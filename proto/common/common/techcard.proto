@@ -1442,6 +1442,7 @@ enum TechCardPieceFusingMode {
   TECH_CARD_PIECE_FUSING_MODE_UNKNOWN = 0; // не размечено (см. выше — это не «целиком»)
   TECH_CARD_PIECE_FUSING_MODE_FULL = 1; // дублируется вся деталь: клеевая = тот же контур
   TECH_CARD_PIECE_FUSING_MODE_STRIP = 3; // полоса вдоль среза; ширина пуста = эталон припуска (0277)
+  TECH_CARD_PIECE_FUSING_MODE_ZONE = 4; // отдельная зона: прямоугольник на детали или DXF-лекало
 }
 
 // TechCardSizeQuantity is the TYPICAL calculation batch for a size — «типовой тираж для
@@ -3243,6 +3244,38 @@ message TechCardPieceDxfAliasSet {
   repeated TechCardPieceDxfAlias items = 1;
 }
 
+// One selected outline segment for strip fusing. edge is the zero-based segment index in the
+// piece's base-size DXF block; start/end trim that segment inward from its two ends, in millimetres.
+message TechCardPieceFusingEdge {
+  int32 edge = 1;
+  google.type.Decimal start_mm = 2;
+  google.type.Decimal end_mm = 3;
+}
+
+// Presence wrapper: absent means an older client did not speak edge selection; present with no
+// items deliberately clears it. A bare repeated field cannot distinguish those two writes.
+message TechCardPieceFusingEdges {
+  repeated TechCardPieceFusingEdge items = 1;
+}
+
+// Piece-local rectangle in millimetres. Coordinates are kept separately rather than as four
+// parallel repeated values, so an incomplete rectangle is unrepresentable after validation.
+message TechCardPieceFusingRect {
+  google.type.Decimal x0 = 1;
+  google.type.Decimal y0 = 2;
+  google.type.Decimal x1 = 3;
+  google.type.Decimal y1 = 4;
+}
+
+// Geometry for ZONE fusing: either a rectangle drawn on the garment piece or a dedicated DXF
+// piece supplied by the pattern maker. An empty message deliberately clears the stored zone.
+message TechCardPieceFusingZone {
+  oneof shape {
+    TechCardPieceFusingRect rect = 1;
+    string dxf_piece_key = 2;
+  }
+}
+
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
 // how many per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused
 // (клеевая). materials picks, per colourway, which BOM fabric it is cut from. Full-replace child.
@@ -3325,6 +3358,22 @@ message TechCardPiece {
   // это не совпадение: режим SEAM_ALLOWANCE берёт ширину полосы прямо из эталона. В сантиметры
   // геометрии переводит РОВНО ОДНО место — расчёт нормы, у которого на руках оба сомножителя.
   google.type.Decimal fusing_width_mm = 14;
+  // Stable TechCardBomItem.line_key of the selected INTERLINING line. Explicit empty = automatic:
+  // use the card's sole interlining line; with zero or several lines the selection is unresolved.
+  // Presence protects a stored choice from a full-card save by an older client.
+  optional string fusing_bom_line_key = 15;
+  // STRIP-only selected outline segments. Absent = do not touch; present empty = clear.
+  TechCardPieceFusingEdges fusing_edges = 16;
+  // ZONE-only geometry. Absent = do not touch; an empty message = clear.
+  TechCardPieceFusingZone fusing_zone = 17;
+  // Inset from the cut edge, mm. NULL/empty = the 3.0 mm default. A present empty Decimal clears.
+  google.type.Decimal fusing_inset_mm = 18;
+  // true replaces the numeric inset with the piece's seam allowance; false clears that special mode.
+  optional bool fusing_inset_net = 19;
+  // Empty/NULL = as_piece; otherwise as_piece|lengthwise|crosswise|bias|any.
+  optional string fusing_grain = 20;
+  // Empty/NULL = cut; otherwise cut|fuse.
+  optional string fusing_darts = 21;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers

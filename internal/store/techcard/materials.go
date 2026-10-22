@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base32"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -55,6 +56,104 @@ type pieceExistingRow struct {
 	// отличить от повторного сохранения того же. Прочие пути этот столбец не выбирают, и false у них
 	// ничего не значит.
 	Ungraded bool `db:"ungraded"`
+}
+
+type pieceFusingEdgeJSON struct {
+	Edge    int         `json:"edge"`
+	StartMm json.Number `json:"start_mm"`
+	EndMm   json.Number `json:"end_mm"`
+}
+
+type pieceFusingZoneJSON struct {
+	Rect        []json.Number `json:"rect,omitempty"`
+	DxfPieceKey string        `json:"dxf_piece_key,omitempty"`
+}
+
+func pieceFusingEdgesJSON(edges []entity.TechCardPieceFusingEdge) (any, error) {
+	if len(edges) == 0 {
+		return nil, nil
+	}
+	rows := make([]pieceFusingEdgeJSON, 0, len(edges))
+	for _, edge := range edges {
+		rows = append(rows, pieceFusingEdgeJSON{
+			Edge: edge.Edge, StartMm: json.Number(edge.StartMm.String()), EndMm: json.Number(edge.EndMm.String()),
+		})
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("marshal piece fusing edges: %w", err)
+	}
+	return string(raw), nil
+}
+
+func pieceFusingZoneJSONValue(zone *entity.TechCardPieceFusingZone) (any, error) {
+	if zone == nil {
+		return nil, nil
+	}
+	row := pieceFusingZoneJSON{DxfPieceKey: zone.DxfPieceKey}
+	if zone.Rect != nil {
+		row.Rect = []json.Number{
+			json.Number(zone.Rect.X0.String()), json.Number(zone.Rect.Y0.String()),
+			json.Number(zone.Rect.X1.String()), json.Number(zone.Rect.Y1.String()),
+		}
+	}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return nil, fmt.Errorf("marshal piece fusing zone: %w", err)
+	}
+	return string(raw), nil
+}
+
+func decodePieceFusingJSON(p *entity.TechCardPiece) error {
+	if len(p.FusingEdgesRaw) > 0 {
+		var rows []pieceFusingEdgeJSON
+		if err := json.Unmarshal(p.FusingEdgesRaw, &rows); err != nil {
+			return fmt.Errorf("decode fusing_edges of piece %q: %w", p.LineKey, err)
+		}
+		p.FusingEdges = make([]entity.TechCardPieceFusingEdge, 0, len(rows))
+		for _, row := range rows {
+			start, err := decimal.NewFromString(row.StartMm.String())
+			if err != nil {
+				return fmt.Errorf("decode fusing_edges start_mm of piece %q: %w", p.LineKey, err)
+			}
+			end, err := decimal.NewFromString(row.EndMm.String())
+			if err != nil {
+				return fmt.Errorf("decode fusing_edges end_mm of piece %q: %w", p.LineKey, err)
+			}
+			p.FusingEdges = append(p.FusingEdges, entity.TechCardPieceFusingEdge{
+				Edge: row.Edge, StartMm: start, EndMm: end,
+			})
+		}
+	}
+	if len(p.FusingZoneRaw) == 0 {
+		return nil
+	}
+	var row pieceFusingZoneJSON
+	if err := json.Unmarshal(p.FusingZoneRaw, &row); err != nil {
+		return fmt.Errorf("decode fusing_zone of piece %q: %w", p.LineKey, err)
+	}
+	switch {
+	case len(row.Rect) > 0:
+		if len(row.Rect) != 4 {
+			return fmt.Errorf("decode fusing_zone of piece %q: rect has %d coordinates, want 4", p.LineKey, len(row.Rect))
+		}
+		coords := make([]decimal.Decimal, 4)
+		for i := range row.Rect {
+			v, err := decimal.NewFromString(row.Rect[i].String())
+			if err != nil {
+				return fmt.Errorf("decode fusing_zone coordinate %d of piece %q: %w", i, p.LineKey, err)
+			}
+			coords[i] = v
+		}
+		p.FusingZone = &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
+			X0: coords[0], Y0: coords[1], X1: coords[2], Y1: coords[3],
+		}}
+	case row.DxfPieceKey != "":
+		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey}
+	default:
+		return fmt.Errorf("decode fusing_zone of piece %q: no rect or dxf_piece_key", p.LineKey)
+	}
+	return nil
 }
 
 // calloutRef is a callout's canonical part name and the sketch it is pinned to, from the payload.
@@ -133,23 +232,38 @@ const (
 					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
 					fusing_mode=IF(:fused, IF(:fusing_omitted, fusing_mode, :fusing_mode), NULL),
 					fusing_width_mm=IF(:fused, IF(:fusing_omitted, fusing_width_mm, :fusing_width_mm), NULL),
+					fusing_bom_item_id=IF(:fused, IF(:fusing_bom_omitted, fusing_bom_item_id, :fusing_bom_item_id), NULL),
+					fusing_edges=IF(:fused AND IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'strip', IF(:fusing_edges_omitted, fusing_edges, :fusing_edges), NULL),
+					fusing_zone=IF(:fused AND IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'zone', IF(:fusing_zone_omitted, fusing_zone, :fusing_zone), NULL),
+					fusing_inset_mm=IF(:fused, IF(:fusing_inset_mm_omitted, fusing_inset_mm, :fusing_inset_mm), NULL),
+					fusing_inset_net=IF(:fused, IF(:fusing_inset_net_omitted, fusing_inset_net, :fusing_inset_net), NULL),
+					fusing_grain=IF(:fused, IF(:fusing_grain_omitted, fusing_grain, :fusing_grain), NULL),
+					fusing_darts=IF(:fused, IF(:fusing_darts_omitted, fusing_darts, :fusing_darts), NULL),
 					fused=:fused, callout_number=:callout_number, detached=:detached, note=:note, display_order=:display_order
 				WHERE id=:id`
 
 	pieceInsertQuery = `
 				INSERT INTO tech_card_piece
-					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm, callout_number, detached, note, display_order)
-				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :fusing_mode, :fusing_width_mm, :callout_number, :detached, :note, :display_order)`
+					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm,
+					 fusing_bom_item_id, fusing_edges, fusing_zone, fusing_inset_mm, fusing_inset_net, fusing_grain, fusing_darts,
+					 callout_number, detached, note, display_order)
+				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :fusing_mode, :fusing_width_mm,
+					:fusing_bom_item_id, :fusing_edges, :fusing_zone, :fusing_inset_mm, :fusing_inset_net, :fusing_grain, :fusing_darts,
+					:callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
 	// hashes: a field the write stores and the read never loads makes the two projections permanently
 	// disagree, and the sign-off it feeds can never match its own stored digest again — the failure the
 	// piece-material read's line_key note records having already paid for once.
 	pieceReadQuery = `
-		SELECT id, tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm, callout_number, detached, note
-		FROM tech_card_piece
-		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`
+		SELECT p.id, p.tech_card_id, p.name, p.line_key, p.pieces_per_garment, p.mirrored, p.cut_symmetry, p.ungraded,
+		       p.grainline, p.fused, p.fusing_mode, p.fusing_width_mm, p.fusing_bom_item_id,
+		       p.fusing_edges, p.fusing_zone, p.fusing_inset_mm, p.fusing_inset_net, p.fusing_grain, p.fusing_darts,
+		       p.callout_number, p.detached, p.note, fb.line_key AS fusing_bom_line_key
+		FROM tech_card_piece p
+		LEFT JOIN tech_card_bom_item fb ON fb.id = p.fusing_bom_item_id
+		WHERE p.tech_card_id IN (:ids)
+		ORDER BY p.tech_card_id, p.display_order, p.id`
 )
 
 // upsertTechCardPieces reconciles a card's cut-pieces by line_key (S8), the same keyed upsert-diff the
@@ -160,6 +274,19 @@ const (
 // deferred-from-0159 cross-aggregate guard. piece_material was cleared in Phase A, so each kept/new
 // piece just re-inserts its per-colourway mapping with the BOM ids resolved by bomRes.
 func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver, cs calloutSync) error {
+	// A selected fusing line is valid only while that SAME row remains in this card's INTERLINING
+	// section. The BOM upsert immediately before this call may have deleted it (the FK SET NULLs it)
+	// or changed its section. Clear the latter case explicitly before omitted-field guards carry the
+	// stored value, so a BOM edit can fall back to sole-line auto-resolution in this transaction.
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card_piece p
+		LEFT JOIN tech_card_bom_item b ON b.id = p.fusing_bom_item_id
+		SET p.fusing_bom_item_id = NULL
+		WHERE p.tech_card_id = :tech_card_id AND p.fusing_bom_item_id IS NOT NULL
+		  AND (b.id IS NULL OR b.tech_card_id <> p.tech_card_id OR b.section <> 'interlining')`,
+		map[string]any{"tech_card_id": tcID}); err != nil {
+		return fmt.Errorf("clear invalid piece fusing BOM selections: %w", err)
+	}
 	// PR6 R1/§14.3: a piece material addresses its colourway by explicit colorway_id = product.id.
 	// Validate membership — the colourway must be one of this style's products (product.style_id = card).
 	cwRows, err := storeutil.QueryListNamed[techCardPieceColorwayIDRow](ctx, db, `
@@ -250,25 +377,66 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			fmt.Sprintf("pieces[%d].fusing_mode", i), p.Fused, p.FusingMode, p.FusingWidthMm); err != nil {
 			return err
 		}
+		if err := entity.ValidatePieceFusingDetails(fmt.Sprintf("pieces[%d]", i), p); err != nil {
+			return err
+		}
+		var fusingBomID any
+		if !p.FusingBomOmitted && strings.TrimSpace(p.FusingBomLineKey) != "" {
+			id, ok := bomRes.byLineKey[strings.TrimSpace(p.FusingBomLineKey)]
+			if !ok {
+				return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_bom_line_key", i),
+					fmt.Sprintf("no BOM line %q in this tech card", p.FusingBomLineKey), "",
+					"reference an existing INTERLINING line by its line_key")
+			}
+			if bomRes.sectionByID[id] != entity.BomSectionInterlining {
+				return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_bom_line_key", i),
+					"the selected BOM line is not interlining", p.FusingBomLineKey,
+					"select a BOM line from the INTERLINING section")
+			}
+			fusingBomID = id
+			p.FusingBomItemId = sql.NullInt64{Int64: int64(id), Valid: true}
+		}
+		fusingEdges, err := pieceFusingEdgesJSON(p.FusingEdges)
+		if err != nil {
+			return err
+		}
+		fusingZone, err := pieceFusingZoneJSONValue(p.FusingZone)
+		if err != nil {
+			return err
+		}
 		params := map[string]any{
-			"tech_card_id":         tcID,
-			"name":                 p.Name,
-			"line_key":             key,
-			"pieces_per_garment":   p.PiecesPerGarment,
-			"mirrored":             p.Mirrored,
-			"cut_symmetry":         p.CutSymmetry,
-			"cut_symmetry_omitted": p.CutSymmetryOmitted,
-			"ungraded":             p.Ungraded,
-			"ungraded_omitted":     p.UngradedOmitted,
-			"grainline":            p.Grainline,
-			"fused":                p.Fused,
-			"fusing_mode":          p.FusingMode,
-			"fusing_width_mm":      p.FusingWidthMm,
-			"fusing_omitted":       p.FusingOmitted,
-			"callout_number":       p.CalloutNumber,
-			"detached":             p.Detached,
-			"note":                 p.Note,
-			"display_order":        i,
+			"tech_card_id":             tcID,
+			"name":                     p.Name,
+			"line_key":                 key,
+			"pieces_per_garment":       p.PiecesPerGarment,
+			"mirrored":                 p.Mirrored,
+			"cut_symmetry":             p.CutSymmetry,
+			"cut_symmetry_omitted":     p.CutSymmetryOmitted,
+			"ungraded":                 p.Ungraded,
+			"ungraded_omitted":         p.UngradedOmitted,
+			"grainline":                p.Grainline,
+			"fused":                    p.Fused,
+			"fusing_mode":              p.FusingMode,
+			"fusing_width_mm":          p.FusingWidthMm,
+			"fusing_omitted":           p.FusingOmitted,
+			"fusing_bom_item_id":       fusingBomID,
+			"fusing_bom_omitted":       p.FusingBomOmitted,
+			"fusing_edges":             fusingEdges,
+			"fusing_edges_omitted":     p.FusingEdgesOmitted,
+			"fusing_zone":              fusingZone,
+			"fusing_zone_omitted":      p.FusingZoneOmitted,
+			"fusing_inset_mm":          p.FusingInsetMm,
+			"fusing_inset_mm_omitted":  p.FusingInsetMmOmitted,
+			"fusing_inset_net":         p.FusingInsetNet,
+			"fusing_inset_net_omitted": p.FusingInsetNetOmitted,
+			"fusing_grain":             p.FusingGrain,
+			"fusing_grain_omitted":     p.FusingGrainOmitted,
+			"fusing_darts":             p.FusingDarts,
+			"fusing_darts_omitted":     p.FusingDartsOmitted,
+			"callout_number":           p.CalloutNumber,
+			"detached":                 p.Detached,
+			"note":                     p.Note,
+			"display_order":            i,
 		}
 		var pieceID int
 		if id, ok := existingByKey[key]; ok {
@@ -412,8 +580,9 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 // (the legacy positional reference that operations/pieces still carry on the wire during the
 // transition). It is how referrers resolve a real bom_item_id (S2/S3).
 type bomResolver struct {
-	byLineKey map[string]int
-	ordered   []int // bom_item.id in submission order (== display_order)
+	byLineKey   map[string]int
+	sectionByID map[int]entity.TechCardBomSection
+	ordered     []int // bom_item.id in submission order (== display_order)
 }
 
 // idForIndex resolves a legacy 0-based bom_item_index to a real id; ok=false when out of range (a
@@ -654,7 +823,10 @@ func validateBomCountableSection(b *entity.TechCardBomItem, i int) error {
 // operation/piece/colourway recipe) surfaces as a field-tagged error, not a raw 500. Returns a
 // resolver so pieces/operations can turn their reference into a real bom_item_id.
 func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []entity.TechCardBomItem) (bomResolver, error) {
-	res := bomResolver{byLineKey: make(map[string]int, len(items)), ordered: make([]int, 0, len(items))}
+	res := bomResolver{
+		byLineKey: make(map[string]int, len(items)), sectionByID: make(map[int]entity.TechCardBomSection, len(items)),
+		ordered: make([]int, 0, len(items)),
+	}
 
 	existingRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, db,
 		`SELECT id, line_key, unit_price, currency, price_source, price_snapshot_at,
@@ -727,6 +899,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			}
 			res.ordered = append(res.ordered, id)
 			res.byLineKey[key] = id
+			res.sectionByID[id] = b.Section
 		} else {
 			newID, err := storeutil.ExecNamedLastId(ctx, db, bomItemInsertQuery, params)
 			if err != nil {
@@ -734,6 +907,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 			}
 			res.ordered = append(res.ordered, newID)
 			res.byLineKey[key] = newID
+			res.sectionByID[newID] = b.Section
 		}
 		seen[key] = true
 	}
@@ -948,7 +1122,8 @@ type techCardDetailMediaRow struct {
 }
 
 type techCardPieceRow struct {
-	TechCardID int `db:"tech_card_id"`
+	TechCardID             int            `db:"tech_card_id"`
+	FusingBomLineKeyJoined sql.NullString `db:"fusing_bom_line_key"`
 	entity.TechCardPiece
 }
 
@@ -1218,7 +1393,12 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	piecesByCard := make(map[int][]entity.TechCardPiece, len(ids))
 	for _, r := range pieceRows {
-		piecesByCard[r.TechCardID] = append(piecesByCard[r.TechCardID], r.TechCardPiece)
+		piece := r.TechCardPiece
+		piece.FusingBomLineKey = r.FusingBomLineKeyJoined.String
+		if err := decodePieceFusingJSON(&piece); err != nil {
+			return err
+		}
+		piecesByCard[r.TechCardID] = append(piecesByCard[r.TechCardID], piece)
 	}
 	pieceByID := make(map[int]*entity.TechCardPiece, len(pieceRows))
 	pieceIDs := make([]int, 0, len(pieceRows))

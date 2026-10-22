@@ -196,6 +196,7 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	if err := s.EnsureDictionaryFresh(ctx, "archive import"); err != nil {
 		return 0, err
 	}
+	card.ReconcileFusing = true
 
 	var newID int
 	var losses *importLosses

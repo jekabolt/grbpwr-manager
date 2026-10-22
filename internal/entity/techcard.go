@@ -3450,6 +3450,11 @@ type TechCardOperation struct {
 	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
 	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
 	Review sql.NullString `db:"review"`
+	// AutoFusingLineKey is the private identity snapshot of an automatically managed FUSING group.
+	// Valid+empty is the shared unresolved group; a non-empty value is the INTERLINING line_key the
+	// group was created for. It deliberately survives deletion of that BOM row, letting an edited
+	// orphan shed the dead FK without becoming indistinguishable from unresolved NULL. Not on wire.
+	AutoFusingLineKey sql.NullString `db:"auto_fusing_line_key"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -3970,6 +3975,30 @@ type TechCardPieceMaterial struct {
 	Note             sql.NullString `db:"note"`
 }
 
+// TechCardPieceFusingEdge is one outline segment selected for STRIP fusing. StartMm and EndMm trim
+// the band from the segment's two ends; zero means no trim. Edge is zero-based in the base-size DXF
+// block, whose segment ordering is the cross-size identity promised by the fusing contract.
+type TechCardPieceFusingEdge struct {
+	Edge    int
+	StartMm decimal.Decimal
+	EndMm   decimal.Decimal
+}
+
+// TechCardPieceFusingRect is a piece-local rectangle in millimetres.
+type TechCardPieceFusingRect struct {
+	X0 decimal.Decimal
+	Y0 decimal.Decimal
+	X1 decimal.Decimal
+	Y1 decimal.Decimal
+}
+
+// TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. Rect and DxfPieceKey may both
+// be empty only to represent a deliberate clear on write; a stored non-NULL zone has exactly one.
+type TechCardPieceFusingZone struct {
+	Rect        *TechCardPieceFusingRect
+	DxfPieceKey string
+}
+
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка…): how many
 // per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused (клеевая).
 // Materials picks, per colourway, which BOM fabric it is cut from. Keyed-upserted child of the card:
@@ -4042,8 +4071,32 @@ type TechCardPiece struct {
 	// же причина, что у CutSymmetryOmitted и UngradedOmitted рядом. Один флаг на оба поля, потому что
 	// присутствие режима управляет и шириной: клиент, приславший режим без ширины, заявляет «полоса
 	// без числа», а не «ширину не трогать», — иначе полоса досталась бы шириной от прошлой правки.
-	FusingOmitted bool          `db:"-"`
-	CalloutNumber sql.NullInt32 `db:"callout_number"`
+	FusingOmitted bool `db:"-"`
+	// FusingBomItemId is the selected INTERLINING BOM line. NULL is not “none”: it asks readers to
+	// auto-resolve the card's sole interlining line, and remains unresolved when there are zero or
+	// several. The wire addresses the same row by FusingBomLineKey.
+	FusingBomItemId  sql.NullInt64 `db:"fusing_bom_item_id"`
+	FusingBomLineKey string        `db:"-"`
+	FusingBomOmitted bool          `db:"-"`
+	// The JSON columns keep raw scanner values beside their typed projections. Store reads decode the
+	// raw bytes once; write paths validate and encode the typed values.
+	FusingEdges        []TechCardPieceFusingEdge `db:"-"`
+	FusingEdgesRaw     RawJSON                   `db:"fusing_edges"`
+	FusingEdgesOmitted bool                      `db:"-"`
+	FusingZone         *TechCardPieceFusingZone  `db:"-"`
+	FusingZoneRaw      RawJSON                   `db:"fusing_zone"`
+	FusingZoneOmitted  bool                      `db:"-"`
+	// NULL inset means the 3 mm default. `net=true` is the mutually-exclusive special value “use
+	// this piece's seam allowance”. False is stored as NULL; wire presence is carried separately.
+	FusingInsetMm         decimal.NullDecimal `db:"fusing_inset_mm"`
+	FusingInsetMmOmitted  bool                `db:"-"`
+	FusingInsetNet        sql.NullBool        `db:"fusing_inset_net"`
+	FusingInsetNetOmitted bool                `db:"-"`
+	FusingGrain           sql.NullString      `db:"fusing_grain"`
+	FusingGrainOmitted    bool                `db:"-"`
+	FusingDarts           sql.NullString      `db:"fusing_darts"`
+	FusingDartsOmitted    bool                `db:"-"`
+	CalloutNumber         sql.NullInt32       `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -4135,13 +4188,16 @@ const (
 	// не тот способ свести. Ширина стала ОПЦИОНАЛЬНОЙ: пусто = эталон припуска карточки (иначе
 	// цеха, 0277), число = переопределение, ровно как у seam_allowance_mm и всех overrides шага.
 	PieceFusingModeStrip TechCardPieceFusingMode = "strip"
+	// PieceFusingModeZone uses either a piece-local rectangle or a dedicated DXF piece as the
+	// interlining contour. Geometry may be temporarily unset while the card is still a draft.
+	PieceFusingModeZone TechCardPieceFusingMode = "zone"
 )
 
-// ValidTechCardPieceFusingModes mirrors the DB CHECK chk_tcp_fusing_mode (0304, сужен 0328).
-// "Not marked" is deliberately absent for the same reason as in cut symmetry: it is the NULL
-// column, not a value.
+// ValidTechCardPieceFusingModes is the write authority after 0426 removed the narrower historical
+// DB CHECK rather than retroactively validating all production rows while adding ZONE. "Not marked"
+// is deliberately absent for the same reason as in cut symmetry: it is the NULL column, not a value.
 var ValidTechCardPieceFusingModes = map[TechCardPieceFusingMode]bool{
-	PieceFusingModeFull: true, PieceFusingModeStrip: true,
+	PieceFusingModeFull: true, PieceFusingModeStrip: true, PieceFusingModeZone: true,
 }
 
 // PieceFusingStripWidthCeilingMm mirrors the ceiling in chk_tcp_fusing_width (0304). The widest real
@@ -4186,10 +4242,31 @@ func (p *TechCardPiece) NormalizeFusing() {
 	if !p.Fused {
 		p.FusingMode = sql.NullString{}
 		p.FusingWidthMm = decimal.NullDecimal{}
+		p.FusingBomItemId = sql.NullInt64{}
+		p.FusingBomLineKey = ""
+		p.FusingEdges = nil
+		p.FusingZone = nil
+		p.FusingInsetMm = decimal.NullDecimal{}
+		p.FusingInsetNet = sql.NullBool{}
+		p.FusingGrain = sql.NullString{}
+		p.FusingDarts = sql.NullString{}
 		return
 	}
-	if PieceFusingModeOrFull(p.FusingMode) != PieceFusingModeStrip {
+	switch PieceFusingModeOrFull(p.FusingMode) {
+	case PieceFusingModeStrip:
+		p.FusingZone = nil
+	case PieceFusingModeZone:
 		p.FusingWidthMm = decimal.NullDecimal{}
+		p.FusingEdges = nil
+	default:
+		p.FusingWidthMm = decimal.NullDecimal{}
+		p.FusingEdges = nil
+		p.FusingZone = nil
+	}
+	if p.FusingInsetNet.Valid && p.FusingInsetNet.Bool {
+		p.FusingInsetMm = decimal.NullDecimal{}
+	} else if p.FusingInsetNet.Valid {
+		p.FusingInsetNet = sql.NullBool{}
 	}
 }
 
@@ -4221,12 +4298,12 @@ func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm 
 	v := TechCardPieceFusingMode(mode.String)
 	if !ValidTechCardPieceFusingModes[v] {
 		return NewFieldViolation(field, "unknown fusing mode", mode.String,
-			"pick one of: full (the whole piece), strip (a strip along the edge — leave the width empty to take the card's seam-allowance reference)")
+			"pick one of: full (the whole piece), strip (selected edges), zone (a rectangle or a dedicated DXF piece)")
 	}
 	if v != PieceFusingModeStrip {
 		if widthMm.Valid {
 			return NewFieldViolation(field, "a strip width is set on a mode that has no width of its own", mode.String,
-				"“the whole piece” is cut to the same contour as the piece; a width belongs to the “strip” mode")
+				"a width belongs only to the “strip” mode")
 		}
 		return nil
 	}
@@ -4257,6 +4334,76 @@ func ValidatePieceFusing(field string, fused bool, mode sql.NullString, widthMm 
 		return NewFieldViolation(field, "the fusing strip width is over 100 mm — this looks like centimetres instead of millimetres",
 			widthMm.Decimal.String(),
 			"the widest real strip is a hem fusing, 40-50 mm; to fuse the whole piece there is the “whole piece” mode")
+	}
+	return nil
+}
+
+var validPieceFusingGrains = map[string]bool{
+	"as_piece": true, "lengthwise": true, "crosswise": true, "bias": true, "any": true,
+}
+
+var validPieceFusingDarts = map[string]bool{"cut": true, "fuse": true}
+
+// ValidatePieceFusingDetails validates the optional geometry/settings added by the FUSING wave.
+// It runs after NormalizeFusing, so values that cannot mean anything in the selected mode have
+// already been cleared rather than judged as an operator statement.
+func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
+	if p == nil || !p.Fused {
+		return nil
+	}
+	mode := PieceFusingModeOrFull(p.FusingMode)
+	if len(p.FusingEdges) > 0 && mode != PieceFusingModeStrip {
+		return NewFieldViolation(field+".fusing_edges", "edge selection belongs only to strip fusing",
+			string(mode), "pick strip mode, or clear the selected edges")
+	}
+	seenEdges := make(map[int]bool, len(p.FusingEdges))
+	for i, edge := range p.FusingEdges {
+		edgeField := fmt.Sprintf("%s.fusing_edges[%d]", field, i)
+		if edge.Edge < 0 {
+			return NewFieldViolation(edgeField+".edge", "edge index must be zero or greater",
+				strconv.Itoa(edge.Edge), "select an outline segment from the base-size piece")
+		}
+		if seenEdges[edge.Edge] {
+			return NewFieldViolation(edgeField+".edge", "the same outline segment is selected twice",
+				strconv.Itoa(edge.Edge), "keep one row per selected edge")
+		}
+		seenEdges[edge.Edge] = true
+		if edge.StartMm.IsNegative() || edge.EndMm.IsNegative() {
+			return NewFieldViolation(edgeField, "edge-end offsets cannot be negative", "",
+				"use zero for no trim from that end")
+		}
+	}
+	if p.FusingZone != nil {
+		if mode != PieceFusingModeZone {
+			return NewFieldViolation(field+".fusing_zone", "zone geometry belongs only to zone fusing",
+				string(mode), "pick zone mode, or clear the zone")
+		}
+		hasRect := p.FusingZone.Rect != nil
+		hasDXF := strings.TrimSpace(p.FusingZone.DxfPieceKey) != ""
+		if hasRect == hasDXF {
+			return NewFieldViolation(field+".fusing_zone", "choose exactly one zone shape", "",
+				"draw a rectangle on the piece or select one dedicated DXF piece")
+		}
+		if hasRect && (p.FusingZone.Rect.X0.Equal(p.FusingZone.Rect.X1) ||
+			p.FusingZone.Rect.Y0.Equal(p.FusingZone.Rect.Y1)) {
+			return NewFieldViolation(field+".fusing_zone.rect", "the fusing rectangle must have an area", "",
+				"move the opposite corners apart")
+		}
+	}
+	if p.FusingInsetMm.Valid {
+		v := p.FusingInsetMm.Decimal
+		if v.IsNegative() || v.Exponent() < -1 || v.GreaterThan(decimal.RequireFromString("9999.9")) {
+			return NewFieldViolation(field+".fusing_inset_mm", "inset must fit DECIMAL(5,1) and be non-negative",
+				v.String(), "enter millimetres with at most one decimal place, or clear it for the 3 mm default")
+		}
+	}
+	if p.FusingGrain.Valid && !validPieceFusingGrains[p.FusingGrain.String] {
+		return NewFieldViolation(field+".fusing_grain", "unknown fusible grain", p.FusingGrain.String,
+			"pick as_piece, lengthwise, crosswise, bias, or any")
+	}
+	if p.FusingDarts.Valid && !validPieceFusingDarts[p.FusingDarts.String] {
+		return NewFieldViolation(field+".fusing_darts", "unknown dart treatment", p.FusingDarts.String,
+			"pick cut or fuse")
 	}
 	return nil
 }
@@ -4469,6 +4616,11 @@ type TechCardInsert struct {
 	Signoffs       []TechCardSignoff      `db:"-"`
 	Patterns       []TechCardSizePattern  `db:"-"`
 	Pieces         []TechCardPiece        `db:"-"` // structural cut-pieces + per-colourway fabric mapping (NF-05)
+	// ReconcileFusing is write-command metadata. Create/clone writers set it unconditionally;
+	// UpdateTechCard sets it only when the stored and incoming piece-fusing/interlining state differs.
+	// It keeps the transaction-side reconciliation aligned with the in-memory pass, so an unrelated
+	// full-document save cannot reorder, unlink, or review-mark historical FUSING operations.
+	ReconcileFusing bool `db:"-"`
 	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
 	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
 	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot

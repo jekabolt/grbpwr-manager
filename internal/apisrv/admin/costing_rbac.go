@@ -736,3 +736,61 @@ func carryOmittedPieceFusingFrom(stored *entity.TechCard, incoming *entity.TechC
 		incoming.Pieces[i].NormalizeFusing()
 	}
 }
+
+// carryOmittedPieceFusingDetailsFrom extends the same presence contract to the FUSING wave's line
+// choice, geometry, and advanced settings. Each field has independent presence: changing the inset
+// must not accidentally clear a selected edge list, and an older bundle that knows none of them
+// must preserve all of them. The store has matching IF(:*_omitted, stored, incoming) guards; this
+// copy keeps the CONSTRUCTION digest projected from the same values that those guards will retain.
+func carryOmittedPieceFusingDetailsFrom(stored *entity.TechCard, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	interliningByKey := make(map[string]bool, len(incoming.BomItems))
+	for i := range incoming.BomItems {
+		if incoming.BomItems[i].Section == entity.BomSectionInterlining {
+			interliningByKey[strings.TrimSpace(incoming.BomItems[i].LineKey)] = true
+		}
+	}
+	byKey := make(map[string]*entity.TechCardPiece, len(stored.Pieces))
+	for i := range stored.Pieces {
+		if key := strings.TrimSpace(stored.Pieces[i].LineKey); key != "" {
+			byKey[key] = &stored.Pieces[i]
+		}
+	}
+	for i := range incoming.Pieces {
+		piece := &incoming.Pieces[i]
+		storedPiece := byKey[strings.TrimSpace(piece.LineKey)]
+		if storedPiece == nil {
+			continue
+		}
+		if piece.FusingBomOmitted {
+			// A BOM edit may delete the selected line or move it out of INTERLINING. In that case
+			// omission cannot carry the old choice: the FK is SET NULL in this same save and the
+			// piece returns to sole-line auto-resolution (or unresolved), exactly as the store does.
+			if interliningByKey[strings.TrimSpace(storedPiece.FusingBomLineKey)] {
+				piece.FusingBomItemId = storedPiece.FusingBomItemId
+				piece.FusingBomLineKey = storedPiece.FusingBomLineKey
+			}
+		}
+		if piece.FusingEdgesOmitted {
+			piece.FusingEdges = append([]entity.TechCardPieceFusingEdge(nil), storedPiece.FusingEdges...)
+		}
+		if piece.FusingZoneOmitted {
+			piece.FusingZone = storedPiece.FusingZone
+		}
+		if piece.FusingInsetMmOmitted {
+			piece.FusingInsetMm = storedPiece.FusingInsetMm
+		}
+		if piece.FusingInsetNetOmitted {
+			piece.FusingInsetNet = storedPiece.FusingInsetNet
+		}
+		if piece.FusingGrainOmitted {
+			piece.FusingGrain = storedPiece.FusingGrain
+		}
+		if piece.FusingDartsOmitted {
+			piece.FusingDarts = storedPiece.FusingDarts
+		}
+		piece.NormalizeFusing()
+	}
+}

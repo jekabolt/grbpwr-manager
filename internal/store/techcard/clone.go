@@ -18,6 +18,7 @@ func (s *Store) CloneTechCardForSeason(ctx context.Context, sourceID, expectedSo
 	if err := s.EnsureDictionaryFresh(ctx, "season clone"); err != nil {
 		return 0, err
 	}
+	tc.ReconcileFusing = true
 	s.stampApprovalTimes(tc, "", sql.NullTime{}, sql.NullTime{})
 	var id int
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {

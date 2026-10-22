@@ -148,6 +148,7 @@ var techCardFabricDirectionEntityToPb = func() map[entity.TechCardFabricDirectio
 var techCardPieceFusingModePbToEntity = map[pb_common.TechCardPieceFusingMode]entity.TechCardPieceFusingMode{
 	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_FULL:  entity.PieceFusingModeFull,
 	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_STRIP: entity.PieceFusingModeStrip,
+	pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_ZONE:  entity.PieceFusingModeZone,
 }
 
 var techCardPieceFusingModeEntityToPb = func() map[entity.TechCardPieceFusingMode]pb_common.TechCardPieceFusingMode {
@@ -3036,6 +3037,80 @@ func parseOptionalPositiveID(id *int64) (sql.NullInt64, bool) {
 	return sql.NullInt64{Int64: *id, Valid: true}, true
 }
 
+func fusingDecimalFromPb(d *pb_decimal.Decimal, field string) (decimal.Decimal, error) {
+	if d == nil || d.GetValue() == "" {
+		return decimal.Zero, nil
+	}
+	v, err := decimal.NewFromString(d.GetValue())
+	if err != nil {
+		return decimal.Zero, entity.NewFieldViolation(field, "not a number", d.GetValue(),
+			"enter a distance in millimetres")
+	}
+	return v, nil
+}
+
+func parsePieceFusingEdges(p *pb_common.TechCardPiece, field string) ([]entity.TechCardPieceFusingEdge, bool, error) {
+	if p.GetFusingEdges() == nil {
+		return nil, true, nil
+	}
+	out := make([]entity.TechCardPieceFusingEdge, 0, len(p.GetFusingEdges().GetItems()))
+	for i, edge := range p.GetFusingEdges().GetItems() {
+		if edge == nil {
+			return nil, false, entity.NewFieldViolation(fmt.Sprintf("%s.fusing_edges[%d]", field, i),
+				"edge selection is empty", "", "remove the empty row or select an outline segment")
+		}
+		start, err := fusingDecimalFromPb(edge.GetStartMm(), fmt.Sprintf("%s.fusing_edges[%d].start_mm", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		end, err := fusingDecimalFromPb(edge.GetEndMm(), fmt.Sprintf("%s.fusing_edges[%d].end_mm", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, entity.TechCardPieceFusingEdge{Edge: int(edge.GetEdge()), StartMm: start, EndMm: end})
+	}
+	return out, false, nil
+}
+
+func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.TechCardPieceFusingZone, bool, error) {
+	zone := p.GetFusingZone()
+	if zone == nil {
+		return nil, true, nil
+	}
+	switch shape := zone.GetShape().(type) {
+	case nil:
+		return nil, false, nil // present empty message is the explicit clear
+	case *pb_common.TechCardPieceFusingZone_DxfPieceKey:
+		key := strings.TrimSpace(shape.DxfPieceKey)
+		if key == "" {
+			return nil, false, entity.NewFieldViolation(field+".fusing_zone.dxf_piece_key",
+				"DXF piece key is empty", "", "select a dedicated DXF piece, or clear the zone")
+		}
+		return &entity.TechCardPieceFusingZone{DxfPieceKey: key}, false, nil
+	case *pb_common.TechCardPieceFusingZone_Rect:
+		if shape.Rect == nil {
+			return nil, false, entity.NewFieldViolation(field+".fusing_zone.rect",
+				"fusing rectangle is empty", "", "draw two opposite corners, or clear the zone")
+		}
+		coords := []*pb_decimal.Decimal{shape.Rect.GetX0(), shape.Rect.GetY0(), shape.Rect.GetX1(), shape.Rect.GetY1()}
+		values := make([]decimal.Decimal, len(coords))
+		names := []string{"x0", "y0", "x1", "y1"}
+		for i := range coords {
+			v, err := fusingDecimalFromPb(coords[i], field+".fusing_zone.rect."+names[i])
+			if err != nil {
+				return nil, false, err
+			}
+			values[i] = v
+		}
+		return &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
+			X0: values[0], Y0: values[1], X1: values[2], Y1: values[3],
+		}}, false, nil
+	default:
+		return nil, false, entity.NewFieldViolation(field+".fusing_zone", "unknown zone shape", "",
+			"draw a rectangle or select a dedicated DXF piece")
+	}
+}
+
 // parseTechCardPieces parses the structural cut-pieces (NF-05). Each piece's per-colourway fabric
 // mapping addresses its colourway by explicit colorway_id = product.id (R1/§14.3; the store validates
 // membership against product.style_id) and the BOM positionally (bom_item_index / fusing_bom_item_index);
@@ -3122,7 +3197,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 				if !ok {
 					return nil, entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_mode", i),
 						"unknown fusing mode", p.GetFusingMode().String(),
-						"pick one of: full (the whole piece), strip (a strip along the edge — leave the width empty to take the card's seam-allowance reference)")
+						"pick one of: full (the whole piece), strip (selected edges), zone (a rectangle or dedicated DXF piece)")
 				}
 				fusingMode = sql.NullString{String: string(fm), Valid: true}
 			}
@@ -3142,6 +3217,36 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			if err := entity.ValidatePieceFusing(
 				fmt.Sprintf("pieces[%d].fusing_mode", i), p.Fused, fusingMode, fusingWidth); err != nil {
 				return nil, err
+			}
+		}
+		pieceField := fmt.Sprintf("pieces[%d]", i)
+		fusingEdges, fusingEdgesOmitted, err := parsePieceFusingEdges(p, pieceField)
+		if err != nil {
+			return nil, err
+		}
+		fusingZone, fusingZoneOmitted, err := parsePieceFusingZone(p, pieceField)
+		if err != nil {
+			return nil, err
+		}
+		fusingInset, err := nullDecimalFromPb(p.GetFusingInsetMm())
+		if err != nil {
+			return nil, entity.NewFieldViolation(pieceField+".fusing_inset_mm", "the inset is not a number",
+				p.GetFusingInsetMm().GetValue(), "enter millimetres with at most one decimal place")
+		}
+		fusingInsetNet := sql.NullBool{}
+		if p.FusingInsetNet != nil && p.GetFusingInsetNet() {
+			fusingInsetNet = sql.NullBool{Bool: true, Valid: true}
+		}
+		fusingGrain := sql.NullString{}
+		if p.FusingGrain != nil {
+			if v := strings.ToLower(strings.TrimSpace(p.GetFusingGrain())); v != "" {
+				fusingGrain = sql.NullString{String: v, Valid: true}
+			}
+		}
+		fusingDarts := sql.NullString{}
+		if p.FusingDarts != nil {
+			if v := strings.ToLower(strings.TrimSpace(p.GetFusingDarts())); v != "" {
+				fusingDarts = sql.NullString{String: v, Valid: true}
 			}
 		}
 		var calloutNumber sql.NullInt32
@@ -3199,7 +3304,7 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			lineKey = mintedLineKey
 		}
 
-		out = append(out, entity.TechCardPiece{
+		piece := entity.TechCardPiece{
 			Name:               p.Name,
 			LineKey:            lineKey,
 			PiecesPerGarment:   perGarment,
@@ -3211,17 +3316,36 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			// молчание старой вкладки, и стирать им пометку нельзя. Проверять здесь больше нечего —
 			// единственное правило, которое из флага следует (помеченной детали нельзя мерить площадь
 			// по размерам), живёт на записи площадей, там же, где лежат сами строки замера.
-			Ungraded:        p.GetUngraded(),
-			UngradedOmitted: p.Ungraded == nil,
-			Grainline:       grainline,
-			Fused:           p.Fused,
-			FusingMode:      fusingMode,
-			FusingWidthMm:   fusingWidth,
-			FusingOmitted:   fusingOmitted,
-			CalloutNumber:   calloutNumber,
-			Note:            nullStringFromPb(p.Note),
-			Materials:       materials,
-		})
+			Ungraded:              p.GetUngraded(),
+			UngradedOmitted:       p.Ungraded == nil,
+			Grainline:             grainline,
+			Fused:                 p.Fused,
+			FusingMode:            fusingMode,
+			FusingWidthMm:         fusingWidth,
+			FusingOmitted:         fusingOmitted,
+			FusingBomLineKey:      strings.TrimSpace(p.GetFusingBomLineKey()),
+			FusingBomOmitted:      p.FusingBomLineKey == nil,
+			FusingEdges:           fusingEdges,
+			FusingEdgesOmitted:    fusingEdgesOmitted,
+			FusingZone:            fusingZone,
+			FusingZoneOmitted:     fusingZoneOmitted,
+			FusingInsetMm:         fusingInset,
+			FusingInsetMmOmitted:  p.FusingInsetMm == nil,
+			FusingInsetNet:        fusingInsetNet,
+			FusingInsetNetOmitted: p.FusingInsetNet == nil,
+			FusingGrain:           fusingGrain,
+			FusingGrainOmitted:    p.FusingGrain == nil,
+			FusingDarts:           fusingDarts,
+			FusingDartsOmitted:    p.FusingDarts == nil,
+			CalloutNumber:         calloutNumber,
+			Note:                  nullStringFromPb(p.Note),
+			Materials:             materials,
+		}
+		piece.NormalizeFusing()
+		if err := entity.ValidatePieceFusingDetails(pieceField, &piece); err != nil {
+			return nil, err
+		}
+		out = append(out, piece)
 	}
 	return out, nil
 }
@@ -3900,6 +4024,39 @@ func frozenBomCuttingCoefficient(b *entity.TechCardBomItem, linked map[int]entit
 	return pbDecimalFromDecimal(decimal.NewFromInt(1))
 }
 
+func pieceFusingEdgesToPb(edges []entity.TechCardPieceFusingEdge) *pb_common.TechCardPieceFusingEdges {
+	if len(edges) == 0 {
+		return nil
+	}
+	out := &pb_common.TechCardPieceFusingEdges{Items: make([]*pb_common.TechCardPieceFusingEdge, 0, len(edges))}
+	for _, edge := range edges {
+		out.Items = append(out.Items, &pb_common.TechCardPieceFusingEdge{
+			Edge: int32(edge.Edge), StartMm: pbDecimalFromDecimal(edge.StartMm), EndMm: pbDecimalFromDecimal(edge.EndMm),
+		})
+	}
+	return out
+}
+
+func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCardPieceFusingZone {
+	if zone == nil {
+		return nil
+	}
+	if zone.Rect != nil {
+		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_Rect{
+			Rect: &pb_common.TechCardPieceFusingRect{
+				X0: pbDecimalFromDecimal(zone.Rect.X0), Y0: pbDecimalFromDecimal(zone.Rect.Y0),
+				X1: pbDecimalFromDecimal(zone.Rect.X1), Y1: pbDecimalFromDecimal(zone.Rect.Y1),
+			},
+		}}
+	}
+	if zone.DxfPieceKey != "" {
+		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_DxfPieceKey{
+			DxfPieceKey: zone.DxfPieceKey,
+		}}
+	}
+	return nil
+}
+
 // techCardPiecesToPb emits the structural cut-pieces (+ per-colourway fabric mapping) for display.
 func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiece {
 	if len(pieces) == 0 {
@@ -3908,6 +4065,10 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 	out := make([]*pb_common.TechCardPiece, 0, len(pieces))
 	for i := range pieces {
 		p := &pieces[i]
+		fusingBomLineKey := p.FusingBomLineKey
+		fusingInsetNet := p.FusingInsetNet.Valid && p.FusingInsetNet.Bool
+		fusingGrain := p.FusingGrain.String
+		fusingDarts := p.FusingDarts.String
 		var calloutNumber *int32
 		if p.CalloutNumber.Valid {
 			v := p.CalloutNumber.Int32
@@ -3966,13 +4127,20 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			// Ширина едет БЕЗ обёртки присутствия, потому что присутствие несёт РЕЖИМ: пара атомарна.
 			// nil здесь читается клиентом как «своего числа нет» — что верно для «целиком» и, с 0328,
 			// для полосы по эталону припуска.
-			FusingWidthMm: pbDecimalFromNull(p.FusingWidthMm),
-			Grainline:     p.Grainline,
-			Fused:         p.Fused,
-			CalloutNumber: calloutNumber,
-			Detached:      p.Detached,
-			Note:          pbStringFromNull(p.Note),
-			Materials:     materials,
+			FusingWidthMm:    pbDecimalFromNull(p.FusingWidthMm),
+			FusingBomLineKey: &fusingBomLineKey,
+			FusingEdges:      pieceFusingEdgesToPb(p.FusingEdges),
+			FusingZone:       pieceFusingZoneToPb(p.FusingZone),
+			FusingInsetMm:    pbDecimalFromNull(p.FusingInsetMm),
+			FusingInsetNet:   &fusingInsetNet,
+			FusingGrain:      &fusingGrain,
+			FusingDarts:      &fusingDarts,
+			Grainline:        p.Grainline,
+			Fused:            p.Fused,
+			CalloutNumber:    calloutNumber,
+			Detached:         p.Detached,
+			Note:             pbStringFromNull(p.Note),
+			Materials:        materials,
 		})
 	}
 	return out

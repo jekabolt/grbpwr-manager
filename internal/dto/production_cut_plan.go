@@ -778,6 +778,26 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		if w, err := nullDecimalFromPb(p.GetFusingWidthMm()); err == nil {
 			piece.FusingWidthMm = w
 		}
+		piece.FusingBomLineKey = strings.TrimSpace(p.GetFusingBomLineKey())
+		if edges, _, err := parsePieceFusingEdges(p, "pieces"); err == nil {
+			piece.FusingEdges = edges
+		}
+		if zone, _, err := parsePieceFusingZone(p, "pieces"); err == nil {
+			piece.FusingZone = zone
+		}
+		if inset, err := nullDecimalFromPb(p.GetFusingInsetMm()); err == nil {
+			piece.FusingInsetMm = inset
+		}
+		if p.GetFusingInsetNet() {
+			piece.FusingInsetNet = sql.NullBool{Bool: true, Valid: true}
+		}
+		if v := strings.ToLower(strings.TrimSpace(p.GetFusingGrain())); v != "" {
+			piece.FusingGrain = sql.NullString{String: v, Valid: true}
+		}
+		if v := strings.ToLower(strings.TrimSpace(p.GetFusingDarts())); v != "" {
+			piece.FusingDarts = sql.NullString{String: v, Valid: true}
+		}
+		piece.NormalizeFusing()
 		card.Pieces = append(card.Pieces, piece)
 	}
 	for _, c := range snap.GetColorways() {
