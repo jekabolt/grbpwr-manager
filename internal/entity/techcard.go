@@ -3997,10 +3997,23 @@ type TechCardPieceFusingRect struct {
 	Y1 decimal.Decimal
 }
 
-// TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. Rect and DxfPieceKey may both
-// be empty only to represent a deliberate clear on write; a stored non-NULL zone has exactly one.
+// TechCardPieceFusingSplinePoint is one piece-local millimetre point of a closed fusing spline.
+// Corner gives the vertex a zero tangent, so the curve reaches it sharply.
+type TechCardPieceFusingSplinePoint struct {
+	X      decimal.Decimal
+	Y      decimal.Decimal
+	Corner bool
+}
+
+type TechCardPieceFusingSpline struct {
+	Points []TechCardPieceFusingSplinePoint
+}
+
+// TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. All shape arms may be empty
+// only to represent a deliberate clear on write; a stored non-NULL zone has exactly one.
 type TechCardPieceFusingZone struct {
 	Rect        *TechCardPieceFusingRect
+	Spline      *TechCardPieceFusingSpline
 	DxfPieceKey string
 }
 
@@ -4384,15 +4397,27 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 				string(mode), "pick zone mode, or clear the zone")
 		}
 		hasRect := p.FusingZone.Rect != nil
+		hasSpline := p.FusingZone.Spline != nil
 		hasDXF := strings.TrimSpace(p.FusingZone.DxfPieceKey) != ""
-		if hasRect == hasDXF {
+		shapeCount := 0
+		for _, present := range []bool{hasRect, hasSpline, hasDXF} {
+			if present {
+				shapeCount++
+			}
+		}
+		if shapeCount != 1 {
 			return NewFieldViolation(field+".fusing_zone", "choose exactly one zone shape", "",
-				"draw a rectangle on the piece or select one dedicated DXF piece")
+				"draw a rectangle or spline on the piece, or select one dedicated DXF piece")
 		}
 		if hasRect && (p.FusingZone.Rect.X0.Equal(p.FusingZone.Rect.X1) ||
 			p.FusingZone.Rect.Y0.Equal(p.FusingZone.Rect.Y1)) {
 			return NewFieldViolation(field+".fusing_zone.rect", "the fusing rectangle must have an area", "",
 				"move the opposite corners apart")
+		}
+		if hasSpline {
+			if err := validatePieceFusingSpline(field+".fusing_zone.spline", p.FusingZone.Spline); err != nil {
+				return err
+			}
 		}
 	}
 	if p.FusingInsetMm.Valid {

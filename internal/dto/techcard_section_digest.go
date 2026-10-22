@@ -635,6 +635,12 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 			case p.FusingZone.Rect != nil:
 				r := p.FusingZone.Rect
 				fusingDetails = append(fusingDetails, []any{"zone_rect", r.X0.String(), r.Y0.String(), r.X1.String(), r.Y1.String()})
+			case p.FusingZone.Spline != nil:
+				points := make([]any, 0, len(p.FusingZone.Spline.Points))
+				for _, point := range p.FusingZone.Spline.Points {
+					points = append(points, []any{point.X.String(), point.Y.String(), point.Corner})
+				}
+				fusingDetails = append(fusingDetails, []any{"zone_spline", points})
 			case p.FusingZone.DxfPieceKey != "":
 				fusingDetails = append(fusingDetails, []any{"zone_dxf", p.FusingZone.DxfPieceKey})
 			}
