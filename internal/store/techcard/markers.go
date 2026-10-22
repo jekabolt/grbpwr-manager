@@ -1009,7 +1009,7 @@ func fabricDirectionLines(ctx context.Context, db dependency.DB, techCardID int)
 		}
 		out = append(out, entity.FabricDirectionLine{
 			Index: i, LineKey: r.LineKey, Purpose: r.Purpose, Name: r.Name,
-			IsSample: r.IsSample, Direction: r.Direction,
+			Section: entity.TechCardBomSection(r.Section), IsSample: r.IsSample, Direction: r.Direction,
 		})
 	}
 	return out, nil

@@ -35,7 +35,7 @@ import (
 // «метаданные о значении не двигают подпись, значение двигает» (так же исключены price_source,
 // wastage_source и purpose). Пересчёт выкроек, давший ТЕ ЖЕ площади, подпись не трогает.
 
-// PieceFabricAssignment is one «эта деталь кроится из этой ткани» statement of a colourway recipe.
+// PieceFabricAssignment is one cost-bearing piece→fabric or piece→fusible statement.
 type PieceFabricAssignment struct {
 	// ColorwayKey identifies the colourway (its product id, else the recipe row's own id).
 	ColorwayKey int
@@ -56,6 +56,10 @@ type PieceFabricAssignment struct {
 	// signature: the norm is an area divided by the CUTTING width, so editing either reprices the
 	// garment without touching the card at all.
 	ArticleGeometry string
+	// FusingBomKey is the per-piece INTERLINING selection. It is encoded as a tagged conditional
+	// tail so legacy assignment rows keep their byte shape, while moving a fused piece between two
+	// lines invalidates the costing approval whose consumption changes.
+	FusingBomKey string
 	// FusingMarking — разметка дублирования детали (0304) одной канонической строкой: режим, ширина
 	// полосы и — только для «по припуску» — ЭФФЕКТИВНЫЙ эталон припуска, по которому эта ширина
 	// выведена. Пусто = деталь не размечена.
@@ -67,8 +71,8 @@ type PieceFabricAssignment struct {
 	FusingMarking string
 }
 
-// DerivedCostInputsDigest fingerprints the cost inputs that live outside the card's own write:
-// measured piece areas and the recipe's piece→fabric assignments.
+// DerivedCostInputsDigest fingerprints the inputs appended to the card's COSTING projection:
+// measured piece areas, recipe piece→fabric assignments, and per-piece fusible selection.
 //
 // EMPTY IN, EMPTY OUT — and that is load-bearing. A card with neither measured areas nor piece-bound
 // recipe rows returns "", the projection appends nothing, and its stored digest stays byte-identical
@@ -122,6 +126,10 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 			a.PinnedMaterialId,
 			strings.TrimSpace(a.ArticleGeometry),
 		})
+		if key := strings.ToUpper(strings.TrimSpace(a.FusingBomKey)); key != "" {
+			last := assignRows[len(assignRows)-1]
+			assignRows[len(assignRows)-1] = append(last, []any{"fusing_bom", key})
+		}
 		// ХВОСТОМ И ТОЛЬКО У РАЗМЕЧЕННОЙ ДЕТАЛИ — тот же приём и та же причина, что у хвостов
 		// проекций секций: строки кодируются ПОЗИЦИОННО, и безусловный седьмой элемент сдвинул бы
 		// токен КАЖДОЙ карточки, объявив все утверждённые подписи КОСТИНГ устаревшими в момент
@@ -147,6 +155,25 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 	}
 	sum := sha256.Sum256(blob)
 	return hex.EncodeToString(sum[:])
+}
+
+// DerivedCostInputsDigestWithFusing adds the piece-level fusible selection only when a card has a
+// real choice between interlining lines. On a card with zero or one such line the selection is
+// implicit and did not enter the pre-L11 digest; preserving that byte shape avoids a deploy-only
+// COSTING staleness wave. Once there are two lines, moving a piece between them changes consumption
+// and therefore must change the approval token.
+func DerivedCostInputsDigestWithFusing(
+	areas map[string]PieceAreaScope,
+	assignments, fusingAssignments []PieceFabricAssignment,
+	interliningLineCount int,
+) string {
+	if interliningLineCount <= 1 || len(fusingAssignments) == 0 {
+		return DerivedCostInputsDigest(areas, assignments)
+	}
+	combined := make([]PieceFabricAssignment, 0, len(assignments)+len(fusingAssignments))
+	combined = append(combined, assignments...)
+	combined = append(combined, fusingAssignments...)
+	return DerivedCostInputsDigest(areas, combined)
 }
 
 func sortRows(rows [][]any) {

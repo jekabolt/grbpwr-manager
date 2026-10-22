@@ -174,3 +174,17 @@ func TestTechCardSeamSourceFingerprintScoping(t *testing.T) {
 	require.NotEqual(t, c, TechCardSeamSourceFingerprint(cross, pock, blocks))
 	require.NotEqual(t, c, TechCardSeamSourceFingerprint(cross, main, blocks))
 }
+
+func TestTechCardSeamSourceFingerprintDedupesCompatibilityBuckets(t *testing.T) {
+	sheet := PatternSheetRef{LineKey: "S-MAIN", URL: "u/main.dxf", Version: 1}
+	block := PieceAreaBlockRef{BlockName: "FRONT", PieceLineKey: "PIECE-FRONT"}
+	want := PieceAreaSourceFingerprint([]PatternSheetRef{sheet}, []PieceAreaBlockRef{block})
+
+	// A line-only alias/sheet of a sorted ordinary FABRIC line was briefly exposed under both its
+	// resolved purpose and raw line key. The seam covers both buckets through the duplicated block,
+	// but its source is still one sheet and one link, so deploy compatibility must not move the hash.
+	got := TechCardSeamSourceFingerprint([]string{"PIECE-FRONT"},
+		map[string][]PatternSheetRef{"main": {sheet}, "FABRIC-LINE": {sheet}},
+		map[string][]PieceAreaBlockRef{"main": {block}, "FABRIC-LINE": {block}})
+	require.Equal(t, want, got)
+}

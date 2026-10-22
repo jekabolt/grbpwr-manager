@@ -308,9 +308,10 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"work": o.Work,
 
 			// Черновик каркаса сборки (0410). NOT NULL DEFAULT 0, в дайджест не входит.
-			"draft":                o.Draft,
-			"review":               o.Review,
-			"auto_fusing_line_key": o.AutoFusingLineKey,
+			"draft":                 o.Draft,
+			"review":                o.Review,
+			"auto_fusing_line_key":  o.AutoFusingLineKey,
+			"auto_fusing_piece_key": o.AutoFusingPieceKey,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -823,7 +824,7 @@ const techCardOperationsQuery = `
 		       o.bartack_length_mm, o.attach_pattern, o.zipper_application,
 		       o.binding_style, o.label_attach_stitch,
 		       o.press_action, o.press_toward,
-		       o.work, o.draft, o.review, o.auto_fusing_line_key
+		       o.work, o.draft, o.review, o.auto_fusing_line_key, o.auto_fusing_piece_key
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`

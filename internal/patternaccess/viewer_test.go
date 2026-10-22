@@ -287,6 +287,40 @@ func TestViewerGroupsResolveBranches(t *testing.T) {
 	}
 }
 
+func TestViewerGroupsKeepSamePurposeInterliningLineScoped(t *testing.T) {
+	lines := []entity.PatternViewerBomLine{
+		{LineKey: "RIB-A", Name: "Rib", Purpose: "other", Section: entity.BomSectionFabric},
+		{LineKey: "FELT-A", Name: "Felt", Purpose: "other", Section: entity.BomSectionInterlining},
+	}
+	defs, keyOf := viewerGroups(lines)
+	if len(defs) != 3 || defs[0].key != "other" || defs[1].key != "FELT-A" ||
+		defs[2].key != unboundGroupKey {
+		t.Fatalf("rib + felt groups = %+v, want other, FELT-A, unbound", defs)
+	}
+	if got := keyOf(entity.PatternViewerSheet{FabricPurpose: "other"}); got != "other" {
+		t.Fatalf("purpose-only sheet = %q, want ordinary rib scope", got)
+	}
+	if got := keyOf(entity.PatternViewerSheet{FabricPurpose: "other", BomLineKey: "FELT-A"}); got != "FELT-A" {
+		t.Fatalf("felt sheet with echoed purpose = %q, want its line scope", got)
+	}
+	if got := keyOf(entity.PatternViewerSheet{BomLineKey: "FELT-A"}); got != "FELT-A" {
+		t.Fatalf("felt line-only sheet = %q, want its line scope", got)
+	}
+}
+
+func TestViewerGroupsUsePurposeOnlyInterliningAsSingletonFallback(t *testing.T) {
+	lines := []entity.PatternViewerBomLine{{
+		LineKey: "FUSE-A", Name: "Fusible", Purpose: "interfacing", Section: entity.BomSectionInterlining,
+	}}
+	defs, keyOf := viewerGroups(lines)
+	if len(defs) != 2 || defs[0].key != "FUSE-A" || defs[1].key != unboundGroupKey {
+		t.Fatalf("singleton interlining groups = %+v, want FUSE-A and unbound", defs)
+	}
+	if got := keyOf(entity.PatternViewerSheet{FabricPurpose: "interfacing"}); got != "FUSE-A" {
+		t.Fatalf("singleton legacy purpose sheet = %q, want FUSE-A", got)
+	}
+}
+
 // TestObjectEndpointRefusesCardToken locks the cross-scope confusion guard: a card token
 // must never resolve on /api/p, where its TECH CARD id would be looked up as a
 // pattern_object_access row id and serve whatever object shares the number.

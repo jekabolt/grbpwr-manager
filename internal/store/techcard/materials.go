@@ -1535,21 +1535,24 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 	if err != nil {
 		return fmt.Errorf("failed to load existing dxf aliases: %w", err)
 	}
-	ciKey := func(scope, block string) string { return strings.ToLower(scope) + "|" + strings.ToLower(block) }
-	existingByKey := make(map[string]aliasExistingRow, len(existing))
-	for _, r := range existing {
-		// The stored row's scope needs no BOM: it is COALESCE of what the row itself holds, the same
-		// value MySQL materialised into scope_key.
-		existingByKey[ciKey(entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey), r.BlockName)] = r
-	}
-	// The card's cloth lines WITH their назначения — resolving a purpose-scoped alias needs both
-	// halves, and a purpose that no line carries is exactly the dangling case to refuse on a NEW pair.
+	// The card's cloth lines WITH their sections and purposes. Existing and incoming aliases must
+	// be matched by effective identity: an old purpose+line INTERLINING row and its normalized
+	// line-only replacement are the same alias, even though their raw COALESCE buckets differ.
 	var rollGoods []entity.RollGoodsLine
 	if len(aliases) > 0 {
 		rollGoods, err = loadRollGoodsLines(ctx, db, tcID)
 		if err != nil {
 			return err
 		}
+	}
+	ciKey := func(scope, block string) string { return strings.ToLower(scope) + "|" + strings.ToLower(block) }
+	existingByKey := make(map[string]aliasExistingRow, len(existing))
+	for _, r := range existing {
+		scope := entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey)
+		if len(rollGoods) > 0 {
+			scope = entity.ResolveFabricScope(r.FabricPurpose, r.BomLineKey, rollGoods).Key
+		}
+		existingByKey[ciKey(scope, r.BlockName)] = r
 	}
 	seen := make(map[string]bool, len(aliases))
 	for i, a := range aliases {

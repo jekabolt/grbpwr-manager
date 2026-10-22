@@ -62,7 +62,7 @@ func (s *Store) GetPatternViewerManifest(ctx context.Context, techCardID int) (*
 	}
 
 	bomLines, err := storeutil.QueryListNamed[entity.PatternViewerBomLine](ctx, s.DB, `
-		SELECT COALESCE(line_key, '') AS line_key, name, COALESCE(purpose, '') AS purpose
+		SELECT COALESCE(line_key, '') AS line_key, name, COALESCE(purpose, '') AS purpose, section
 		FROM tech_card_bom_item
 		WHERE tech_card_id = :id AND `+rollGoodsSectionIn+`
 		ORDER BY display_order, id`,

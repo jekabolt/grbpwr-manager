@@ -168,6 +168,128 @@ func TestOwnFusingGeometryBeatsTheBorrowedOne(t *testing.T) {
 	}
 }
 
+func TestOwnGeneratedFusingAreaIsUsedDirectly(t *testing.T) {
+	for _, mode := range []entity.TechCardPieceFusingMode{
+		entity.PieceFusingModeStrip,
+		entity.PieceFusingModeZone,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			tc := fusedCard(mode, "25")
+			tc.PieceAreaScopes["FUSEKEY"] = entity.PieceAreaScope{
+				ScopeKey: "FUSEKEY", Rows: []entity.PieceAreaRow{{
+					PieceLineKey: "PIECE1",
+					SizeId:       sql.NullInt64{Int64: 4, Valid: true},
+					AreaCm2:      decimal.RequireFromString("1400"),
+					PerimeterCm: decimal.NullDecimal{
+						Decimal: decimal.RequireFromString("150"), Valid: true,
+					},
+					ContourLayer: "1",
+				}},
+			}
+			est := fusingSlotEstimate(t, tc)
+			// The generated fusing sheet already describes the strip/zone itself: 1400 cm² / 100 cm.
+			// Applying strip perimeter×width would yield 0.0375 m; refusing zone would yield no norm.
+			if !est.normDerived || !est.perGarment.Equal(decimal.RequireFromString("0.14")) {
+				t.Fatalf("mode %s gave %s (refusal %q), want direct measured area 0.14 m",
+					mode, est.perGarment, est.refusal)
+			}
+		})
+	}
+}
+
+func TestSlotAssignedPiecesUsesThePieceFusingLine(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeFull, "")
+	tc.BomItems[1].Purpose = sql.NullString{String: "interfacing", Valid: true}
+	tc.BomItems = append(tc.BomItems, entity.TechCardBomItem{
+		LineKey: "FUSEKEY2", Purpose: sql.NullString{String: "interfacing", Valid: true},
+		Section: entity.BomSectionInterlining,
+	})
+	tc.Pieces[0].FusingBomItemId = sql.NullInt64{Int64: 57, Valid: true}
+	tc.Pieces = append(tc.Pieces, entity.TechCardPiece{
+		Id: 15, LineKey: "PIECE2", PiecesPerGarment: 1, Fused: true,
+		FusingBomLineKey: "FUSEKEY2",
+	})
+	// Deliberately remove recipe duplicates: the per-piece selection is sufficient and authoritative.
+	tc.Colorways[0].Usages = nil
+
+	for i, wantPiece := range []string{"PIECE1", "PIECE2"} {
+		bom := &tc.BomItems[i+1]
+		pieces, _, conflict := slotAssignedPieces(tc, &tc.Colorways[0], bom)
+		if conflict || len(pieces) != 1 || pieces[0].LineKey != wantPiece {
+			t.Fatalf("slot %s pieces = %#v, conflict=%v; want only %s", bom.LineKey, pieces, conflict, wantPiece)
+		}
+	}
+}
+
+func TestSlotAssignedPiecesFallsBackToTheOnlyInterliningLine(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeFull, "")
+	tc.Colorways[0].Usages = nil
+	tc.Pieces[0].FusingBomItemId = sql.NullInt64{}
+	tc.Pieces[0].FusingBomLineKey = ""
+	pieces, _, conflict := slotAssignedPieces(tc, &tc.Colorways[0], &tc.BomItems[1])
+	if conflict || len(pieces) != 1 || pieces[0].LineKey != "PIECE1" {
+		t.Fatalf("singleton fallback pieces = %#v, conflict=%v; want PIECE1", pieces, conflict)
+	}
+}
+
+func TestLegacyInterliningAreaFallbackIsUnambiguousAndLineDataWins(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeFull, "")
+	tc.BomItems[1].Purpose = sql.NullString{String: "interfacing", Valid: true}
+	legacy := entity.PieceAreaScope{ScopeKey: "interfacing", Rows: []entity.PieceAreaRow{{
+		PieceLineKey: "PIECE1", SizeId: sql.NullInt64{Int64: 4, Valid: true},
+		AreaCm2: decimal.RequireFromString("1400"),
+	}}}
+	tc.PieceAreaScopes = map[string]entity.PieceAreaScope{"interfacing": legacy}
+	if est := fusingSlotEstimate(t, tc); !est.normDerived || !est.perGarment.Equal(decimal.RequireFromString("0.14")) {
+		t.Fatalf("singleton legacy area gave %s (refusal %q), want 0.14", est.perGarment, est.refusal)
+	}
+
+	lineScoped := legacy
+	lineScoped.ScopeKey = "FUSEKEY"
+	lineScoped.Rows = append([]entity.PieceAreaRow(nil), legacy.Rows...)
+	lineScoped.Rows[0].AreaCm2 = decimal.RequireFromString("1000")
+	tc.PieceAreaScopes["FUSEKEY"] = lineScoped
+	if est := fusingSlotEstimate(t, tc); !est.perGarment.Equal(decimal.RequireFromString("0.1")) {
+		t.Fatalf("line-scoped area did not suppress legacy fallback: got %s, want 0.1", est.perGarment)
+	}
+	lineScoped.Stale = true
+	tc.PieceAreaScopes["FUSEKEY"] = lineScoped
+	if est := fusingSlotEstimate(t, tc); est.normDerived || est.refusal != entity.AreaEstimateStale {
+		t.Fatalf("present stale line scope was replaced by legacy data: norm=%s refusal=%q, want stale",
+			est.perGarment, est.refusal)
+	}
+
+	delete(tc.PieceAreaScopes, "FUSEKEY")
+	tc.BomItems = append(tc.BomItems, entity.TechCardBomItem{
+		Id: 58, LineKey: "FUSEKEY2", Purpose: sql.NullString{String: "interfacing", Valid: true},
+		Section: entity.BomSectionInterlining,
+	})
+	tc.Pieces[0].FusingBomItemId = sql.NullInt64{Int64: 57, Valid: true}
+	est := fusingSlotEstimate(t, tc)
+	if est.normDerived || est.refusal != entity.AreaEstimateNoAreas {
+		t.Fatalf("ambiguous legacy purpose area was used: norm=%s refusal=%q, want no areas", est.perGarment, est.refusal)
+	}
+}
+
+func TestMeasuredInterliningDoesNotGiveEveryColorwayAnOwnRecipe(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeFull, "")
+	tc.PieceAreaScopes["FUSEKEY"] = entity.PieceAreaScope{
+		ScopeKey: "FUSEKEY",
+		Rows: []entity.PieceAreaRow{{
+			PieceLineKey: "PIECE1",
+			SizeId:       sql.NullInt64{Int64: 4, Valid: true},
+			AreaCm2:      decimal.RequireFromString("1400"),
+		}},
+	}
+	tc.Colorways = append(tc.Colorways, entity.TechCardColorway{Id: 36, Name: "ecru"})
+	if colorwayHasOwnRecipe(tc, &tc.Colorways[1]) {
+		t.Fatal("a colourway with no piece-assignment row claimed the shared measured interlining as its own recipe")
+	}
+	if !colorwayHasOwnRecipe(tc, &tc.Colorways[0]) {
+		t.Fatal("the colourway that owns the interlining piece-assignment row lost its own recipe")
+	}
+}
+
 // ЧИСЛО НЕ ПОКАЗЫВАЕТСЯ БЕЗ ПРОВЕНАНСА. Норма клеевой стоит на замере ОСНОВНОЙ ткани, и экран
 // обязан назвать этот замер: цифра с пустым «измерено …» — ровно то, от чего провенанс заводился.
 func TestBorrowedEstimateCarriesTheMeasurementProvenance(t *testing.T) {

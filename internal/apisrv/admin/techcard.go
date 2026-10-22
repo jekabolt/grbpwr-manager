@@ -352,7 +352,8 @@ func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountry
 // SAME callout-number mint, the SAME carries and the SAME digest restamp — and owes them IN THIS
 // ORDER:
 //
-//	wire gates → convert → load stored → stored gates → wastage claims → sign-off reconcile →
+//	wire gates → load stored → convert (restore private FUSING identity before assembly validation) →
+//	stored gates → wastage claims → sign-off reconcile →
 //	costing preservation → MINT CALLOUT NUMBERS → carryOmitted{FabricDirection,CutSymmetry,
 //	Ungraded,Fusing} → CarryOmittedCalloutGeometry → CarryOmittedCalloutClientRef →
 //	fresh-section presence → sign-off belts → restampFreshSignoffDigests
@@ -422,7 +423,29 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := bomQtyWireGate(in); err != nil {
 		return nil, err
 	}
-	tc, err := dto.ConvertPbTechCardInsertToEntity(in)
+	stored := src.stored
+	if stored == nil {
+		var loadErr error
+		stored, loadErr = s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
+		if loadErr != nil {
+			if errors.Is(loadErr, sql.ErrNoRows) {
+				return nil, status.Errorf(codes.NotFound, "tech card not found")
+			}
+			slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
+				slog.Int("tech_card_id", id), slog.String("err", loadErr.Error()))
+			return nil, status.Error(codes.Internal, "can't load tech card; try again")
+		}
+	}
+	if stored == nil {
+		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
+			slog.Int("tech_card_id", id))
+		return nil, status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	tc, err := dto.ConvertPbTechCardInsertToEntityPrepared(in, func(tc *entity.TechCardInsert) {
+		// Private keys are absent from protobuf. Restore them before the converter's first assembly
+		// pass so a keyed FUSING echo cannot make deletion of its piece fail on a stale input.
+		fusingops.PrepareTechCardUpdateAssembly(&stored.TechCardInsert, tc)
+	})
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
@@ -434,23 +457,6 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	}
 	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err
-	}
-	stored := src.stored
-	if stored == nil {
-		stored, err = s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, status.Errorf(codes.NotFound, "tech card not found")
-			}
-			slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
-				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "can't load tech card; try again")
-		}
-	}
-	if stored == nil {
-		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
-			slog.Int("tech_card_id", id))
-		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
 	// §8, rule 2 — the first thing done with `stored`, because it is about what this save would
 	// DESTROY and every line below either reconciles sign-offs or moves data toward the store.
@@ -631,18 +637,22 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
+	// Always hand the store the pre-update card. Most saves never persist this blob: the store does
+	// so lazily only if pattern reconciliation is about to archive an outgoing sheet. This closes the
+	// restore gap for clients that replace or remove a sheet without sending snapshot_reason, while
+	// leaving SnapshotReason empty so those saves do not gain a second revision-journal entry.
+	blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
+			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
+	}
+	tc.SnapshotJSON = blob
+	// The blob is `stored`; the store writes it only if the row is still at this version, so the
+	// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
+	tc.SnapshotLockVersion = stored.LockVersion
 	if snapshotReason != "" {
-		blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
-				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
-		}
 		tc.SnapshotReason = snapshotReason
-		tc.SnapshotJSON = blob
-		// The blob is `stored`; the store writes it only if the row is still at this version, so the
-		// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
-		tc.SnapshotLockVersion = stored.LockVersion
 	}
 	return tc, nil
 }

@@ -230,7 +230,7 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := syncStyleCategoryTriple(ctx, db, newID, card.CategoryId); err != nil {
 			return err
 		}
-		if err := insertTechCardChildren(ctx, db, newID, card, 0); err != nil {
+		if err := insertTechCardChildren(ctx, db, newID, card, nil); err != nil {
 			return err
 		}
 

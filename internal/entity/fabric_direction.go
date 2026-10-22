@@ -36,6 +36,7 @@ type FabricDirectionLine struct {
 	Index   int
 	LineKey string
 	Purpose string
+	Section TechCardBomSection
 	Name    string
 	// IsSample marks the yardage the ОБРАЗЕЦ is sewn from (0265). It is a flag beside назначение,
 	// not a value of it, precisely because a card carries a production main fabric AND a sample main
@@ -216,7 +217,7 @@ func MarkerFabricScope(bomLineKey string, lines []FabricDirectionLine) FabricSco
 		if l.IsSample != sample {
 			continue
 		}
-		rollGoods = append(rollGoods, RollGoodsLine{LineKey: l.LineKey, Purpose: l.Purpose})
+		rollGoods = append(rollGoods, RollGoodsLine{LineKey: l.LineKey, Purpose: l.Purpose, Section: l.Section})
 	}
 	return ResolveFabricScope(purpose, key, rollGoods)
 }

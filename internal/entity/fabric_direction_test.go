@@ -508,6 +508,36 @@ func TestScopeFabricDirectionStrictest(t *testing.T) {
 	}
 }
 
+func TestMarkerFabricScopeDoesNotMergeSamePurposeInterliningLines(t *testing.T) {
+	lines := []FabricDirectionLine{
+		{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining, Direction: "any"},
+		{LineKey: "FUSE-B", Purpose: "interfacing", Section: BomSectionInterlining, Direction: "one_way"},
+	}
+	scope := MarkerFabricScope("FUSE-A", lines)
+	if scope.Key != "FUSE-A" || len(scope.LineKeys) != 1 || scope.LineKeys[0] != "FUSE-A" {
+		t.Fatalf("interlining marker scope = %#v, want FUSE-A only", scope)
+	}
+	dir, unknown, ok := ScopeFabricDirection(scope, lines)
+	if !ok || len(unknown) != 0 || dir != FabricDirectionAny {
+		t.Fatalf("FUSE-B direction leaked into FUSE-A: dir=%q unknown=%v ok=%v", dir, unknown, ok)
+	}
+}
+
+func TestMarkerFabricScopeDoesNotPullInterliningIntoAnOrdinaryPurpose(t *testing.T) {
+	lines := []FabricDirectionLine{
+		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric, Direction: "any"},
+		{LineKey: "FELT-A", Purpose: "other", Section: BomSectionInterlining, Direction: "one_way"},
+	}
+	rib := MarkerFabricScope("RIB-A", lines)
+	if rib.Key != "other" || len(rib.LineKeys) != 1 || rib.LineKeys[0] != "RIB-A" {
+		t.Fatalf("rib marker scope = %#v, want ordinary purpose with RIB-A only", rib)
+	}
+	felt := MarkerFabricScope("FELT-A", lines)
+	if felt.Key != "FELT-A" || len(felt.LineKeys) != 1 || felt.LineKeys[0] != "FELT-A" {
+		t.Fatalf("felt marker scope = %#v, want FELT-A only", felt)
+	}
+}
+
 func requireFieldViolation(t *testing.T, err error, field, reason string) *ValidationError {
 	t.Helper()
 	var ve *ValidationError

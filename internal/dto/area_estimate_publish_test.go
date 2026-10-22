@@ -46,6 +46,33 @@ func measuredCard() *entity.TechCard {
 	return tc
 }
 
+// borrowedStripCard keeps the measured contour on the main fabric and adds a generated-less
+// INTERLINING line that must borrow it. Directly measured fusing geometry is already the finished
+// strip/zone shape after L11, so only borrowed geometry can legitimately lack a perimeter or strip
+// standard at this stage.
+func borrowedStripCard(width decimal.NullDecimal) *entity.TechCard {
+	tc := measuredCard()
+	tc.BomItems = append(tc.BomItems, entity.TechCardBomItem{
+		Id:          57,
+		LineKey:     "FUSEKEY",
+		Section:     entity.BomSectionInterlining,
+		Unit:        sql.NullString{String: "m", Valid: true},
+		UnitPrice:   decimal.NullDecimal{Decimal: decimal.RequireFromString("10"), Valid: true},
+		Currency:    sql.NullString{String: "EUR", Valid: true},
+		FabricWidth: decimal.NullDecimal{Decimal: decimal.RequireFromString("100"), Valid: true},
+	})
+	tc.Pieces[0].Fused = true
+	tc.Pieces[0].FusingMode = sql.NullString{String: string(entity.PieceFusingModeStrip), Valid: true}
+	tc.Pieces[0].FusingWidthMm = width
+	tc.Colorways[0].Usages = []entity.TechCardColorwayUsage{
+		// Main-fabric piece assignment: the contour borrowing candidate.
+		{Id: 34, BomItemId: sql.NullInt64{Int64: 56, Valid: true}, PieceId: sql.NullInt64{Int64: 14, Valid: true}},
+		// Authored main-fabric row keeps it out of the active estimate list, leaving only FUSEKEY.
+		{Id: 35, BomItemId: sql.NullInt64{Int64: 56, Valid: true}},
+	}
+	return tc
+}
+
 func publishedEstimates(t *testing.T, tc *entity.TechCard) []*pb_common.TechCardSlotAreaEstimate {
 	t.Helper()
 	refs := techCardColorwayRefsToPb(tc, nil, CostingFx{})
@@ -409,31 +436,18 @@ func TestEveryRefusalReachesTheWire(t *testing.T) {
 		}},
 		// Клеевая полосой по краю (0304) на замере, снятом до 0305: площадь есть, периметра нет.
 		// Комплект при этом ПОЛОН и не устарел — то есть все соседние причины сказали бы неправду и
-		// отправили оператора чинить то, что в порядке. Единственный слот карточки сделан клеевым,
-		// чтобы публикуемая оценка осталась одна: заимствование геометрии здесь ни при чём, контур
-		// детали лежит в своём же скоупе.
+		// отправили оператора чинить то, что в порядке. Геометрия заимствована у основной ткани:
+		// собственный замер клеевой уже был бы готовой площадью полосы и не требовал бы периметра.
 		{"no measured perimeter", entity.AreaEstimateNoPerimeter, func() *entity.TechCard {
-			tc := measuredCard()
-			tc.BomItems[0].Section = entity.BomSectionInterlining
-			tc.Pieces[0].Fused = true
-			tc.Pieces[0].FusingMode = sql.NullString{String: string(entity.PieceFusingModeStrip), Valid: true}
-			tc.Pieces[0].FusingWidthMm = decimal.NullDecimal{
+			return borrowedStripCard(decimal.NullDecimal{
 				Decimal: decimal.RequireFromString("25"), Valid: true,
-			}
-			return tc
+			})
 		}},
 		// Полоса БЕЗ СВОЕГО ЧИСЛА при незаданном эталоне: ширины полосы не существует. Комплект
 		// полон, замер свеж — недостающий факт лежит в настройках цеха, и только эта причина туда и
 		// посылает. До 0328 то же самое состояние записывалось отдельным режимом `seam_allowance`.
 		{"no seam allowance standard", entity.AreaEstimateNoStripWidth, func() *entity.TechCard {
-			tc := measuredCard()
-			tc.BomItems[0].Section = entity.BomSectionInterlining
-			tc.Pieces[0].Fused = true
-			tc.Pieces[0].FusingMode = sql.NullString{
-				String: string(entity.PieceFusingModeStrip), Valid: true,
-			}
-			tc.Pieces[0].FusingWidthMm = decimal.NullDecimal{}
-			return tc
+			return borrowedStripCard(decimal.NullDecimal{})
 		}},
 		{"pin conflict", entity.AreaEstimatePinConflict, func() *entity.TechCard {
 			// Two pieces of ONE slot pinned to two different articles: that is two rolls, not an

@@ -92,6 +92,7 @@ func RollGoodsLinesOfBom(items []TechCardBomItem) []RollGoodsLine {
 		out = append(out, RollGoodsLine{
 			LineKey: items[i].LineKey,
 			Purpose: items[i].Purpose.String,
+			Section: items[i].Section,
 		})
 	}
 	return out
@@ -115,6 +116,7 @@ func FabricDirectionLinesOfBom(items []TechCardBomItem) []FabricDirectionLine {
 			Index:     i,
 			LineKey:   items[i].LineKey,
 			Purpose:   items[i].Purpose.String,
+			Section:   items[i].Section,
 			Name:      items[i].Name,
 			IsSample:  items[i].IsSample,
 			Direction: items[i].FabricDirection.String,

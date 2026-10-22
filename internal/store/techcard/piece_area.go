@@ -44,7 +44,11 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 	if len(rows) == 0 {
 		return map[string]entity.PieceAreaScope{}, nil
 	}
-	current, err := s.scopeFingerprints(ctx, s.DB, techCardID)
+	lines, err := loadRollGoodsLines(ctx, s.DB, techCardID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := s.scopeFingerprints(ctx, s.DB, techCardID, lines)
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +65,28 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 		sc.Stale = sc.Stale || current[r.ScopeKey] != r.SheetFingerprint
 		out[r.ScopeKey] = sc
 	}
+	preferLineScopedAreaSets(out, lines)
 	return out, nil
 }
 
-// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs a card's own write does not carry:
-// measured piece areas and the recipe's piece→fabric assignments (Ф-П).
+// preferLineScopedAreaSets applies the same whole-artifact precedence as sheets and aliases. Area
+// rows already arrive grouped by their stored scope_key, so no rebucketing is needed: when the
+// singleton interlining line has a non-empty line set, its legacy purpose set is simply invisible.
+func preferLineScopedAreaSets(byScope map[string]entity.PieceAreaScope, lines []entity.RollGoodsLine) {
+	for _, line := range lines {
+		legacyScope, ok := entity.LegacyInterliningPurposeScope(line, lines)
+		if !ok {
+			continue
+		}
+		lineScope := entity.EffectiveFabricScopeKey(line)
+		if scoped, found := byScope[lineScope]; found && len(scoped.Rows) > 0 {
+			delete(byScope, legacyScope)
+		}
+	}
+}
+
+// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs appended to COSTING: measured
+// piece areas, recipe piece→fabric assignments, and the resolved per-piece fusible (Ф-П/L11).
 //
 // BOTH SIDES CALL THIS ONE FUNCTION — the card read (which puts the token on the entity) and the
 // write path that stamps a fresh COSTING approval (which has only the payload, and the payload
@@ -178,7 +199,56 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			FusingMarking:    r.FusingMarking,
 		})
 	}
-	return entity.DerivedCostInputsDigest(areas, assignments), nil
+	// The selected INTERLINING line lives on the piece itself and may have no duplicate recipe row.
+	// It changes costing only when the card has a CHOICE of fusibles. With one interlining line the
+	// selection was already implicit before L11, so adding these rows would stale every measured
+	// single-line card's COSTING approval on deploy without changing one computed number.
+	interliningLineCount := 0
+	var fusingAssignments []entity.PieceFabricAssignment
+	if len(areas) > 0 {
+		interliningLineCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+			SELECT COUNT(*)
+			FROM tech_card_bom_item
+			WHERE tech_card_id = :id AND section = 'interlining'`, map[string]any{"id": techCardID})
+		if err != nil {
+			return "", fmt.Errorf("count interlining BOM lines of tech card %d: %w", techCardID, err)
+		}
+	}
+	if interliningLineCount > 1 {
+		fusingRows, err := storeutil.QueryListNamed[struct {
+			PieceKey         string `db:"piece_key"`
+			FusingBomKey     string `db:"fusing_bom_key"`
+			PiecesPerGarment int    `db:"pieces_per_garment"`
+			FusingMarking    string `db:"fusing_marking"`
+		}](ctx, s.DB, `
+			SELECT COALESCE(p.line_key, CONCAT('#', p.id)) AS piece_key,
+			       COALESCE(b.line_key, CONCAT('#', p.fusing_bom_item_id)) AS fusing_bom_key,
+			       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment,
+			       IF(p.fusing_mode IS NULL, '', CONCAT_WS('|',
+			           p.fusing_mode,
+			           COALESCE(p.fusing_width_mm, ''),
+			           IF(p.fusing_mode = 'strip' AND p.fusing_width_mm IS NULL,
+			              COALESCE(tc.required_seam_allowance_mm, ws.default_seam_allowance_mm, ''),
+			              '')
+			       )) AS fusing_marking
+			FROM tech_card_piece p
+			JOIN tech_card_bom_item b ON b.id = p.fusing_bom_item_id
+			LEFT JOIN tech_card tc ON tc.id = p.tech_card_id
+			LEFT JOIN workshop_settings ws ON ws.id = 1
+			WHERE p.tech_card_id = :id AND p.fused = 1 AND p.fusing_bom_item_id IS NOT NULL`,
+			map[string]any{"id": techCardID})
+		if err != nil {
+			return "", fmt.Errorf("load piece→fusing assignments of tech card %d: %w", techCardID, err)
+		}
+		for _, r := range fusingRows {
+			fusingAssignments = append(fusingAssignments, entity.PieceFabricAssignment{
+				PieceKey: r.PieceKey, FusingBomKey: r.FusingBomKey,
+				PiecesPerGarment: r.PiecesPerGarment, FusingMarking: r.FusingMarking,
+			})
+		}
+	}
+	return entity.DerivedCostInputsDigestWithFusing(
+		areas, assignments, fusingAssignments, interliningLineCount), nil
 }
 
 // scopeFingerprints computes TODAY's source fingerprint for every fabric scope of a card — sheets
@@ -186,11 +256,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 //
 // A scope with no sheets simply does not appear: its stored areas then compare against "" and read
 // as stale, which is the honest answer — the files they were measured from are gone.
-func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCardID int) (map[string]string, error) {
-	lines, err := loadRollGoodsLines(ctx, db, techCardID)
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCardID int, lines []entity.RollGoodsLine) (map[string]string, error) {
 	byScope, err := scopeSheetRefs(ctx, db, techCardID, lines)
 	if err != nil {
 		return nil, err
@@ -218,14 +284,38 @@ func scopeSheetRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	if err != nil {
 		return nil, fmt.Errorf("load pattern sheets of tech card %d: %w", techCardID, err)
 	}
-	out := map[string][]entity.PatternSheetRef{}
+	artifacts := make([]entity.FabricArtifact[entity.PatternSheetRef], 0, len(sheets))
 	for _, sh := range sheets {
-		k := entity.FabricScopeIdentity(sh.FabricPurpose, sh.BomLineKey, lines)
-		out[k] = append(out[k], entity.PatternSheetRef{
-			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PatternSheetRef]{
+			FabricPurpose: sh.FabricPurpose,
+			BomLineKey:    sh.BomLineKey,
+			Value: entity.PatternSheetRef{
+				LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
+			},
 		})
 	}
+	out := entity.PreferredFabricArtifactsByScope(artifacts, lines)
+	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
+}
+
+// addLegacyInterliningPurposeBuckets keeps stored purpose-keyed measurements/indexes fresh for the
+// one unambiguous legacy case. PreferredFabricArtifactsByScope has already selected exactly one
+// complete source set under the line identity; this compatibility bucket is an exact copy, never a
+// merge of line and legacy refs.
+//
+// This deliberately replaces raw COALESCE-key duplication. A line-only binding of an ordinary
+// sorted FABRIC/LINING line has a raw line bucket and a purpose identity, but the line bucket is not
+// a live scope and must not make area/index writes under scope_key=<line> look valid.
+func addLegacyInterliningPurposeBuckets[T any](byScope map[string][]T, lines []entity.RollGoodsLine) {
+	for _, line := range lines {
+		lineScope := entity.EffectiveFabricScopeKey(line)
+		legacyScope, ok := entity.LegacyInterliningPurposeScope(line, lines)
+		if !ok || lineScope == "" || legacyScope == "" || len(byScope[lineScope]) == 0 {
+			continue
+		}
+		byScope[legacyScope] = append([]T(nil), byScope[lineScope]...)
+	}
 }
 
 // scopeBlockRefs loads a card's блок→деталь links, bucketed by the ТКАНЬ they address. A link whose
@@ -255,13 +345,18 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	if err != nil {
 		return nil, fmt.Errorf("load dxf block links of tech card %d: %w", techCardID, err)
 	}
-	out := make(map[string][]entity.PieceAreaBlockRef, len(rows))
+	artifacts := make([]entity.FabricArtifact[entity.PieceAreaBlockRef], 0, len(rows))
 	for _, r := range rows {
-		k := entity.FabricScopeIdentity(r.FabricPurpose, r.BomLineKey, lines)
-		out[k] = append(out[k], entity.PieceAreaBlockRef{
-			BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PieceAreaBlockRef]{
+			FabricPurpose: r.FabricPurpose,
+			BomLineKey:    r.BomLineKey,
+			Value: entity.PieceAreaBlockRef{
+				BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
+			},
 		})
 	}
+	out := entity.PreferredFabricArtifactsByScope(artifacts, lines)
+	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
 }
 
@@ -433,7 +528,7 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // расшить.
 //
 // А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
-// ЖИВОЙ строки (dto.slotAreaEstimate считает его как FabricScopeKey(строка.purpose, строка.line_key)),
+// ЖИВОЙ строки (dto.slotAreaEstimate считает его как EffectiveFabricScopeKey(строка)),
 // поэтому мёртвое ведро не питает ни одну норму. Противоречие, ради которого стоит гард, физически
 // не может из него возникнуть.
 //
@@ -443,9 +538,19 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // заглавные ULID'ы на входе, обе стороны считает одна функция.
 func livePieceKeysOfSizedAreas(rows []sizedAreaRow, lines []entity.RollGoodsLine) map[string]bool {
 	live := make(map[string]bool, len(lines))
+	areaScopes := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		areaScopes[strings.TrimSpace(r.ScopeKey)] = true
+	}
 	for _, l := range lines {
-		if k := entity.FabricScopeKey(l.Purpose, l.LineKey); k != "" {
-			live[k] = true
+		keys := entity.FabricScopeReadKeys(l, lines)
+		if len(keys) == 0 {
+			continue
+		}
+		live[keys[0]] = true
+		// A stored line-scoped area set suppresses the legacy purpose fallback wholesale.
+		if len(keys) > 1 && !areaScopes[keys[0]] {
+			live[keys[1]] = true
 		}
 	}
 	out := make(map[string]bool, len(rows))

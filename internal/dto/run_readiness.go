@@ -1019,11 +1019,7 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 	worst := entity.RunReadinessOK
 	var notes []string
 	for _, sc := range scopes {
-		var rp *entity.PatternSizeIndexRow
-		if r, ok := b.in.PatternSizeIndex[sc.key]; ok {
-			rp = &r
-		}
-		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
+		state, tokens := patternSizeIndexStatusForScope(sc, b.in.PatternSizeIndex)
 		switch state {
 		case entity.PatternSizeIndexMissing:
 			notes = append(notes, fmt.Sprintf("%s: sizes in the files were never checked — press “⌕ sizes in the files” on the patterns tab", sc.key))
@@ -1082,8 +1078,26 @@ func worseReadiness(a, b entity.RunReadinessSeverity) entity.RunReadinessSeverit
 }
 
 type patternScope struct {
-	key    string
-	sheets []entity.PatternSheetRef
+	key       string
+	legacyKey string
+	sheets    []entity.PatternSheetRef
+}
+
+// patternSizeIndexStatusForScope treats the line and legacy purpose indexes as alternative complete
+// artifacts. Any line-keyed row wins wholesale, including a stale or malformed one; the singleton
+// legacy purpose row is consulted only when the line row is absent.
+func patternSizeIndexStatusForScope(sc patternScope, index map[string]entity.PatternSizeIndexRow) (entity.PatternSizeIndexState, map[string]bool) {
+	fingerprint := entity.PatternSheetFingerprint(sc.sheets)
+	if row, ok := index[sc.key]; ok {
+		return entity.PatternSizeIndexStatus(&row, fingerprint)
+	}
+	if sc.legacyKey == "" {
+		return entity.PatternSizeIndexMissing, nil
+	}
+	if row, ok := index[sc.legacyKey]; ok {
+		return entity.PatternSizeIndexStatus(&row, fingerprint)
+	}
+	return entity.PatternSizeIndexMissing, nil
 }
 
 // patternScopes groups the card's pattern sheets by the ТКАНЬ each one addresses. The fingerprint
@@ -1100,27 +1114,36 @@ func (b *runReadinessBuilder) patternScopes() []patternScope {
 
 func patternScopesOfCard(card *entity.TechCard) []patternScope {
 	lines := entity.RollGoodsLinesOfBom(card.BomItems)
-	byKey := map[string][]entity.PatternSheetRef{}
-	var order []string
+	artifacts := make([]entity.FabricArtifact[entity.PatternSheetRef], 0, len(card.Patterns))
 	for i := range card.Patterns {
 		p := &card.Patterns[i]
-		key := entity.FabricScopeIdentity(p.FabricPurpose.String, p.BomLineKey.String, lines)
-		if key == "" {
-			// A sheet bound to nothing at all (uploaded before 0260). pattern_binding_resolved already
-			// names it; indexing it under "" would let one unbound sheet answer for every cloth.
-			continue
-		}
-		if _, ok := byKey[key]; !ok {
-			order = append(order, key)
-		}
-		byKey[key] = append(byKey[key], entity.PatternSheetRef{
-			LineKey: p.LineKey, URL: p.URL, Version: p.Version,
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PatternSheetRef]{
+			FabricPurpose: p.FabricPurpose.String,
+			BomLineKey:    p.BomLineKey.String,
+			Value: entity.PatternSheetRef{
+				LineKey: p.LineKey, URL: p.URL, Version: p.Version,
+			},
 		})
 	}
+	byKey := entity.PreferredFabricArtifactsByScope(artifacts, lines)
+	order := make([]string, 0, len(byKey))
+	for key := range byKey {
+		if key != "" {
+			// A sheet bound to nothing at all (uploaded before 0260) stays out: indexing it would let
+			// one unbound sheet answer for every cloth.
+			order = append(order, key)
+		}
+	}
 	sort.Strings(order)
+	legacyByKey := map[string]string{}
+	for _, line := range lines {
+		if legacy, ok := entity.LegacyInterliningPurposeScope(line, lines); ok {
+			legacyByKey[entity.EffectiveFabricScopeKey(line)] = legacy
+		}
+	}
 	out := make([]patternScope, 0, len(order))
 	for _, k := range order {
-		out = append(out, patternScope{key: k, sheets: byKey[k]})
+		out = append(out, patternScope{key: k, legacyKey: legacyByKey[k], sheets: byKey[k]})
 	}
 	return out
 }
@@ -1564,11 +1587,7 @@ func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.P
 	missingSet := map[int]bool{}
 	usable := 0
 	for _, sc := range scopes {
-		var rp *entity.PatternSizeIndexRow
-		if r, found := index[sc.key]; found {
-			rp = &r
-		}
-		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
+		state, tokens := patternSizeIndexStatusForScope(sc, index)
 		switch state {
 		case entity.PatternSizeIndexMissing:
 			reasons = append(reasons, fmt.Sprintf("%s: sizes in the files were never checked", sc.key))

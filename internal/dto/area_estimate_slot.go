@@ -41,8 +41,9 @@ type slotEstimate struct {
 	// bomLineKey — стабильный ключ строки BOM, по которому клиент сшивает оценку со своей строкой.
 	// Не id: в слепке релиза у части строк его нет, а ключ есть всегда.
 	bomLineKey string
-	// scopeKey — скоуп площадей, на которых стоит ответ: COALESCE(назначение, line_key), тот же
-	// ключ, что у TechCard.piece_area_scopes.
+	// scopeKey — effective scope the answer belongs to: INTERLINING line_key, otherwise
+	// COALESCE(назначение, line_key). A singleton legacy area may be read from its old purpose bucket,
+	// but the published identity remains the line.
 	scopeKey string
 
 	// ok=true — ЕСТЬ ДЕНЬГИ: perGarment/unit/money/currency заполнены. ok=false — refusal называет
@@ -78,6 +79,53 @@ type slotEstimate struct {
 	parsedAt        time.Time
 }
 
+func rollGoodsLineOfBom(bom *entity.TechCardBomItem) entity.RollGoodsLine {
+	if bom == nil {
+		return entity.RollGoodsLine{}
+	}
+	return entity.RollGoodsLine{
+		LineKey: bom.LineKey,
+		Purpose: bom.Purpose.String,
+		Section: bom.Section,
+	}
+}
+
+func effectiveScopeKeyOfBom(bom *entity.TechCardBomItem) string {
+	return entity.EffectiveFabricScopeKey(rollGoodsLineOfBom(bom))
+}
+
+// pieceAreaScopeForBom resolves measured geometry with the L11 read fallback: a line-scoped
+// interlining measurement wins; a purpose-scoped legacy measurement is visible only when this is
+// the card's sole interlining line of that purpose and no line-scoped entry exists.
+func pieceAreaScopeForBom(tc *entity.TechCard, bom *entity.TechCardBomItem) (string, entity.PieceAreaScope, bool) {
+	if tc == nil || bom == nil {
+		return "", entity.PieceAreaScope{}, false
+	}
+	line := rollGoodsLineOfBom(bom)
+	lines := entity.RollGoodsLinesOfBom(tc.BomItems)
+	keys := entity.FabricScopeReadKeys(line, lines)
+	if len(keys) == 0 {
+		return "", entity.PieceAreaScope{}, false
+	}
+	lineScope, lineFound := tc.PieceAreaScopes[keys[0]]
+	if lineFound && len(lineScope.Rows) > 0 {
+		return keys[0], lineScope, true
+	}
+	// Only LegacyInterliningPurposeScope can add this second key, so a purpose shared with rib,
+	// lining or any other roll good never becomes a fallback for one fusible line.
+	if len(keys) > 1 {
+		if legacy, ok := tc.PieceAreaScopes[keys[1]]; ok {
+			return keys[1], legacy, true
+		}
+	}
+	// Preserve the useful stale verdict when no legacy bucket can answer. Returning "missing" here
+	// would hide the fact that this exact line was measured and its source later changed.
+	if lineFound {
+		return keys[0], lineScope, true
+	}
+	return keys[0], entity.PieceAreaScope{}, false
+}
+
 // slotAreaEstimate answers «what does this one roll slot consume per garment by estimate, and why
 // not» — the single place that assembles the arguments of entity.AreaEstimateNorm and the only
 // caller of it. Money is derived here from the answer, never computed beside it.
@@ -100,7 +148,8 @@ func slotAreaEstimate(
 		// устранить.
 		return slotEstimate{}
 	}
-	scope := entity.FabricScopeKey(bom.Purpose.String, bom.LineKey)
+	scope := effectiveScopeKeyOfBom(bom)
+	areaScope := scope
 	out := slotEstimate{
 		bomLineKey: bom.LineKey,
 		scopeKey:   scope,
@@ -110,15 +159,18 @@ func slotAreaEstimate(
 		// посчитанном ответе поэтому всегда одна и та же.
 		unit: bom.Unit.String,
 	}
-	if sc, ok := tc.PieceAreaScopes[scope]; ok && len(sc.Rows) > 0 {
-		out.measured = true
-		out.stale = sc.Stale
-		// Условия и провенанс — одни на скоуп (их пишет одна транзакция), читаются с первой строки
-		// ровно как в TechCardPieceAreaScopesToPb; второго правила чтения тех же полей не заводим.
-		out.contourLayer = sc.Rows[0].ContourLayer
-		out.seamAllowanceMm = sc.Rows[0].SeamAllowanceMm
-		out.parsedBy = sc.Rows[0].ParsedBy
-		out.parsedAt = sc.Rows[0].ParsedAt
+	if key, sc, ok := pieceAreaScopeForBom(tc, bom); ok {
+		areaScope = key
+		if len(sc.Rows) > 0 {
+			out.measured = true
+			out.stale = sc.Stale
+			// Условия и провенанс — одни на скоуп (их пишет одна транзакция), читаются с первой строки
+			// ровно как в TechCardPieceAreaScopesToPb; второго правила чтения тех же полей не заводим.
+			out.contourLayer = sc.Rows[0].ContourLayer
+			out.seamAllowanceMm = sc.Rows[0].SeamAllowanceMm
+			out.parsedBy = sc.Rows[0].ParsedBy
+			out.parsedAt = sc.Rows[0].ParsedAt
+		}
 	}
 
 	pieces, pinned, pinConflict := slotAssignedPieces(tc, cw, bom)
@@ -178,7 +230,7 @@ func slotAreaEstimate(
 	// ЛЕСТНИЦА ОТКАЗОВ ПРИ ЭТОМ НЕ ТРОНУТА: «нет цены» по-прежнему называется РАНЬШЕ геометрических
 	// причин (см. ниже), поэтому деньги и флаги костинга ведут себя ровно как раньше.
 	widthCm := slotCuttingWidthCm(bom, pinned, linked)
-	perGarment, normRefusal := areaEstimateOnBasis(scope, pieces, tc.PieceAreaScopes, widthCm, out.unit, basis)
+	perGarment, normRefusal := areaEstimateOnBasis(areaScope, pieces, tc.PieceAreaScopes, widthCm, out.unit, basis)
 	if normRefusal == "" {
 		out.perGarment, out.normDerived = perGarment, true
 	}
@@ -486,8 +538,7 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 	//
 	// СТРОКА РЕЦЕПТА ПОБЕЖДАЕТ: она новее, она же несёт пин, и дублирование по детали снимается по
 	// одному ключу (см. seen).
-	appendPiece := func(pieceID int, pinnedMaterial int64) {
-		p := byID[pieceID]
+	appendResolvedPiece := func(p *entity.TechCardPiece, pinnedMaterial int64) {
 		if p == nil || strings.TrimSpace(p.LineKey) == "" {
 			return
 		}
@@ -509,6 +560,63 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 		ap := entity.AreaEstimatePiece{LineKey: p.LineKey, PerGarment: p.PiecesPerGarment}
 		ap.StripWidthCm, ap.StripWidthMissing, ap.ScopeOverride = fusingGeometryFor(tc, cw, bom, p)
 		out = append(out, ap)
+	}
+	appendPiece := func(pieceID int, pinnedMaterial int64) {
+		appendResolvedPiece(byID[pieceID], pinnedMaterial)
+	}
+	if bom.Section == entity.BomSectionInterlining {
+		// The piece-level selection introduced with the fusing model is the authority for WHICH
+		// fusible consumes this contour. Generic recipe rows used to make one fused piece appear in
+		// every same-purpose interlining slot; with several materials that double-counted consumption.
+		interliningCount := 0
+		for i := range tc.BomItems {
+			candidate := &tc.BomItems[i]
+			if candidate.Section != entity.BomSectionInterlining {
+				continue
+			}
+			interliningCount++
+		}
+		selected := make(map[*entity.TechCardPiece]bool, len(tc.Pieces))
+		selectedByID := make(map[int]bool, len(tc.Pieces))
+		for i := range tc.Pieces {
+			p := &tc.Pieces[i]
+			if !p.Fused {
+				continue
+			}
+			selectedHere := false
+			switch {
+			case strings.TrimSpace(p.FusingBomLineKey) != "":
+				// Stable keys also work on a not-yet-persisted card whose new BOM ids are all zero.
+				selectedHere = strings.EqualFold(strings.TrimSpace(p.FusingBomLineKey), strings.TrimSpace(bom.LineKey))
+			case p.FusingBomItemId.Valid:
+				selectedHere = int(p.FusingBomItemId.Int64) == bom.Id
+			case interliningCount == 1:
+				// Compatibility with cards saved before a piece could name its fusible.
+				selectedHere = true
+			}
+			if selectedHere {
+				selected[p] = true
+				selectedByID[p.Id] = true
+			}
+		}
+		// A recipe row on the selected fusible may still pin its article. It can price the piece,
+		// but it cannot assign a piece whose own fusing selection points at another line.
+		for i := range cw.Usages {
+			u := &cw.Usages[i]
+			if !u.IsPieceMaterialAssignment() || !u.PieceId.Valid || !u.BomItemId.Valid ||
+				int(u.BomItemId.Int64) != bom.Id || !selectedByID[int(u.PieceId.Int64)] {
+				continue
+			}
+			appendPiece(int(u.PieceId.Int64), u.MaterialId.Int64)
+		}
+		// The direct piece link is sufficient on its own; a generated fusing slot does not require a
+		// duplicate colourway-usage row merely to become consumable.
+		for i := range tc.Pieces {
+			if selected[&tc.Pieces[i]] {
+				appendResolvedPiece(&tc.Pieces[i], 0)
+			}
+		}
+		return out, pin, !pinAgrees
 	}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
@@ -534,15 +642,7 @@ func slotAssignedPieces(tc *entity.TechCard, cw *entity.TechCardColorway, bom *e
 			if m.ColorwayID != 0 && m.ColorwayID != colorwayKey {
 				continue
 			}
-			// ВТОРАЯ ПОЛОВИНА ЛЕГАСИ-ИСТОЧНИКА: у строки детали ДВЕ ссылки на BOM — ткань
-			// (bom_item_id) и клеевая (fusing_bom_item_id). Читать только первую значило бы, что
-			// клеевой слот на карточке, заведённой через вкладку деталей кроя, не видит НИ ОДНОЙ
-			// детали и вечно отвечает «детали не назначены» — при том, что кат-план этот же источник
-			// видит и печатает по нему пару «деталь → клеевая». Одна связь, два читателя, и
-			// расходиться им нельзя.
-			fusingHere := bom.Section == entity.BomSectionInterlining && p.Fused &&
-				m.FusingBomItemId.Valid && int(m.FusingBomItemId.Int64) == bom.Id
-			if !fusingHere && (!m.BomItemId.Valid || int(m.BomItemId.Int64) != bom.Id) {
+			if !m.BomItemId.Valid || int(m.BomItemId.Int64) != bom.Id {
 				continue
 			}
 			appendPiece(p.Id, 0)
@@ -640,7 +740,14 @@ func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *en
 	if bom.Section != entity.BomSectionInterlining || !p.Fused {
 		return decimal.NullDecimal{}, false, ""
 	}
-	scope := fusedPieceContourScope(tc, cw, bom, p)
+	scope, ownMeasuredContour := fusedPieceContourScope(tc, cw, bom, p)
+	if ownMeasuredContour {
+		// A generated sheet in this interlining line is already the exact fusible shape (full,
+		// selected strip bands, or zone). Its measured area is authoritative: applying the piece's
+		// perimeter×width formula again would transform the generated result a second time, while a
+		// zone refusal would discard geometry the line has measured directly.
+		return decimal.NullDecimal{}, false, ""
+	}
 	switch entity.PieceFusingModeOrFull(p.FusingMode) {
 	case entity.PieceFusingModeStrip:
 		if p.FusingWidthMm.Valid {
@@ -673,24 +780,24 @@ func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *en
 	}
 }
 
-// fusedPieceContourScope finds the ONE fabric scope holding this piece's measured contour, or "" when
-// the answer is not unique — see fusingGeometryFor's header on why "" beats a guess.
+// fusedPieceContourScope distinguishes the slot's own measured fusible shape from one borrowed
+// fabric contour. The bool reports the former; scope names the latter. Both are empty/false when a
+// borrowed contour is absent or ambiguous — see fusingGeometryFor's header on why that beats a guess.
 func fusedPieceContourScope(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem,
-	p *entity.TechCardPiece) string {
+	p *entity.TechCardPiece) (string, bool) {
 	key := strings.ToUpper(strings.TrimSpace(p.LineKey))
 	if key == "" {
-		return ""
+		return "", false
 	}
 	// СВОЯ ГЕОМЕТРИЯ ПОБЕЖДАЕТ ЗАИМСТВОВАННУЮ, и это не оптимизация. Клеевая ОБЫЧНО не имеет своих
 	// выкроек — ради этого случая заимствование и заведено, — но бывает и нарисованной отдельным
 	// лекалом (обтачка дублируется не по контуру детали, а своей деталью). Если у скоупа этого слота
 	// есть замер ЭТОЙ детали, он и есть ответ: подменить его контуром основной ткани значило бы
 	// посчитать клеевую по чужому лекалу, имея на руках её собственное.
-	slotScope := entity.FabricScopeKey(bom.Purpose.String, bom.LineKey)
-	if sc, ok := tc.PieceAreaScopes[slotScope]; ok {
+	if _, sc, ok := pieceAreaScopeForBom(tc, bom); ok {
 		for _, r := range sc.Rows {
 			if strings.ToUpper(strings.TrimSpace(r.PieceLineKey)) == key {
-				return ""
+				return "", true
 			}
 		}
 	}
@@ -707,7 +814,7 @@ func fusedPieceContourScope(tc *entity.TechCard, cw *entity.TechCardColorway, bo
 			!isRollGoodsSection(b.Section) {
 			return
 		}
-		scope := entity.FabricScopeKey(b.Purpose.String, b.LineKey)
+		scope := effectiveScopeKeyOfBom(b)
 		sc, ok := tc.PieceAreaScopes[scope]
 		if !ok {
 			return
@@ -744,12 +851,12 @@ func fusedPieceContourScope(tc *entity.TechCard, cw *entity.TechCardColorway, bo
 		}
 	}
 	if len(candidates) != 1 {
-		return ""
+		return "", false
 	}
 	for scope := range candidates {
-		return scope
+		return scope, false
 	}
-	return ""
+	return "", false
 }
 
 // mmToCm converts a millimetre width into the centimetres the geometry is measured in. ONE place
