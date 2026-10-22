@@ -3450,11 +3450,18 @@ type TechCardOperation struct {
 	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
 	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
 	Review sql.NullString `db:"review"`
-	// AutoFusingLineKey is the private identity snapshot of an automatically managed FUSING group.
-	// Valid+empty is the shared unresolved group; a non-empty value is the INTERLINING line_key the
-	// group was created for. It deliberately survives deletion of that BOM row, letting an edited
-	// orphan shed the dead FK without becoming indistinguishable from unresolved NULL. Not on wire.
+	// AutoFusingLineKey is the private material snapshot of an automatically managed FUSING step:
+	// the INTERLINING line_key it fuses with, Valid+empty when unresolved. It deliberately survives
+	// deletion of that BOM row, letting an edited orphan shed the dead FK without becoming
+	// indistinguishable from a manual step (NULL). Without AutoFusingPieceKey it marks a grouped
+	// step of the retired one-per-line model. Not on wire.
 	AutoFusingLineKey sql.NullString `db:"auto_fusing_line_key"`
+	// AutoFusingPieceKey is the private identity of a per-piece automatic FUSING step (0429): the
+	// line_key of the one piece it fuses. With it set, AutoFusingLineKey is that piece's material link
+	// (empty = unresolved), re-synced when the piece's interlining changes. NULL with
+	// AutoFusingLineKey set is a grouped step of the one-per-line model, split on the next reconcile.
+	// It survives the piece being unfused or deleted, so an edited orphan stays distinct. Not on wire.
+	AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").

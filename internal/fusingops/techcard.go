@@ -148,41 +148,68 @@ func sortedKeySet(keys []string) string {
 	return strings.Join(out, "\x00")
 }
 
-func shapeOfFusingOp(op *entity.TechCardOperation) fusingOpShape {
-	pieces := op.PieceLineKeys
-	if len(op.AssemblyInputs) > 0 {
-		pieces = make([]string, 0, len(op.AssemblyInputs))
+// pieceInputKeys is the operation's piece inputs in order, from whichever input list it carries.
+func pieceInputKeys(op *entity.TechCardOperation, pieceKeys map[string]bool) []string {
+	switch {
+	case len(op.AssemblyInputs) > 0:
+		keys := make([]string, 0, len(op.AssemblyInputs))
 		for _, input := range op.AssemblyInputs {
 			if input.Kind == entity.AssemblyInputPiece {
-				pieces = append(pieces, input.Key)
+				keys = append(keys, input.Key)
 			}
 		}
+		return keys
+	case len(op.InputKeys) > 0 && pieceKeys != nil:
+		keys := make([]string, 0, len(op.InputKeys))
+		for _, input := range entity.ClassifyAssemblyInputs(pieceKeys, op.InputKeys) {
+			if input.Kind == entity.AssemblyInputPiece {
+				keys = append(keys, input.Key)
+			}
+		}
+		return keys
+	default:
+		return op.PieceLineKeys
 	}
-	return fusingOpShape{draft: op.Draft, bom: sortedKeySet(op.BomLineKeys), pieces: sortedKeySet(pieces)}
 }
 
-// matchAutoFusingOps pairs every stored automatic FUSING step (auto_fusing_line_key set) with at most
-// one incoming FUSING step and copies the private group key onto it. It returns the stored indexes
-// that found a counterpart; carryMissingAutoFusingOps treats every other draft automatic step as
-// dropped by the payload.
+func shapeOfFusingOp(op *entity.TechCardOperation) fusingOpShape {
+	return fusingOpShape{draft: op.Draft, bom: sortedKeySet(op.BomLineKeys), pieces: sortedKeySet(pieceInputKeys(op, nil))}
+}
+
+// autoIdentity is the private identity of an automatic FUSING step: the piece it fuses, or for a
+// grouped legacy step the interlining line it was created for. ok is false for a manual step.
+func autoIdentity(op *entity.TechCardOperation) (string, bool) {
+	if op.AutoFusingPieceKey.Valid {
+		return "piece\x00" + op.AutoFusingPieceKey.String, true
+	}
+	if op.AutoFusingLineKey.Valid {
+		return "line\x00" + strings.TrimSpace(op.AutoFusingLineKey.String), true
+	}
+	return "", false
+}
+
+// matchAutoFusingOps pairs every stored automatic FUSING step (a piece or line key set) with at most
+// one incoming FUSING step and copies the private keys onto it. It returns the stored indexes that
+// found a counterpart; carryMissingAutoFusingOps treats every other draft automatic step as dropped
+// by the payload.
 //
-// The wire has no operation id, and both the number and the interlining link are shared by steps
-// that are not the same step, so identity is the whole shape (fusingOpShape), in this order:
-//  0. an incoming step that already carries the key (server-built writers);
-//  1. every stored MANUAL step (NULL key) first claims an incoming step of its own shape. Such a
-//     step is never adopted: 0428's invariant is that NULL means manual, and a stale payload shifts
-//     manual steps onto the numbers the automatic steps hold;
+// The wire has no operation id, and neither the number nor the interlining link is identity, so
+// identity is the whole shape (fusingOpShape), in this order:
+//  0. an incoming step that already carries the same key (server-built writers);
+//  1. every stored MANUAL step (no key) first claims an incoming step of its own shape. Such a step is
+//     never keyed here: a stale payload shifts manual steps onto the numbers automatic steps hold;
 //  2. the exact echo: same draft flag, same BOM links, same pieces, at any number (a client may
 //     renumber or reorder);
-//  3. a draft step still a draft with the same BOM links, at any number — a client that holds the
-//     step but not its latest piece list;
+//  3. a draft step still a draft with the same pieces (per-piece step) or the same BOM links (grouped
+//     legacy step), at any number — a client that holds the step but not its latest material link or
+//     piece list;
 //  4. the same step reviewed in this save: draft cleared, same BOM links, same pieces, at the
 //     stored number.
 //
 // Among several candidates the one at the stored number wins, so an up-to-date echo pairs with
-// itself. Anything looser (a group link alone, a number alone) is not identity: a missed draft step
-// is carried back as a visible duplicate, while a false match silently deletes it and hands a
-// manual step an automatic identity.
+// itself. Anything looser (a link alone, a number alone) is not identity: a missed draft step is
+// carried back as a visible duplicate, while a false match silently deletes it and hands a manual
+// step an automatic identity.
 func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 	matched := make(map[int]bool)
 	if stored == nil || incoming == nil {
@@ -195,7 +222,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		if op.OperationType != entity.OpTypeFusing {
 			continue
 		}
-		if op.AutoFusingLineKey.Valid {
+		if _, ok := autoIdentity(op); ok {
 			autoIdx = append(autoIdx, i)
 		} else {
 			manualIdx = append(manualIdx, i)
@@ -205,8 +232,10 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		return matched
 	}
 	shapes := make([]fusingOpShape, len(incoming.Operations))
+	keyed := make([]bool, len(incoming.Operations))
 	for j := range incoming.Operations {
 		shapes[j] = shapeOfFusingOp(&incoming.Operations[j])
+		_, keyed[j] = autoIdentity(&incoming.Operations[j])
 	}
 	taken := make(map[int]bool, len(incoming.Operations))
 	pick := func(number sql.NullInt32, accept func(j int, in *entity.TechCardOperation) bool) int {
@@ -225,7 +254,6 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		}
 		return best
 	}
-	groupKey := func(op *entity.TechCardOperation) string { return strings.TrimSpace(op.AutoFusingLineKey.String) }
 	pass := func(accept func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool) {
 		for _, i := range autoIdx {
 			if matched[i] {
@@ -241,34 +269,40 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 			}
 			taken[j] = true
 			matched[i] = true
-			if !incoming.Operations[j].AutoFusingLineKey.Valid {
+			if !keyed[j] {
 				incoming.Operations[j].AutoFusingLineKey = s.AutoFusingLineKey
+				incoming.Operations[j].AutoFusingPieceKey = s.AutoFusingPieceKey
 			}
 		}
 	}
 
-	pass(func(s *entity.TechCardOperation, _ fusingOpShape, _ int, in *entity.TechCardOperation) bool {
-		return in.AutoFusingLineKey.Valid && groupKey(in) == groupKey(s)
+	pass(func(s *entity.TechCardOperation, _ fusingOpShape, j int, in *entity.TechCardOperation) bool {
+		sKey, _ := autoIdentity(s)
+		inKey, ok := autoIdentity(in)
+		return ok && inKey == sKey
 	})
 	for _, i := range manualIdx {
 		m := &stored.Operations[i]
 		mShape := shapeOfFusingOp(m)
 		if j := pick(m.OperationNumber, func(j int, in *entity.TechCardOperation) bool {
-			return !in.AutoFusingLineKey.Valid && shapes[j] == mShape
+			return !keyed[j] && shapes[j] == mShape
 		}); j >= 0 {
 			taken[j] = true
 		}
 	}
-	pass(func(_ *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
-		return !in.AutoFusingLineKey.Valid && shapes[j] == sShape
+	pass(func(_ *entity.TechCardOperation, sShape fusingOpShape, j int, _ *entity.TechCardOperation) bool {
+		return !keyed[j] && shapes[j] == sShape
 	})
 	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
-		return !in.AutoFusingLineKey.Valid && s.Draft && in.Draft && shapes[j].bom == sShape.bom
+		return !keyed[j] && s.AutoFusingPieceKey.Valid && s.Draft && in.Draft && shapes[j].pieces == sShape.pieces
+	})
+	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
+		return !keyed[j] && !s.AutoFusingPieceKey.Valid && s.Draft && in.Draft && shapes[j].bom == sShape.bom
 	})
 	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
 		reviewed := sShape
 		reviewed.draft = false
-		return !in.AutoFusingLineKey.Valid && s.Draft && s.OperationNumber.Valid &&
+		return !keyed[j] && s.Draft && s.OperationNumber.Valid &&
 			in.OperationNumber == s.OperationNumber && shapes[j] == reviewed
 	})
 	return matched
@@ -321,12 +355,13 @@ func carriedAutoFusingOp(op entity.TechCardOperation, pieceKeys, bomKeys map[str
 // server-owned: a client that saved before the server inserted them (and never reloaded its step
 // list) would otherwise delete them on its next unrelated save while the pieces stay fused, and the
 // assembly order would silently lose Fusing. Only draft steps come back — an edited (non-draft) step
-// the client dropped was deleted by a person and stays deleted; legacy steps (no automatic identity)
+// the client dropped was deleted by a person and stays deleted; manual steps (no automatic identity)
 // are never candidates.
 //
-// A carried step returns to its stored index, capped at the leading run of FUSING steps so it stays
-// at the front of the order. Every step is then renumbered 10, 20, … and the payload's issue
-// references follow their step's new number, exactly as ReconcileTechCard renumbers.
+// A carried step goes just before the first payload step that uses one of its pieces, as the
+// reconciler places a new step; with no such step it returns to its stored index. Every step is then
+// renumbered 10, 20, … and the payload's issue references follow their step's new number, exactly as
+// ReconcileTechCard renumbers.
 func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched map[int]bool) bool {
 	if stored == nil || incoming == nil {
 		return false
@@ -334,7 +369,7 @@ func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched 
 	missing := make([]int, 0)
 	for i := range stored.Operations {
 		op := &stored.Operations[i]
-		if op.OperationType == entity.OpTypeFusing && op.Draft && op.AutoFusingLineKey.Valid && !matched[i] {
+		if _, auto := autoIdentity(op); op.OperationType == entity.OpTypeFusing && op.Draft && auto && !matched[i] {
 			missing = append(missing, i)
 		}
 	}
@@ -353,22 +388,29 @@ func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched 
 
 	type slot struct {
 		op        entity.TechCardOperation
+		pieces    []string
 		oldNumber sql.NullInt32 // payload numbering; invalid for a carried step
 	}
 	slots := make([]slot, 0, len(incoming.Operations)+len(missing))
 	for _, op := range incoming.Operations {
-		slots = append(slots, slot{op: op, oldNumber: op.OperationNumber})
+		slots = append(slots, slot{op: op, pieces: pieceInputKeys(&op, pieceKeys), oldNumber: op.OperationNumber})
 	}
 	for _, i := range missing {
-		position := i
-		lead := 0
-		for lead < len(slots) && slots[lead].op.OperationType == entity.OpTypeFusing {
-			lead++
-		}
-		if position > lead {
-			position = lead
-		}
 		carried := slot{op: carriedAutoFusingOp(stored.Operations[i], pieceKeys, bomKeys)}
+		carried.pieces = carried.op.PieceLineKeys
+		position := -1
+		for s := range slots {
+			if sharesKey(slots[s].pieces, carried.pieces) {
+				position = s
+				break
+			}
+		}
+		if position < 0 {
+			position = i
+			if position > len(slots) {
+				position = len(slots)
+			}
+		}
 		slots = append(slots[:position], append([]slot{carried}, slots[position:]...)...)
 	}
 
@@ -395,10 +437,38 @@ func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched 
 	return true
 }
 
+func sharesKey(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasGroupedAutoFusing reports a grouped automatic step of the one-per-line model (line key without
+// piece key) that is not an orphan: the card still has to be split into per-piece steps.
+func hasGroupedAutoFusing(tc *entity.TechCardInsert) bool {
+	if tc == nil {
+		return false
+	}
+	for i := range tc.Operations {
+		op := &tc.Operations[i]
+		if op.OperationType == entity.OpTypeFusing && op.AutoFusingLineKey.Valid && !op.AutoFusingPieceKey.Valid &&
+			!(op.Review.Valid && op.Review.String == ReviewOrphan) {
+			return true
+		}
+	}
+	return false
+}
+
 // UpdateOutcome is what an update's FUSING pass did to the write model.
 type UpdateOutcome struct {
-	// Reconcile: piece fusing or INTERLINING membership changed. The write model is reconciled and
-	// the store must repeat the reconciliation against rows (entity.TechCardInsert.ReconcileFusing).
+	// Reconcile: piece fusing or INTERLINING membership changed, or the FUSING steps are not in
+	// their per-piece shape. The write model is reconciled and the store must repeat the
+	// reconciliation against rows (entity.TechCardInsert.ReconcileFusing).
 	Reconcile bool
 	// Carried: nothing fusing-relevant changed, but the payload lacked draft automatic FUSING steps
 	// and they were put back (operations renumbered, issue references remapped).
@@ -406,10 +476,17 @@ type UpdateOutcome struct {
 }
 
 // ReconcileTechCardUpdate is the update-only trigger. Create and clone paths call ReconcileTechCard
-// directly. An unrelated update never reconciles (legacy/manual FUSING steps are not touched); it only
-// restores the draft automatic steps a stale payload dropped. Either way the caller must re-run
-// assembly validation when the outcome reports a change, since a step moved to the front can now
-// consume a unit produced later.
+// directly. It reconciles when
+//   - piece fusing or INTERLINING membership changed (FusingStateChanged);
+//   - the stored card still holds a grouped step of the one-per-line model (it is split on this
+//     save; there is no separate backfill);
+//   - the payload's FUSING steps are not what the reconciler would leave: a grouped or adoptable
+//     step to convert, a skeleton draft duplicating a piece's step, a step whose material link or
+//     piece no longer matches its piece. A fused piece merely lacking a step is not a reason: a
+//     person may have deleted its edited step.
+//
+// Otherwise it only restores the draft automatic steps a stale payload dropped. Either way the caller
+// must re-run assembly validation when the outcome reports a change.
 func ReconcileTechCardUpdate(stored, incoming *entity.TechCardInsert) (UpdateOutcome, *entity.ValidationError) {
 	if incoming == nil {
 		return UpdateOutcome{}, nil
@@ -419,228 +496,10 @@ func ReconcileTechCardUpdate(stored, incoming *entity.TechCardInsert) (UpdateOut
 	// number-only fallback must not second-guess this identity match.
 	matched := matchAutoFusingOps(stored, incoming)
 	incoming.AutoFusingKeysResolved = true
-	if FusingStateChanged(stored, incoming) {
-		// The reconcile recreates every group still used by a fused piece, so automatic steps a
-		// stale payload dropped come back here too (as fresh drafts at the front).
+	if FusingStateChanged(stored, incoming) || hasGroupedAutoFusing(stored) || fusingOpsNeedReconcile(incoming) {
+		// The reconcile creates a step for every fused piece without one, so automatic steps a
+		// stale payload dropped come back here too (as fresh drafts before their first use).
 		return UpdateOutcome{Reconcile: true}, ReconcileTechCard(incoming)
 	}
 	return UpdateOutcome{Carried: carryMissingAutoFusingOps(stored, incoming, matched)}, nil
-}
-
-// ReconcileTechCard applies the same FUSING transition to the in-memory write model. The API calls
-// this before sign-off digests are stamped; the store then repeats the reconciliation against rows
-// in the transaction. Keeping both views canonical prevents a generated operation or renumbered
-// issue reference from making a fresh sign-off stale as soon as the card is read back.
-func ReconcileTechCard(tc *entity.TechCardInsert) *entity.ValidationError {
-	if tc == nil {
-		return nil
-	}
-	interliningKeys := make([]string, 0)
-	sectionByKey := make(map[string]entity.TechCardBomSection, len(tc.BomItems))
-	for i := range tc.BomItems {
-		key := strings.TrimSpace(tc.BomItems[i].LineKey)
-		if key == "" {
-			continue
-		}
-		sectionByKey[key] = tc.BomItems[i].Section
-		if tc.BomItems[i].Section == entity.BomSectionInterlining {
-			interliningKeys = append(interliningKeys, key)
-		}
-	}
-
-	groupByKey := map[string]int{"": 0}
-	keyByGroup := map[int]string{0: ""}
-	nextGroup := 1
-	groupFor := func(key string) int {
-		if group, ok := groupByKey[key]; ok {
-			return group
-		}
-		group := nextGroup
-		nextGroup++
-		groupByKey[key] = group
-		keyByGroup[group] = key
-		return group
-	}
-	for _, key := range interliningKeys {
-		groupFor(key)
-	}
-
-	pieceKeyByID := make(map[int]string, len(tc.Pieces))
-	pieceKeys := make(map[string]bool, len(tc.Pieces))
-	pieces := make([]Piece, 0, len(tc.Pieces))
-	for i := range tc.Pieces {
-		piece := &tc.Pieces[i]
-		pieceID := i + 1
-		pieceKeyByID[pieceID] = piece.LineKey
-		pieceKeys[piece.LineKey] = true
-		bomGroup := 0
-		if piece.Fused {
-			selected := strings.TrimSpace(piece.FusingBomLineKey)
-			switch {
-			case selected != "":
-				if sectionByKey[selected] != entity.BomSectionInterlining {
-					return entity.NewFieldViolation(fmt.Sprintf("pieces[%d].fusing_bom_line_key", i),
-						"the selected BOM line is not interlining", selected,
-						"select a BOM line from the INTERLINING section")
-				}
-				bomGroup = groupFor(selected)
-			case len(interliningKeys) == 1:
-				bomGroup = groupFor(interliningKeys[0])
-			}
-		}
-		pieces = append(pieces, Piece{ID: pieceID, Fused: piece.Fused, BOMItemID: bomGroup})
-	}
-
-	operations := make([]Operation, 0, len(tc.Operations))
-	oldNumberByID := make(map[int]sql.NullInt32, len(tc.Operations))
-	for i := range tc.Operations {
-		source := &tc.Operations[i]
-		op := Operation{ID: i + 1, Fusing: source.OperationType == entity.OpTypeFusing, Draft: source.Draft}
-		if source.Review.Valid {
-			op.Review = source.Review.String
-		}
-		if op.Fusing {
-			interlining := ""
-			interliningCount := 0
-			for _, rawKey := range source.BomLineKeys {
-				key := strings.TrimSpace(rawKey)
-				if sectionByKey[key] == entity.BomSectionInterlining {
-					interlining = key
-					interliningCount++
-				}
-			}
-			if source.AutoFusingLineKey.Valid {
-				autoKey := strings.TrimSpace(source.AutoFusingLineKey.String)
-				switch {
-				case autoKey == "":
-					op.BOMItemID = 0
-				case interliningCount == 1 && interlining == autoKey:
-					op.BOMItemID = groupFor(autoKey)
-				default:
-					// A resolved automatic group without its matching live FK is a permanent
-					// orphan, even if a different/new BOM row later reuses the old line key.
-					op.BOMItemID = -op.ID
-				}
-			} else {
-				switch {
-				case interliningCount == 1:
-					op.BOMItemID = groupFor(interlining)
-					source.AutoFusingLineKey = sql.NullString{String: interlining, Valid: true}
-				case len(source.BomLineKeys) == 0 && op.Review != ReviewOrphan:
-					op.BOMItemID = 0
-					source.AutoFusingLineKey = sql.NullString{Valid: true}
-				default:
-					op.BOMItemID = -op.ID
-					// First reconcile after deletion still sees the stale wire key. Snapshot it
-					// before the dead FK-backed link is removed, so review acknowledgement can
-					// never turn this operation into the unresolved automatic group.
-					if len(source.BomLineKeys) == 1 {
-						if key := strings.TrimSpace(source.BomLineKeys[0]); key != "" {
-							source.AutoFusingLineKey = sql.NullString{String: key, Valid: true}
-						}
-					}
-				}
-			}
-		}
-		operations = append(operations, op)
-		oldNumberByID[op.ID] = source.OperationNumber
-	}
-
-	plan := ReconcileFusingOps(pieces, operations)
-	reconciled := make([]entity.TechCardOperation, 0, len(plan.Operations))
-	newNumberByOld := make(map[int32]int32, len(plan.Operations))
-	deletedOldNumbers := make(map[int32]bool, len(plan.DeletedIDs))
-	for _, deletedID := range plan.DeletedIDs {
-		if old := oldNumberByID[deletedID]; old.Valid {
-			deletedOldNumbers[old.Int32] = true
-		}
-	}
-	for i, planned := range plan.Operations {
-		var operation entity.TechCardOperation
-		if planned.ID > 0 {
-			operation = tc.Operations[planned.ID-1]
-		} else {
-			operation = entity.TechCardOperation{
-				OperationType: entity.OpTypeFusing,
-				Zone:          entity.ZoneInterlining,
-				PressEquipment: sql.NullString{
-					String: "fusing_press", Valid: true,
-				},
-				Draft: true,
-				AutoFusingLineKey: sql.NullString{
-					String: keyByGroup[planned.BOMItemID], Valid: true,
-				},
-			}
-			if key := keyByGroup[planned.BOMItemID]; key != "" {
-				operation.BomLineKeys = []string{key}
-			}
-		}
-
-		if planned.Fusing {
-			if planned.Review == ReviewOrphan && planned.BOMItemID < 0 {
-				// The automatic group this edited operation belonged to was deleted. Retain the
-				// operation, but never send a dead BOM key to the FK resolver. Live custom links
-				// survive; AutoFusingLineKey keeps a now-linkless row distinct from unresolved.
-				kept := operation.BomLineKeys[:0]
-				for _, rawKey := range operation.BomLineKeys {
-					if _, live := sectionByKey[strings.TrimSpace(rawKey)]; live {
-						kept = append(kept, rawKey)
-					}
-				}
-				operation.BomLineKeys = kept
-				keptQty := operation.BomQuantities[:0]
-				for _, qty := range operation.BomQuantities {
-					if _, live := sectionByKey[strings.TrimSpace(qty.LineKey)]; live {
-						keptQty = append(keptQty, qty)
-					}
-				}
-				operation.BomQuantities = keptQty
-			}
-			lineKeys := make([]string, 0, len(planned.PieceIDs))
-			for _, pieceID := range planned.PieceIDs {
-				if key := pieceKeyByID[pieceID]; key != "" {
-					lineKeys = append(lineKeys, key)
-				}
-			}
-			inputs := operation.AssemblyInputs
-			if inputs == nil && len(operation.InputKeys) > 0 {
-				inputs = entity.ClassifyAssemblyInputs(pieceKeys, operation.InputKeys)
-			}
-			union := make([]entity.OperationInput, 0, len(inputs)+len(lineKeys))
-			for _, input := range inputs {
-				if input.Kind == entity.AssemblyInputUnit {
-					union = append(union, input)
-				}
-			}
-			for _, key := range lineKeys {
-				union = append(union, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: key})
-			}
-			operation.PieceLineKeys = lineKeys
-			operation.PieceIds = nil
-			operation.AssemblyInputs = union
-			operation.InputKeys = make([]string, 0, len(union))
-			for _, input := range union {
-				operation.InputKeys = append(operation.InputKeys, input.Key)
-			}
-			operation.Review = sql.NullString{String: planned.Review, Valid: planned.Review != ""}
-		}
-
-		newNumber := int32((i + 1) * 10)
-		if old := oldNumberByID[planned.ID]; old.Valid {
-			newNumberByOld[old.Int32] = newNumber
-		}
-		operation.OperationNumber = sql.NullInt32{Int32: newNumber, Valid: true}
-		reconciled = append(reconciled, operation)
-	}
-	for i := range tc.Issues {
-		if current := tc.Issues[i].OperationNumber; current.Valid {
-			if deletedOldNumbers[current.Int32] {
-				tc.Issues[i].OperationNumber = sql.NullInt32{}
-			} else if next, ok := newNumberByOld[current.Int32]; ok {
-				tc.Issues[i].OperationNumber = sql.NullInt32{Int32: next, Valid: true}
-			}
-		}
-	}
-	tc.Operations = reconciled
-	return nil
 }

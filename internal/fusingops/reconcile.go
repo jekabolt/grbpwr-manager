@@ -1,91 +1,237 @@
 // Package fusingops contains the database-free state transition behind automatic FUSING operations.
 package fusingops
 
+import "sort"
+
 const ReviewOrphan = "orphan"
 
-// Piece is the minimum cut-piece state the operation reconciler needs. BOMItemID is zero when the
-// piece's interlining is unresolved (no sole line, or several lines without an explicit choice).
+// Piece is the minimum cut-piece state the operation reconciler needs, in the card's piece order.
 type Piece struct {
-	ID        int
-	Fused     bool
-	BOMItemID int
+	ID    int
+	Fused bool
 }
 
-// Operation is the minimum operation state the pure reconciler reads and returns. A non-FUSING
-// operation is carried through byte-for-byte. ID zero denotes an operation the caller must create.
+// Kind is how the reconciler treats an operation. Callers classify every operation the same way
+// on both sides (write model and rows), so the two passes yield the same plan.
+type Kind int
+
+const (
+	// KindOther is not a FUSING step. Never changed; its piece inputs place new FUSING steps.
+	KindOther Kind = iota
+	// KindManual is a FUSING step without automatic identity that is not shaped like a pre-fuse
+	// step (output unit, unit inputs, or non-interlining links). Never changed.
+	KindManual
+	// KindAdoptable is a FUSING step without automatic identity shaped like a pre-fuse step: pieces
+	// only, no output, no BOM link or one INTERLINING link (the assembly skeleton's steps). It is
+	// adopted as the step of its first fused piece that has none.
+	KindAdoptable
+	// KindLegacy is a grouped automatic step of the one-per-line model (line key, no piece key).
+	// It is split: the first fused piece keeps the row, every other one gets a copy.
+	KindLegacy
+	// KindAuto is a per-piece automatic step. Owner is the piece it fuses (0 = the piece is gone).
+	KindAuto
+)
+
+// Operation is the minimum operation state the pure reconciler reads and returns. ID zero denotes an
+// operation the caller must create; CopyOf then names the operation whose press settings it copies
+// (zero = defaults). UnitInputs reports unit inputs, which keep a converted step where it stands.
 type Operation struct {
-	ID        int
-	Fusing    bool
-	BOMItemID int
-	Draft     bool
-	Review    string
-	PieceIDs  []int
+	ID         int
+	Kind       Kind
+	Owner      int
+	Draft      bool
+	Review     string
+	PieceIDs   []int
+	UnitInputs bool
+	CopyOf     int
 }
 
-// Plan is the reconciled operation list plus the ids of draft FUSING operations that became empty.
-// Operations is already in assembly order: all retained/new FUSING operations first, preserving the
-// relative order of existing FUSING operations, followed by untouched operations in their order.
+// Plan is the reconciled operation list in assembly order plus the ids of draft steps to delete.
+// Every operation of KindAuto in it is server-owned: an orphan (Review == ReviewOrphan) has no piece
+// inputs, any other one has exactly [Owner]. Operations of any other kind are returned untouched.
 type Plan struct {
 	Operations []Operation
 	DeletedIDs []int
 }
 
-// ReconcileFusingOps computes the idempotent FUSING operation state. One operation owns every fused
-// piece resolved to the same interlining BOM line; BOMItemID zero is the shared unresolved bucket.
-// Empty draft operations disappear, while edited operations survive with review=orphan.
+// IsOrphan reports a retained automatic step that no longer fuses a piece.
+func (o Operation) IsOrphan() bool { return o.Kind == KindAuto && o.Review == ReviewOrphan }
+
+// ReconcileFusingOps computes the idempotent FUSING state: exactly one automatic step per fused
+// piece, placed just before the first step that uses the piece.
+//
+//  1. A per-piece step keeps its piece while the piece is fused and no earlier step claimed it.
+//  2. In operation order, a grouped legacy step or an adoptable manual step takes its fused pieces
+//     nobody claimed yet: the first keeps the row, each other gets a new draft copying its press
+//     settings. A legacy step left without pieces, like a per-piece step without its piece, is
+//     deleted when draft and kept as an orphan when edited. An adoptable draft whose pieces are all
+//     fused (and so all claimed) is a duplicate and is deleted; any other adoptable step is kept.
+//  3. Every fused piece still unclaimed gets a new draft step.
+//
+// Retained steps keep their order. New steps, and grouped legacy rows the old model had forced to the
+// front (unless they have unit inputs), go immediately before the first retained step whose inputs
+// hold their piece; ties follow piece order, and a piece no step uses yet goes first.
 func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
-	desired := make(map[int][]int)
-	desiredOrder := make([]int, 0)
-	seenPiece := make(map[int]bool, len(pieces))
+	rank := make(map[int]int, len(pieces))
+	fused := make(map[int]bool, len(pieces))
+	fusedOrder := make([]int, 0, len(pieces))
 	for _, piece := range pieces {
-		if !piece.Fused || piece.ID <= 0 || seenPiece[piece.ID] {
+		if piece.ID <= 0 {
 			continue
 		}
-		seenPiece[piece.ID] = true
-		if _, ok := desired[piece.BOMItemID]; !ok {
-			desiredOrder = append(desiredOrder, piece.BOMItemID)
+		if _, seen := rank[piece.ID]; seen {
+			continue
 		}
-		desired[piece.BOMItemID] = append(desired[piece.BOMItemID], piece.ID)
+		rank[piece.ID] = len(rank)
+		if piece.Fused {
+			fused[piece.ID] = true
+			fusedOrder = append(fusedOrder, piece.ID)
+		}
 	}
 
-	claimed := make(map[int]bool, len(desired))
-	fusing := make([]Operation, 0, len(operations)+len(desired))
-	other := make([]Operation, 0, len(operations))
+	out := make([]Operation, len(operations))
+	keep := make([]bool, len(operations))
+	move := make([]bool, len(operations))
+	claimed := make(map[int]bool, len(fusedOrder))
 	var deleted []int
-	for _, operation := range operations {
-		if !operation.Fusing {
-			other = append(other, operation)
-			continue
-		}
-		pieceIDs, wanted := desired[operation.BOMItemID]
-		if wanted && !claimed[operation.BOMItemID] {
-			operation.PieceIDs = append([]int(nil), pieceIDs...)
-			if operation.Review == ReviewOrphan {
-				operation.Review = ""
+	dropOrOrphan := func(i int) {
+		if out[i].Draft {
+			keep[i] = false
+			if out[i].ID > 0 {
+				deleted = append(deleted, out[i].ID)
 			}
-			claimed[operation.BOMItemID] = true
-			fusing = append(fusing, operation)
-			continue
+			return
 		}
-		if operation.Draft {
-			if operation.ID > 0 {
-				deleted = append(deleted, operation.ID)
-			}
-			continue
-		}
-		operation.PieceIDs = nil
-		operation.Review = ReviewOrphan
-		fusing = append(fusing, operation)
+		out[i].Kind = KindAuto
+		out[i].PieceIDs = nil
+		out[i].Review = ReviewOrphan
 	}
-	for _, bomItemID := range desiredOrder {
-		if claimed[bomItemID] {
-			continue
+	own := func(i, pieceID int) {
+		claimed[pieceID] = true
+		out[i].Kind = KindAuto
+		out[i].Owner = pieceID
+		out[i].PieceIDs = []int{pieceID}
+		if out[i].Review == ReviewOrphan {
+			out[i].Review = ""
 		}
-		fusing = append(fusing, Operation{
-			Fusing: true, BOMItemID: bomItemID, Draft: true,
-			PieceIDs: append([]int(nil), desired[bomItemID]...),
-		})
 	}
 
-	return Plan{Operations: append(fusing, other...), DeletedIDs: deleted}
+	for i, operation := range operations {
+		operation.PieceIDs = append([]int(nil), operation.PieceIDs...)
+		operation.CopyOf = 0
+		out[i], keep[i] = operation, true
+		if operation.Kind != KindAuto {
+			continue
+		}
+		if operation.Owner > 0 && fused[operation.Owner] && !claimed[operation.Owner] {
+			own(i, operation.Owner)
+			continue
+		}
+		dropOrOrphan(i)
+	}
+
+	fresh := make([]Operation, 0)
+	for i, operation := range operations {
+		if operation.Kind != KindLegacy && operation.Kind != KindAdoptable {
+			continue
+		}
+		candidates := make([]int, 0, len(operation.PieceIDs))
+		allFused := len(operation.PieceIDs) > 0
+		for _, pieceID := range operation.PieceIDs {
+			if !fused[pieceID] {
+				allFused = false
+				continue
+			}
+			if claimed[pieceID] {
+				continue
+			}
+			claimed[pieceID] = true // reserve; own() below re-marks the first
+			candidates = append(candidates, pieceID)
+		}
+		if len(candidates) == 0 {
+			switch {
+			case operation.Kind == KindLegacy:
+				dropOrOrphan(i)
+			case operation.Draft && allFused:
+				keep[i] = false
+				if operation.ID > 0 {
+					deleted = append(deleted, operation.ID)
+				}
+			}
+			continue
+		}
+		own(i, candidates[0])
+		move[i] = operation.Kind == KindLegacy && !operation.UnitInputs
+		for _, pieceID := range candidates[1:] {
+			fresh = append(fresh, Operation{
+				Kind: KindAuto, Owner: pieceID, Draft: true, PieceIDs: []int{pieceID}, CopyOf: operation.ID,
+			})
+		}
+	}
+	for _, pieceID := range fusedOrder {
+		if claimed[pieceID] {
+			continue
+		}
+		claimed[pieceID] = true
+		fresh = append(fresh, Operation{Kind: KindAuto, Owner: pieceID, Draft: true, PieceIDs: []int{pieceID}})
+	}
+
+	retained := make([]Operation, 0, len(out)+len(fresh))
+	placed := make([]Operation, 0, len(fresh))
+	for i := range out {
+		switch {
+		case !keep[i]:
+		case move[i]:
+			placed = append(placed, out[i])
+		default:
+			retained = append(retained, out[i])
+		}
+	}
+	placed = append(placed, fresh...)
+	if len(placed) == 0 {
+		return Plan{Operations: retained, DeletedIDs: deleted}
+	}
+
+	anchor := make([]int, len(placed))
+	for p := range placed {
+		owner := placed[p].Owner
+		for j := range retained {
+			if containsInt(retained[j].PieceIDs, owner) {
+				anchor[p] = j
+				break
+			}
+		}
+	}
+	index := make([]int, len(placed))
+	for p := range index {
+		index[p] = p
+	}
+	sort.SliceStable(index, func(a, b int) bool {
+		pa, pb := index[a], index[b]
+		if anchor[pa] != anchor[pb] {
+			return anchor[pa] < anchor[pb]
+		}
+		return rank[placed[pa].Owner] < rank[placed[pb].Owner]
+	})
+	ordered := make([]Operation, 0, len(retained)+len(placed))
+	next := 0
+	for j := 0; j <= len(retained); j++ {
+		for next < len(index) && anchor[index[next]] == j {
+			ordered = append(ordered, placed[index[next]])
+			next++
+		}
+		if j < len(retained) {
+			ordered = append(ordered, retained[j])
+		}
+	}
+	return Plan{Operations: ordered, DeletedIDs: deleted}
+}
+
+func containsInt(values []int, value int) bool {
+	for _, v := range values {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }

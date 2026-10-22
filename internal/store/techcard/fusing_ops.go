@@ -10,10 +10,12 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/fusingops"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 type fusingPieceRow struct {
 	ID               int            `db:"id"`
+	LineKey          sql.NullString `db:"line_key"`
 	Fused            bool           `db:"fused"`
 	FusingBOMItemID  sql.NullInt64  `db:"fusing_bom_item_id"`
 	FusingBOMCardID  sql.NullInt64  `db:"fusing_bom_card_id"`
@@ -31,57 +33,76 @@ type fusingOperationRow struct {
 	Draft              bool           `db:"draft"`
 	Review             sql.NullString `db:"review"`
 	OperationNumber    sql.NullInt64  `db:"operation_number"`
+	DisplayOrder       int            `db:"display_order"`
+	OutputUnitKey      sql.NullString `db:"output_unit_key"`
 	AutoFusingLineKey  sql.NullString `db:"auto_fusing_line_key"`
-	BOMLinkCount       int            `db:"bom_link_count"`
-	InterliningCount   int            `db:"interlining_count"`
-	InterliningBOMID   sql.NullInt64  `db:"interlining_bom_id"`
-	InterliningLineKey sql.NullString `db:"interlining_line_key"`
+	AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 }
 
-// carryStoredAutoFusingKeys preserves private automatic-group identity across the operation
-// full-replace for writers that bypass the public API (archive/maintenance commands). The field is
-// deliberately absent from protobuf; operation number is the stable address during an ordinary
-// pre-reconcile replacement, and the operation type guard prevents number reuse by another verb.
+type fusingInputRow struct {
+	OperationID int            `db:"operation_id"`
+	PieceID     sql.NullInt64  `db:"piece_id"`
+	UnitKey     sql.NullString `db:"unit_key"`
+}
+
+type fusingBomLinkRow struct {
+	OperationID int                 `db:"operation_id"`
+	BomItemID   int                 `db:"bom_item_id"`
+	Section     string              `db:"section"`
+	Qty         decimal.NullDecimal `db:"qty_per_garment"`
+}
+
+// carryStoredAutoFusingKeys preserves private automatic identity across the operation full-replace
+// for writers that bypass the public API (archive/maintenance commands). The keys are deliberately
+// absent from protobuf; operation number is the stable address during an ordinary pre-reconcile
+// replacement, and the operation type guard prevents number reuse by another verb.
 func carryStoredAutoFusingKeys(ctx context.Context, db dependency.DB, techCardID int,
 	operations []entity.TechCardOperation,
 ) error {
 	rows, err := storeutil.QueryListNamed[struct {
-		OperationNumber   sql.NullInt64  `db:"operation_number"`
-		AutoFusingLineKey sql.NullString `db:"auto_fusing_line_key"`
+		OperationNumber    sql.NullInt64  `db:"operation_number"`
+		AutoFusingLineKey  sql.NullString `db:"auto_fusing_line_key"`
+		AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 	}](ctx, db, `
-		SELECT operation_number, auto_fusing_line_key
+		SELECT operation_number, auto_fusing_line_key, auto_fusing_piece_key
 		FROM tech_card_operation
 		WHERE tech_card_id = :tech_card_id AND operation_type = 'fusing'
-		  AND auto_fusing_line_key IS NOT NULL`, map[string]any{"tech_card_id": techCardID})
+		  AND (auto_fusing_line_key IS NOT NULL OR auto_fusing_piece_key IS NOT NULL)`,
+		map[string]any{"tech_card_id": techCardID})
 	if err != nil {
 		return fmt.Errorf("load automatic fusing identities before operation replacement: %w", err)
 	}
-	byNumber := make(map[int64]sql.NullString, len(rows))
+	type keys struct{ line, piece sql.NullString }
+	byNumber := make(map[int64]keys, len(rows))
 	for _, row := range rows {
 		if row.OperationNumber.Valid {
-			byNumber[row.OperationNumber.Int64] = row.AutoFusingLineKey
+			byNumber[row.OperationNumber.Int64] = keys{line: row.AutoFusingLineKey, piece: row.AutoFusingPieceKey}
 		}
 	}
 	for i := range operations {
 		op := &operations[i]
-		if op.OperationType != entity.OpTypeFusing || op.AutoFusingLineKey.Valid || !op.OperationNumber.Valid {
+		if op.OperationType != entity.OpTypeFusing || op.AutoFusingLineKey.Valid || op.AutoFusingPieceKey.Valid ||
+			!op.OperationNumber.Valid {
 			continue
 		}
-		if key, ok := byNumber[int64(op.OperationNumber.Int32)]; ok {
-			op.AutoFusingLineKey = key
+		if stored, ok := byNumber[int64(op.OperationNumber.Int32)]; ok {
+			op.AutoFusingLineKey, op.AutoFusingPieceKey = stored.line, stored.piece
 		}
 	}
 	return nil
 }
 
-// ReconcileFusingOps makes automatic FUSING operations agree with the current piece and BOM state.
+// ReconcileFusingOps makes automatic FUSING operations agree with the current piece and BOM state:
+// one step per fused piece (fusingops.ReconcileFusingOps), classified exactly as the write model
+// classifies them (fusingops.ReconcileTechCard), so a reconciled write model is a no-op here.
 // db is the caller's transaction: this function deliberately never opens or commits a transaction.
 func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) error {
+	params := map[string]any{"tech_card_id": techCardID}
 	interlinings, err := storeutil.QueryListNamed[fusingInterliningRow](ctx, db, `
 		SELECT id, line_key
 		FROM tech_card_bom_item
 		WHERE tech_card_id = :tech_card_id AND section = 'interlining'
-		ORDER BY display_order, id`, map[string]any{"tech_card_id": techCardID})
+		ORDER BY display_order, id`, params)
 	if err != nil {
 		return fmt.Errorf("load interlining BOM lines for fusing reconciliation: %w", err)
 	}
@@ -95,18 +116,26 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	}
 
 	pieceRows, err := storeutil.QueryListNamed[fusingPieceRow](ctx, db, `
-		SELECT p.id, p.fused, p.fusing_bom_item_id,
+		SELECT p.id, p.line_key, p.fused, p.fusing_bom_item_id,
 		       b.tech_card_id AS fusing_bom_card_id, b.section AS fusing_bom_section
 		FROM tech_card_piece p
 		LEFT JOIN tech_card_bom_item b ON b.id = p.fusing_bom_item_id
 		WHERE p.tech_card_id = :tech_card_id
-		ORDER BY p.display_order, p.id`, map[string]any{"tech_card_id": techCardID})
+		ORDER BY p.display_order, p.id`, params)
 	if err != nil {
 		return fmt.Errorf("load pieces for fusing reconciliation: %w", err)
 	}
 	pieces := make([]fusingops.Piece, 0, len(pieceRows))
+	pieceIDByKey := make(map[string]int, len(pieceRows))
+	pieceKeyByID := make(map[int]string, len(pieceRows))
+	lineIDOf := make(map[int]int, len(pieceRows)) // resolved INTERLINING line per fused piece; 0 = unresolved
 	for _, row := range pieceRows {
-		bomItemID := 0
+		if row.LineKey.Valid {
+			if _, dup := pieceIDByKey[row.LineKey.String]; !dup {
+				pieceIDByKey[row.LineKey.String] = row.ID
+			}
+			pieceKeyByID[row.ID] = row.LineKey.String
+		}
 		if row.Fused {
 			switch {
 			case row.FusingBOMItemID.Valid:
@@ -116,73 +145,88 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 						"selected fusing material is not an INTERLINING line of this tech card", "",
 						"choose an INTERLINING BOM line from this tech card")
 				}
-				bomItemID = int(row.FusingBOMItemID.Int64)
+				lineIDOf[row.ID] = int(row.FusingBOMItemID.Int64)
 			case soleInterliningID != 0:
-				bomItemID = soleInterliningID
+				lineIDOf[row.ID] = soleInterliningID
 			}
 		}
-		pieces = append(pieces, fusingops.Piece{ID: row.ID, Fused: row.Fused, BOMItemID: bomItemID})
+		pieces = append(pieces, fusingops.Piece{ID: row.ID, Fused: row.Fused})
 	}
 
 	operationRows, err := storeutil.QueryListNamed[fusingOperationRow](ctx, db, `
-		SELECT o.id, o.operation_type, o.draft, o.review, o.operation_number,
-		       o.auto_fusing_line_key,
-		       COUNT(l.id) AS bom_link_count,
-		       COALESCE(SUM(CASE WHEN b.section = 'interlining' THEN 1 ELSE 0 END), 0) AS interlining_count,
-		       MAX(CASE WHEN b.section = 'interlining' THEN b.id ELSE NULL END) AS interlining_bom_id,
-		       MAX(CASE WHEN b.section = 'interlining' THEN b.line_key ELSE NULL END) AS interlining_line_key
-		FROM tech_card_operation o
-		LEFT JOIN tech_card_operation_bom l ON l.operation_id = o.id
-		LEFT JOIN tech_card_bom_item b ON b.id = l.bom_item_id
-		WHERE o.tech_card_id = :tech_card_id
-		GROUP BY o.id, o.operation_type, o.draft, o.review, o.operation_number,
-		         o.auto_fusing_line_key, o.display_order
-		ORDER BY o.display_order, o.id`, map[string]any{"tech_card_id": techCardID})
+		SELECT id, operation_type, draft, review, operation_number, display_order, output_unit_key,
+		       auto_fusing_line_key, auto_fusing_piece_key
+		FROM tech_card_operation
+		WHERE tech_card_id = :tech_card_id
+		ORDER BY display_order, id`, params)
 	if err != nil {
 		return fmt.Errorf("load operations for fusing reconciliation: %w", err)
 	}
+	inputRows, err := storeutil.QueryListNamed[fusingInputRow](ctx, db, `
+		SELECT l.operation_id, l.piece_id, l.unit_key
+		FROM tech_card_operation_input l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		WHERE o.tech_card_id = :tech_card_id
+		ORDER BY l.operation_id, l.display_order, l.id`, params)
+	if err != nil {
+		return fmt.Errorf("load operation inputs for fusing reconciliation: %w", err)
+	}
+	linkRows, err := storeutil.QueryListNamed[fusingBomLinkRow](ctx, db, `
+		SELECT l.operation_id, l.bom_item_id, b.section, l.qty_per_garment
+		FROM tech_card_operation_bom l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		JOIN tech_card_bom_item b ON b.id = l.bom_item_id
+		WHERE o.tech_card_id = :tech_card_id
+		ORDER BY l.operation_id, l.display_order, l.id`, params)
+	if err != nil {
+		return fmt.Errorf("load operation BOM links for fusing reconciliation: %w", err)
+	}
+	piecesOf := make(map[int][]int, len(operationRows))
+	unitsOf := make(map[int]bool, len(operationRows))
+	for _, row := range inputRows {
+		switch {
+		case row.UnitKey.Valid && row.UnitKey.String != "":
+			unitsOf[row.OperationID] = true
+		case row.PieceID.Valid:
+			piecesOf[row.OperationID] = append(piecesOf[row.OperationID], int(row.PieceID.Int64))
+		}
+	}
+	linksOf := make(map[int][]fusingBomLinkRow, len(operationRows))
+	for _, row := range linkRows {
+		linksOf[row.OperationID] = append(linksOf[row.OperationID], row)
+	}
+
 	operations := make([]fusingops.Operation, 0, len(operationRows))
+	rowByID := make(map[int]fusingOperationRow, len(operationRows))
 	oldNumberByID := make(map[int]sql.NullInt64, len(operationRows))
-	autoKeyByID := make(map[int]sql.NullString, len(operationRows))
 	for _, row := range operationRows {
+		rowByID[row.ID] = row
+		oldNumberByID[row.ID] = row.OperationNumber
 		op := fusingops.Operation{
-			ID:     row.ID,
-			Fusing: row.OperationType == string(entity.OpTypeFusing),
-			Draft:  row.Draft,
+			ID: row.ID, Draft: row.Draft, PieceIDs: piecesOf[row.ID], UnitInputs: unitsOf[row.ID],
 		}
 		if row.Review.Valid {
 			op.Review = row.Review.String
 		}
-		if op.Fusing {
-			autoKey := row.AutoFusingLineKey
-			if autoKey.Valid {
-				switch {
-				case autoKey.String == "":
-					op.BOMItemID = 0
-				case row.InterliningCount == 1 && row.InterliningBOMID.Valid &&
-					row.InterliningLineKey.Valid && row.InterliningLineKey.String == autoKey.String:
-					op.BOMItemID = int(row.InterliningBOMID.Int64)
-				default:
-					op.BOMItemID = -row.ID
-				}
-			} else {
-				switch {
-				case row.InterliningCount == 1 && row.InterliningBOMID.Valid:
-					op.BOMItemID = int(row.InterliningBOMID.Int64)
-					autoKey = sql.NullString{String: row.InterliningLineKey.String, Valid: true}
-				case row.BOMLinkCount == 0 && op.Review != fusingops.ReviewOrphan:
-					op.BOMItemID = 0 // the shared unresolved operation
-					autoKey = sql.NullString{Valid: true}
-				default:
-					// A malformed/custom FUSING row, or a linkless pre-snapshot orphan, must
-					// not be mistaken for the unresolved automatic row.
-					op.BOMItemID = -row.ID
-				}
+		switch {
+		case row.OperationType != string(entity.OpTypeFusing):
+			op.Kind = fusingops.KindOther
+		case row.AutoFusingPieceKey.Valid:
+			op.Kind = fusingops.KindAuto
+			op.Owner = pieceIDByKey[row.AutoFusingPieceKey.String]
+		case row.AutoFusingLineKey.Valid:
+			op.Kind = fusingops.LegacyKind(op.Review)
+		default:
+			sections := make([]entity.TechCardBomSection, 0, len(linksOf[row.ID]))
+			for _, link := range linksOf[row.ID] {
+				sections = append(sections, entity.TechCardBomSection(link.Section))
 			}
-			autoKeyByID[row.ID] = autoKey
+			op.Kind = fusingops.KindManual
+			if fusingops.AdoptableShape(strings.TrimSpace(row.OutputUnitKey.String) != "", op.UnitInputs, sections, op.Review) {
+				op.Kind = fusingops.KindAdoptable
+			}
 		}
 		operations = append(operations, op)
-		oldNumberByID[row.ID] = row.OperationNumber
 	}
 
 	plan := fusingops.ReconcileFusingOps(pieces, operations)
@@ -190,53 +234,102 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_operation WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing' AND draft = 1`,
 			map[string]any{"tech_card_id": techCardID, "id": operationID}); err != nil {
-			return fmt.Errorf("delete empty draft fusing operation %d: %w", operationID, err)
+			return fmt.Errorf("delete draft fusing operation %d: %w", operationID, err)
 		}
 	}
 
+	copyColumns := strings.Join(fusingops.PressCopyColumns, ", ")
 	for i := range plan.Operations {
 		op := &plan.Operations[i]
-		if !op.Fusing || op.ID != 0 {
+		if op.ID != 0 {
 			continue
 		}
-		opID, err := storeutil.ExecNamedLastId(ctx, db, `
+		insert := `
 			INSERT INTO tech_card_operation
 				(tech_card_id, operation_type, zone, press_equipment, draft, display_order)
 			VALUES
-				(:tech_card_id, 'fusing', 'interlining', 'fusing_press', 1, :display_order)`,
-			map[string]any{"tech_card_id": techCardID, "display_order": i})
+				(:tech_card_id, 'fusing', 'interlining', 'fusing_press', 1, :display_order)`
+		if op.CopyOf > 0 {
+			// A piece split off a grouped step keeps that step's press settings (same column list
+			// as the write model's fusingops.CopyPressSettings).
+			insert = `
+				INSERT INTO tech_card_operation (tech_card_id, operation_type, draft, display_order, ` + copyColumns + `)
+				SELECT tech_card_id, 'fusing', 1, :display_order, ` + copyColumns + `
+				FROM tech_card_operation
+				WHERE tech_card_id = :tech_card_id AND id = :source_id`
+		}
+		opID, err := storeutil.ExecNamedLastId(ctx, db, insert, map[string]any{
+			"tech_card_id": techCardID, "display_order": i, "source_id": op.CopyOf,
+		})
 		if err != nil {
 			return fmt.Errorf("create automatic fusing operation: %w", err)
 		}
-		op.ID = opID
-		autoKeyByID[opID] = sql.NullString{String: interliningKeyByID[op.BOMItemID], Valid: true}
-		if op.BOMItemID > 0 {
-			if err := storeutil.ExecNamed(ctx, db, `
-				INSERT INTO tech_card_operation_bom (operation_id, bom_item_id, display_order)
-				VALUES (:operation_id, :bom_item_id, 0)`, map[string]any{
-				"operation_id": opID, "bom_item_id": op.BOMItemID,
-			}); err != nil {
-				return fmt.Errorf("link automatic fusing operation %d to BOM: %w", opID, err)
-			}
+		if opID == 0 {
+			return fmt.Errorf("create automatic fusing operation: source operation %d not found", op.CopyOf)
 		}
+		op.ID = opID
+		rowByID[opID] = fusingOperationRow{ID: opID, OperationType: string(entity.OpTypeFusing), Draft: true, DisplayOrder: -1}
 	}
 
 	for _, op := range plan.Operations {
-		if !op.Fusing {
+		if op.Kind != fusingops.KindAuto {
 			continue
 		}
-		var review any
-		if op.Review != "" {
-			review = op.Review
+		if err := applyAutoFusingOp(ctx, db, techCardID, op, rowByID[op.ID], piecesOf[op.ID], linksOf[op.ID],
+			pieceKeyByID, lineIDOf, interliningKeyByID); err != nil {
+			return err
+		}
+	}
+
+	if err := remapFusingIssueNumbers(ctx, db, techCardID, plan.Operations, plan.DeletedIDs, oldNumberByID); err != nil {
+		return err
+	}
+	for i, op := range plan.Operations {
+		row := rowByID[op.ID]
+		if row.DisplayOrder == i && row.OperationNumber.Valid && row.OperationNumber.Int64 == int64((i+1)*10) {
+			continue
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
-			UPDATE tech_card_operation SET review = :review, auto_fusing_line_key = :auto_fusing_line_key
-			WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing'`, map[string]any{
-			"review": review, "auto_fusing_line_key": autoKeyByID[op.ID],
+			UPDATE tech_card_operation
+			SET display_order = :display_order, operation_number = :operation_number
+			WHERE tech_card_id = :tech_card_id AND id = :id`, map[string]any{
+			"display_order": i, "operation_number": (i + 1) * 10,
 			"tech_card_id": techCardID, "id": op.ID,
 		}); err != nil {
-			return fmt.Errorf("update fusing operation %d review: %w", op.ID, err)
+			return fmt.Errorf("order reconciled operation %d: %w", op.ID, err)
 		}
+	}
+	return nil
+}
+
+// applyAutoFusingOp writes one planned automatic step: identity, review, piece input and material
+// links. Rows already in that state are left alone, so a write model the API reconciled is a no-op.
+func applyAutoFusingOp(ctx context.Context, db dependency.DB, techCardID int, op fusingops.Operation,
+	row fusingOperationRow, currentPieces []int, currentLinks []fusingBomLinkRow,
+	pieceKeyByID map[int]string, lineIDOf map[int]int, interliningKeyByID map[int]string,
+) error {
+	lineKey, pieceKey := row.AutoFusingLineKey, row.AutoFusingPieceKey
+	var wantPieces []int
+	if !op.IsOrphan() {
+		lineID := lineIDOf[op.Owner]
+		lineKey = sql.NullString{String: interliningKeyByID[lineID], Valid: true}
+		pieceKey = sql.NullString{String: pieceKeyByID[op.Owner], Valid: true}
+		wantPieces = []int{op.Owner}
+	}
+	review := sql.NullString{String: op.Review, Valid: op.Review != ""}
+	if review != row.Review || lineKey != row.AutoFusingLineKey || pieceKey != row.AutoFusingPieceKey {
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE tech_card_operation
+			SET review = :review, auto_fusing_line_key = :auto_fusing_line_key, auto_fusing_piece_key = :auto_fusing_piece_key
+			WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing'`, map[string]any{
+			"review": review, "auto_fusing_line_key": lineKey, "auto_fusing_piece_key": pieceKey,
+			"tech_card_id": techCardID, "id": op.ID,
+		}); err != nil {
+			return fmt.Errorf("update fusing operation %d identity: %w", op.ID, err)
+		}
+	}
+
+	if !equalInts(currentPieces, wantPieces) {
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_operation_piece WHERE operation_id = :operation_id`,
 			map[string]any{"operation_id": op.ID}); err != nil {
@@ -256,7 +349,7 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 		if err != nil {
 			return fmt.Errorf("load next input position of fusing operation %d: %w", op.ID, err)
 		}
-		for piecePosition, pieceID := range op.PieceIDs {
+		for piecePosition, pieceID := range wantPieces {
 			params := map[string]any{
 				"operation_id": op.ID,
 				"piece_id":     pieceID,
@@ -276,21 +369,64 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 		}
 	}
 
-	if err := remapFusingIssueNumbers(ctx, db, techCardID, plan.Operations, plan.DeletedIDs, oldNumberByID); err != nil {
-		return err
+	if op.IsOrphan() {
+		return nil // only dead links would go, and rows cannot hold one
 	}
-	for i, op := range plan.Operations {
+	// The piece's INTERLINING line first, then the step's other non-INTERLINING links in order —
+	// the order fusingops.ReconcileTechCard writes, since the section digest hashes it.
+	current := make([]int, 0, len(currentLinks))
+	qtyByID := make(map[int]decimal.NullDecimal, len(currentLinks))
+	for _, link := range currentLinks {
+		current = append(current, link.BomItemID)
+		qtyByID[link.BomItemID] = link.Qty
+	}
+	want := make([]int, 0, len(currentLinks)+1)
+	seen := make(map[int]bool, len(currentLinks)+1)
+	if lineID := lineIDOf[op.Owner]; lineID != 0 {
+		want = append(want, lineID)
+		seen[lineID] = true
+	}
+	for _, link := range currentLinks {
+		if link.Section == string(entity.BomSectionInterlining) || seen[link.BomItemID] {
+			continue
+		}
+		seen[link.BomItemID] = true
+		want = append(want, link.BomItemID)
+	}
+	if equalInts(current, want) {
+		return nil
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM tech_card_operation_bom WHERE operation_id = :operation_id`,
+		map[string]any{"operation_id": op.ID}); err != nil {
+		return fmt.Errorf("clear BOM links of fusing operation %d: %w", op.ID, err)
+	}
+	for position, bomItemID := range want {
+		var qty any
+		if q := qtyByID[bomItemID]; q.Valid {
+			qty = q.Decimal
+		}
 		if err := storeutil.ExecNamed(ctx, db, `
-			UPDATE tech_card_operation
-			SET display_order = :display_order, operation_number = :operation_number
-			WHERE tech_card_id = :tech_card_id AND id = :id`, map[string]any{
-			"display_order": i, "operation_number": (i + 1) * 10,
-			"tech_card_id": techCardID, "id": op.ID,
+			INSERT INTO tech_card_operation_bom (operation_id, bom_item_id, display_order, qty_per_garment)
+			VALUES (:operation_id, :bom_item_id, :display_order, :qty_per_garment)`, map[string]any{
+			"operation_id": op.ID, "bom_item_id": bomItemID, "display_order": position, "qty_per_garment": qty,
 		}); err != nil {
-			return fmt.Errorf("order reconciled operation %d: %w", op.ID, err)
+			return fmt.Errorf("link fusing operation %d to BOM line %d: %w", op.ID, bomItemID, err)
 		}
 	}
 	return nil
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func remapFusingIssueNumbers(ctx context.Context, db dependency.DB, techCardID int,
