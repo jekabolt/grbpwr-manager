@@ -183,6 +183,7 @@ func TestTechCardPatternHistoryMapping(t *testing.T) {
 		Version: 3,
 		History: []entity.TechCardPatternRevision{
 			{
+				HistoryID: 912,
 				Revision:  2,
 				URL:       "https://cdn/tech-card-patterns/front-v2.dxf",
 				SHA256:    sql.NullString{String: strings.Repeat("b", 64), Valid: true},
@@ -204,13 +205,34 @@ func TestTechCardPatternHistoryMapping(t *testing.T) {
 	got := out[0].History
 	if got[0].Revision != 2 || got[0].Url != "https://cdn/tech-card-patterns/front-v2.dxf" ||
 		got[0].Sha256 != strings.Repeat("b", 64) || got[0].FileName != "front-v2.dxf" ||
-		!got[0].CreatedAt.AsTime().Equal(newer) || got[0].SnapshotId != 4711 {
+		!got[0].CreatedAt.AsTime().Equal(newer) || got[0].SnapshotId != 4711 || got[0].HistoryId != 912 {
 		t.Fatalf("newest history revision mismatch: %+v", got[0])
 	}
 	// A revision archived without a snapshot (NULL) is not restorable: 0 on the wire.
 	if got[1].Revision != 1 || got[1].Sha256 != "" || got[1].FileName != "" ||
 		!got[1].CreatedAt.AsTime().Equal(older) || got[1].SnapshotId != 0 {
 		t.Fatalf("oldest history revision mismatch: %+v", got[1])
+	}
+}
+
+func TestTechCardRemovedPatternHistoryMapping(t *testing.T) {
+	created := time.Date(2026, time.October, 22, 9, 0, 0, 0, time.UTC)
+	out := ConvertEntityTechCardToPb(&entity.TechCard{
+		RemovedPatternHistory: []entity.TechCardPatternRevision{{
+			HistoryID:  51,
+			Revision:   4,
+			URL:        "https://cdn/tech-card-patterns/removed-v4.dxf",
+			CreatedAt:  sql.NullTime{Time: created, Valid: true},
+			SnapshotID: sql.NullInt64{Int64: 81, Valid: true},
+		}},
+	}, CostingFx{})
+	if len(out.GetRemovedPatternHistory()) != 1 {
+		t.Fatalf("removed history not mapped: %+v", out.GetRemovedPatternHistory())
+	}
+	got := out.GetRemovedPatternHistory()[0]
+	if got.GetHistoryId() != 51 || got.GetRevision() != 4 || got.GetSnapshotId() != 81 ||
+		got.GetUrl() != "https://cdn/tech-card-patterns/removed-v4.dxf" || !got.GetCreatedAt().AsTime().Equal(created) {
+		t.Fatalf("removed history mismatch: %+v", got)
 	}
 }
 

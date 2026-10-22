@@ -1511,15 +1511,16 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	flatWords := pbStringFromNull(tc.FlatWords)
 
 	return &pb_common.TechCard{
-		Id:              int32(tc.Id),
-		LockVersion:     int32(tc.LockVersion),
-		CreatedAt:       timestamppb.New(tc.CreatedAt),
-		UpdatedAt:       timestamppb.New(tc.UpdatedAt),
-		CreatedBy:       tc.CreatedBy,
-		UpdatedBy:       tc.UpdatedBy,
-		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
-		Revisions:       techCardRevisionsToPb(tc.Revisions),
-		Guided:          tc.Guided, // 0407, output-only
+		Id:                    int32(tc.Id),
+		LockVersion:           int32(tc.LockVersion),
+		CreatedAt:             timestamppb.New(tc.CreatedAt),
+		UpdatedAt:             timestamppb.New(tc.UpdatedAt),
+		CreatedBy:             tc.CreatedBy,
+		UpdatedBy:             tc.UpdatedBy,
+		RoleAssignments:       techCardRoleAssignmentsToPb(tc.RoleAssignments),
+		Revisions:             techCardRevisionsToPb(tc.Revisions),
+		RemovedPatternHistory: techCardPatternHistoryToPb(tc.RemovedPatternHistory),
+		Guided:                tc.Guided, // 0407, output-only
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
@@ -2613,6 +2614,7 @@ func techCardPatternHistoryToPb(history []entity.TechCardPatternRevision) []*pb_
 	out := make([]*pb_common.TechCardPatternRevision, 0, len(history))
 	for _, revision := range history {
 		out = append(out, &pb_common.TechCardPatternRevision{
+			HistoryId: revision.HistoryID,
 			Revision:  int32(revision.Revision),
 			Url:       revision.URL,
 			Sha256:    pbStringFromNull(revision.SHA256),

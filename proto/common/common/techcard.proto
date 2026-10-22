@@ -1466,6 +1466,9 @@ message TechCardPatternRevision {
   // it was while this file was the current sheet. Admin.RestoreTechCardSnapshot takes it to bring the
   // card back to that state (operations, pieces, aliases, sheets). 0 = no snapshot, not restorable.
   int64 snapshot_id = 6;
+  // Stable id of tech_card_size_pattern_history. Required by
+  // Admin.DeleteTechCardPatternRevision; 0 only for an older snapshot/read model that predates it.
+  int64 history_id = 7;
 }
 
 // TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
@@ -3867,6 +3870,10 @@ message TechCard {
   // DeleteTechCardSeams — never through TechCardInsert, so a full card save cannot erase them, the
   // seams RPCs never bump lock_version, and they enter no section digest. Ignored on write.
   repeated TechCardSeam seams = 32;
+  // OUTPUT-ONLY pattern-history rows whose stable sheet identity no longer has a live pattern row.
+  // These are deleted sheets, newest first. They stay visible here so snapshot_id can restore the
+  // whole pre-delete card and history_id can remove an unwanted retained revision.
+  repeated TechCardPatternRevision removed_pattern_history = 33;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.

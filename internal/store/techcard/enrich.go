@@ -76,7 +76,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err != nil {
 		return err
 	}
-	attachPatternHistories(patterns, patternHistories)
+	removedPatternHistories := attachPatternHistories(patterns, patternHistories)
 
 	for i := range cards {
 		id := cards[i].Id
@@ -87,6 +87,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 		cards[i].Callouts = callouts[id]
 		cards[i].Revisions = revisions[id]
 		cards[i].Patterns = patterns[id]
+		cards[i].RemovedPatternHistory = removedPatternHistories[id]
 	}
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
@@ -425,19 +426,20 @@ func (s *Store) patternHistoriesByTechCardIds(ctx context.Context, ids []int) ([
 		return nil, nil
 	}
 	rows, err := storeutil.QueryListNamed[techCardPatternHistoryRow](ctx, s.DB, `
-		SELECT tech_card_id, line_key, scope_key, COALESCE(size_id, 0) AS size_id,
+		SELECT id AS history_id, tech_card_id, line_key, scope_key, COALESCE(size_id, 0) AS size_id,
 		       version AS revision, url, sha256, filename AS file_name,
 		       COALESCE(uploaded_at, replaced_at) AS created_at, snapshot_id
 		FROM tech_card_size_pattern_history
 		WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, version DESC, replaced_at DESC, id DESC`, map[string]any{"ids": ids})
+		ORDER BY tech_card_id, replaced_at DESC, id DESC`, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, fmt.Errorf("can't load tech card pattern history: %w", err)
 	}
 	return rows, nil
 }
 
-func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows []techCardPatternHistoryRow) {
+func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows []techCardPatternHistoryRow) map[int][]entity.TechCardPatternRevision {
+	removed := make(map[int][]entity.TechCardPatternRevision)
 	lineIndexes := make(map[int]map[string]int, len(patterns))
 	legacyIndexes := make(map[int]map[techCardPatternLegacyKey]int, len(patterns))
 	for techCardID, cardPatterns := range patterns {
@@ -480,6 +482,7 @@ func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows 
 			}]
 		}
 		if !ok || index < 0 {
+			removed[row.TechCardID] = append(removed[row.TechCardID], row.TechCardPatternRevision)
 			continue
 		}
 		cardPatterns := patterns[row.TechCardID]
@@ -492,6 +495,7 @@ func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows 
 		cardPatterns[index].History = append(cardPatterns[index].History, row.TechCardPatternRevision)
 		patterns[row.TechCardID] = cardPatterns
 	}
+	return removed
 }
 
 func (s *Store) revisionsByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardRevision, error) {

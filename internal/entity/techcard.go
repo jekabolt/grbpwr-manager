@@ -2253,6 +2253,7 @@ type TechCardSizeQuantity struct {
 // while it was active; CreatedAt is that version's original upload time (or its archive time for
 // legacy rows that do not carry uploaded_at).
 type TechCardPatternRevision struct {
+	HistoryID int64          `db:"history_id"`
 	Revision  int            `db:"revision"`
 	URL       string         `db:"url"`
 	SHA256    sql.NullString `db:"sha256"`
@@ -4742,6 +4743,10 @@ type TechCard struct {
 	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
 	// (GetTechCardById); empty on list views.
 	RoleAssignments []TechCardRoleAssignment `db:"-"`
+	// RemovedPatternHistory is the newest-first history of sheets whose line no longer exists among
+	// the active patterns. It is a read-only projection; the history rows remain the object/snapshot
+	// retention roots and are never accepted through TechCardInsert.
+	RemovedPatternHistory []TechCardPatternRevision `db:"-"`
 	// CompositionEntries is the style's structured fibre composition (S17/M1 fix), populated on the
 	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
 	// instead of it. Empty when the style has no style_composition rows yet.
