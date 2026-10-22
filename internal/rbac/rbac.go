@@ -685,13 +685,14 @@ var methodRequirements = map[string]Requirement{
 	// gate could not serve both of its readers.
 	"UpdateWorkshopSettings": wr(SectionProduction),
 	// material warehouse (new-flow NF-01)
-	"ReceiveMaterialStock":    wr(SectionInventory),
-	"IssueMaterialStock":      wr(SectionInventory),
-	"AdjustMaterialStock":     wr(SectionInventory),
-	"BatchIssueMaterialStock": wr(SectionInventory),
-	"GetMaterialStock":        rd(SectionInventory),
-	"ListMaterialStock":       rd(SectionInventory),
-	"ListMaterialMovements":   rd(SectionInventory),
+	"ReceiveMaterialStock":      wr(SectionInventory),
+	"ReceiveMaterialStockBatch": wr(SectionInventory),
+	"IssueMaterialStock":        wr(SectionInventory),
+	"AdjustMaterialStock":       wr(SectionInventory),
+	"BatchIssueMaterialStock":   wr(SectionInventory),
+	"GetMaterialStock":          rd(SectionInventory),
+	"ListMaterialStock":         rd(SectionInventory),
+	"ListMaterialMovements":     rd(SectionInventory),
 	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
 	"UpsertPackagingBom": wr(SectionInventory),
 	"ListPackagingBom":   rd(SectionInventory),

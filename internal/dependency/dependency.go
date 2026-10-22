@@ -1475,6 +1475,7 @@ type (
 	// from Inventory (which is the finished-goods valuation metrics of task 16).
 	MaterialStock interface {
 		ReceiveMaterialStock(ctx context.Context, ins entity.MaterialReceiptInsert) (entity.MaterialMovement, error)
+		ReceiveMaterialStockBatch(ctx context.Context, ins entity.MaterialReceiptBatchInsert) ([]entity.MaterialMovement, error)
 		IssueMaterialStock(ctx context.Context, ins entity.MaterialIssueInsert) (entity.MaterialMovement, error)
 		BatchIssueMaterialStock(ctx context.Context, ins entity.MaterialBatchIssueInsert) ([]entity.MaterialMovement, error)
 		AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdjustInsert) (entity.MaterialMovement, error)

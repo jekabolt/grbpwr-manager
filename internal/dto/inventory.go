@@ -49,6 +49,9 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 	if req == nil || req.MaterialId <= 0 {
 		return entity.MaterialReceiptInsert{}, fmt.Errorf("material_id is required")
 	}
+	if req.GetInvoiceFileId() < 0 {
+		return entity.MaterialReceiptInsert{}, fmt.Errorf("invoice_file_id must be non-negative")
+	}
 	qty, err := positiveDecimal(req.GetQuantity().GetValue(), "quantity")
 	if err != nil {
 		return entity.MaterialReceiptInsert{}, err
@@ -133,6 +136,7 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		MeasuredWidthCm: measuredWidth,
 		ShadeCode:       nullStringFromPb(shadeCode),
 		SupplierDoc:     nullStringFromPb(req.GetSupplierDoc()),
+		InvoiceFileId:   sql.NullInt32{Int32: req.GetInvoiceFileId(), Valid: req.GetInvoiceFileId() > 0},
 		SupplierId:      sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
 		ExpectedAt:      expectedAt,
 		OccurredAt:      occurredAt,
@@ -140,6 +144,211 @@ func ConvertPbReceiveMaterialStock(req *pb_admin.ReceiveMaterialStockRequest) (e
 		InputVatAmount:  inputVatAmount,
 		InputVatRegime:  inputVatRegime,
 	}, nil
+}
+
+const maxMaterialReceiptBatchLines = 50
+
+type materialReceiptCostLine struct {
+	Quantity decimal.Decimal
+	UnitCost decimal.Decimal
+}
+
+type materialReceiptCostAllocation struct {
+	LineNet        decimal.Decimal
+	DeliveryShare  decimal.Decimal
+	InputVatShare  decimal.Decimal
+	LandedUnitCost decimal.Decimal
+}
+
+// allocateMaterialReceiptBatchCosts is the pure landed-cost allocator. Invoice delivery is kept at
+// movement unit-cost precision (4 decimals), VAT at its ledger precision (2 decimals). Every share
+// is rounded independently, then the complete residual is assigned to the largest net line so each
+// set of shares sums exactly to the invoice total.
+func allocateMaterialReceiptBatchCosts(lines []materialReceiptCostLine, deliveryCost, inputVatAmount decimal.Decimal) ([]materialReceiptCostAllocation, error) {
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("at least one line is required")
+	}
+	weights := make([]decimal.Decimal, len(lines))
+	totalWeight := decimal.Zero
+	largest := 0
+	for i, line := range lines {
+		if line.Quantity.LessThanOrEqual(decimal.Zero) {
+			return nil, fmt.Errorf("line %d quantity must be positive", i+1)
+		}
+		if line.UnitCost.IsNegative() {
+			return nil, fmt.Errorf("line %d unit_cost must be non-negative", i+1)
+		}
+		weights[i] = line.Quantity.Mul(line.UnitCost)
+		totalWeight = totalWeight.Add(weights[i])
+		if weights[i].GreaterThan(weights[largest]) {
+			largest = i
+		}
+	}
+	if (deliveryCost.IsPositive() || inputVatAmount.IsPositive()) && !totalWeight.IsPositive() {
+		return nil, fmt.Errorf("delivery_cost or input_vat_amount requires a positive line net value")
+	}
+
+	deliveryShares := allocateMaterialReceiptTotal(deliveryCost, weights, totalWeight, largest, 4)
+	vatShares := allocateMaterialReceiptTotal(inputVatAmount, weights, totalWeight, largest, 2)
+	out := make([]materialReceiptCostAllocation, len(lines))
+	for i, line := range lines {
+		out[i] = materialReceiptCostAllocation{
+			LineNet:        weights[i],
+			DeliveryShare:  deliveryShares[i],
+			InputVatShare:  vatShares[i],
+			LandedUnitCost: weights[i].Add(deliveryShares[i]).Div(line.Quantity).Round(4),
+		}
+	}
+	return out, nil
+}
+
+func allocateMaterialReceiptTotal(total decimal.Decimal, weights []decimal.Decimal, totalWeight decimal.Decimal, largest, scale int) []decimal.Decimal {
+	shares := make([]decimal.Decimal, len(weights))
+	if total.IsZero() || totalWeight.IsZero() {
+		return shares
+	}
+	allocated := decimal.Zero
+	for i, weight := range weights {
+		shares[i] = total.Mul(weight).Div(totalWeight).Round(int32(scale))
+		allocated = allocated.Add(shares[i])
+	}
+	shares[largest] = shares[largest].Add(total.Sub(allocated))
+	return shares
+}
+
+// ConvertPbReceiveMaterialStockBatch validates one invoice and allocates its shared delivery and VAT
+// totals into receipt lines. AdminUsername is added by the handler after the costing/file guards.
+func ConvertPbReceiveMaterialStockBatch(req *pb_admin.ReceiveMaterialStockBatchRequest) (entity.MaterialReceiptBatchInsert, error) {
+	if req == nil || len(req.GetLines()) == 0 {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("at least one line is required")
+	}
+	if len(req.GetLines()) > maxMaterialReceiptBatchLines {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("at most %d lines are allowed", maxMaterialReceiptBatchLines)
+	}
+	if req.GetInvoiceFileId() < 0 {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("invoice_file_id must be non-negative")
+	}
+	if req.GetSupplierId() < 0 {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("supplier_id must be non-negative")
+	}
+
+	currency := strings.ToUpper(strings.TrimSpace(req.GetCurrency()))
+	if currency != "" && !IsExpenseCurrency(currency) {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("currency must be a supported currency or USDT")
+	}
+	occurredAt, err := parseNullDate(req.GetOccurredAt())
+	if err != nil {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("occurred_at: %w", err)
+	}
+	expectedAt, err := parseNullDate(req.GetExpectedAt())
+	if err != nil {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("expected_at: %w", err)
+	}
+	inputVatAmount, inputVatRegime, err := convertInputVat(req.GetInputVatAmount(), req.GetInputVatRegime())
+	if err != nil {
+		return entity.MaterialReceiptBatchInsert{}, err
+	}
+	if err := validateDecimalScale(inputVatAmount, "input_vat_amount", 2, 10_000_000_000); err != nil {
+		return entity.MaterialReceiptBatchInsert{}, err
+	}
+	deliveryCost, err := nullDecimalFromPb(req.GetDeliveryCost())
+	if err != nil {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("delivery_cost: %w", err)
+	}
+	if deliveryCost.Valid {
+		if err := validateDecimalScale(deliveryCost, "delivery_cost", 4, 100_000_000); err != nil {
+			return entity.MaterialReceiptBatchInsert{}, err
+		}
+		if deliveryCost.Decimal.IsZero() {
+			deliveryCost = decimal.NullDecimal{}
+		}
+	}
+
+	costLines := make([]materialReceiptCostLine, len(req.GetLines()))
+	unitCosts := make([]decimal.NullDecimal, len(req.GetLines()))
+	seen := make(map[int32]struct{}, len(req.GetLines()))
+	anyUncosted := false
+	for i, line := range req.GetLines() {
+		if line == nil || line.GetMaterialId() <= 0 {
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d material_id is required", i+1)
+		}
+		if _, duplicate := seen[line.GetMaterialId()]; duplicate {
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("material_id %d appears more than once", line.GetMaterialId())
+		}
+		seen[line.GetMaterialId()] = struct{}{}
+		qty, err := positiveDecimal(line.GetQuantity().GetValue(), fmt.Sprintf("line %d quantity", i+1))
+		if err != nil {
+			return entity.MaterialReceiptBatchInsert{}, err
+		}
+		if err := validateDecimalScale(decimal.NullDecimal{Decimal: qty, Valid: true}, fmt.Sprintf("line %d quantity", i+1), 3, 1_000_000_000); err != nil {
+			return entity.MaterialReceiptBatchInsert{}, err
+		}
+		unitCost, err := nullDecimalFromPb(line.GetUnitCost())
+		if err != nil {
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d unit_cost: %w", i+1, err)
+		}
+		if err := validateDecimalScale(unitCost, fmt.Sprintf("line %d unit_cost", i+1), 4, 100_000_000); err != nil {
+			return entity.MaterialReceiptBatchInsert{}, err
+		}
+		if unitCost.Valid && !IsExpenseCurrency(currency) {
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("currency must be a supported currency or USDT when unit_cost is set")
+		}
+		if !unitCost.Valid {
+			anyUncosted = true
+		}
+		unitCosts[i] = unitCost
+		costLines[i] = materialReceiptCostLine{Quantity: qty}
+		if unitCost.Valid {
+			costLines[i].UnitCost = unitCost.Decimal
+		}
+	}
+	if anyUncosted && (deliveryCost.Valid || inputVatAmount.Valid) {
+		return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("delivery_cost or input_vat_amount requires every line to have unit_cost")
+	}
+
+	deliveryTotal := decimal.Zero
+	if deliveryCost.Valid {
+		deliveryTotal = deliveryCost.Decimal
+	}
+	vatTotal := decimal.Zero
+	if inputVatAmount.Valid {
+		vatTotal = inputVatAmount.Decimal
+	}
+	allocations, err := allocateMaterialReceiptBatchCosts(costLines, deliveryTotal, vatTotal)
+	if err != nil {
+		return entity.MaterialReceiptBatchInsert{}, err
+	}
+
+	shared := entity.MaterialReceiptInsert{
+		Currency:       currency,
+		SupplierDoc:    nullStringFromPb(req.GetSupplierDoc()),
+		InvoiceFileId:  sql.NullInt32{Int32: req.GetInvoiceFileId(), Valid: req.GetInvoiceFileId() > 0},
+		SupplierId:     sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
+		ExpectedAt:     expectedAt,
+		OccurredAt:     occurredAt,
+		Comment:        nullStringFromPb(req.GetComment()),
+		InputVatRegime: inputVatRegime,
+	}
+	out := entity.MaterialReceiptBatchInsert{Lines: make([]entity.MaterialReceiptInsert, len(req.GetLines()))}
+	for i, line := range req.GetLines() {
+		ins := shared
+		ins.MaterialId = int(line.GetMaterialId())
+		ins.Quantity = costLines[i].Quantity
+		ins.Lot = nullStringFromPb(line.GetLot())
+		if unitCosts[i].Valid {
+			ins.UnitCost = decimal.NullDecimal{Decimal: allocations[i].LandedUnitCost, Valid: true}
+		}
+		if inputVatAmount.Valid {
+			ins.InputVatAmount = decimal.NullDecimal{Decimal: allocations[i].InputVatShare, Valid: true}
+			if allocations[i].InputVatShare.GreaterThan(allocations[i].LineNet.Mul(decimal.RequireFromString("0.30"))) {
+				return entity.MaterialReceiptBatchInsert{}, fmt.Errorf(
+					"line %d input VAT share %s exceeds 30%% of its net line cost %s — unit_cost must be NET (VAT-exclusive)",
+					i+1, allocations[i].InputVatShare.StringFixed(2), allocations[i].LineNet.StringFixed(2))
+			}
+		}
+		out.Lines[i] = ins
+	}
+	return out, nil
 }
 
 // convertInputVat validates and converts a receipt's recoverable input VAT (phase 2, wave 1,
@@ -327,6 +536,8 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 		LotId:           nullInt32Value(m.LotId),
 		Lot:             m.Lot.String,
 		SupplierDoc:     m.SupplierDoc.String,
+		InvoiceFileId:   nullInt32Value(m.InvoiceFileId),
+		InvoiceFileName: m.InvoiceFileName.String,
 		Reason:          m.Reason.String,
 		Comment:         m.Comment.String,
 		AdminUsername:   m.AdminUsername,

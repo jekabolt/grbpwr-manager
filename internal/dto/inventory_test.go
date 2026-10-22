@@ -7,8 +7,10 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestConvertPbReceiveMaterialStock_InputVatGuard pins the H-5 soft double-VAT guard: input VAT above
@@ -91,6 +93,83 @@ func TestConvertPbReceiveMaterialStock_RollFactsNeedALot(t *testing.T) {
 	_, err = ConvertPbReceiveMaterialStock(overPrecise)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "decimal places")
+}
+
+func TestConvertPbReceiveMaterialStock_InvoiceFileID(t *testing.T) {
+	withInvoice, err := ConvertPbReceiveMaterialStock(&pb_admin.ReceiveMaterialStockRequest{
+		MaterialId: 1, Quantity: dec("10"), InvoiceFileId: 42,
+	})
+	require.NoError(t, err)
+	require.True(t, withInvoice.InvoiceFileId.Valid)
+	assert.Equal(t, int32(42), withInvoice.InvoiceFileId.Int32)
+
+	withoutInvoice, err := ConvertPbReceiveMaterialStock(&pb_admin.ReceiveMaterialStockRequest{
+		MaterialId: 1, Quantity: dec("10"), InvoiceFileId: 0,
+	})
+	require.NoError(t, err)
+	assert.False(t, withoutInvoice.InvoiceFileId.Valid)
+}
+
+func TestAllocateMaterialReceiptBatchCosts_ExactTotalsAndLargestRemainder(t *testing.T) {
+	lines := []materialReceiptCostLine{
+		{Quantity: decimal.RequireFromString("1"), UnitCost: decimal.RequireFromString("1")},
+		{Quantity: decimal.RequireFromString("1"), UnitCost: decimal.RequireFromString("1")},
+		{Quantity: decimal.RequireFromString("4"), UnitCost: decimal.RequireFromString("1")},
+	}
+	alloc, err := allocateMaterialReceiptBatchCosts(
+		lines, decimal.RequireFromString("0.0002"), decimal.RequireFromString("0.02"))
+	require.NoError(t, err)
+	require.Len(t, alloc, 3)
+
+	deliverySum := decimal.Zero
+	vatSum := decimal.Zero
+	for _, line := range alloc {
+		deliverySum = deliverySum.Add(line.DeliveryShare)
+		vatSum = vatSum.Add(line.InputVatShare)
+	}
+	assert.True(t, deliverySum.Equal(decimal.RequireFromString("0.0002")))
+	assert.True(t, vatSum.Equal(decimal.RequireFromString("0.02")))
+	// Ordinary rounding allocates only half of each tiny total. The full residual belongs to line 3,
+	// whose net value (4) is larger than either sibling's (1).
+	assert.True(t, alloc[0].DeliveryShare.IsZero())
+	assert.True(t, alloc[1].DeliveryShare.IsZero())
+	assert.True(t, alloc[2].DeliveryShare.Equal(decimal.RequireFromString("0.0002")))
+	assert.True(t, alloc[0].InputVatShare.IsZero())
+	assert.True(t, alloc[1].InputVatShare.IsZero())
+	assert.True(t, alloc[2].InputVatShare.Equal(decimal.RequireFromString("0.02")))
+	assert.True(t, alloc[2].LandedUnitCost.Equal(decimal.RequireFromString("1.0001")))
+}
+
+func TestConvertPbReceiveMaterialStockBatch_AllocationAndGuards(t *testing.T) {
+	req := &pb_admin.ReceiveMaterialStockBatchRequest{
+		Lines: []*pb_admin.ReceiveMaterialStockLine{
+			{MaterialId: 1, Quantity: dec("2"), UnitCost: dec("10"), Lot: "A"},
+			{MaterialId: 2, Quantity: dec("4"), UnitCost: dec("5"), Lot: "B"},
+		},
+		Currency: "eur", SupplierId: 3, SupplierDoc: "INV-7", InvoiceFileId: 9,
+		DeliveryCost: dec("3"), InputVatAmount: dec("5"), InputVatRegime: "domestic_pl",
+	}
+	got, err := ConvertPbReceiveMaterialStockBatch(req)
+	require.NoError(t, err)
+	require.Len(t, got.Lines, 2)
+	assert.True(t, got.Lines[0].UnitCost.Decimal.Equal(decimal.RequireFromString("10.75")))
+	assert.True(t, got.Lines[1].UnitCost.Decimal.Equal(decimal.RequireFromString("5.375")))
+	assert.True(t, got.Lines[0].InputVatAmount.Decimal.Equal(decimal.RequireFromString("2.5")))
+	assert.True(t, got.Lines[1].InputVatAmount.Decimal.Equal(decimal.RequireFromString("2.5")))
+	assert.Equal(t, "EUR", got.Lines[0].Currency)
+	assert.Equal(t, int32(9), got.Lines[1].InvoiceFileId.Int32)
+
+	duplicate := proto.Clone(req).(*pb_admin.ReceiveMaterialStockBatchRequest)
+	duplicate.Lines[1] = &pb_admin.ReceiveMaterialStockLine{MaterialId: 1, Quantity: dec("1"), UnitCost: dec("1")}
+	_, err = ConvertPbReceiveMaterialStockBatch(duplicate)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "more than once")
+
+	uncosted := proto.Clone(req).(*pb_admin.ReceiveMaterialStockBatchRequest)
+	uncosted.Lines[1] = &pb_admin.ReceiveMaterialStockLine{MaterialId: 2, Quantity: dec("1")}
+	_, err = ConvertPbReceiveMaterialStockBatch(uncosted)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "every line")
 }
 
 // TestConvertEntityMaterialMovementToPb_OccurredAtFallback pins the defensive date: an undated

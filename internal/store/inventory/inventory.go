@@ -49,6 +49,30 @@ type stockState struct {
 	Avg    decimal.NullDecimal `db:"avg_unit_cost_base"`
 }
 
+const materialMovementSelect = `
+		msm.id, msm.material_id, msm.movement_type, msm.quantity,
+		msm.on_hand_before, msm.on_hand_after, msm.unit_cost, msm.currency,
+		msm.unit_cost_base, msm.production_run_id, msm.sample_id, msm.tech_card_id,
+		msm.product_id, msm.lot, msm.lot_id, msm.supplier_doc, msm.invoice_file_id,
+		lf.file_name AS invoice_file_name, msm.supplier_id, msm.expected_at, msm.reason,
+		msm.comment, msm.admin_username, msm.occurred_at, msm.created_at,
+		msm.input_vat_amount, msm.input_vat_regime`
+
+// readMovement hydrates a movement together with the invoice's current library filename. The LEFT
+// JOIN deliberately keeps a receipt readable when its optional file was deleted (the FK clears the
+// id); both immediate write responses and ledger reads use this projection.
+func readMovement(ctx context.Context, db dependency.DB, id int) (entity.MaterialMovement, error) {
+	m, err := storeutil.QueryNamedOne[entity.MaterialMovement](ctx, db, `
+		SELECT `+materialMovementSelect+`
+		FROM material_stock_movement msm
+		LEFT JOIN library_file lf ON lf.id = msm.invoice_file_id
+		WHERE msm.id = :id`, map[string]any{"id": id})
+	if err != nil {
+		return entity.MaterialMovement{}, fmt.Errorf("read material movement %d: %w", id, err)
+	}
+	return m, nil
+}
+
 // readStockForUpdate locks and returns the material's stock row, or a zero state when no row
 // exists yet (lazy creation).
 func readStockForUpdate(ctx context.Context, db dependency.DB, materialID int) (stockState, error) {
@@ -89,12 +113,12 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 		INSERT INTO material_stock_movement
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
 			 unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-			 lot, lot_id, supplier_doc, supplier_id, expected_at, reason, comment, admin_username, occurred_at,
+			 lot, lot_id, supplier_doc, invoice_file_id, supplier_id, expected_at, reason, comment, admin_username, occurred_at,
 			 input_vat_amount, input_vat_regime)
 		VALUES
 			(:material_id, :movement_type, :quantity, :on_hand_before, :on_hand_after,
 			 :unit_cost, :currency, :unit_cost_base, :production_run_id, :sample_id, :tech_card_id, :product_id,
-			 :lot, :lot_id, :supplier_doc, :supplier_id, :expected_at, :reason, :comment, :admin_username, :occurred_at,
+			 :lot, :lot_id, :supplier_doc, :invoice_file_id, :supplier_id, :expected_at, :reason, :comment, :admin_username, :occurred_at,
 			 :input_vat_amount, :input_vat_regime)`,
 		map[string]any{
 			"material_id":       m.MaterialId,
@@ -112,6 +136,7 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			"lot":               m.Lot,
 			"lot_id":            m.LotId,
 			"supplier_doc":      m.SupplierDoc,
+			"invoice_file_id":   m.InvoiceFileId,
 			"supplier_id":       m.SupplierId,
 			"expected_at":       m.ExpectedAt,
 			"reason":            m.Reason,
@@ -124,8 +149,7 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 	if err != nil {
 		return entity.MaterialMovement{}, fmt.Errorf("insert material movement: %w", err)
 	}
-	m.Id = id
-	return m, nil
+	return readMovement(ctx, db, id)
 }
 
 // dateOnlyUTC is t's calendar day at 00:00 UTC — the codebase's date convention (DATE columns are read
@@ -285,6 +309,36 @@ func (s *Store) ReceiveMaterialStock(ctx context.Context, ins entity.MaterialRec
 	return out, nil
 }
 
+// ReceiveMaterialStockBatch posts every line of one supplier invoice in one transaction. The API
+// layer has already rejected duplicate materials and allocated shared invoice costs, but the store
+// still guards the empty batch and each line's quantity as invariants of its public interface.
+func (s *Store) ReceiveMaterialStockBatch(ctx context.Context, ins entity.MaterialReceiptBatchInsert) ([]entity.MaterialMovement, error) {
+	if len(ins.Lines) == 0 {
+		return nil, fmt.Errorf("receipt batch must contain at least one line")
+	}
+	for i := range ins.Lines {
+		if ins.Lines[i].Quantity.LessThanOrEqual(decimal.Zero) {
+			return nil, fmt.Errorf("receipt line %d quantity must be positive", i+1)
+		}
+	}
+	movements := make([]entity.MaterialMovement, 0, len(ins.Lines))
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		now := s.Now()
+		for _, line := range ins.Lines {
+			movement, err := ReceiveInTx(ctx, rep, line, now)
+			if err != nil {
+				return err
+			}
+			movements = append(movements, movement)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return movements, nil
+}
+
 // ReceiveInTx performs a stock receipt WITHIN the caller's transaction (rep) — the moving-average
 // update, the movement row and the price-history point — and returns the inserted movement. It is
 // the shared core of ReceiveMaterialStock (which wraps it in its own tx) and of a production run's
@@ -350,6 +404,7 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 		ProductionRunId: ins.ProductionRunId,
 		Lot:             ins.Lot,
 		SupplierDoc:     ins.SupplierDoc,
+		InvoiceFileId:   ins.InvoiceFileId,
 		ExpectedAt:      ins.ExpectedAt,
 		Comment:         ins.Comment,
 		AdminUsername:   ins.AdminUsername,
@@ -713,19 +768,19 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 	params := map[string]any{}
 	where := ""
 	if filter.MaterialId > 0 {
-		where += " AND material_id = :material_id"
+		where += " AND msm.material_id = :material_id"
 		params["material_id"] = filter.MaterialId
 	}
 	if filter.ProductionRunId > 0 {
-		where += " AND production_run_id = :production_run_id"
+		where += " AND msm.production_run_id = :production_run_id"
 		params["production_run_id"] = filter.ProductionRunId
 	}
 	if filter.SampleId > 0 {
-		where += " AND sample_id = :sample_id"
+		where += " AND msm.sample_id = :sample_id"
 		params["sample_id"] = filter.SampleId
 	}
 	if filter.MovementType != "" {
-		where += " AND movement_type = :movement_type"
+		where += " AND msm.movement_type = :movement_type"
 		params["movement_type"] = string(filter.MovementType)
 	}
 	// Inclusive occurred_at date window (B-5). occurred_at is a DATE column, so a plain YYYY-MM-DD bound
@@ -733,26 +788,26 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 	// serve the range. Every movement is dated (insertMovement defaults it; the occurred-at backfill
 	// migration filled the legacy NULLs), so no row silently drops out of a window.
 	if filter.OccurredFrom != "" {
-		where += " AND occurred_at >= :occurred_from"
+		where += " AND msm.occurred_at >= :occurred_from"
 		params["occurred_from"] = filter.OccurredFrom
 	}
 	if filter.OccurredTo != "" {
-		where += " AND occurred_at <= :occurred_to"
+		where += " AND msm.occurred_at <= :occurred_to"
 		params["occurred_to"] = filter.OccurredTo
 	}
 	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		fmt.Sprintf(`SELECT COUNT(*) FROM material_stock_movement WHERE 1=1%s`, where), params)
+		fmt.Sprintf(`SELECT COUNT(*) FROM material_stock_movement msm WHERE 1=1%s`, where), params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count material movements: %w", err)
 	}
 	params["limit"] = limit
 	params["offset"] = offset
 	rows, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, fmt.Sprintf(`
-		SELECT id, material_id, movement_type, quantity, on_hand_before, on_hand_after,
-			unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
-			lot, lot_id, supplier_doc, reason, comment, admin_username, occurred_at, created_at
-		FROM material_stock_movement WHERE 1=1%s
-		ORDER BY occurred_at DESC, id DESC LIMIT :limit OFFSET :offset`, where), params)
+		SELECT `+materialMovementSelect+`
+		FROM material_stock_movement msm
+		LEFT JOIN library_file lf ON lf.id = msm.invoice_file_id
+		WHERE 1=1%s
+		ORDER BY msm.occurred_at DESC, msm.id DESC LIMIT :limit OFFSET :offset`, where), params)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list material movements: %w", err)
 	}

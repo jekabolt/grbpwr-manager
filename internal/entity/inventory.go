@@ -144,6 +144,10 @@ type MaterialMovement struct {
 	// D). NULL when no lot was tracked. The free-text Lot above is kept for backward compatibility.
 	LotId       sql.NullInt32  `db:"lot_id"`
 	SupplierDoc sql.NullString `db:"supplier_doc"`
+	// InvoiceFileId links a purchase receipt to its supplier invoice in the private files library.
+	// InvoiceFileName is read through a LEFT JOIN and is never persisted on the movement itself.
+	InvoiceFileId   sql.NullInt32  `db:"invoice_file_id"`
+	InvoiceFileName sql.NullString `db:"invoice_file_name"`
 	// SupplierId is the catalogued supplier of a purchase receipt (phase 2, wave 4 — AP subledger). NULL
 	// on non-receipts and on receipts entered without a supplier; the accounting worker copies it onto the
 	// M1 journal entry so GetPayables can group open Accounts-Payable per supplier.
@@ -179,6 +183,8 @@ type MaterialReceiptInsert struct {
 	MeasuredWidthCm decimal.NullDecimal
 	ShadeCode       sql.NullString
 	SupplierDoc     sql.NullString
+	// InvoiceFileId optionally attaches the supplier invoice uploaded to the private files library.
+	InvoiceFileId sql.NullInt32
 	// SupplierId optionally tags a purchase receipt with a catalogued supplier (phase 2, wave 4 — AP
 	// subledger). NULL for a receipt entered without a supplier; ignored for a receipt_production.
 	SupplierId sql.NullInt32
@@ -196,6 +202,13 @@ type MaterialReceiptInsert struct {
 	// rule (phase 2, wave 1). Both NULL for a receipt without VAT.
 	InputVatAmount decimal.NullDecimal
 	InputVatRegime sql.NullString
+}
+
+// MaterialReceiptBatchInsert is one supplier invoice posted as several stock receipts. Lines carry
+// their already-allocated landed unit cost and input-VAT share; the store commits all of them in one
+// transaction so an invalid or failed line leaves no partial stock or accounting facts.
+type MaterialReceiptBatchInsert struct {
+	Lines []MaterialReceiptInsert
 }
 
 // MaterialIssueInsert is the payload of an issue to (or return from) a production run or a sample.

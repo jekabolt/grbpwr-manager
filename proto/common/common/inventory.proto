@@ -58,6 +58,8 @@ message MaterialMovement {
   // When a purchase receipt was promised to arrive (Phase 9); unset = not tracked. Lateness =
   // occurred_at vs expected_at, no PO entity needed.
   google.protobuf.Timestamp expected_at = 22;
+  int32 invoice_file_id = 23; // supplier invoice in the private files library; 0 = none
+  string invoice_file_name = 24; // current library filename; empty when no invoice is attached
 }
 
 // MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code

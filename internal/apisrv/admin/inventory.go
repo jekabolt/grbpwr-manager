@@ -31,12 +31,79 @@ func (s *Server) ReceiveMaterialStock(ctx context.Context, req *pb_admin.Receive
 			return nil, status.Error(codes.PermissionDenied, "costing:write is required to record a material cost or input VAT")
 		}
 	}
+	if err := s.validateReceiptInvoiceFile(ctx, ins.InvoiceFileId); err != nil {
+		return nil, err
+	}
 	ins.AdminUsername = authsrv.GetAdminUsername(ctx)
 	m, err := s.repo.MaterialStock().ReceiveMaterialStock(ctx, ins)
 	if err != nil {
 		return nil, mapInventoryErr(ctx, "receive material stock", err)
 	}
+	s.tagReceiptInvoiceBestEffort(ctx, ins.InvoiceFileId)
 	return &pb_admin.ReceiveMaterialStockResponse{Movement: s.movementToPb(ctx, m)}, nil
+}
+
+// ReceiveMaterialStockBatch posts one supplier invoice's material lines atomically.
+func (s *Server) ReceiveMaterialStockBatch(ctx context.Context, req *pb_admin.ReceiveMaterialStockBatchRequest) (*pb_admin.ReceiveMaterialStockBatchResponse, error) {
+	ins, err := dto.ConvertPbReceiveMaterialStockBatch(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	for i := range ins.Lines {
+		if ins.Lines[i].UnitCost.Valid || ins.Lines[i].InputVatAmount.Valid {
+			if _, write := s.costingAccess(ctx); !write {
+				return nil, status.Error(codes.PermissionDenied, "costing:write is required to record a material cost, delivery, or input VAT")
+			}
+			break
+		}
+	}
+	invoiceFileID := ins.Lines[0].InvoiceFileId
+	if err := s.validateReceiptInvoiceFile(ctx, invoiceFileID); err != nil {
+		return nil, err
+	}
+	username := authsrv.GetAdminUsername(ctx)
+	for i := range ins.Lines {
+		ins.Lines[i].AdminUsername = username
+	}
+	movements, err := s.repo.MaterialStock().ReceiveMaterialStockBatch(ctx, ins)
+	if err != nil {
+		return nil, mapInventoryErr(ctx, "receive material stock batch", err)
+	}
+	s.tagReceiptInvoiceBestEffort(ctx, invoiceFileID)
+	out := make([]*pb_common.MaterialMovement, 0, len(movements))
+	for _, movement := range movements {
+		out = append(out, s.movementToPb(ctx, movement))
+	}
+	return &pb_admin.ReceiveMaterialStockBatchResponse{Movements: out}, nil
+}
+
+// validateReceiptInvoiceFile reuses the files library's visibility-aware read. A missing and an
+// invisible file are intentionally indistinguishable, and both are caller input errors here.
+func (s *Server) validateReceiptInvoiceFile(ctx context.Context, fileID sql.NullInt32) error {
+	if !fileID.Valid {
+		return nil
+	}
+	if _, err := s.repo.Files().GetFileById(ctx, int(fileID.Int32)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return status.Error(codes.InvalidArgument, "invoice file not found or not visible")
+		}
+		slog.Default().ErrorContext(ctx, "can't validate receipt invoice file", slog.String("err", err.Error()))
+		return status.Error(codes.Internal, "can't validate invoice file")
+	}
+	return nil
+}
+
+// tagReceiptInvoiceBestEffort makes receipts discoverable in the files library. AssignTopics creates
+// the topic when missing and is idempotent when the link already exists. The receipt has committed
+// before this runs, so a library failure is logged and never changes the money/stock result.
+func (s *Server) tagReceiptInvoiceBestEffort(ctx context.Context, fileID sql.NullInt32) {
+	if !fileID.Valid {
+		return
+	}
+	if _, err := s.repo.Files().AssignTopics(ctx, []int{int(fileID.Int32)}, nil, []string{"invoices"}); err != nil {
+		slog.Default().ErrorContext(ctx, "can't tag receipt invoice file",
+			slog.Int("file_id", int(fileID.Int32)), slog.String("err", err.Error()))
+	}
 }
 
 // IssueMaterialStock issues (or returns) material to a production run or a sample.
