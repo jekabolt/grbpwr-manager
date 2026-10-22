@@ -2,6 +2,7 @@ package fusingops
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -197,7 +198,50 @@ func sameFusingOpContent(a, b *entity.TechCardOperation) bool {
 			}
 		}
 	}
-	return reflect.DeepEqual(left, right)
+	return reflect.DeepEqual(canonicalOpContent(&left), canonicalOpContent(&right))
+}
+
+// canonicalOpContent is the operation as its JSON value with empty values pruned: decimals compare
+// by their canonical string (MySQL's fixed-scale 10.0 and the wire's 10 are one value), and a nil
+// slice equals an empty one, so a DB→protobuf→entity round trip yields the same content.
+func canonicalOpContent(op *entity.TechCardOperation) any {
+	raw, err := json.Marshal(op)
+	if err != nil {
+		return op
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return op
+	}
+	return pruneEmpty(v)
+}
+
+func pruneEmpty(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			x = pruneEmpty(x)
+			if x == nil {
+				delete(t, k)
+				continue
+			}
+			t[k] = x
+		}
+		if len(t) == 0 {
+			return nil
+		}
+		return t
+	case []any:
+		for i := range t {
+			t[i] = pruneEmpty(t[i])
+		}
+		if len(t) == 0 {
+			return nil
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // autoIdentity is the private identity of an automatic FUSING step: the piece it fuses, or for a
