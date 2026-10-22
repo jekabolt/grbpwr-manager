@@ -153,16 +153,54 @@ func FabricScopeKeyLive(scopeKey string, lines []RollGoodsLine) bool {
 	return false
 }
 
+// LiveFabricScopeKey maps a scope key that a sidecar row is filed under (tech_card_pattern_size_index,
+// tech_card_piece_area), or that a client names when it writes one, to the effective scope it
+// addresses today. A key that is already live is returned unchanged. A key that is the RAW line key
+// of a live ORDINARY roll-goods line which has since been sorted into a purpose is not a scope any
+// more (FabricScopeKeyLive says no), but it still names that line's cloth unambiguously, so it maps to
+// the line's EffectiveFabricScopeKey. Rows written before the line was sorted, and older clients that
+// publish the raw sheet binding, land there instead of being refused or deleted. Anything else names
+// no cloth on the card: ("", false).
+func LiveFabricScopeKey(scopeKey string, lines []RollGoodsLine) (string, bool) {
+	want := strings.TrimSpace(scopeKey)
+	if want == "" {
+		return "", false
+	}
+	if FabricScopeKeyLive(want, lines) {
+		return want, true
+	}
+	for _, line := range lines {
+		if line.Section == BomSectionInterlining ||
+			!strings.EqualFold(strings.TrimSpace(line.LineKey), want) {
+			continue
+		}
+		if key := EffectiveFabricScopeKey(line); key != "" && FabricScopeKeyLive(key, lines) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 // NormalizeFabricBomLineKey removes a compatibility line key that no longer belongs to a live
 // purpose binding. Purpose-bound rows legitimately carry the concrete line that was selected when
 // the binding was made, but that echo must not invalidate the purpose after the line is deleted or
 // moved to another purpose. A purpose that is itself dead is left untouched so legacy orphan rows
 // remain identifiable and repairable rather than being silently rewritten.
+//
+// A key that names a live INTERLINING line is never an echo: ResolveFabricScope makes that line win
+// over any purpose beside it, so the key IS the binding. Dropping it after the line's purpose changed
+// would hand the row to whatever ordinary line still carries the old purpose (felt «other» → rib
+// «other»), and the sheet, its aliases and its sidecars would follow the wrong cloth without a word.
 func NormalizeFabricBomLineKey(purpose, bomLineKey string, lines []RollGoodsLine) string {
 	p := strings.TrimSpace(purpose)
 	key := strings.TrimSpace(bomLineKey)
 	if p == "" || key == "" || !ResolveFabricScope(p, "", lines).Live() {
 		return key
+	}
+	for _, line := range lines {
+		if line.Section == BomSectionInterlining && strings.EqualFold(strings.TrimSpace(line.LineKey), key) {
+			return key
+		}
 	}
 	for _, line := range lines {
 		if strings.EqualFold(strings.TrimSpace(line.LineKey), key) &&

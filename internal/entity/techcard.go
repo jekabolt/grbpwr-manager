@@ -4631,6 +4631,12 @@ type TechCardInsert struct {
 	// renumbered the list, so the store's fallback for direct writers must not re-match it. False keeps
 	// that fallback enabled when a retained identity could not be resolved uniquely.
 	AutoFusingKeysResolved bool `db:"-"`
+	// FabricBindingsCopied is write-command metadata, never read off the wire: the season clone and
+	// the archive import set it because every sheet and DXF alias in their payload is copied from an
+	// existing card with its fabric binding unchanged. A binding the source already held unresolved
+	// (a grandfathered orphan) is carried as-is instead of refusing the whole create; the ordinary
+	// create/update API never sets it and keeps requiring a live scope for every new binding.
+	FabricBindingsCopied bool `db:"-"`
 	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
 	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
 	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot

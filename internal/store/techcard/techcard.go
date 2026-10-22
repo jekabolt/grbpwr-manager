@@ -669,6 +669,14 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if err != nil {
 		return nil, err
 	}
+	// Size-index / piece-area rows still filed under the RAW key of a line the STORED BOM has already
+	// sorted into a purpose belong to that purpose. File them there before anything below reads the
+	// sidecars: the UNI guard (upsertTechCardPieces) reads them by live scope and the scope-move
+	// reconcile moves them by live scope, so both would otherwise act on a card missing the rows that
+	// the closing cleanup adopts (and the guard could let a sized row land on a piece marked UNI).
+	if err := adoptRawLineFabricScopeSidecars(ctx, rep.DB(), id, priorRollGoods); err != nil {
+		return nil, err
+	}
 	patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
 
 	// Capture the style's products before the full-replace so a change to the style's SKU facts
@@ -1627,7 +1635,8 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	}
 	// DXF block aliases (§2.2) resolve piece_line_key against THIS save's pieces, so they run after
 	// the piece upsert — the resolveUsagePiece ordering precedent.
-	if err := upsertTechCardPieceDxfAliases(ctx, db, id, tc.PieceDxfAliasesSet, tc.PieceDxfAliases, tc.UpdatedBy); err != nil {
+	if err := upsertTechCardPieceDxfAliases(ctx, db, id, tc.PieceDxfAliasesSet, tc.PieceDxfAliases, tc.UpdatedBy,
+		tc.FabricBindingsCopied); err != nil {
 		return err
 	}
 	// production (Phase 3)
@@ -1675,7 +1684,8 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason, snapshotID)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason, snapshotID,
+		tc.FabricBindingsCopied)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -1772,7 +1782,11 @@ func patternObjectIdentity(raw string) string {
 // key may carry a distinct row — keeping the first would silently delete the row the second
 // claimed). Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding to a slot created
 // by the same save resolves.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotID int64) error {
+//
+// bindingsCopied (season clone, archive import) skips the three «a new binding must be live» refusals
+// below: every row is new on the destination card, but its binding is the source's, unchanged, and a
+// source sheet that was already an unresolved (grandfathered) orphan must not abort the whole create.
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotID int64, bindingsCopied bool) error {
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
@@ -2051,7 +2065,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		// A present, non-empty value that CHANGES the binding must name something live; an unchanged
 		// round-trip passes even when the target has gone away since.
-		if fabricPurpose.Valid && fabricPurpose.String != "" &&
+		if !bindingsCopied && fabricPurpose.Valid && fabricPurpose.String != "" &&
 			(!storedPurpose.Valid || storedPurpose.String != fabricPurpose.String) {
 			lines, err := loadRollGoods()
 			if err != nil {
@@ -2080,7 +2094,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 					reason, "", howToFix)
 			}
 		}
-		if bomLineKey.Valid && bomLineKey.String != "" &&
+		if !bindingsCopied && bomLineKey.Valid && bomLineKey.String != "" &&
 			(!storedBinding.Valid || storedBinding.String != bomLineKey.String) {
 			lines, err := loadRollGoods()
 			if err != nil {
@@ -2095,7 +2109,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		// Unlike legacy PDFs, a newly-created DXF can only come from a material slot in the current
 		// admin client. Accepting it without a live scope would create an orphan at the instant of
 		// upload, before the post-save grandfathering comparison has any stored identity to compare.
-		if matched == nil && isDXFPattern(p) {
+		if matched == nil && !bindingsCopied && isDXFPattern(p) {
 			lines, err := loadRollGoods()
 			if err != nil {
 				return err

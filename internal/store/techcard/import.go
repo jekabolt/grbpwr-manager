@@ -197,6 +197,9 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		return 0, err
 	}
 	card.ReconcileFusing = true
+	// Sheets and DXF aliases arrive with the exported card's bindings unchanged: a grandfathered
+	// unresolved one is carried, not a reason to abort the import.
+	card.FabricBindingsCopied = true
 
 	var newID int
 	var losses *importLosses

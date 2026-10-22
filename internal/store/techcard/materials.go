@@ -1505,7 +1505,11 @@ func nullIfEmpty(s string) sql.NullString {
 // A card MID-SORT — some lines sorted, some not — is the normal state for the whole transition, and
 // it needs no special case here: each alias resolves on its own, so a line-scoped row and a
 // purpose-scoped row of the same card coexist and are diffed side by side.
-func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string) error {
+//
+// bindingsCopied (season clone, archive import): every pair is new on the destination card but its
+// scope is the source's, unchanged, so a pair the source already held in a dead scope is carried
+// as-is rather than aborting the create — the same grandfathering an existing card gets above.
+func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID int, set bool, aliases []entity.TechCardPieceDxfAlias, username string, bindingsCopied bool) error {
 	if !set {
 		return nil
 	}
@@ -1587,7 +1591,7 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 				}
 			}
 		} else {
-			if !scope.Live() {
+			if !scope.Live() && !bindingsCopied {
 				// Two different dead ends, two different controls to fix them in — so two messages.
 				// Self-contained on purpose: the operator may see this without the form scrolling
 				// anywhere, so it has to say what to do, not merely what is wrong.

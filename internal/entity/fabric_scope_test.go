@@ -251,6 +251,58 @@ func TestNormalizeFabricBomLineKeyClearsOnlyStalePurposeEcho(t *testing.T) {
 	}
 }
 
+func TestNormalizeFabricBomLineKeyKeepsALiveInterliningLine(t *testing.T) {
+	// The felt used to share «other» with the rib; it has just been re-sorted to «interfacing». A
+	// sheet stored as {other, FELT-A} still names the felt (the line wins), so the key must survive —
+	// clearing it would rebind the sheet to the rib's «other» group, which is live, so nothing fails.
+	lines := []RollGoodsLine{
+		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric},
+		{LineKey: "FELT-A", Purpose: "interfacing", Section: BomSectionInterlining},
+	}
+	if got := NormalizeFabricBomLineKey("other", "FELT-A", lines); got != "FELT-A" {
+		t.Fatalf("interlining line key = %q, want it kept", got)
+	}
+	if got := FabricScopeIdentity("other", NormalizeFabricBomLineKey("other", "FELT-A", lines), lines); got != "FELT-A" {
+		t.Fatalf("normalized felt binding resolves to %q, want the felt", got)
+	}
+	// Same key case-folded, and an ordinary line moved out of the purpose is still cleared.
+	if got := NormalizeFabricBomLineKey("other", "felt-a", lines); got != "felt-a" {
+		t.Fatalf("case-folded interlining key = %q, want it kept", got)
+	}
+	lines = append(lines, RollGoodsLine{LineKey: "MAIN-A", Purpose: "main", Section: BomSectionFabric})
+	if got := NormalizeFabricBomLineKey("other", "MAIN-A", lines); got != "" {
+		t.Fatalf("ordinary stale echo = %q, want cleared", got)
+	}
+}
+
+func TestLiveFabricScopeKeyMapsARawSortedLineToItsPurpose(t *testing.T) {
+	lines := []RollGoodsLine{
+		{LineKey: "MAIN-A", Purpose: "main", Section: BomSectionFabric},
+		{LineKey: "RAW-A", Section: BomSectionFabric},
+		{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining},
+	}
+	tests := []struct {
+		key, want string
+		ok        bool
+	}{
+		{"main", "main", true},
+		{"MAIN-A", "main", true}, // raw key of a sorted ordinary line → its purpose
+		{"main-a", "main", true},
+		{"RAW-A", "RAW-A", true}, // unsorted line: its own key is the scope
+		{"FUSE-A", "FUSE-A", true},
+		{"interfacing", "interfacing", true}, // singleton legacy interlining fallback stays live
+		{"lining", "", false},
+		{"GONE", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := LiveFabricScopeKey(tt.key, lines)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("LiveFabricScopeKey(%q) = (%q, %v), want (%q, %v)", tt.key, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestPurposeSharedByRibAndFeltKeepsFeltInItsOwnScope(t *testing.T) {
 	lines := []RollGoodsLine{
 		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric},

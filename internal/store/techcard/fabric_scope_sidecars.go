@@ -173,9 +173,55 @@ type fabricScopeSidecarCleanup struct {
 	PieceAreaRows int64
 }
 
+// adoptRawLineFabricScopeSidecars moves rows filed under the RAW line key of an ordinary roll-goods
+// line that has since been sorted into a purpose onto that line's effective scope
+// (entity.LiveFabricScopeKey). Such rows are not dead: a sheet bound to line L keeps naming L after L
+// gets purpose «main», reconcileMovedFabricScopeSidecars sees no identity move (main → main), and the
+// rows written under L before the sort (or by an older client publishing the raw binding) would
+// otherwise be deleted as a dead bucket. The destination wins when it already holds rows — the same
+// rule as a merge in reconcileMovedFabricScopeSidecars. Sources are visited in sorted order so two raw
+// keys folding into one scope resolve deterministically.
+func adoptRawLineFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
+	lines []entity.RollGoodsLine) error {
+	targets := make(map[string]string)
+	for _, table := range []string{"tech_card_pattern_size_index", "tech_card_piece_area"} {
+		scopes, err := storeutil.QueryListNamed[struct {
+			ScopeKey string `db:"scope_key"`
+		}](ctx, db, fmt.Sprintf(`SELECT DISTINCT scope_key FROM %s WHERE tech_card_id = :card`, table),
+			map[string]any{"card": techCardID})
+		if err != nil {
+			return fmt.Errorf("load %s scopes: %w", table, err)
+		}
+		for _, scope := range scopes {
+			if entity.FabricScopeKeyLive(scope.ScopeKey, lines) {
+				continue
+			}
+			if to, ok := entity.LiveFabricScopeKey(scope.ScopeKey, lines); ok {
+				targets[scope.ScopeKey] = to
+			}
+		}
+	}
+	from := make([]string, 0, len(targets))
+	for key := range targets {
+		from = append(from, key)
+	}
+	sort.Strings(from)
+	for _, key := range from {
+		if err := rekeyFabricScopeSidecars(ctx, db, techCardID, key, targets[key]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanupDeadFabricScopeSidecars first adopts raw-line buckets into their line's live scope, then
+// deletes only what still resolves to nothing on the card.
 func cleanupDeadFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
 	lines []entity.RollGoodsLine) (fabricScopeSidecarCleanup, error) {
 	var out fabricScopeSidecarCleanup
+	if err := adoptRawLineFabricScopeSidecars(ctx, db, techCardID, lines); err != nil {
+		return out, err
+	}
 	for _, target := range []struct {
 		table string
 		rows  *int64
