@@ -36,6 +36,16 @@ func TestEveryAdminMethodIsClassified(t *testing.T) {
 	}
 }
 
+func TestDeleteTechCardPatternRevisionUsesTechCardWriteAccess(t *testing.T) {
+	req, allowlisted, known := Lookup(MethodPrefix + "DeleteTechCardPatternRevision")
+	if allowlisted || !known {
+		t.Fatalf("DeleteTechCardPatternRevision must be section-gated (allowlisted=%v, known=%v)", allowlisted, known)
+	}
+	if req.Section != SectionTechCards || req.Access != entity.AccessWrite {
+		t.Fatalf("DeleteTechCardPatternRevision = %s:%s, want %s:write", req.Section, req.Access, SectionTechCards)
+	}
+}
+
 // TestCostingIsGrantableFieldShapingSection guards the task-19 costing section: it is a
 // valid, catalogued, round-trippable grant even though NO method maps to it (it redacts
 // response fields rather than gating whole RPCs). A regression that drops it from the

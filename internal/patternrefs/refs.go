@@ -27,6 +27,32 @@ func ObjectKey(raw string) (string, bool) {
 	return "", false
 }
 
+// ObjectURLReferenced reports whether candidate and one of refs name the same object. Managed
+// origin/CDN spellings compare by canonical object key; non-managed URLs compare literally so an
+// old row with an unusual URL still fails closed instead of being treated as disposable.
+func ObjectURLReferenced(candidate string, refs []string) bool {
+	candidateKey, managed := ObjectKey(candidate)
+	for _, ref := range refs {
+		if managed {
+			if refKey, ok := ObjectKey(ref); ok && refKey == candidateKey {
+				return true
+			}
+			continue
+		}
+		if ref == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// SnapshotCanBeDeleted is the retention rule for a snapshot reached from a deleted history row.
+// Restore-generated snapshots are durable undo points even after their last history link disappears;
+// every other snapshot is removable only after no history row references it.
+func SnapshotCanBeDeleted(reason string, remainingHistoryRefs int) bool {
+	return remainingHistoryRefs == 0 && !strings.HasPrefix(strings.TrimSpace(reason), "restore:")
+}
+
 // UnreferencedObjectURLs returns managed candidates whose canonical keys do not occur in refs.
 // Candidate order is stable and duplicate origin/CDN spellings collapse to the first one.
 func UnreferencedObjectURLs(candidates, refs []string) []string {
@@ -55,7 +81,8 @@ func UnreferencedObjectURLs(candidates, refs []string) []string {
 }
 
 type snapshotPattern struct {
-	URL string `json:"url"`
+	URL     string            `json:"url"`
+	History []snapshotPattern `json:"history"`
 }
 
 type snapshotInsert struct {
@@ -63,9 +90,11 @@ type snapshotInsert struct {
 }
 
 type snapshotDocument struct {
-	TechCard      *snapshotInsert   `json:"techCard"`
-	TechCardSnake *snapshotInsert   `json:"tech_card"`
-	Patterns      []snapshotPattern `json:"patterns"`
+	TechCard                   *snapshotInsert   `json:"techCard"`
+	TechCardSnake              *snapshotInsert   `json:"tech_card"`
+	Patterns                   []snapshotPattern `json:"patterns"`
+	RemovedPatternHistory      []snapshotPattern `json:"removedPatternHistory"`
+	RemovedPatternHistorySnake []snapshotPattern `json:"removed_pattern_history"`
 }
 
 // URLsFromSnapshots extracts pattern URLs from the common.TechCard proto-JSON shape used by both
@@ -85,11 +114,19 @@ func URLsFromSnapshots(blobs []string) ([]string, error) {
 		if doc.TechCardSnake != nil {
 			patterns = append(patterns, doc.TechCardSnake.Patterns...)
 		}
-		for _, pattern := range patterns {
-			if pattern.URL != "" {
-				out = append(out, pattern.URL)
-			}
-		}
+		patterns = append(patterns, doc.RemovedPatternHistory...)
+		patterns = append(patterns, doc.RemovedPatternHistorySnake...)
+		out = appendSnapshotPatternURLs(out, patterns)
 	}
 	return out, nil
+}
+
+func appendSnapshotPatternURLs(out []string, patterns []snapshotPattern) []string {
+	for _, pattern := range patterns {
+		if pattern.URL != "" {
+			out = append(out, pattern.URL)
+		}
+		out = appendSnapshotPatternURLs(out, pattern.History)
+	}
+	return out
 }

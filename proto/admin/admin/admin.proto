@@ -2090,6 +2090,13 @@ service AdminService {
     };
   }
 
+  // DeleteTechCardPatternRevision removes one retained pattern-history row. It cannot remove the
+  // object currently attached to a live sheet. The card is optimistically locked and returned in
+  // the same read shape as GetTechCard.
+  rpc DeleteTechCardPatternRevision(DeleteTechCardPatternRevisionRequest) returns (DeleteTechCardPatternRevisionResponse) {
+    option (google.api.http) = {delete: "/api/admin/tech-card/{tech_card_id}/pattern-history/{history_id}"};
+  }
+
   // DeleteTechCard deletes a tech card by id (nested sections cascade).
   rpc DeleteTechCard(DeleteTechCardRequest) returns (DeleteTechCardResponse) {
     option (google.api.http) = {delete: "/api/admin/tech-card/{id}"};
@@ -9866,6 +9873,16 @@ message RestoreTechCardSnapshotRequest {
 
 message RestoreTechCardSnapshotResponse {
   common.TechCard tech_card = 1; // the restored card, as GetTechCard returns it
+}
+
+message DeleteTechCardPatternRevisionRequest {
+  int32 tech_card_id = 1;
+  int64 history_id = 2; // TechCardPatternRevision.history_id of THIS card
+  int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
+}
+
+message DeleteTechCardPatternRevisionResponse {
+  common.TechCard tech_card = 1; // the updated card, as GetTechCard returns it
 }
 
 // GetTechCardConstructionAuditRequest — which saved card to audit. Nothing else: the machine layer

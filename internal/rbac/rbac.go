@@ -363,17 +363,18 @@ var methodRequirements = map[string]Requirement{
 	// live here on the argument "a role-assigner needs tech_cards, not accounts"; it has since grown
 	// three more callers in sections that do not contain tech cards, so it moved to the allowlist —
 	// see there for the full reasoning.
-	"AssignTechCardRole":           wr(SectionTechCards),
-	"RemoveTechCardRoleAssignment": wr(SectionTechCards),
-	"ExitTechCardGuide":            wr(SectionTechCards),
-	"ListTechCardRoleAssignments":  rd(SectionTechCards),
-	"GetTechCard":                  rd(SectionTechCards),
-	"UpdateTechCard":               wr(SectionTechCards),
-	"RestoreTechCardSnapshot":      wr(SectionTechCards),
-	"DeleteTechCard":               wr(SectionTechCards),
-	"ListTechCards":                rd(SectionTechCards),
-	"GetStylePipeline":             rd(SectionTechCards),
-	"GetTechCardReadiness":         rd(SectionTechCards),
+	"AssignTechCardRole":            wr(SectionTechCards),
+	"RemoveTechCardRoleAssignment":  wr(SectionTechCards),
+	"ExitTechCardGuide":             wr(SectionTechCards),
+	"ListTechCardRoleAssignments":   rd(SectionTechCards),
+	"GetTechCard":                   rd(SectionTechCards),
+	"UpdateTechCard":                wr(SectionTechCards),
+	"RestoreTechCardSnapshot":       wr(SectionTechCards),
+	"DeleteTechCardPatternRevision": wr(SectionTechCards),
+	"DeleteTechCard":                wr(SectionTechCards),
+	"ListTechCards":                 rd(SectionTechCards),
+	"GetStylePipeline":              rd(SectionTechCards),
+	"GetTechCardReadiness":          rd(SectionTechCards),
 	// CONSTRUCTION-аудит (машинный слой): rd, не wr, и это НЕ описка рядом с AI-методами этой
 	// секции, которые стоят на записи. Те тратят деньги ключа — это авторинг. Этот только
 	// пересчитывает уже сохранённую карточку и ничего не выводит, чего внимательный читатель той же
