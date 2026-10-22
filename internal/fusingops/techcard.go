@@ -176,6 +176,30 @@ func shapeOfFusingOp(op *entity.TechCardOperation) fusingOpShape {
 	return fusingOpShape{draft: op.Draft, bom: sortedKeySet(op.BomLineKeys), pieces: sortedKeySet(pieceInputKeys(op, nil))}
 }
 
+// sameFusingOpContent compares the complete wire-visible operation while ignoring fields that are
+// either its position in the list or resolved/private store metadata. This is the strongest identity
+// available on the wire: operation_number changes when a client reorders steps, and no operation id
+// is exposed by the admin contract.
+func sameFusingOpContent(a, b *entity.TechCardOperation) bool {
+	left, right := *a, *b
+	for _, op := range []*entity.TechCardOperation{&left, &right} {
+		op.OperationNumber = sql.NullInt32{}
+		op.AutoFusingLineKey = sql.NullString{}
+		op.AutoFusingPieceKey = sql.NullString{}
+		op.PieceIds = nil
+		op.BomIds = nil
+		if len(op.Media) > 0 {
+			op.Media = append([]entity.TechCardOperationMedia(nil), op.Media...)
+			for i := range op.Media {
+				op.Media[i].Id = 0
+				op.Media[i].TechCardOperationId = 0
+				op.Media[i].AnnotationsRaw = nil
+			}
+		}
+	}
+	return reflect.DeepEqual(left, right)
+}
+
 // autoIdentity is the private identity of an automatic FUSING step: the piece it fuses, or for a
 // grouped legacy step the interlining line it was created for. ok is false for a manual step.
 func autoIdentity(op *entity.TechCardOperation) (string, bool) {
@@ -200,12 +224,12 @@ type autoFusingMatch struct {
 // enabled for the full replace.
 //
 // The wire has no operation id, and neither the number nor the interlining link is identity, so
-// identity is the whole shape (fusingOpShape), in this order:
+// identity is operation content, in this order:
 //  0. an incoming step that already carries the same key (server-built writers);
-//  1. every stored MANUAL step (no key) first claims an incoming step of its own shape. Such a step is
-//     never keyed here: a stale payload shifts manual steps onto the numbers automatic steps hold;
-//  2. the exact echo: same draft flag, same BOM links, same pieces, at any number (a client may
-//     renumber or reorder);
+//  1. globally pair exact full-content echoes, at any number, for both automatic and manual stored
+//     steps. A manual echo is only reserved and is never keyed. If the same content could belong to
+//     both kinds, no key is assigned and the store fallback stays enabled;
+//  2. a grouped legacy echo with the same draft flag, BOM links and pieces;
 //  3. a unique step on the same single piece (per-piece step), regardless of draft state or other
 //     edits — changing its BOM link, note, SMV or press settings does not discard its identity;
 //  4. a grouped legacy draft still a draft with the same BOM links, at any number — a client that
@@ -224,16 +248,15 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) autoFusingMatch
 		return result
 	}
 	autoIdx := make([]int, 0)
-	manualIdx := make([]int, 0)
+	fusingIdx := make([]int, 0)
 	for i := range stored.Operations {
 		op := &stored.Operations[i]
 		if op.OperationType != entity.OpTypeFusing {
 			continue
 		}
+		fusingIdx = append(fusingIdx, i)
 		if _, ok := autoIdentity(op); ok {
 			autoIdx = append(autoIdx, i)
-		} else {
-			manualIdx = append(manualIdx, i)
 		}
 	}
 	if len(autoIdx) == 0 {
@@ -290,13 +313,53 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) autoFusingMatch
 		inKey, ok := autoIdentity(in)
 		return ok && inKey == sKey
 	})
-	for _, i := range manualIdx {
-		m := &stored.Operations[i]
-		mShape := shapeOfFusingOp(m)
-		if j := pick(m.OperationNumber, func(j int, in *entity.TechCardOperation) bool {
-			return !keyed[j] && shapes[j] == mShape
-		}); j >= 0 {
+
+	// Match exact echoes as content equivalence classes before reserving either side. Matching a
+	// manual row first by its old number is not global: after a reorder it can claim the automatic
+	// echo and leave the manual echo as the automatic row's only same-piece candidate.
+	grouped := make(map[int]bool, len(fusingIdx))
+	for _, i := range fusingIdx {
+		if grouped[i] || result.matched[i] {
+			continue
+		}
+		var autos, manuals []int
+		for _, k := range fusingIdx {
+			if result.matched[k] || !sameFusingOpContent(&stored.Operations[i], &stored.Operations[k]) {
+				continue
+			}
+			grouped[k] = true
+			if _, ok := autoIdentity(&stored.Operations[k]); ok {
+				autos = append(autos, k)
+			} else {
+				manuals = append(manuals, k)
+			}
+		}
+		candidates := make([]int, 0)
+		for j := range incoming.Operations {
+			in := &incoming.Operations[j]
+			if taken[j] || keyed[j] || in.OperationType != entity.OpTypeFusing ||
+				!sameFusingOpContent(&stored.Operations[i], in) {
+				continue
+			}
+			candidates = append(candidates, j)
+		}
+		switch {
+		case len(autos) == 0 && len(candidates) == len(manuals):
+			for _, j := range candidates {
+				taken[j] = true
+			}
+		case len(autos) == 1 && len(manuals) == 0 && len(candidates) == 1:
+			j := candidates[0]
+			s := &stored.Operations[autos[0]]
 			taken[j] = true
+			result.matched[autos[0]] = true
+			incoming.Operations[j].AutoFusingLineKey = s.AutoFusingLineKey
+			incoming.Operations[j].AutoFusingPieceKey = s.AutoFusingPieceKey
+		case len(autos) > 0 && len(candidates) > 0:
+			result.unresolved = true
+			for _, k := range autos {
+				blocked[k] = true
+			}
 		}
 	}
 	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, _ *entity.TechCardOperation) bool {

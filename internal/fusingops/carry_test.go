@@ -442,6 +442,33 @@ func TestAmbiguousSamePieceEditsKeepStoreFallbackEnabled(t *testing.T) {
 	}
 }
 
+func TestReorderedEditedAutoAndSameShapeManualKeepTheirIdentities(t *testing.T) {
+	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
+	edited.Draft = false
+	edited.Note = sql.NullString{String: "automatic settings", Valid: true}
+	manual := manualFusing(20, []string{"INTERLINING-A"}, "FRONT")
+	stored := fusedCard([]entity.TechCardOperation{edited, manual, machineOp(30, "join")})
+	incoming := staleCopy(stored, []entity.TechCardOperation{
+		wireEcho(manual, 10), wireEcho(edited, 20), machineOp(30, "join"),
+	})
+
+	outcome, err := ReconcileTechCardUpdate(stored, incoming)
+	if err != nil || outcome.Carried || outcome.Reconcile {
+		t.Fatalf("outcome = %+v err = %v, want a content-matched reorder", outcome, err)
+	}
+	if !incoming.AutoFusingKeysResolved {
+		t.Fatal("unambiguous full-content echoes left the store fallback enabled")
+	}
+	if got := incoming.Operations[0]; got.AutoFusingPieceKey.Valid || got.AutoFusingLineKey.Valid ||
+		got.Note.String != "by hand" {
+		t.Fatalf("manual step inherited automatic identity: %#v", got)
+	}
+	if got := incoming.Operations[1]; got.AutoFusingPieceKey != autoKey("FRONT") ||
+		got.AutoFusingLineKey.Valid || got.Note.String != "automatic settings" {
+		t.Fatalf("edited automatic step lost its identity: %#v", got)
+	}
+}
+
 func TestDeletedPieceInputIsRemovedBeforeAssemblyValidation(t *testing.T) {
 	for _, draft := range []bool{true, false} {
 		name := "edited_orphan_is_kept"
