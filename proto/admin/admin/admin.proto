@@ -2576,6 +2576,14 @@ service AdminService {
       body: "*"
     };
   }
+  // Receive several supplier-invoice lines atomically. Shared delivery and input VAT totals are
+  // allocated by line net value before each receipt is posted.
+  rpc ReceiveMaterialStockBatch(ReceiveMaterialStockBatchRequest) returns (ReceiveMaterialStockBatchResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/receive-batch"
+      body: "*"
+    };
+  }
   rpc IssueMaterialStock(IssueMaterialStockRequest) returns (IssueMaterialStockResponse) {
     option (google.api.http) = {
       post: "/api/admin/inventory/issue"
@@ -11761,10 +11769,36 @@ message ReceiveMaterialStockRequest {
   // Measured LENGTH has no field: `quantity` already is it.
   google.type.Decimal measured_width_cm = 13;
   string shade_code = 14;
+  int32 invoice_file_id = 15; // supplier invoice from the private files library; 0 = none
 }
 
 message ReceiveMaterialStockResponse {
   common.MaterialMovement movement = 1;
+}
+
+message ReceiveMaterialStockLine {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2; // > 0
+  google.type.Decimal unit_cost = 3; // NET per unit, in request currency; empty = uncosted line
+  string lot = 4;
+}
+
+message ReceiveMaterialStockBatchRequest {
+  repeated ReceiveMaterialStockLine lines = 1; // 1..50; material_id must be unique
+  string currency = 2;
+  int32 supplier_id = 3;
+  string supplier_doc = 4;
+  int32 invoice_file_id = 5;
+  string occurred_at = 6;
+  string expected_at = 7;
+  string comment = 8;
+  google.type.Decimal input_vat_amount = 9; // invoice total, EUR
+  string input_vat_regime = 10;
+  google.type.Decimal delivery_cost = 11; // invoice delivery NET, in currency; empty/0 = none
+}
+
+message ReceiveMaterialStockBatchResponse {
+  repeated common.MaterialMovement movements = 1;
 }
 
 message IssueMaterialStockRequest {
