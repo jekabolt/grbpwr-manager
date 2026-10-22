@@ -637,18 +637,22 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
+	// Always hand the store the pre-update card. Most saves never persist this blob: the store does
+	// so lazily only if pattern reconciliation is about to archive an outgoing sheet. This closes the
+	// restore gap for clients that replace or remove a sheet without sending snapshot_reason, while
+	// leaving SnapshotReason empty so those saves do not gain a second revision-journal entry.
+	blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
+			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
+	}
+	tc.SnapshotJSON = blob
+	// The blob is `stored`; the store writes it only if the row is still at this version, so the
+	// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
+	tc.SnapshotLockVersion = stored.LockVersion
 	if snapshotReason != "" {
-		blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
-				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
-			return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
-		}
 		tc.SnapshotReason = snapshotReason
-		tc.SnapshotJSON = blob
-		// The blob is `stored`; the store writes it only if the row is still at this version, so the
-		// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
-		tc.SnapshotLockVersion = stored.LockVersion
 	}
 	return tc, nil
 }

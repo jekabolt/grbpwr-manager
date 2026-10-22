@@ -40,6 +40,8 @@ func TestSnapshotCanBeDeletedOnlyAfterLastNonRestoreReference(t *testing.T) {
 		want      bool
 	}{
 		{name: "another history row retains it", reason: "dxf-delete", remaining: 1, want: false},
+		{name: "replacement history retains implicit snapshot", reason: "pattern replaced", remaining: 1, want: false},
+		{name: "removal history retains implicit snapshot", reason: "pattern removed", remaining: 1, want: false},
 		{name: "last ordinary reference", reason: "dxf-delete", remaining: 0, want: true},
 		{name: "restore snapshot is durable", reason: "restore:42", remaining: 0, want: false},
 	}

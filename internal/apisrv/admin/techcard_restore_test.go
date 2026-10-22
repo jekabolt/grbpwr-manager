@@ -370,7 +370,7 @@ func TestRestoreWithoutCostingWrite(t *testing.T) {
 // never the payload (sheet v7), and it carries the version it was read at, so the store writes it only
 // if the row is still that card. The store half — the snapshot row is inserted first in the same
 // transaction and its id goes onto the history row of v6, the OUTGOING sheet, while v7 gets no history
-// row — is UpdateTechCardTx → insertTechCardChildren(…, snapshotID) → insertTechCardPatterns →
+// row — is UpdateTechCardTx → insertTechCardChildren(…, snapshotIDForArchive) → insertTechCardPatterns →
 // archiveTechCardPattern, which only ever archives replaced or removed rows.
 func TestSaveWithSnapshotReasonFreezesTheOutgoingCard(t *testing.T) {
 	restoreHosts(t)
@@ -402,6 +402,38 @@ func TestSaveWithSnapshotReasonFreezesTheOutgoingCard(t *testing.T) {
 		"the snapshot is the card v7 replaces — restoring it brings back v6")
 	require.Empty(t, frozen.GetTechCard().GetOperations()[1].GetReview(),
 		"and the steps as they were before the reconciliation marked them")
+}
+
+// A CLIENT THAT DOES NOT KNOW snapshot_reason STILL HANDS THE STORE THE SAME PRE-SAVE CARD.
+// SnapshotReason deliberately stays empty: UpdateTechCardTx uses the blob only if pattern
+// reconciliation archives an outgoing row, and the ordinary save keeps its one generic journal row.
+func TestSaveWithoutSnapshotReasonStillFreezesTheOutgoingCardForPatternHistory(t *testing.T) {
+	restoreHosts(t)
+	rig := newRestoreRig(t)
+	stored := restoreCardAtV6()
+	stored.LockVersion = 3
+	rig.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, restoreCardID).Return(stored, nil)
+	var written *entity.TechCardInsert
+	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
+		mock.AnythingOfType("*entity.TechCardInsert"), 3).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Return(nil, entity.ErrTechCardConflict)
+
+	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
+	payload.OperationReviewAware = true
+	payload.MachineFieldsAware = true
+	payload.LabelsAware = true
+	_, err := rig.srv.UpdateTechCard(restoreCtx(), &pb_admin.UpdateTechCardRequest{
+		Id: restoreCardID, ExpectedLockVersion: 3, TechCard: payload,
+	})
+	require.Equal(t, codes.Aborted, status.Code(err), "%v", err)
+	require.NotNil(t, written)
+	require.Empty(t, written.SnapshotReason, "an implicit pattern snapshot must not alter the revision journal")
+	require.Equal(t, 3, written.SnapshotLockVersion)
+	var frozen pb_common.TechCard
+	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozen))
+	require.Equal(t, restoreSheetV6, frozen.GetTechCard().GetPatterns()[0].GetUrl(),
+		"the lazy store snapshot must restore the outgoing sheet, not the incoming replacement")
 }
 
 // TestRestorePayloadSpeaksEveryField — the read model is not a write payload: for a dozen fields an

@@ -49,7 +49,7 @@ func (s *Store) CloneTechCardForSeason(ctx context.Context, sourceID, expectedSo
 		if err := syncStyleCategoryTriple(ctx, db, id, tc.CategoryId); err != nil {
 			return err
 		}
-		if err := insertTechCardChildren(ctx, db, id, tc, 0); err != nil {
+		if err := insertTechCardChildren(ctx, db, id, tc, nil); err != nil {
 			return err
 		}
 		if err := copySeasonCloneCarryover(ctx, db, sourceID, id, tc.CreatedBy); err != nil {
