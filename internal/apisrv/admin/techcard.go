@@ -17,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fusingops"
 	"github.com/jekabolt/grbpwr-manager/internal/stylenumber"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -195,6 +196,12 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// лечась переутверждением. Хранимой карточки нет вовсе, поэтому счётчик начинается с нуля и
 	// поднимается до MAX(номеров payload'а).
 	dto.MintCalloutNumbers(nil, tc)
+	// Materialise the derived FUSING steps before any approval digest is stamped. The store repeats
+	// this transition inside its transaction; doing it here keeps the signed write model identical to
+	// the eventual read model (including operation and issue renumbering).
+	if err := fusingops.ReconcileTechCard(tc); err != nil {
+		return nil, apierr.Invalid(err)
+	}
 	// Server-stamp the audit trail (norm §2.11); client-sent values are ignored.
 	username := authsrv.GetAdminUsername(ctx)
 	tc.CreatedBy, tc.UpdatedBy = username, username
@@ -559,6 +566,20 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// той же причине. Отличие одно: перенос ещё и ГАСИТ разметку, если эта же правка сняла галку
 	// «дублируется», — иначе дайджест подписал бы режим, который стор в ту же транзакцию обнулит.
 	carryOmittedPieceFusingFrom(stored, tc)
+	// The selected interlining, edge/zone geometry and advanced fusing settings are independently
+	// optional for the same stale-tab reason. Carry each omitted value before restamping the
+	// CONSTRUCTION digest so the signature describes what the store's guarded UPDATE will retain.
+	carryOmittedPieceFusingDetailsFrom(stored, tc)
+	// Reconcile after every presence carry: an old tab may omit the selected interlining, and the
+	// resolved operation must be computed from the value the same transaction will actually retain.
+	// This also happens before the final sign-off restamp, preventing a generated/moved step from
+	// making a fresh CONSTRUCTION approval stale on its first read.
+	if err := fusingops.ReconcileTechCard(tc); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	if err := operationReviewReleaseGate(tc); err != nil {
+		return nil, err
+	}
 	// ГЕОМЕТРИЯ УКАЗАНИЙ НА ЭСКИЗЕ (0309) — тот же контракт присутствия, но на секции DESIGN.
 	// Вкладка со старым бандлом шлёт выноски без вида, якорей и цвета; без переноса сохранение
 	// такой вкладки стёрло бы каждую мерку и скобку на карточке, а подпись DESIGN, поставленная

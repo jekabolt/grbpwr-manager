@@ -14,25 +14,39 @@ import (
 // card save path.
 func pieceUpsertParams() map[string]any {
 	return map[string]any{
-		"tech_card_id":         1,
-		"name":                 "полочка",
-		"line_key":             "01ABCDEF0000000000000001",
-		"pieces_per_garment":   2,
-		"mirrored":             false,
-		"cut_symmetry":         sql.NullString{String: "mirrored", Valid: true},
-		"cut_symmetry_omitted": false,
-		"ungraded":             false,
-		"ungraded_omitted":     false,
-		"grainline":            "lengthwise",
-		"fused":                false,
-		"fusing_mode":          sql.NullString{},
-		"fusing_width_mm":      decimal.NullDecimal{},
-		"fusing_omitted":       false,
-		"callout_number":       sql.NullInt32{},
-		"detached":             false,
-		"note":                 sql.NullString{},
-		"display_order":        0,
-		"id":                   7,
+		"tech_card_id":             1,
+		"name":                     "полочка",
+		"line_key":                 "01ABCDEF0000000000000001",
+		"pieces_per_garment":       2,
+		"mirrored":                 false,
+		"cut_symmetry":             sql.NullString{String: "mirrored", Valid: true},
+		"cut_symmetry_omitted":     false,
+		"ungraded":                 false,
+		"ungraded_omitted":         false,
+		"grainline":                "lengthwise",
+		"fused":                    false,
+		"fusing_mode":              sql.NullString{},
+		"fusing_width_mm":          decimal.NullDecimal{},
+		"fusing_omitted":           false,
+		"fusing_bom_item_id":       nil,
+		"fusing_bom_omitted":       false,
+		"fusing_edges":             nil,
+		"fusing_edges_omitted":     false,
+		"fusing_zone":              nil,
+		"fusing_zone_omitted":      false,
+		"fusing_inset_mm":          decimal.NullDecimal{},
+		"fusing_inset_mm_omitted":  false,
+		"fusing_inset_net":         sql.NullBool{},
+		"fusing_inset_net_omitted": false,
+		"fusing_grain":             sql.NullString{},
+		"fusing_grain_omitted":     false,
+		"fusing_darts":             sql.NullString{},
+		"fusing_darts_omitted":     false,
+		"callout_number":           sql.NullInt32{},
+		"detached":                 false,
+		"note":                     sql.NullString{},
+		"display_order":            0,
+		"id":                       7,
 	}
 }
 
@@ -106,7 +120,11 @@ func TestPieceUpdateClearsFusingWhenTheBoxIsUnchecked(t *testing.T) {
 // перестала бы совпадать со своим же хранимым дайджестом — та самая беда, о которой предупреждает
 // шапка pieceReadQuery.
 func TestPieceReadSelectsTheFusingColumns(t *testing.T) {
-	for _, col := range []string{"fusing_mode", "fusing_width_mm"} {
+	for _, col := range []string{
+		"fusing_mode", "fusing_width_mm", "fusing_bom_item_id", "fusing_bom_line_key",
+		"fusing_edges", "fusing_zone", "fusing_inset_mm", "fusing_inset_net",
+		"fusing_grain", "fusing_darts",
+	} {
 		if !strings.Contains(pieceReadQuery, col) {
 			t.Fatalf("the piece read must SELECT %s — the digest hashes it", col)
 		}

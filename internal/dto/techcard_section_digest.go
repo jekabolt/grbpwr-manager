@@ -616,6 +616,44 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if p.FusingMode.Valid {
 			row = append(row, []any{"fusing", p.FusingMode.String, digestDecimal(p.FusingWidthMm)})
 		}
+		// FUSING WAVE DETAILS are a separately tagged conditional tail. Keeping the established
+		// (mode,width) tuple byte-for-byte means cards that predate 0426 do not all become stale at
+		// deploy time; the tail appears only when somebody records one of the new physical facts.
+		fusingDetails := []any{"fusing_details"}
+		if p.FusingBomLineKey != "" {
+			fusingDetails = append(fusingDetails, []any{"bom", p.FusingBomLineKey})
+		}
+		if len(p.FusingEdges) > 0 {
+			edges := make([]any, 0, len(p.FusingEdges))
+			for _, edge := range p.FusingEdges {
+				edges = append(edges, []any{edge.Edge, edge.StartMm.String(), edge.EndMm.String()})
+			}
+			fusingDetails = append(fusingDetails, []any{"edges", edges})
+		}
+		if p.FusingZone != nil {
+			switch {
+			case p.FusingZone.Rect != nil:
+				r := p.FusingZone.Rect
+				fusingDetails = append(fusingDetails, []any{"zone_rect", r.X0.String(), r.Y0.String(), r.X1.String(), r.Y1.String()})
+			case p.FusingZone.DxfPieceKey != "":
+				fusingDetails = append(fusingDetails, []any{"zone_dxf", p.FusingZone.DxfPieceKey})
+			}
+		}
+		if p.FusingInsetMm.Valid {
+			fusingDetails = append(fusingDetails, []any{"inset_mm", p.FusingInsetMm.Decimal.String()})
+		}
+		if p.FusingInsetNet.Valid && p.FusingInsetNet.Bool {
+			fusingDetails = append(fusingDetails, []any{"inset_net", true})
+		}
+		if p.FusingGrain.Valid {
+			fusingDetails = append(fusingDetails, []any{"grain", p.FusingGrain.String})
+		}
+		if p.FusingDarts.Valid {
+			fusingDetails = append(fusingDetails, []any{"darts", p.FusingDarts.String})
+		}
+		if len(fusingDetails) > 1 {
+			row = append(row, fusingDetails)
+		}
 		pieces = append(pieces, row)
 	}
 	out := []any{construction, ops, pieces}

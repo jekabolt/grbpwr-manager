@@ -1619,6 +1619,12 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardIssues(ctx, db, id, tc.Issues); err != nil {
 		return err
 	}
+	// FUSING steps are derived from the final piece + BOM state of this save. Reconcile only after
+	// both are durable and after issues, whose operation-number references move with the generated
+	// steps. db is the caller's transaction, so every link/order/review change commits atomically.
+	if err := ReconcileFusingOps(ctx, db, id); err != nil {
+		return err
+	}
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
