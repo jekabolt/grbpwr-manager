@@ -676,8 +676,12 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// Automatic FUSING identity is private store metadata and therefore is not echoed by protobuf.
 	// Carry it before the operation full-replace so direct/maintenance writers preserve the same
 	// orphan discriminator as the API update path.
-	if err := carryStoredAutoFusingKeys(ctx, rep.DB(), id, tc.Operations); err != nil {
-		return nil, err
+	// The API path resolves this identity itself (by content, not number) and may have renumbered
+	// the list while restoring draft automatic steps; a number match here would contradict it.
+	if !tc.AutoFusingKeysResolved {
+		if err := carryStoredAutoFusingKeys(ctx, rep.DB(), id, tc.Operations); err != nil {
+			return nil, err
+		}
 	}
 
 	// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their

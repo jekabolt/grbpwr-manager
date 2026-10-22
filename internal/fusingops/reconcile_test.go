@@ -27,12 +27,12 @@ func TestUnrelatedUpdateDoesNotTouchLegacyFusingOperation(t *testing.T) {
 	incoming.Operations = append([]entity.TechCardOperation(nil), stored.Operations...)
 	before := append([]entity.TechCardOperation(nil), incoming.Operations...)
 
-	changed, err := ReconcileTechCardUpdate(stored, &incoming)
+	outcome, err := ReconcileTechCardUpdate(stored, &incoming)
 	if err != nil {
 		t.Fatalf("ReconcileTechCardUpdate() error = %v", err)
 	}
-	if changed {
-		t.Fatal("unrelated save was classified as a fusing change")
+	if outcome.Reconcile || outcome.Carried {
+		t.Fatalf("unrelated save changed the operation list: %+v", outcome)
 	}
 	if !reflect.DeepEqual(incoming.Operations, before) {
 		t.Fatalf("unrelated save mutated legacy FUSING operation: before=%#v after=%#v", before, incoming.Operations)
