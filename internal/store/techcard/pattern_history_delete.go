@@ -119,7 +119,7 @@ func (s *Store) DeleteTechCardPatternRevisionAndListOrphanedPatternURLs(
 			}
 		}
 
-		if err := appendTechCardRevision(ctx, rep.DB(), techCardID, actor, "pieces", "deleted",
+		if err := appendTechCardRevision(ctx, rep.DB(), techCardID, actor, "pieces", "updated",
 			fmt.Sprintf("pattern history revision %d deleted", historyID)); err != nil {
 			return err
 		}
