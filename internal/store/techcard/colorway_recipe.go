@@ -318,7 +318,7 @@ func rollGoodsSectionInOn(alias string) string {
 }
 
 // loadRollGoodsLines reads the card's cloth lines in the shape the ONE binding rule takes
-// (entity.ResolveFabricScope / entity.FabricScopeIdentity): the stable line_key and its назначение.
+// (entity.ResolveFabricScope / entity.FabricScopeIdentity): stable line_key, назначение and section.
 //
 // One loader for every path that has to resolve a binding, because the ARGUMENTS of that rule drift
 // as easily as the rule itself: a caller that forgot the purpose column, or narrowed the families to
@@ -329,7 +329,8 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 	rows, err := storeutil.QueryListNamed[struct {
 		LineKey string `db:"line_key"`
 		Purpose string `db:"purpose"`
-	}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose
+		Section string `db:"section"`
+	}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose, section
 		FROM tech_card_bom_item
 		WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
 		rollGoodsSectionArgs(map[string]any{"id": techCardID}))
@@ -338,7 +339,9 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 	}
 	out := make([]entity.RollGoodsLine, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, entity.RollGoodsLine{LineKey: r.LineKey, Purpose: r.Purpose})
+		out = append(out, entity.RollGoodsLine{
+			LineKey: r.LineKey, Purpose: r.Purpose, Section: entity.TechCardBomSection(r.Section),
+		})
 	}
 	return out, nil
 }

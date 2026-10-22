@@ -73,12 +73,12 @@ func dec(s string) decimal.NullDecimal {
 	return decimal.NullDecimal{Decimal: d, Valid: true}
 }
 
-// card8Piece is one row of the pieces table of the dump.
+// card8Piece is one row of the pieces table of the dump, with its current effective fabric scope.
 type card8Piece struct {
 	id       int
 	name     string
 	ungraded bool
-	scope    string // ведро ткани из дампа; в entity колонки нет — резолвится через рецепт
+	scope    string // effective scope; INTERLINING is the BOM line key since L11
 }
 
 // card8Pieces — 48 строк дампа в том же порядке (по scope, внутри — по имени), потому что порядок
@@ -128,20 +128,19 @@ var card8Pieces = []card8Piece{
 	{77, "PCK_OUT_L_S", true, "pocketing"},
 	{78, "PCK_OUT_R_S", true, "pocketing"},
 	{79, "PCK_UP_INS_S", true, "pocketing"},
-	{80, "SHLD_1_L", false, "other"},
-	{81, "SHLD_1_R", false, "other"},
-	{82, "SHLD_L", false, "other"},
-	{83, "SHLD_R", false, "other"},
+	{80, "SHLD_1_L", false, card8BomInterlining},
+	{81, "SHLD_1_R", false, card8BomInterlining},
+	{82, "SHLD_L", false, card8BomInterlining},
+	{83, "SHLD_R", false, card8BomInterlining},
 }
 
-// card8ScopeToBom maps the dump's scope column to the BOM line that carries that назначение. Ведро
-// НЕ хранится на детали: в entity такой колонки нет — привязка живёт в строке рецепта колорвея
-// (usage.piece_id), и ведро резолвится из назначения строки BOM (entity.FabricScopeIdentity).
+// card8ScopeToBom maps each effective scope to the BOM line recipe rows reference. Ordinary cloth
+// scopes are purposes; INTERLINING is its own line key since L11.
 var card8ScopeToBom = map[string]string{
-	"main":      card8BomMain,
-	"lining":    card8BomLining,
-	"pocketing": card8BomPocketing,
-	"other":     card8BomInterlining, // «Плечевая», purpose other («Плечи»)
+	"main":              card8BomMain,
+	"lining":            card8BomLining,
+	"pocketing":         card8BomPocketing,
+	card8BomInterlining: card8BomInterlining, // «Плечевая», purpose other («Плечи»)
 }
 
 // pc / un spell one operation input: a cut piece BY NAME, or a unit BY KEY. Явные конструкторы, а

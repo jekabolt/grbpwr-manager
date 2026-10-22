@@ -1539,8 +1539,7 @@ func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool
 		// То есть карточка, которую мы только что отказались считать, всё равно называла бы цену,
 		// просто чужую. Здесь поэтому только len(pieces) > 0: конфликт снимет уже расчёт.
 		if pieces, _, _ := slotAssignedPieces(tc, cw, b); len(pieces) > 0 {
-			scope := entity.FabricScopeKey(b.Purpose.String, b.LineKey)
-			if sc, ok := tc.PieceAreaScopes[scope]; ok && len(sc.Rows) > 0 {
+			if _, sc, ok := pieceAreaScopeForBom(tc, b); ok && len(sc.Rows) > 0 {
 				return true
 			}
 		}

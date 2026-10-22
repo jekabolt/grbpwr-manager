@@ -508,6 +508,21 @@ func TestScopeFabricDirectionStrictest(t *testing.T) {
 	}
 }
 
+func TestMarkerFabricScopeDoesNotMergeSamePurposeInterliningLines(t *testing.T) {
+	lines := []FabricDirectionLine{
+		{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining, Direction: "any"},
+		{LineKey: "FUSE-B", Purpose: "interfacing", Section: BomSectionInterlining, Direction: "one_way"},
+	}
+	scope := MarkerFabricScope("FUSE-A", lines)
+	if scope.Key != "FUSE-A" || len(scope.LineKeys) != 1 || scope.LineKeys[0] != "FUSE-A" {
+		t.Fatalf("interlining marker scope = %#v, want FUSE-A only", scope)
+	}
+	dir, unknown, ok := ScopeFabricDirection(scope, lines)
+	if !ok || len(unknown) != 0 || dir != FabricDirectionAny {
+		t.Fatalf("FUSE-B direction leaked into FUSE-A: dir=%q unknown=%v ok=%v", dir, unknown, ok)
+	}
+}
+
 func requireFieldViolation(t *testing.T, err error, field, reason string) *ValidationError {
 	t.Helper()
 	var ve *ValidationError

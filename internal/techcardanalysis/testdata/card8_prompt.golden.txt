@@ -53,10 +53,10 @@ CUT PIECES (name | per garment | fabric bucket | non-default attributes):
 - PCK_OUT_L_S | x1 | pocketing | ungraded
 - PCK_OUT_R_S | x1 | pocketing | ungraded
 - PCK_UP_INS_S | x1 | pocketing | ungraded
-- SHLD_1_L | x1 | other
-- SHLD_1_R | x1 | other
-- SHLD_L | x1 | other
-- SHLD_R | x1 | other
+- SHLD_1_L | x1 | 01M082KWYFHQ9T4PNW2NP9184D
+- SHLD_1_R | x1 | 01M082KWYFHQ9T4PNW2NP9184D
+- SHLD_L | x1 | 01M082KWYFHQ9T4PNW2NP9184D
+- SHLD_R | x1 | 01M082KWYFHQ9T4PNW2NP9184D
 
 BILL OF MATERIALS (section, purpose | name | price):
 - [lining, purpose lining] подкладка - 1.0000 EUR/m

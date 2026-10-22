@@ -103,7 +103,8 @@ func TestCard8PiecesMatchTheDump(t *testing.T) {
 		t.Errorf("ungraded деталей %d, в дампе 7 (все pocketing)", ungraded)
 	}
 
-	// Ведро ткани резолвится через рецепт и совпадает с колонкой scope дампа у ВСЕХ 48 деталей.
+	// Ведро ткани резолвится через рецепт у ВСЕХ 48 деталей. L11 intentionally changes the four
+	// interlining pieces from dump purpose `other` to their BOM line key.
 	if len(scopes) != 48 {
 		t.Fatalf("ведро ткани разрешилось у %d деталей из 48", len(scopes))
 	}
@@ -122,7 +123,7 @@ func TestCard8PiecesMatchTheDump(t *testing.T) {
 	for _, s := range scopes {
 		byScope[s]++
 	}
-	wantScopes := map[string]int{"main": 24, "lining": 13, "pocketing": 7, "other": 4}
+	wantScopes := map[string]int{"main": 24, "lining": 13, "pocketing": 7, card8BomInterlining: 4}
 	for scope, want := range wantScopes {
 		if byScope[scope] != want {
 			t.Errorf("в ведре %q деталей %d, в дампе %d", scope, byScope[scope], want)
@@ -141,9 +142,9 @@ func TestCard8PiecesMatchTheDump(t *testing.T) {
 		// Карманка.
 		"PCK_MAIN_INS_S": "pocketing",
 		"PCK_UP_INS_S":   "pocketing",
-		// Плечевые накладки: строка «Плечевая», назначение other.
-		"SHLD_L":   "other",
-		"SHLD_1_R": "other",
+		// Плечевые накладки: INTERLINING строка «Плечевая» — собственный line scope since L11.
+		"SHLD_L":   card8BomInterlining,
+		"SHLD_1_R": card8BomInterlining,
 		"BP_L":     "main",
 	}
 	for name, want := range named {

@@ -64,8 +64,8 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 	return out, nil
 }
 
-// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs a card's own write does not carry:
-// measured piece areas and the recipe's piece→fabric assignments (Ф-П).
+// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs appended to COSTING: measured
+// piece areas, recipe piece→fabric assignments, and the resolved per-piece fusible (Ф-П/L11).
 //
 // BOTH SIDES CALL THIS ONE FUNCTION — the card read (which puts the token on the entity) and the
 // write path that stamps a fresh COSTING approval (which has only the payload, and the payload
@@ -178,6 +178,42 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			FusingMarking:    r.FusingMarking,
 		})
 	}
+	// The selected INTERLINING line lives on the piece itself and may have no duplicate recipe row.
+	// Once geometry exists it changes which slot consumes that contour, so COSTING must see it.
+	// Cards without areas remain byte-identical: no area-derived cost can use the selection yet.
+	if len(areas) > 0 {
+		fusingRows, err := storeutil.QueryListNamed[struct {
+			PieceKey         string `db:"piece_key"`
+			FusingBomKey     string `db:"fusing_bom_key"`
+			PiecesPerGarment int    `db:"pieces_per_garment"`
+			FusingMarking    string `db:"fusing_marking"`
+		}](ctx, s.DB, `
+			SELECT COALESCE(p.line_key, CONCAT('#', p.id)) AS piece_key,
+			       COALESCE(b.line_key, CONCAT('#', p.fusing_bom_item_id)) AS fusing_bom_key,
+			       COALESCE(p.pieces_per_garment, 0) AS pieces_per_garment,
+			       IF(p.fusing_mode IS NULL, '', CONCAT_WS('|',
+			           p.fusing_mode,
+			           COALESCE(p.fusing_width_mm, ''),
+			           IF(p.fusing_mode = 'strip' AND p.fusing_width_mm IS NULL,
+			              COALESCE(tc.required_seam_allowance_mm, ws.default_seam_allowance_mm, ''),
+			              '')
+			       )) AS fusing_marking
+			FROM tech_card_piece p
+			JOIN tech_card_bom_item b ON b.id = p.fusing_bom_item_id
+			LEFT JOIN tech_card tc ON tc.id = p.tech_card_id
+			LEFT JOIN workshop_settings ws ON ws.id = 1
+			WHERE p.tech_card_id = :id AND p.fused = 1 AND p.fusing_bom_item_id IS NOT NULL`,
+			map[string]any{"id": techCardID})
+		if err != nil {
+			return "", fmt.Errorf("load piece→fusing assignments of tech card %d: %w", techCardID, err)
+		}
+		for _, r := range fusingRows {
+			assignments = append(assignments, entity.PieceFabricAssignment{
+				PieceKey: r.PieceKey, FusingBomKey: r.FusingBomKey,
+				PiecesPerGarment: r.PiecesPerGarment, FusingMarking: r.FusingMarking,
+			})
+		}
+	}
 	return entity.DerivedCostInputsDigest(areas, assignments), nil
 }
 
@@ -221,11 +257,39 @@ func scopeSheetRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	out := map[string][]entity.PatternSheetRef{}
 	for _, sh := range sheets {
 		k := entity.FabricScopeIdentity(sh.FabricPurpose, sh.BomLineKey, lines)
-		out[k] = append(out[k], entity.PatternSheetRef{
+		ref := entity.PatternSheetRef{
 			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
-		})
+		}
+		out[k] = append(out[k], ref)
+		// Preserve the fingerprint of legacy purpose-keyed area rows. An old singleton binding often
+		// stores both purpose and compatibility line; its effective identity is now the line, while
+		// the already measured area remains under the raw purpose key.
+		if raw := entity.FabricScopeKey(sh.FabricPurpose, sh.BomLineKey); raw != "" && raw != k {
+			out[raw] = append(out[raw], ref)
+		}
 	}
+	applyLegacyInterliningReadFallback(out, lines)
 	return out, nil
+}
+
+// applyLegacyInterliningReadFallback exposes old purpose-keyed artefacts to their one unambiguous
+// interlining line. A line-scoped set always wins wholesale; mixing the two sets would let stale
+// aliases or sheets from the old bucket contaminate a newly generated per-line fingerprint.
+func applyLegacyInterliningReadFallback[T any](byScope map[string][]T, lines []entity.RollGoodsLine) {
+	for _, line := range lines {
+		if line.Section != entity.BomSectionInterlining {
+			continue
+		}
+		lineScope := entity.EffectiveFabricScopeKey(line)
+		if lineScope == "" || len(byScope[lineScope]) > 0 {
+			continue
+		}
+		legacyScope, ok := entity.LegacyInterliningPurposeScope(line, lines)
+		if !ok || len(byScope[legacyScope]) == 0 {
+			continue
+		}
+		byScope[lineScope] = byScope[legacyScope]
+	}
 }
 
 // scopeBlockRefs loads a card's блок→деталь links, bucketed by the ТКАНЬ they address. A link whose
@@ -258,10 +322,15 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	out := make(map[string][]entity.PieceAreaBlockRef, len(rows))
 	for _, r := range rows {
 		k := entity.FabricScopeIdentity(r.FabricPurpose, r.BomLineKey, lines)
-		out[k] = append(out[k], entity.PieceAreaBlockRef{
+		ref := entity.PieceAreaBlockRef{
 			BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
-		})
+		}
+		out[k] = append(out[k], ref)
+		if raw := entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey); raw != "" && raw != k {
+			out[raw] = append(out[raw], ref)
+		}
 	}
+	applyLegacyInterliningReadFallback(out, lines)
 	return out, nil
 }
 
@@ -433,7 +502,7 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // расшить.
 //
 // А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
-// ЖИВОЙ строки (dto.slotAreaEstimate считает его как FabricScopeKey(строка.purpose, строка.line_key)),
+// ЖИВОЙ строки (dto.slotAreaEstimate считает его как EffectiveFabricScopeKey(строка)),
 // поэтому мёртвое ведро не питает ни одну норму. Противоречие, ради которого стоит гард, физически
 // не может из него возникнуть.
 //
@@ -443,9 +512,19 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // заглавные ULID'ы на входе, обе стороны считает одна функция.
 func livePieceKeysOfSizedAreas(rows []sizedAreaRow, lines []entity.RollGoodsLine) map[string]bool {
 	live := make(map[string]bool, len(lines))
+	areaScopes := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		areaScopes[strings.TrimSpace(r.ScopeKey)] = true
+	}
 	for _, l := range lines {
-		if k := entity.FabricScopeKey(l.Purpose, l.LineKey); k != "" {
-			live[k] = true
+		keys := entity.FabricScopeReadKeys(l, lines)
+		if len(keys) == 0 {
+			continue
+		}
+		live[keys[0]] = true
+		// A stored line-scoped area set suppresses the legacy purpose fallback wholesale.
+		if len(keys) > 1 && !areaScopes[keys[0]] {
+			live[keys[1]] = true
 		}
 	}
 	out := make(map[string]bool, len(rows))

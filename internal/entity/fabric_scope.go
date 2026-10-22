@@ -33,14 +33,15 @@ import "strings"
 type RollGoodsLine struct {
 	LineKey string
 	Purpose string
+	Section TechCardBomSection
 }
 
 // FabricScope is one binding, resolved.
 type FabricScope struct {
-	// Key is the UNIQUENESS bucket the binding files under, and it is exactly what the generated
-	// column tech_card_piece_dxf_block.scope_key holds: COALESCE(fabric_purpose, bom_line_key).
-	// Computed by the same function on both sides on purpose — the index and Go agree by
-	// construction rather than by agreement. "" means the binding names nothing at all.
+	// Key is the binding key used by write validation/diffing. It equals the stored COALESCE bucket
+	// for ordinary roll goods; a binding that names an INTERLINING line resolves to that line even
+	// when an old client also echoed its purpose. Cross-table readers use FabricScopeIdentity.
+	// "" means the binding names nothing at all.
 	Key string
 	// ByPurpose reports WHICH half of the COALESCE answered. The caller needs it for the message it
 	// writes: «no BOM line with this назначение» and «no such BOM line» send an operator to two
@@ -70,24 +71,106 @@ func FabricScopeKey(purpose, bomLineKey string) string {
 	return strings.TrimSpace(bomLineKey)
 }
 
+// EffectiveFabricScopeKey is the fabric identity a BOM line uses today. INTERLINING is physical
+// material, not a purpose class: every fusible line owns its sheets, aliases and measured areas.
+// All other roll-goods sections retain the purpose-first rule introduced by 0267.
+//
+// FabricScopeKey deliberately remains the raw stored-row bucket (the DB's COALESCE). Do not use
+// this helper to key a row without a BOM line: changing that would disagree with the generated
+// scope_key column and its unique indexes.
+func EffectiveFabricScopeKey(line RollGoodsLine) string {
+	if line.Section == BomSectionInterlining {
+		return strings.TrimSpace(line.LineKey)
+	}
+	return FabricScopeKey(line.Purpose, line.LineKey)
+}
+
+// LegacyInterliningPurposeScope returns the purpose bucket an interlining line may read for
+// compatibility. It is intentionally available only when that purpose identifies exactly one
+// interlining line on the card. Callers must prefer the line scope whenever it contains data;
+// this function supplies a fallback, never a second scope to merge.
+func LegacyInterliningPurposeScope(line RollGoodsLine, lines []RollGoodsLine) (string, bool) {
+	if line.Section != BomSectionInterlining {
+		return "", false
+	}
+	purpose := strings.TrimSpace(line.Purpose)
+	key := strings.TrimSpace(line.LineKey)
+	if purpose == "" || key == "" {
+		return "", false
+	}
+	match := ""
+	for _, candidate := range lines {
+		if candidate.Section != BomSectionInterlining ||
+			!strings.EqualFold(strings.TrimSpace(candidate.Purpose), purpose) ||
+			strings.TrimSpace(candidate.LineKey) == "" {
+			continue
+		}
+		if match != "" {
+			return "", false
+		}
+		match = candidate.LineKey
+	}
+	if !strings.EqualFold(strings.TrimSpace(match), key) {
+		return "", false
+	}
+	return purpose, true
+}
+
+// FabricScopeReadKeys lists a line's effective scope followed by its optional legacy purpose
+// fallback. A reader checks the first key for data before trying the second; it must never merge
+// both. For non-interlining lines the list always contains the unchanged purpose-or-line key.
+func FabricScopeReadKeys(line RollGoodsLine, lines []RollGoodsLine) []string {
+	key := EffectiveFabricScopeKey(line)
+	if key == "" {
+		return nil
+	}
+	out := []string{key}
+	if legacy, ok := LegacyInterliningPurposeScope(line, lines); ok && !strings.EqualFold(legacy, key) {
+		out = append(out, legacy)
+	}
+	return out
+}
+
 // ResolveFabricScope resolves one binding against the card's roll-goods lines.
 //
-// The purpose WINS even when no line carries it yet. Scope is a bucket, not a lookup: demoting to
-// the legacy line whenever a purpose happens to be empty would silently re-scope every alias of a
-// card the moment somebody cleared a назначение on the BOM tab, and the aliases would land in a
-// different uniqueness bucket than the one they were written into.
+// Purpose wins for every ordinary roll-goods line even when no line carries it yet. A named
+// INTERLINING line is the one exception: each fusible is its own scope. A purpose-only legacy
+// interlining binding remains readable only when exactly one such line carries that purpose.
 func ResolveFabricScope(purpose, bomLineKey string, lines []RollGoodsLine) FabricScope {
 	p := strings.TrimSpace(purpose)
+	key := strings.TrimSpace(bomLineKey)
+	// A named interlining line always wins over a purpose carried beside it. Old clients commonly
+	// round-trip both fields; folding such a row back into the shared purpose would recreate the
+	// collision this rule removes.
+	if key != "" {
+		for _, l := range lines {
+			if l.Section == BomSectionInterlining && strings.EqualFold(strings.TrimSpace(l.LineKey), key) {
+				return FabricScope{Key: l.LineKey, LineKeys: []string{l.LineKey}}
+			}
+		}
+	}
 	if p != "" {
 		out := FabricScope{Key: p, ByPurpose: true}
+		legacyInterlining := ""
+		legacyInterliningCount := 0
 		for _, l := range lines {
-			if strings.EqualFold(strings.TrimSpace(l.Purpose), p) && strings.TrimSpace(l.LineKey) != "" {
-				out.LineKeys = append(out.LineKeys, l.LineKey)
+			if !strings.EqualFold(strings.TrimSpace(l.Purpose), p) || strings.TrimSpace(l.LineKey) == "" {
+				continue
 			}
+			if l.Section == BomSectionInterlining {
+				legacyInterlining = l.LineKey
+				legacyInterliningCount++
+				continue
+			}
+			out.LineKeys = append(out.LineKeys, l.LineKey)
+		}
+		// A purpose-only interlining binding is a legacy read fallback. It remains live only when it
+		// identifies one line; N same-purpose fusibles must never be merged or guessed between.
+		if legacyInterliningCount == 1 {
+			out.LineKeys = append(out.LineKeys, legacyInterlining)
 		}
 		return out
 	}
-	key := strings.TrimSpace(bomLineKey)
 	out := FabricScope{Key: key}
 	if key == "" {
 		return out
@@ -112,8 +195,8 @@ func ResolveFabricScope(purpose, bomLineKey string, lines []RollGoodsLine) Fabri
 //     запись оказалась бы в другом ведре, чем то, в которое её положили.
 //   - FabricScopeIdentity — ЛИЧНОСТЬ ТКАНИ: под каким ключом эту запись видит всё остальное. Она
 //     обязана двигаться вместе с BOM, потому что деньги считаются от СТРОКИ: оценка по площади берёт
-//     скоуп как FabricScopeKey(строка.purpose, строка.line_key) (dto.slotAreaEstimate), и клиент
-//     группирует ровно так же (bom-purpose.ts scopeKeyOfBinding).
+//     скоуп как EffectiveFabricScopeKey(строка) (dto.slotAreaEstimate), и клиент группирует ровно
+//     так же (bom-purpose.ts scopeKeyOfBinding).
 //
 // ЖИВОЙ РАЗРЫВ, РАДИ КОТОРОГО ЭТО ЗАВЕДЕНО. Переход 0267 аддитивен: запись, привязанная к строке L,
 // переехать на назначение не может (у L назначения тогда не было), и она НЕ ПЕРЕЕЗЖАЕТ сама потом —
@@ -149,7 +232,7 @@ func FabricScopeIdentity(purpose, bomLineKey string, lines []RollGoodsLine) stri
 			// (dto.slotAreaEstimate). Написание берётся со строки, а не с записи: ключи строк
 			// заглавные на входе, но у записи мог остаться другой регистр, и два ведра под одну
 			// ткань — это тот же разрыв, только тише.
-			return FabricScopeKey(l.Purpose, l.LineKey)
+			return EffectiveFabricScopeKey(l)
 		}
 	}
 	// Строки нет вовсе (удалена или переклассифицирована из рулонных) — ключ остаётся тем, что
@@ -164,6 +247,9 @@ func PurposesOfRollGoods(lines []RollGoodsLine) []string {
 	seen := make(map[string]bool, len(lines))
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
+		if l.Section == BomSectionInterlining {
+			continue
+		}
 		p := strings.TrimSpace(l.Purpose)
 		if p == "" || seen[p] {
 			continue
