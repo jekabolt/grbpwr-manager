@@ -666,9 +666,25 @@ func CarryOmittedCalloutClientRef(stored *entity.TechCard, tc *entity.TechCardIn
 	}
 }
 
-// ConvertPbTechCardInsertToEntity converts a pb_common.TechCardInsert to an
-// entity.TechCardInsert, validating identifiers, lengths, enums and child lists.
+// ConvertPbTechCardInsertToEntity converts a pb_common.TechCardInsert to an entity.TechCardInsert,
+// validating identifiers, lengths, enums and child lists.
 func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.TechCardInsert, error) {
+	return convertPbTechCardInsertToEntity(pb, nil)
+}
+
+// ConvertPbTechCardInsertToEntityPrepared is the update-path variant. prepare runs after every wire
+// field has been parsed but before the first assembly validation and its sign-off digest. It exists
+// for private server metadata absent from protobuf: callers may restore that metadata and remove its
+// stale derived references, but must not otherwise normalize or validate the document here.
+func ConvertPbTechCardInsertToEntityPrepared(pb *pb_common.TechCardInsert,
+	prepare func(*entity.TechCardInsert),
+) (*entity.TechCardInsert, error) {
+	return convertPbTechCardInsertToEntity(pb, prepare)
+}
+
+func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
+	prepare func(*entity.TechCardInsert),
+) (*entity.TechCardInsert, error) {
 	if pb == nil {
 		return nil, fmt.Errorf("tech card insert is nil")
 	}
@@ -999,48 +1015,6 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		return nil, err
 	}
 
-	// --- РЕЕСТР ПОСТ-ПРОХОДОВ. Порядок обязателен, а не сложился ---------------------------------
-	//
-	//     canonicalizeAssembly  →  релизные гейты  →  StampTechCardSignoffDigests
-	//
-	// Канонизация МУТИРУЕТ разобранный payload: классифицирует входы операций в «деталь или
-	// узел», пересобирает PieceLineKeys как проекцию объединения и переносит имя узла на первого
-	// производителя. Релизные гейты обязаны читать уже нормализованное, а штамп — хешировать
-	// итог: PieceLineKeys стоит позицией 4 в кортеже CONSTRUCTION, и подпись, поставленная до
-	// нормализации, никогда не совпала бы с отпечатком следующего чтения.
-	//
-	// Конвертер тем самым перестал быть чистым переводчиком и стал нормализатором. Следующая
-	// фича, которой понадобится то же место, обязана встать в этот реестр ЯВНО — иначе
-	// пост-проходы начнут зависеть друг от друга по порядку молча.
-	if verr := canonicalizeAssembly(operations, pieces, pb.AssemblyAware); verr != nil {
-		return nil, verr
-	}
-
-	// Release gate: a card cannot be RELEASED to a factory while any high-severity maker issue is
-	// still open (a known un-buildable operation).
-	// TODO(pr6-B): the colourway lab-dip release gate (no release while any colourway's bulk colour is
-	// unsigned) was a parse-time check over the style's colourways, which are no longer a write child
-	// (R1 merge). lab_dip_status now lives on product; re-add the gate at the style-release path
-	// (reading persisted colourways) once its post-merge semantics (draft/NULL handling) are settled
-	// with live-DB verification (T-E / R4 style lifecycle). Not silently lost — data is preserved.
-	if approvalState == entity.TechCardApprovalReleased {
-		for _, is := range issues {
-			if is.Severity == entity.IssueSeverityHigh && is.Status == entity.IssueStatusOpen {
-				// Был голый fmt.Errorf, выходивший наружу нетипизированной строкой: единственный
-				// жёсткий отказ релиза во всём репозитории не умел назвать поле. Теперь как у
-				// соседних гейтов — FieldViolation → apierr.Invalid → BadRequest.
-				return nil, entity.NewFieldViolation("approval_state", "high_severity_issue_open",
-					is.Description,
-					"close the high-severity issue or lower it — a card with a known unbuildable operation doesn't go to the factory")
-			}
-		}
-		// Правило 4: сборка обязана сходиться в одно изделие. Включается только на карточке с
-		// производящими шагами — сегодняшняя неразмеченная релизится как раньше.
-		if verr := assemblyReleaseCheck(operations, pieces); verr != nil {
-			return nil, verr
-		}
-	}
-
 	// Validated at the boundary rather than left to the CHECK: chk_tc_required_seam_allowance would
 	// answer 3819 with no field name, and this is an operator-typed number on a form control.
 	requiredSeamAllowance, err := nullDecimalFromPb(pb.RequiredSeamAllowanceMm)
@@ -1132,6 +1106,38 @@ func ConvertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert) (*entity.Tech
 		// Транспортный флаг количеств на связях (0334) — по тому же правилу: доезжает до сущности,
 		// но НИ В ОДИН дайджест не входит (закрыто TestBomQtyAwareIsNotHashed).
 		BomQtyAware: pb.BomQtyAware,
+	}
+	if prepare != nil {
+		prepare(insert)
+	}
+	// --- РЕЕСТР ПОСТ-ПРОХОДОВ. Порядок обязателен, а не сложился ---------------------------------
+	//
+	//     private prepare → canonicalizeAssembly → release gates → StampTechCardSignoffDigests
+	//
+	// Канонизация МУТИРУЕТ разобранный payload: классифицирует входы операций в «деталь или
+	// узел», пересобирает PieceLineKeys как проекцию объединения и переносит имя узла на первого
+	// производителя. The optional prepare hook is earlier so server-owned references absent from the
+	// new piece set can be removed before the graph judges them. Release gates read the normalized
+	// form, and the stamp hashes that final form.
+	if verr := canonicalizeAssembly(insert.Operations, insert.Pieces, insert.AssemblyAware); verr != nil {
+		return nil, verr
+	}
+
+	// Release gate: a card cannot be RELEASED to a factory while any high-severity maker issue is
+	// still open (a known un-buildable operation).
+	// TODO(pr6-B): restore the colourway lab-dip release gate at the style-release path; colourways
+	// are no longer write children of this payload.
+	if insert.ApprovalState == entity.TechCardApprovalReleased {
+		for _, is := range insert.Issues {
+			if is.Severity == entity.IssueSeverityHigh && is.Status == entity.IssueStatusOpen {
+				return nil, entity.NewFieldViolation("approval_state", "high_severity_issue_open",
+					is.Description,
+					"close the high-severity issue or lower it — a card with a known unbuildable operation doesn't go to the factory")
+			}
+		}
+		if verr := assemblyReleaseCheck(insert.Operations, insert.Pieces); verr != nil {
+			return nil, verr
+		}
 	}
 	// Fingerprint each APPROVED section from the payload being written, so "changed since sign-off"
 	// is a durable fact rather than something the browser remembers until the next reload. Runs last:

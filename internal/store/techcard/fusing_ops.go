@@ -54,8 +54,9 @@ type fusingBomLinkRow struct {
 
 // carryStoredAutoFusingKeys preserves private automatic identity across the operation full-replace
 // for writers that bypass the public API (archive/maintenance commands). The keys are deliberately
-// absent from protobuf; operation number is the stable address during an ordinary pre-reconcile
-// replacement, and the operation type guard prevents number reuse by another verb.
+// absent from protobuf. A unique same-piece match is authoritative for per-piece rows; a unique
+// operation number is the conservative fallback for legacy/direct replacements. Ambiguous addresses
+// are rejected, and the operation type guard prevents number reuse by another verb.
 func carryStoredAutoFusingKeys(ctx context.Context, db dependency.DB, techCardID int,
 	operations []entity.TechCardOperation,
 ) error {
@@ -74,10 +75,60 @@ func carryStoredAutoFusingKeys(ctx context.Context, db dependency.DB, techCardID
 	}
 	type keys struct{ line, piece sql.NullString }
 	byNumber := make(map[int64]keys, len(rows))
+	duplicateNumber := make(map[int64]bool)
+	byPiece := make(map[string]keys, len(rows))
+	duplicatePiece := make(map[string]bool)
 	for _, row := range rows {
 		if row.OperationNumber.Valid {
-			byNumber[row.OperationNumber.Int64] = keys{line: row.AutoFusingLineKey, piece: row.AutoFusingPieceKey}
+			if _, exists := byNumber[row.OperationNumber.Int64]; exists {
+				duplicateNumber[row.OperationNumber.Int64] = true
+			} else {
+				byNumber[row.OperationNumber.Int64] = keys{line: row.AutoFusingLineKey, piece: row.AutoFusingPieceKey}
+			}
 		}
+		if row.AutoFusingPieceKey.Valid {
+			piece := row.AutoFusingPieceKey.String
+			if _, exists := byPiece[piece]; exists {
+				duplicatePiece[piece] = true
+			} else {
+				byPiece[piece] = keys{piece: row.AutoFusingPieceKey}
+			}
+		}
+	}
+	for number := range duplicateNumber {
+		delete(byNumber, number)
+	}
+	for piece := range duplicatePiece {
+		delete(byPiece, piece)
+	}
+	// A direct writer may reorder or renumber operations. Preserve a per-piece identity by its one
+	// piece before considering the legacy number fallback, but only when both sides are unique.
+	candidatesByPiece := make(map[string][]int)
+	claimedPiece := make(map[string]bool)
+	for i := range operations {
+		op := &operations[i]
+		if op.OperationType != entity.OpTypeFusing {
+			continue
+		}
+		if op.AutoFusingPieceKey.Valid {
+			claimedPiece[op.AutoFusingPieceKey.String] = true
+			continue
+		}
+		if op.AutoFusingLineKey.Valid {
+			continue
+		}
+		if piece, ok := soleOperationPieceKey(op); ok {
+			candidatesByPiece[piece] = append(candidatesByPiece[piece], i)
+		}
+	}
+	for piece, candidates := range candidatesByPiece {
+		stored, ok := byPiece[piece]
+		if !ok || claimedPiece[piece] || len(candidates) != 1 {
+			continue
+		}
+		op := &operations[candidates[0]]
+		op.AutoFusingPieceKey = stored.piece
+		claimedPiece[piece] = true
 	}
 	for i := range operations {
 		op := &operations[i]
@@ -85,11 +136,53 @@ func carryStoredAutoFusingKeys(ctx context.Context, db dependency.DB, techCardID
 			!op.OperationNumber.Valid {
 			continue
 		}
-		if stored, ok := byNumber[int64(op.OperationNumber.Int32)]; ok {
-			op.AutoFusingLineKey, op.AutoFusingPieceKey = stored.line, stored.piece
+		stored, ok := byNumber[int64(op.OperationNumber.Int32)]
+		if !ok {
+			continue
+		}
+		if stored.piece.Valid {
+			if claimedPiece[stored.piece.String] {
+				continue
+			}
+			if piece, hasPiece := soleOperationPieceKey(op); hasPiece {
+				// A different piece is a different row; several candidates for one piece are ambiguous.
+				if piece != stored.piece.String || len(candidatesByPiece[piece]) != 1 || claimedPiece[piece] {
+					continue
+				}
+			}
+		}
+		op.AutoFusingLineKey, op.AutoFusingPieceKey = stored.line, stored.piece
+		if stored.piece.Valid {
+			claimedPiece[stored.piece.String] = true
 		}
 	}
 	return nil
+}
+
+func soleOperationPieceKey(op *entity.TechCardOperation) (string, bool) {
+	keys := op.PieceLineKeys
+	if len(op.AssemblyInputs) > 0 {
+		keys = nil
+		for _, input := range op.AssemblyInputs {
+			if input.Kind == entity.AssemblyInputPiece {
+				keys = append(keys, input.Key)
+			}
+		}
+	}
+	seen := make(map[string]bool, len(keys))
+	sole := ""
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if sole != "" {
+			return "", false
+		}
+		sole = key
+	}
+	return sole, sole != ""
 }
 
 // ReconcileFusingOps makes automatic FUSING operations agree with the current piece and BOM state:
@@ -110,11 +203,6 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	if len(interlinings) == 1 {
 		soleInterliningID = interlinings[0].ID
 	}
-	interliningKeyByID := make(map[int]string, len(interlinings))
-	for _, line := range interlinings {
-		interliningKeyByID[line.ID] = line.LineKey.String
-	}
-
 	pieceRows, err := storeutil.QueryListNamed[fusingPieceRow](ctx, db, `
 		SELECT p.id, p.line_key, p.fused, p.fusing_bom_item_id,
 		       b.tech_card_id AS fusing_bom_card_id, b.section AS fusing_bom_section
@@ -222,7 +310,8 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 				sections = append(sections, entity.TechCardBomSection(link.Section))
 			}
 			op.Kind = fusingops.KindManual
-			if fusingops.AdoptableShape(strings.TrimSpace(row.OutputUnitKey.String) != "", op.UnitInputs, sections, op.Review) {
+			if fusingops.AdoptableShape(strings.TrimSpace(row.OutputUnitKey.String) != "", op.UnitInputs,
+				len(op.PieceIDs), sections, op.Review) {
 				op.Kind = fusingops.KindAdoptable
 			}
 		}
@@ -276,7 +365,7 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 			continue
 		}
 		if err := applyAutoFusingOp(ctx, db, techCardID, op, rowByID[op.ID], piecesOf[op.ID], linksOf[op.ID],
-			pieceKeyByID, lineIDOf, interliningKeyByID); err != nil {
+			pieceKeyByID, lineIDOf); err != nil {
 			return err
 		}
 	}
@@ -306,13 +395,17 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 // links. Rows already in that state are left alone, so a write model the API reconciled is a no-op.
 func applyAutoFusingOp(ctx context.Context, db dependency.DB, techCardID int, op fusingops.Operation,
 	row fusingOperationRow, currentPieces []int, currentLinks []fusingBomLinkRow,
-	pieceKeyByID map[int]string, lineIDOf map[int]int, interliningKeyByID map[int]string,
+	pieceKeyByID map[int]string, lineIDOf map[int]int,
 ) error {
 	lineKey, pieceKey := row.AutoFusingLineKey, row.AutoFusingPieceKey
 	var wantPieces []int
+	if row.AutoFusingPieceKey.Valid || op.Owner > 0 {
+		// Rollback safety: an old binary only knows this legacy line key. Keeping it NULL makes a
+		// per-piece row look manual to that binary, so it can add a duplicate but cannot regroup or
+		// delete the per-piece row. The operation BOM link below remains the material identity.
+		lineKey = sql.NullString{}
+	}
 	if !op.IsOrphan() {
-		lineID := lineIDOf[op.Owner]
-		lineKey = sql.NullString{String: interliningKeyByID[lineID], Valid: true}
 		pieceKey = sql.NullString{String: pieceKeyByID[op.Owner], Valid: true}
 		wantPieces = []int{op.Owner}
 	}

@@ -1,9 +1,10 @@
 -- +migrate Up
 
 -- Automatic FUSING steps move from one step per INTERLINING line (holding every fused piece) to one
--- step per fused piece. The step's identity becomes the line_key of the piece it fuses; the existing
--- auto_fusing_line_key stays as the material link and is re-synced when the piece's interlining
--- changes. Private write metadata, never on the wire.
+-- step per fused piece. The step's identity becomes the line_key of the piece it fuses. Per-piece
+-- rows deliberately leave auto_fusing_line_key NULL and carry their material through the ordinary
+-- INTERLINING BOM link: a pre-0429 binary therefore sees them as manual and cannot regroup or delete
+-- them during a rollback. Private write metadata, never on the wire.
 
 SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_operation'

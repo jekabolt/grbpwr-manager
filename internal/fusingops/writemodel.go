@@ -116,7 +116,8 @@ func (m *writeModel) classify(i int) Operation {
 		op.Owner = m.pieceIDByKey[source.AutoFusingPieceKey.String]
 	case source.AutoFusingLineKey.Valid:
 		op.Kind = LegacyKind(op.Review)
-	case AdoptableShape(strings.TrimSpace(source.OutputUnitKey.String) != "", op.UnitInputs, m.liveSections(source), op.Review):
+	case AdoptableShape(strings.TrimSpace(source.OutputUnitKey.String) != "", op.UnitInputs,
+		len(op.PieceIDs), m.liveSections(source), op.Review):
 		op.Kind = KindAdoptable
 	default:
 		op.Kind = KindManual
@@ -143,10 +144,13 @@ func LegacyKind(review string) Kind {
 }
 
 // AdoptableShape is the shape of a step without automatic identity that the reconciler may adopt
-// as a piece's FUSING step: it assembles nothing, works on pieces only, and links no material or
-// exactly one INTERLINING line. A step the reconciler itself orphaned is never adopted again.
-func AdoptableShape(hasOutput, unitInputs bool, linkSections []entity.TechCardBomSection, review string) bool {
-	if hasOutput || unitInputs || review == ReviewOrphan {
+// as a piece's FUSING step: it assembles nothing, works on exactly one piece, and links no material
+// or exactly one INTERLINING line. Multi-piece manual steps are a person's instruction and are never
+// split; only explicitly keyed KindLegacy rows may split. An orphan is never adopted again.
+func AdoptableShape(hasOutput, unitInputs bool, pieceInputs int,
+	linkSections []entity.TechCardBomSection, review string,
+) bool {
+	if hasOutput || unitInputs || pieceInputs != 1 || review == ReviewOrphan {
 		return false
 	}
 	switch len(linkSections) {
@@ -212,6 +216,12 @@ func (m *writeModel) materialize(op *entity.TechCardOperation, planned Operation
 	}
 	op.PieceIds = nil
 	op.PieceLineKeys = nil
+	// A per-piece row must be harmless to a pre-0429 binary. That binary only understands the line
+	// key and would otherwise regroup this row or delete it as its own draft. The ordinary BOM link
+	// below is the material identity; AutoFusingPieceKey is the sole automatic identity.
+	if op.AutoFusingPieceKey.Valid || planned.Owner > 0 {
+		op.AutoFusingLineKey = sql.NullString{}
+	}
 	if planned.IsOrphan() {
 		// The step lost its piece. Its keys stay, so it is never mistaken for a manual step, and only
 		// dead material links go — a live one is a person's statement.
@@ -224,7 +234,6 @@ func (m *writeModel) materialize(op *entity.TechCardOperation, planned Operation
 		piece := &m.tc.Pieces[planned.Owner-1]
 		line := m.lineOf[planned.Owner-1]
 		op.AutoFusingPieceKey = sql.NullString{String: piece.LineKey, Valid: true}
-		op.AutoFusingLineKey = sql.NullString{String: line, Valid: true}
 		inputs = append(inputs, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: piece.LineKey})
 		op.PieceLineKeys = []string{piece.LineKey}
 		bom := m.canonicalBom(op, line)

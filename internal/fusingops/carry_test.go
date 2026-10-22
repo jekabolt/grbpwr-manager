@@ -17,6 +17,7 @@ func autoKey(key string) sql.NullString { return sql.NullString{String: key, Val
 func storedAutoFusing(number int32, key, piece string) entity.TechCardOperation {
 	op := legacyGroupedFusing(number, key, piece)
 	op.AutoFusingPieceKey = autoKey(piece)
+	op.AutoFusingLineKey = sql.NullString{}
 	return op
 }
 
@@ -106,7 +107,7 @@ func TestStaleSaveWithoutAutoOpsCarriesThemBack(t *testing.T) {
 	}
 	fusing := incoming.Operations[0]
 	if fusing.OperationType != entity.OpTypeFusing || !fusing.Draft || fusing.OperationNumber != opNumber(10) ||
-		fusing.AutoFusingLineKey != autoKey("INTERLINING-A") || fusing.AutoFusingPieceKey != autoKey("FRONT") ||
+		fusing.AutoFusingLineKey.Valid || fusing.AutoFusingPieceKey != autoKey("FRONT") ||
 		!reflect.DeepEqual(fusing.BomLineKeys, []string{"INTERLINING-A"}) ||
 		!reflect.DeepEqual(fusing.PieceLineKeys, []string{"FRONT"}) ||
 		!reflect.DeepEqual(fusing.InputKeys, []string{"FRONT"}) ||
@@ -152,7 +153,7 @@ func TestStaleSaveCarriesUnresolvedAutoOp(t *testing.T) {
 	if err != nil || !outcome.Carried || outcome.Reconcile {
 		t.Fatalf("outcome = %+v err = %v, want carried", outcome, err)
 	}
-	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingLineKey != autoKey("") ||
+	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingLineKey.Valid ||
 		len(incoming.Operations[0].BomLineKeys) != 0 || !incoming.Operations[0].Draft {
 		t.Fatalf("operations = %#v, want the unresolved draft step first", incoming.Operations)
 	}
@@ -200,8 +201,9 @@ func TestStaleSaveLeavesLegacyFusingOpUntouched(t *testing.T) {
 	if !reflect.DeepEqual(incoming.Operations[0], legacy) {
 		t.Fatalf("legacy step was touched: want=%#v got=%#v", legacy, incoming.Operations[0])
 	}
-	if got := incoming.Operations[1]; got.AutoFusingLineKey != autoKey("INTERLINING-A") || got.OperationNumber != opNumber(20) {
-		t.Fatalf("carried step = %#v, want auto INTERLINING-A at 20 (its stored place)", got)
+	if got := incoming.Operations[1]; got.AutoFusingLineKey.Valid || got.AutoFusingPieceKey != autoKey("FRONT") ||
+		got.OperationNumber != opNumber(20) {
+		t.Fatalf("carried step = %#v, want auto FRONT at 20 (its stored place)", got)
 	}
 	if got := incoming.Operations[2].OperationNumber; got != opNumber(30) {
 		t.Fatalf("machine number = %#v, want 30", got)
@@ -224,7 +226,8 @@ func TestLegacyStepOnAutoOpNumberDoesNotInheritItsIdentity(t *testing.T) {
 	if err != nil || !outcome.Carried {
 		t.Fatalf("outcome = %+v err = %v, want carried", outcome, err)
 	}
-	if len(incoming.Operations) != 3 || incoming.Operations[0].AutoFusingLineKey != autoKey("INTERLINING-A") {
+	if len(incoming.Operations) != 3 || incoming.Operations[0].AutoFusingPieceKey != autoKey("FRONT") ||
+		incoming.Operations[0].AutoFusingLineKey.Valid {
 		t.Fatalf("operations = %#v, want the automatic step carried first", incoming.Operations)
 	}
 	got := incoming.Operations[1]
@@ -248,7 +251,7 @@ func TestRenumberedAutoOpIsNotMissing(t *testing.T) {
 	if len(incoming.Operations) != 2 {
 		t.Fatalf("renumbered step was duplicated: %#v", incoming.Operations)
 	}
-	if got := incoming.Operations[1]; got.AutoFusingLineKey != autoKey("INTERLINING-A") ||
+	if got := incoming.Operations[1]; got.AutoFusingLineKey.Valid ||
 		got.AutoFusingPieceKey != autoKey("FRONT") || got.OperationNumber != opNumber(20) {
 		t.Fatalf("renumbered step = %#v, want identity FRONT kept at 20", got)
 	}
@@ -370,7 +373,8 @@ func TestLinklessManualStepDoesNotHideUnresolvedAutoOp(t *testing.T) {
 	if err != nil || !outcome.Carried {
 		t.Fatalf("outcome = %+v err = %v, want the unresolved step carried", outcome, err)
 	}
-	if len(incoming.Operations) != 3 || incoming.Operations[0].AutoFusingLineKey != autoKey("") {
+	if len(incoming.Operations) != 3 || incoming.Operations[0].AutoFusingLineKey.Valid ||
+		incoming.Operations[0].AutoFusingPieceKey != autoKey("FRONT") {
 		t.Fatalf("operations = %#v, want the unresolved automatic step first", incoming.Operations)
 	}
 	if got := incoming.Operations[1]; got.AutoFusingLineKey.Valid || !reflect.DeepEqual(got, wireEcho(manual, 20)) {
@@ -378,7 +382,7 @@ func TestLinklessManualStepDoesNotHideUnresolvedAutoOp(t *testing.T) {
 	}
 }
 
-func TestStepOnEditedAutoOpNumberDoesNotInheritItsIdentity(t *testing.T) {
+func TestUniqueSamePieceEditKeepsAutoIdentity(t *testing.T) {
 	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
 	edited.Draft = false
 	for _, tc := range []struct {
@@ -398,14 +402,90 @@ func TestStepOnEditedAutoOpNumberDoesNotInheritItsIdentity(t *testing.T) {
 			stored := fusedCard(tc.stored)
 			stored.BomItems = append(stored.BomItems, entity.TechCardBomItem{LineKey: "THREAD"})
 			incoming := staleCopy(stored, tc.incoming)
-			before := append([]entity.TechCardOperation(nil), incoming.Operations...)
-
 			outcome, err := ReconcileTechCardUpdate(stored, incoming)
 			if err != nil || outcome.Carried || outcome.Reconcile {
-				t.Fatalf("outcome = %+v err = %v, want no change (edited step stays deleted)", outcome, err)
+				t.Fatalf("outcome = %+v err = %v, want the unique same-piece edit retained in place", outcome, err)
 			}
-			if !reflect.DeepEqual(incoming.Operations, before) {
-				t.Fatalf("a manual step gained the edited step's identity: before=%#v after=%#v", before, incoming.Operations)
+			if len(incoming.Operations) != 2 {
+				t.Fatalf("operations = %#v, want the edited step once", incoming.Operations)
+			}
+			got := incoming.Operations[0]
+			if got.AutoFusingPieceKey != autoKey("FRONT") || got.AutoFusingLineKey.Valid || got.Draft ||
+				got.Note.String != "by hand" || len(got.BomLineKeys) != 2 {
+				t.Fatalf("same-piece edit lost identity or content: %#v", got)
+			}
+		})
+	}
+}
+
+func TestAmbiguousSamePieceEditsKeepStoreFallbackEnabled(t *testing.T) {
+	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
+	edited.Draft = false
+	stored := fusedCard([]entity.TechCardOperation{edited, machineOp(20, "join")})
+	stored.BomItems = append(stored.BomItems,
+		entity.TechCardBomItem{LineKey: "THREAD"}, entity.TechCardBomItem{LineKey: "TAPE"})
+	first := manualFusing(10, []string{"INTERLINING-A", "THREAD"}, "FRONT")
+	second := manualFusing(20, []string{"INTERLINING-A", "TAPE"}, "FRONT")
+	incoming := staleCopy(stored, []entity.TechCardOperation{first, second, machineOp(30, "join")})
+
+	outcome, err := ReconcileTechCardUpdate(stored, incoming)
+	if err != nil || outcome.Carried || outcome.Reconcile {
+		t.Fatalf("outcome = %+v err = %v, want no ambiguous content match", outcome, err)
+	}
+	if incoming.AutoFusingKeysResolved {
+		t.Fatal("ambiguous same-piece candidates disabled the store fallback")
+	}
+	for i := 0; i < 2; i++ {
+		if incoming.Operations[i].AutoFusingPieceKey.Valid || incoming.Operations[i].AutoFusingLineKey.Valid {
+			t.Fatalf("candidate %d inherited an ambiguous identity: %#v", i, incoming.Operations[i])
+		}
+	}
+}
+
+func TestDeletedPieceInputIsRemovedBeforeAssemblyValidation(t *testing.T) {
+	for _, draft := range []bool{true, false} {
+		name := "edited_orphan_is_kept"
+		if draft {
+			name = "draft_is_deleted"
+		}
+		t.Run(name, func(t *testing.T) {
+			step := storedAutoFusing(10, "INTERLINING-A", "FRONT")
+			step.Draft = draft
+			if !draft {
+				step.Note = sql.NullString{String: "operator settings", Valid: true}
+			}
+			stored := fusedCard([]entity.TechCardOperation{step, machineOp(20, "join")})
+			echo := wireEcho(step, 10)
+			incoming := staleCopy(stored, []entity.TechCardOperation{echo, machineOp(20, "join")})
+			incoming.Pieces = []entity.TechCardPiece{stored.Pieces[1]} // FRONT was deleted in this save
+			incoming.AssemblyAware = true
+
+			PrepareTechCardUpdateAssembly(stored, incoming)
+			prepared := incoming.Operations[0]
+			if prepared.AutoFusingPieceKey != autoKey("FRONT") || len(prepared.InputKeys) != 0 ||
+				len(prepared.PieceLineKeys) != 0 || len(prepared.AssemblyInputs) != 0 {
+				t.Fatalf("prepared keyed step kept its dead piece input: %#v", prepared)
+			}
+			if verr := dto.RevalidateTechCardAssembly(incoming); verr != nil {
+				t.Fatalf("first assembly validation rejected the removable server input: %v", verr)
+			}
+			outcome, verr := ReconcileTechCardUpdate(stored, incoming)
+			if verr != nil || !outcome.Reconcile {
+				t.Fatalf("outcome = %+v err = %v, want deletion reconciliation", outcome, verr)
+			}
+			if draft {
+				if len(incoming.Operations) != 1 || incoming.Operations[0].OperationType != entity.OpTypeMachine {
+					t.Fatalf("draft of the deleted piece survived: %#v", incoming.Operations)
+				}
+				return
+			}
+			if len(incoming.Operations) != 2 {
+				t.Fatalf("edited step was lost: %#v", incoming.Operations)
+			}
+			orphan := incoming.Operations[0]
+			if orphan.AutoFusingPieceKey != autoKey("FRONT") || orphan.AutoFusingLineKey.Valid ||
+				orphan.Review.String != ReviewOrphan || orphan.Draft || len(pieceInputKeys(&orphan, nil)) != 0 {
+				t.Fatalf("edited step was not retained as a keyed orphan: %#v", orphan)
 			}
 		})
 	}
@@ -444,8 +524,8 @@ func TestAutoOpReviewedInThisSaveKeepsIdentity(t *testing.T) {
 	if err != nil || outcome.Carried || outcome.Reconcile {
 		t.Fatalf("outcome = %+v err = %v, want no carry", outcome, err)
 	}
-	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingLineKey != autoKey("INTERLINING-A") ||
-		incoming.Operations[0].Draft {
+	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingLineKey.Valid ||
+		incoming.Operations[0].AutoFusingPieceKey != autoKey("FRONT") || incoming.Operations[0].Draft {
 		t.Fatalf("operations = %#v, want the reviewed step alone, keeping its identity", incoming.Operations)
 	}
 }

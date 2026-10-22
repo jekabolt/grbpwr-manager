@@ -227,7 +227,7 @@ func assertConverged(t *testing.T, card *entity.TechCardInsert) {
 func assertPerPieceStep(t *testing.T, op entity.TechCardOperation, piece, line string, bom ...string) {
 	t.Helper()
 	if op.OperationType != entity.OpTypeFusing || op.AutoFusingPieceKey != autoKey(piece) ||
-		op.AutoFusingLineKey != autoKey(line) || !reflect.DeepEqual(op.PieceLineKeys, []string{piece}) ||
+		op.AutoFusingLineKey.Valid || !reflect.DeepEqual(op.PieceLineKeys, []string{piece}) ||
 		!reflect.DeepEqual(pieceInputKeys(&op, nil), []string{piece}) || op.Review.Valid ||
 		!slices.Equal(op.BomLineKeys, bom) {
 		t.Fatalf("step = %#v, want the automatic step of %s on %q with BOM %v", op, piece, line, bom)
@@ -282,6 +282,43 @@ func TestWriteModelCreatesOneStepPerFusedPiece(t *testing.T) {
 		t.Fatalf("reconciled card failed assembly revalidation: %v", verr)
 	}
 	assertConverged(t, card)
+}
+
+func TestPerPieceIdentityDropsLegacyLineKeyForRollbackSafety(t *testing.T) {
+	step := storedAutoFusing(10, "INTERLINING-A", "FRONT")
+	// This is the mixed-version shape emitted by 04a8a17 before the rollback guard: both private
+	// keys were set. The next reconcile must retain the BOM link but clear the key an old binary owns.
+	step.AutoFusingLineKey = autoKey("INTERLINING-A")
+	card := fusedCard([]entity.TechCardOperation{step})
+
+	if err := ReconcileTechCard(card); err != nil {
+		t.Fatalf("ReconcileTechCard() error = %v", err)
+	}
+	if len(card.Operations) != 1 {
+		t.Fatalf("operations = %#v, want one per-piece step", card.Operations)
+	}
+	assertPerPieceStep(t, card.Operations[0], "FRONT", "INTERLINING-A", "INTERLINING-A")
+}
+
+func TestMultiPieceManualFusingIsNeverAdoptedOrSplit(t *testing.T) {
+	manual := manualFusing(10, []string{"INTERLINING-A"}, "FRONT", "BACK")
+	card := fusedCard([]entity.TechCardOperation{manual})
+	card.Pieces[1].Fused = true
+	card.Pieces[1].FusingBomLineKey = "INTERLINING-A"
+
+	if err := ReconcileTechCard(card); err != nil {
+		t.Fatalf("ReconcileTechCard() error = %v", err)
+	}
+	if len(card.Operations) != 3 {
+		t.Fatalf("operations = %#v, want two automatic steps plus the untouched manual step", card.Operations)
+	}
+	assertPerPieceStep(t, card.Operations[0], "FRONT", "INTERLINING-A", "INTERLINING-A")
+	assertPerPieceStep(t, card.Operations[1], "BACK", "INTERLINING-A", "INTERLINING-A")
+	got := card.Operations[2]
+	if got.AutoFusingPieceKey.Valid || got.AutoFusingLineKey.Valid || got.Draft ||
+		!reflect.DeepEqual(got.PieceLineKeys, []string{"FRONT", "BACK"}) {
+		t.Fatalf("multi-piece manual step was adopted or split: %#v", got)
+	}
 }
 
 func TestPostReconcileStepPrecedesTheStepConsumingAProducedUnit(t *testing.T) {

@@ -3450,17 +3450,15 @@ type TechCardOperation struct {
 	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
 	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
 	Review sql.NullString `db:"review"`
-	// AutoFusingLineKey is the private material snapshot of an automatically managed FUSING step:
-	// the INTERLINING line_key it fuses with, Valid+empty when unresolved. It deliberately survives
-	// deletion of that BOM row, letting an edited orphan shed the dead FK without becoming
-	// indistinguishable from a manual step (NULL). Without AutoFusingPieceKey it marks a grouped
-	// step of the retired one-per-line model. Not on wire.
+	// AutoFusingLineKey is the private identity of a grouped automatic FUSING step from the retired
+	// one-per-INTERLINING-line model. Per-piece automatic steps deliberately leave it NULL: a binary
+	// predating AutoFusingPieceKey then treats them as manual and cannot regroup or delete them during
+	// a rollback. Valid+empty is the legacy unresolved group. Not on wire.
 	AutoFusingLineKey sql.NullString `db:"auto_fusing_line_key"`
 	// AutoFusingPieceKey is the private identity of a per-piece automatic FUSING step (0429): the
-	// line_key of the one piece it fuses. With it set, AutoFusingLineKey is that piece's material link
-	// (empty = unresolved), re-synced when the piece's interlining changes. NULL with
-	// AutoFusingLineKey set is a grouped step of the one-per-line model, split on the next reconcile.
-	// It survives the piece being unfused or deleted, so an edited orphan stays distinct. Not on wire.
+	// line_key of the one piece it fuses. Its material identity lives in the operation's INTERLINING
+	// BOM link, never AutoFusingLineKey. It survives the piece being unfused or deleted, so an edited
+	// orphan stays distinct. NULL with AutoFusingLineKey set is a grouped legacy step. Not on wire.
 	AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
@@ -4628,10 +4626,10 @@ type TechCardInsert struct {
 	// It keeps the transaction-side reconciliation aligned with the in-memory pass, so an unrelated
 	// full-document save cannot reorder, unlink, or review-mark historical FUSING operations.
 	ReconcileFusing bool `db:"-"`
-	// AutoFusingKeysResolved is write-command metadata: the API update path already matched every
-	// incoming FUSING step to the stored automatic steps by identity (fusingops.ReconcileTechCardUpdate)
-	// and possibly renumbered the list, so the store's operation-number fallback for direct writers
-	// must not re-match it.
+	// AutoFusingKeysResolved is write-command metadata: the API update path resolved every retained
+	// automatic FUSING identity without ambiguity (fusingops.ReconcileTechCardUpdate) and may have
+	// renumbered the list, so the store's fallback for direct writers must not re-match it. False keeps
+	// that fallback enabled when a retained identity could not be resolved uniquely.
 	AutoFusingKeysResolved bool `db:"-"`
 	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
 	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false

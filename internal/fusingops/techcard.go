@@ -188,10 +188,16 @@ func autoIdentity(op *entity.TechCardOperation) (string, bool) {
 	return "", false
 }
 
+type autoFusingMatch struct {
+	matched    map[int]bool
+	unresolved bool // at least one retained identity had several equally valid counterparts
+}
+
 // matchAutoFusingOps pairs every stored automatic FUSING step (a piece or line key set) with at most
-// one incoming FUSING step and copies the private keys onto it. It returns the stored indexes that
-// found a counterpart; carryMissingAutoFusingOps treats every other draft automatic step as dropped
-// by the payload.
+// one incoming FUSING step and copies the private keys onto it. carryMissingAutoFusingOps treats every
+// unmatched draft automatic step as dropped by the payload. An ambiguous content match is rejected:
+// no candidate receives the private key and unresolved tells the caller to leave the store fallback
+// enabled for the full replace.
 //
 // The wire has no operation id, and neither the number nor the interlining link is identity, so
 // identity is the whole shape (fusingOpShape), in this order:
@@ -200,20 +206,22 @@ func autoIdentity(op *entity.TechCardOperation) (string, bool) {
 //     never keyed here: a stale payload shifts manual steps onto the numbers automatic steps hold;
 //  2. the exact echo: same draft flag, same BOM links, same pieces, at any number (a client may
 //     renumber or reorder);
-//  3. a draft step still a draft with the same pieces (per-piece step) or the same BOM links (grouped
-//     legacy step), at any number — a client that holds the step but not its latest material link or
-//     piece list;
-//  4. the same step reviewed in this save: draft cleared, same BOM links, same pieces, at the
+//  3. a unique step on the same single piece (per-piece step), regardless of draft state or other
+//     edits — changing its BOM link, note, SMV or press settings does not discard its identity;
+//  4. a grouped legacy draft still a draft with the same BOM links, at any number — a client that
+//     holds the step but not its latest piece list;
+//  5. the same step reviewed in this save: draft cleared, same BOM links, same pieces, at the
 //     stored number.
 //
-// Among several candidates the one at the stored number wins, so an up-to-date echo pairs with
-// itself. Anything looser (a link alone, a number alone) is not identity: a missed draft step is
+// In the strict keyed/legacy passes the candidate at the stored number wins, so an up-to-date echo
+// pairs with itself. Per-piece content matching is different: the same-piece candidate must be
+// unique. Anything looser (a link alone, a number alone) is not identity: a missed draft step is
 // carried back as a visible duplicate, while a false match silently deletes it and hands a manual
 // step an automatic identity.
-func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
-	matched := make(map[int]bool)
+func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) autoFusingMatch {
+	result := autoFusingMatch{matched: make(map[int]bool)}
 	if stored == nil || incoming == nil {
-		return matched
+		return result
 	}
 	autoIdx := make([]int, 0)
 	manualIdx := make([]int, 0)
@@ -229,7 +237,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		}
 	}
 	if len(autoIdx) == 0 {
-		return matched
+		return result
 	}
 	shapes := make([]fusingOpShape, len(incoming.Operations))
 	keyed := make([]bool, len(incoming.Operations))
@@ -238,6 +246,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		_, keyed[j] = autoIdentity(&incoming.Operations[j])
 	}
 	taken := make(map[int]bool, len(incoming.Operations))
+	blocked := make(map[int]bool, len(autoIdx))
 	pick := func(number sql.NullInt32, accept func(j int, in *entity.TechCardOperation) bool) int {
 		best := -1
 		for j := range incoming.Operations {
@@ -256,7 +265,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 	}
 	pass := func(accept func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool) {
 		for _, i := range autoIdx {
-			if matched[i] {
+			if result.matched[i] || blocked[i] {
 				continue
 			}
 			s := &stored.Operations[i]
@@ -268,7 +277,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 				continue
 			}
 			taken[j] = true
-			matched[i] = true
+			result.matched[i] = true
 			if !keyed[j] {
 				incoming.Operations[j].AutoFusingLineKey = s.AutoFusingLineKey
 				incoming.Operations[j].AutoFusingPieceKey = s.AutoFusingPieceKey
@@ -290,12 +299,41 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 			taken[j] = true
 		}
 	}
-	pass(func(_ *entity.TechCardOperation, sShape fusingOpShape, j int, _ *entity.TechCardOperation) bool {
-		return !keyed[j] && shapes[j] == sShape
+	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, _ *entity.TechCardOperation) bool {
+		return !s.AutoFusingPieceKey.Valid && !keyed[j] && shapes[j] == sShape
 	})
-	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
-		return !keyed[j] && s.AutoFusingPieceKey.Valid && s.Draft && in.Draft && shapes[j].pieces == sShape.pieces
-	})
+	// Shape is intentionally not identity for an edited per-piece row. The piece is: preserve the
+	// private key across any unique same-piece edit, including draft -> reviewed and BOM/SMV/note
+	// changes. With two candidates, choosing by order or operation number would silently key a manual
+	// step, so reject the content match and let the store's conservative fallback have the last word.
+	for _, i := range autoIdx {
+		s := &stored.Operations[i]
+		if result.matched[i] || !s.AutoFusingPieceKey.Valid {
+			continue
+		}
+		candidate := -1
+		count := 0
+		for j := range incoming.Operations {
+			in := &incoming.Operations[j]
+			if taken[j] || keyed[j] || in.OperationType != entity.OpTypeFusing ||
+				shapes[j].pieces != s.AutoFusingPieceKey.String {
+				continue
+			}
+			candidate = j
+			count++
+		}
+		switch count {
+		case 0:
+		case 1:
+			taken[candidate] = true
+			result.matched[i] = true
+			incoming.Operations[candidate].AutoFusingLineKey = s.AutoFusingLineKey
+			incoming.Operations[candidate].AutoFusingPieceKey = s.AutoFusingPieceKey
+		default:
+			result.unresolved = true
+			blocked[i] = true
+		}
+	}
 	pass(func(s *entity.TechCardOperation, sShape fusingOpShape, j int, in *entity.TechCardOperation) bool {
 		return !keyed[j] && !s.AutoFusingPieceKey.Valid && s.Draft && in.Draft && shapes[j].bom == sShape.bom
 	})
@@ -305,7 +343,67 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
 		return !keyed[j] && s.Draft && s.OperationNumber.Valid &&
 			in.OperationNumber == s.OperationNumber && shapes[j] == reviewed
 	})
-	return matched
+	return result
+}
+
+// PrepareTechCardUpdateAssembly restores private automatic identities before the DTO layer performs
+// its first assembly validation. That timing matters when a save deletes a piece: the wire still
+// echoes the server-owned FUSING step with that now-dead input, and the reconciler must be allowed to
+// delete its draft or retain its edited orphan before the graph rejects the stale key.
+func PrepareTechCardUpdateAssembly(stored, incoming *entity.TechCardInsert) {
+	if stored == nil || incoming == nil {
+		return
+	}
+	matchAutoFusingOps(stored, incoming)
+	live := make(map[string]bool, len(incoming.Pieces))
+	for i := range incoming.Pieces {
+		live[incoming.Pieces[i].LineKey] = true
+	}
+	dead := make(map[string]bool)
+	for i := range stored.Pieces {
+		key := stored.Pieces[i].LineKey
+		if key != "" && !live[key] {
+			dead[key] = true
+		}
+	}
+	if len(dead) == 0 {
+		return
+	}
+	keepKey := func(key string) bool { return !dead[key] }
+	for i := range incoming.Operations {
+		op := &incoming.Operations[i]
+		if op.OperationType != entity.OpTypeFusing || !op.AutoFusingPieceKey.Valid {
+			continue
+		}
+		op.PieceIds = nil
+		op.PieceLineKeys = filterStrings(op.PieceLineKeys, keepKey)
+		op.InputKeys = filterStrings(op.InputKeys, keepKey)
+		inputs := op.AssemblyInputs[:0]
+		for _, input := range op.AssemblyInputs {
+			if input.Kind == entity.AssemblyInputPiece && dead[input.Key] {
+				continue
+			}
+			inputs = append(inputs, input)
+		}
+		op.AssemblyInputs = nilIfEmptyInputs(inputs)
+	}
+}
+
+func filterStrings(values []string, keep func(string) bool) []string {
+	var out []string
+	for _, value := range values {
+		if keep(value) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func nilIfEmptyInputs(inputs []entity.OperationInput) []entity.OperationInput {
+	if len(inputs) == 0 {
+		return nil
+	}
+	return inputs
 }
 
 // carriedAutoFusingOp copies a stored draft automatic step into the write model in wire shape: links
@@ -494,12 +592,15 @@ func ReconcileTechCardUpdate(stored, incoming *entity.TechCardInsert) (UpdateOut
 	// This private identity is intentionally absent from the wire, so carry it across the operation
 	// full-replace even on a no-op save. It changes no instruction or workflow state. The store's
 	// number-only fallback must not second-guess this identity match.
-	matched := matchAutoFusingOps(stored, incoming)
-	incoming.AutoFusingKeysResolved = true
+	matches := matchAutoFusingOps(stored, incoming)
 	if FusingStateChanged(stored, incoming) || hasGroupedAutoFusing(stored) || fusingOpsNeedReconcile(incoming) {
 		// The reconcile creates a step for every fused piece without one, so automatic steps a
 		// stale payload dropped come back here too (as fresh drafts before their first use).
-		return UpdateOutcome{Reconcile: true}, ReconcileTechCard(incoming)
+		verr := ReconcileTechCard(incoming)
+		incoming.AutoFusingKeysResolved = verr == nil && !matches.unresolved
+		return UpdateOutcome{Reconcile: true}, verr
 	}
-	return UpdateOutcome{Carried: carryMissingAutoFusingOps(stored, incoming, matched)}, nil
+	carried := carryMissingAutoFusingOps(stored, incoming, matches.matched)
+	incoming.AutoFusingKeysResolved = !matches.unresolved
+	return UpdateOutcome{Carried: carried}, nil
 }
