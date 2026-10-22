@@ -303,7 +303,7 @@ func (s *Store) AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInse
 		if err := syncStyleCategoryTriple(ctx, rep.DB(), id, tc.CategoryId); err != nil {
 			return err
 		}
-		if err := insertTechCardChildren(ctx, rep.DB(), id, tc, 0); err != nil {
+		if err := insertTechCardChildren(ctx, rep.DB(), id, tc, nil); err != nil {
 			return err
 		}
 		// A card created directly in RELEASED state freezes at commit exactly like the update path,
@@ -482,18 +482,14 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
-	// snapshotID is the tech_card_snapshot this save freezes; the pattern rows it archives below
-	// carry it (0425), so «restore v.N» finds the whole card as it was while v.N was current.
-	var snapshotID int64
+	// A client-requested snapshot keeps its existing eager semantics: it is an explicit journalled
+	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
+	// first outgoing pattern row, so ordinary saves without an archive do not grow the snapshot table.
+	snapshotIDForArchive := memoizedTechCardSnapshotID(tc, cur.LockVersion, func(reason string) (int64, error) {
+		return appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, reason, tc)
+	})
 	if tc.SnapshotReason != "" {
-		// The blob was serialised by the handler from a read taken OUTSIDE this transaction. It is
-		// the state this save replaces only if the row is still at that read's version — a client
-		// may send an expected_lock_version it never read, and then the blob would freeze an older
-		// card under the id the archived sheet will point at.
-		if cur.LockVersion != tc.SnapshotLockVersion {
-			return nil, entity.ErrTechCardConflict
-		}
-		snapshotID, err = appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc)
+		_, err = snapshotIDForArchive(tc.SnapshotReason)
 		if err != nil {
 			return nil, err
 		}
@@ -751,7 +747,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		kept.GarmentLabels, kept.PackagingItems = nil, nil
 		children = &kept
 	}
-	if err := insertTechCardChildren(ctx, rep.DB(), id, children, snapshotID); err != nil {
+	if err := insertTechCardChildren(ctx, rep.DB(), id, children, snapshotIDForArchive); err != nil {
 		return nil, err
 	}
 	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
@@ -1538,9 +1534,10 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 
 // insertTechCardChildren inserts the size range, product links, sketch media,
 // callouts and revisions for a tech card (used by both Add and Update).
-// snapshotID is the tech_card_snapshot the calling save froze in this transaction (0 = none); it is
-// stamped on every pattern row the save archives.
-func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert, snapshotID int64) error {
+// snapshotIDForArchive memoizes the tech_card_snapshot the calling save freezes in this transaction;
+// its id is stamped on every pattern row the save archives. Create/import callers pass nil because
+// a new card has no outgoing pattern state.
+func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert, snapshotIDForArchive func(string) (int64, error)) error {
 	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
@@ -1644,7 +1641,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardSignoffs(ctx, db, id, tc.Signoffs); err != nil {
 		return err
 	}
-	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason, snapshotID)
+	return insertTechCardPatterns(ctx, db, id, tc.Patterns, tc.SizeIds, tc.UpdatedBy, tc.SnapshotReason, snapshotIDForArchive)
 }
 
 // patternHistoryRow is what a pattern row remembers across a full-replace: which revision it is and
@@ -1741,7 +1738,7 @@ func patternObjectIdentity(raw string) string {
 // key may carry a distinct row — keeping the first would silently delete the row the second
 // claimed). Runs AFTER upsertTechCardBom in insertTechCardChildren, so a binding to a slot created
 // by the same save resolves.
-func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotID int64) error {
+func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotIDForArchive func(string) (int64, error)) error {
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
@@ -2070,8 +2067,12 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if matched != nil {
 			consumed[matched.Id] = struct{}{}
 			if matched.URL != p.URL {
-				if err := archiveTechCardPattern(ctx, db, id, *matched, actor,
-					patternHistoryReason(snapshotReason, "pattern replaced"), snapshotID); err != nil {
+				reason := patternHistoryReason(snapshotReason, "pattern replaced")
+				snapshotID, err := patternArchiveSnapshotID(snapshotIDForArchive, reason)
+				if err != nil {
+					return err
+				}
+				if err := archiveTechCardPattern(ctx, db, id, *matched, actor, reason, snapshotID); err != nil {
 					return err
 				}
 			}
@@ -2101,8 +2102,12 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		if _, used := consumed[r.Id]; used {
 			continue
 		}
-		if err := archiveTechCardPattern(ctx, db, id, r, actor,
-			patternHistoryReason(snapshotReason, "pattern removed"), snapshotID); err != nil {
+		reason := patternHistoryReason(snapshotReason, "pattern removed")
+		snapshotID, err := patternArchiveSnapshotID(snapshotIDForArchive, reason)
+		if err != nil {
+			return err
+		}
+		if err := archiveTechCardPattern(ctx, db, id, r, actor, reason, snapshotID); err != nil {
 			return err
 		}
 		if err := storeutil.ExecNamed(ctx, db,
@@ -2131,6 +2136,15 @@ func patternHistoryReason(snapshotReason, fallback string) string {
 		return reason
 	}
 	return fallback
+}
+
+// patternArchiveSnapshotID obtains the save's one pre-update snapshot immediately before an
+// outgoing pattern row is archived. nil is the create/import path: there is no prior card to freeze.
+func patternArchiveSnapshotID(snapshotIDForArchive func(string) (int64, error), reason string) (int64, error) {
+	if snapshotIDForArchive == nil {
+		return 0, nil
+	}
+	return snapshotIDForArchive(reason)
 }
 
 // archiveTechCardPattern records the OUTGOING row of a replacement or removal. snapshotID (0 = none)
@@ -2389,8 +2403,35 @@ func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, autho
 	return nil
 }
 
+// memoizedTechCardSnapshotID returns the id of this save's pre-update snapshot, inserting it at
+// most once. The handler's blob came from a read outside the transaction, so it can be attached to
+// outgoing rows only while the locked card is still at that read's version. A caller with no blob
+// (notably cmd/assembly_clear.go) keeps the old no-snapshot behaviour.
+func memoizedTechCardSnapshotID(tc *entity.TechCardInsert, currentLockVersion int, appendSnapshot func(string) (int64, error)) func(string) (int64, error) {
+	var snapshotID int64
+	return func(reason string) (int64, error) {
+		if snapshotID > 0 {
+			return snapshotID, nil
+		}
+		// Explicit snapshot requests historically fail if their blob is missing; call through so
+		// appendTechCardSnapshot retains that validation. An implicit, blobless writer is a no-op.
+		if tc.SnapshotJSON == "" && tc.SnapshotReason == "" {
+			return 0, nil
+		}
+		if currentLockVersion != tc.SnapshotLockVersion {
+			return 0, entity.ErrTechCardConflict
+		}
+		id, err := appendSnapshot(reason)
+		if err != nil {
+			return 0, err
+		}
+		snapshotID = id
+		return snapshotID, nil
+	}
+}
+
 // appendTechCardSnapshot inserts the pre-update snapshot and returns its id.
-func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersion int, tc *entity.TechCardInsert) (int64, error) {
+func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersion int, reason string, tc *entity.TechCardInsert) (int64, error) {
 	if tc.SnapshotJSON == "" {
 		return 0, fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
 	}
@@ -2401,7 +2442,7 @@ func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersi
 			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by)`, map[string]any{
 		"tech_card_id": id,
 		"lock_version": lockVersion,
-		"reason":       tc.SnapshotReason,
+		"reason":       reason,
 		"snapshot":     tc.SnapshotJSON,
 		"created_by":   sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
 	})
