@@ -208,6 +208,49 @@ func TestNonInterliningSortedLineHasNoRawLineReadBucket(t *testing.T) {
 	}
 }
 
+func TestFabricScopeKeyLiveUsesEffectiveScopes(t *testing.T) {
+	lines := []RollGoodsLine{
+		{LineKey: "FABRIC-A", Purpose: "main", Section: BomSectionFabric},
+		{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining},
+	}
+	for _, key := range []string{"main", "FUSE-A", "interfacing"} {
+		if !FabricScopeKeyLive(key, lines) {
+			t.Errorf("scope %q should be live", key)
+		}
+	}
+	for _, key := range []string{"", "FABRIC-A", "lining", "GONE"} {
+		if FabricScopeKeyLive(key, lines) {
+			t.Errorf("scope %q should be dead", key)
+		}
+	}
+}
+
+func TestNormalizeFabricBomLineKeyClearsOnlyStalePurposeEcho(t *testing.T) {
+	lines := []RollGoodsLine{
+		{LineKey: "MAIN-A", Purpose: "main", Section: BomSectionFabric},
+		{LineKey: "MAIN-B", Purpose: "main", Section: BomSectionLining},
+		{LineKey: "LINING-A", Purpose: "lining", Section: BomSectionLining},
+		{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining},
+	}
+	tests := []struct {
+		name, purpose, line, want string
+	}{
+		{"same purpose", "main", "MAIN-A", "MAIN-A"},
+		{"line moved to another purpose", "main", "LINING-A", ""},
+		{"line deleted", "main", "GONE", ""},
+		{"singleton interlining compatibility", "interfacing", "FUSE-A", "FUSE-A"},
+		{"dead purpose remains repairable", "mesh", "GONE", "GONE"},
+		{"line-only binding is unchanged", "", "MAIN-A", "MAIN-A"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeFabricBomLineKey(tt.purpose, tt.line, lines); got != tt.want {
+				t.Fatalf("NormalizeFabricBomLineKey(%q, %q) = %q, want %q", tt.purpose, tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPurposeSharedByRibAndFeltKeepsFeltInItsOwnScope(t *testing.T) {
 	lines := []RollGoodsLine{
 		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric},

@@ -200,12 +200,14 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 
 	var newID int
 	var losses *importLosses
+	var deadSidecars fabricScopeSidecarCleanup
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		newID = 0 // a retried attempt must not inherit the rolled-back one's id
 		// ... and must not inherit its losses either: a retry re-runs every drop below, so a
 		// collector carried over would report each dropped row once per attempt.
 		losses = newImportLosses()
+		deadSidecars = fabricScopeSidecarCleanup{}
 
 		// CLAIM FIRST, WRITE SECOND. The row is taken exclusively before a single byte of the card
 		// exists, so a concurrent twin of this call blocks here and then reads its own refusal —
@@ -264,6 +266,17 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := insertImportedPieceAreas(ctx, db, newID, importID, in.PieceAreas, rng, losses); err != nil {
 			return err
 		}
+		// Archives currently carry measured areas but no size-index payload. Run the shared hygiene
+		// over both tables anyway so this import contract cannot acquire a dead sidecar path later.
+		// The imported graph is authoritative: a scope absent from its just-written BOM is dropped.
+		lines, err := loadRollGoodsLines(ctx, db, newID)
+		if err != nil {
+			return err
+		}
+		deadSidecars, err = cleanupDeadFabricScopeSidecars(ctx, db, newID, lines)
+		if err != nil {
+			return err
+		}
 		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
 			return err
 		}
@@ -303,6 +316,12 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		slog.Default().InfoContext(ctx, "tech card import: the write dropped rows the dry run counted as imported",
 			slog.String("import_id", importID), slog.Int("tech_card_id", newID),
 			slog.Int("report_lines_added", len(losses.holes)))
+	}
+	if deadSidecars.SizeIndexRows > 0 || deadSidecars.PieceAreaRows > 0 {
+		slog.Default().InfoContext(ctx, "tech card import: dropped sidecars outside the imported fabric graph",
+			slog.String("import_id", importID), slog.Int("tech_card_id", newID),
+			slog.Int64("pattern_size_index_rows", deadSidecars.SizeIndexRows),
+			slog.Int64("piece_area_rows", deadSidecars.PieceAreaRows))
 	}
 	return newID, nil
 }
@@ -1155,7 +1174,11 @@ func importedMarkerRef(name string) string {
 // used to tell the operator instead, about a file that read perfectly well.
 func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID int, importID string,
 	areas []entity.TechCardArchivePieceArea, rng storeutil.TechCardSizeRange, lost *importLosses) error {
-	rows, err := importedPieceAreaRows(techCardID, importID, areas, rng, lost)
+	lines, err := loadRollGoodsLines(ctx, db, techCardID)
+	if err != nil {
+		return err
+	}
+	rows, err := importedPieceAreaRows(techCardID, importID, areas, rng, lines, lost)
 	if err != nil {
 		return err
 	}
@@ -1171,7 +1194,7 @@ func insertImportedPieceAreas(ctx context.Context, db dependency.DB, techCardID 
 // only on a DUPLICATE, which is the archive contradicting itself rather than the target missing a
 // reference — the row it would collide with is in the same file.
 func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechCardArchivePieceArea,
-	rng storeutil.TechCardSizeRange, lost *importLosses) ([]map[string]any, error) {
+	rng storeutil.TechCardSizeRange, lines []entity.RollGoodsLine, lost *importLosses) ([]map[string]any, error) {
 	rows := make([]map[string]any, 0, len(areas))
 	// UNIQUE (tech_card_id, scope_key, piece_line_key, size_key) — a duplicate in the archive would
 	// otherwise arrive as a bare 1062 with no hint of which row it was.
@@ -1184,6 +1207,12 @@ func importedPieceAreaRows(techCardID int, importID string, areas []entity.TechC
 				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
 				"the archive measures an area that names no fabric scope or no cut piece, so it "+
 					"addresses nothing; the row was dropped")
+			continue
+		}
+		if !entity.FabricScopeKeyLive(scope, lines) {
+			lost.drop(techcardarchive.EntityPieceArea, importedPieceAreaRef(scope, a.PieceLineKey),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				"the archive files this measurement under a fabric scope that does not exist in the imported BOM; the row was dropped")
 			continue
 		}
 		// chk_tcpa_area_positive refuses a non-positive area at the schema level; caught here so a

@@ -489,18 +489,20 @@ func TestImportedPieceAreaRowsDropWhatTheyCannotStore(t *testing.T) {
 		{ScopeKey: "", PieceLineKey: "DDD", AreaCm2: decimal.NewFromInt(10), ParsedAt: measured},
 		{ScopeKey: "MAIN", PieceLineKey: "EEE", AreaCm2: decimal.NewFromInt(10), ParsedAt: measured,
 			SizeId: sql.NullInt64{Int64: 99, Valid: true}},
+		{ScopeKey: "lining", PieceLineKey: "FFF", AreaCm2: decimal.NewFromInt(10), ParsedAt: measured},
 	}
 	l := newImportLosses()
 
-	rows, err := importedPieceAreaRows(7, "01J8", areas, rng, l)
+	lines := []entity.RollGoodsLine{{LineKey: "FABRIC-A", Purpose: "main", Section: entity.BomSectionFabric}}
+	rows, err := importedPieceAreaRows(7, "01J8", areas, rng, lines, l)
 	if err != nil {
 		t.Fatalf("a droppable row must not fail the import: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("kept rows = %d, want 1 (only the measurement this base can hold)", len(rows))
 	}
-	if len(l.holes) != 4 {
-		t.Fatalf("lines = %d, want 4 — every dropped row on the report: %+v", len(l.holes), l.holes)
+	if len(l.holes) != 5 {
+		t.Fatalf("lines = %d, want 5 — every dropped row on the report: %+v", len(l.holes), l.holes)
 	}
 	for _, h := range l.holes {
 		if h.Entity != techcardarchive.EntityPieceArea {
@@ -508,18 +510,19 @@ func TestImportedPieceAreaRowsDropWhatTheyCannotStore(t *testing.T) {
 				"reads as a sheet that did not import, and the sheet imported", h)
 		}
 	}
-	// THE THREE MALFORMED ROWS AND THE ONE OUT-OF-RANGE SIZE ARE DIFFERENT LOSSES. The first three
-	// were unusable in the archive itself — no scope, no area, no storable date — and nothing added
-	// on this side closes them; the fourth names a size this base has and this card does not make.
+	// THE FOUR INVALID ROWS AND THE ONE OUT-OF-RANGE SIZE ARE DIFFERENT LOSSES. The first four
+	// were unusable in the imported graph — no scope, dead scope, no area, or no storable date — and
+	// nothing added on this side closes them; the remaining row names a size this base has and this
+	// card does not make.
 	// Reported under one code (they were both, at different times: pattern_invalid and size_unknown)
 	// the operator is sent to re-upload a readable file, or to add a size that is already there.
 	byReason := map[techcardarchive.Reason]int{}
 	for _, h := range l.holes {
 		byReason[h.Reason]++
 	}
-	if byReason[techcardarchive.ReasonArchiveRowInvalid] != 3 ||
+	if byReason[techcardarchive.ReasonArchiveRowInvalid] != 4 ||
 		byReason[techcardarchive.ReasonSizeNotInCardRange] != 1 {
-		t.Fatalf("reasons = %+v, want 3 archive_row_invalid + 1 size_not_in_card_range: %+v", byReason, l.holes)
+		t.Fatalf("reasons = %+v, want 4 archive_row_invalid + 1 size_not_in_card_range: %+v", byReason, l.holes)
 	}
 	for _, h := range l.holes {
 		if act := techcardarchive.ActionFor(h.Reason); act == "" || strings.Contains(act, "DXF") {
@@ -537,7 +540,7 @@ func TestImportedPieceAreaRowsDropWhatTheyCannotStore(t *testing.T) {
 		{ScopeKey: "MAIN", PieceLineKey: "AAA", AreaCm2: decimal.NewFromInt(120), ParsedAt: measured},
 		{ScopeKey: "main", PieceLineKey: "aaa", AreaCm2: decimal.NewFromInt(121), ParsedAt: measured},
 	}
-	if _, err := importedPieceAreaRows(7, "01J8", dup, rng, newImportLosses()); err == nil {
+	if _, err := importedPieceAreaRows(7, "01J8", dup, rng, lines, newImportLosses()); err == nil {
 		t.Fatal("the same piece measured twice in one scope and size must still refuse the import")
 	}
 }

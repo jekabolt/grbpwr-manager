@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"time"
 
@@ -664,6 +665,10 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if err != nil {
 		return nil, err
 	}
+	priorRollGoods, err := loadRollGoodsLines(ctx, rep.DB(), id)
+	if err != nil {
+		return nil, err
+	}
 	patternCleanupCandidates := patternURLsRemovedByPayload(priorPatterns, tc.Patterns)
 
 	// Capture the style's products before the full-replace so a change to the style's SKU facts
@@ -752,6 +757,32 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		children = &kept
 	}
 	if err := insertTechCardChildren(ctx, rep.DB(), id, children, snapshotID); err != nil {
+		return nil, err
+	}
+	prospectiveRollGoods, err := loadRollGoodsLines(ctx, rep.DB(), id)
+	if err != nil {
+		return nil, err
+	}
+	prospectivePatterns, err := techCardPatternRows(ctx, rep.DB(), id)
+	if err != nil {
+		return nil, err
+	}
+	// The BOM and patterns above are now the exact graph this transaction would commit. Compare
+	// unresolved SHEET identities, not only the binding fields the client happened to change: an
+	// unchanged purpose can die because the last BOM line left it in this same save. A stored orphan
+	// remains writable (and can therefore be repaired), but no resolved or new sheet may join it.
+	if err := refuseNewlyUnresolvedPatterns(priorPatterns, priorRollGoods,
+		prospectivePatterns, prospectiveRollGoods); err != nil {
+		return nil, err
+	}
+	// Derived scope data follows a one-destination sheet move. A merge keeps an already-existing
+	// target set; a split has no honest single destination and drops the old derived set. Finally,
+	// remove every bucket the prospective BOM no longer exposes. All of this is in the document tx.
+	if err := reconcileMovedFabricScopeSidecars(ctx, rep.DB(), id, priorPatterns, priorRollGoods,
+		prospectivePatterns, prospectiveRollGoods); err != nil {
+		return nil, err
+	}
+	if _, err := cleanupDeadFabricScopeSidecars(ctx, rep.DB(), id, prospectiveRollGoods); err != nil {
 		return nil, err
 	}
 	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the
@@ -2006,6 +2037,18 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 		bomLineKey := storeutil.ResolveNullableOnPresence(p.BomLineKey, storedBinding)
 		fabricPurpose := storeutil.ResolveNullableOnPresence(p.FabricPurpose, storedPurpose)
+		// Purpose is authoritative for ordinary roll goods. Keep its compatibility line only while
+		// that line still belongs to the purpose; a deleted/reclassified echo must not invalidate an
+		// otherwise-live sheet (notably on season clone, where every destination row is new).
+		if fabricPurpose.Valid && strings.TrimSpace(fabricPurpose.String) != "" &&
+			bomLineKey.Valid && strings.TrimSpace(bomLineKey.String) != "" {
+			lines, err := loadRollGoods()
+			if err != nil {
+				return err
+			}
+			normalized := entity.NormalizeFabricBomLineKey(fabricPurpose.String, bomLineKey.String, lines)
+			bomLineKey = sql.NullString{String: normalized, Valid: normalized != ""}
+		}
 		// A present, non-empty value that CHANGES the binding must name something live; an unchanged
 		// round-trip passes even when the target has gone away since.
 		if fabricPurpose.Valid && fabricPurpose.String != "" &&
@@ -2016,7 +2059,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			}
 			if !entity.ResolveFabricScope(fabricPurpose.String, "", lines).Live() {
 				reason := fmt.Sprintf("no fabric line of this card carries purpose %q", fabricPurpose.String)
-				howToFix := "set that purpose on the line you need on the BOM tab (the “purpose” field), then bind the pattern piece to it — or leave the sheet unbound"
+				howToFix := "set that purpose on the line you need on the BOM tab (the “purpose” field), then bind the sheet to it — or remove the sheet"
 				interliningMatches := 0
 				hasOrdinaryMatch := false
 				for _, line := range lines {
@@ -2046,7 +2089,21 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			if !entity.ResolveFabricScope("", bomLineKey.String, lines).Live() {
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].bom_line_key", i),
 					fmt.Sprintf("no roll-goods BOM line %q in this tech card", bomLineKey.String), "",
-					"pick the fabric for this DXF on the PATTERNS tab — a BOM line of section fabric, lining, interlining or insulation — or leave the sheet unbound")
+					"pick the fabric for this DXF on the PATTERNS tab — a BOM line of section fabric, lining, interlining or insulation — or remove the sheet")
+			}
+		}
+		// Unlike legacy PDFs, a newly-created DXF can only come from a material slot in the current
+		// admin client. Accepting it without a live scope would create an orphan at the instant of
+		// upload, before the post-save grandfathering comparison has any stored identity to compare.
+		if matched == nil && isDXFPattern(p) {
+			lines, err := loadRollGoods()
+			if err != nil {
+				return err
+			}
+			if !entity.ResolveFabricScope(fabricPurpose.String, bomLineKey.String, lines).Live() {
+				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].fabric_scope", i),
+					"live_binding_required", patternInputName(p),
+					"pick a live fabric purpose or roll-goods BOM line for this DXF sheet")
 			}
 		}
 		params := map[string]any{
@@ -2111,6 +2168,28 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		}
 	}
 	return nil
+}
+
+func isDXFPattern(p entity.TechCardSizePattern) bool {
+	for _, raw := range []string{p.Filename.String, p.URL} {
+		clean := strings.TrimSpace(raw)
+		if i := strings.IndexAny(clean, "?#"); i >= 0 {
+			clean = clean[:i]
+		}
+		if strings.EqualFold(path.Ext(clean), ".dxf") {
+			return true
+		}
+	}
+	return false
+}
+
+func patternInputName(p entity.TechCardSizePattern) string {
+	for _, candidate := range []string{p.Name.String, p.Filename.String, p.LineKey, p.URL} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name
+		}
+	}
+	return "unnamed sheet"
 }
 
 // techCardArchivedPatternRows reads the card's sheet history as the numbering needs it: which

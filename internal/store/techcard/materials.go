@@ -1561,6 +1561,9 @@ func upsertTechCardPieceDxfAliases(ctx context.Context, db dependency.DB, tcID i
 			return entity.NewFieldViolation(fmt.Sprintf("piece_dxf_aliases[%d].piece_line_key", i),
 				"not_found", a.PieceLineKey, "the referenced cut-piece is not on this card")
 		}
+		// A purpose-bound alias may retain a compatibility line from an earlier BOM shape. Clear the
+		// echo when that line no longer belongs to the live purpose; the purpose remains authoritative.
+		a.BomLineKey = entity.NormalizeFabricBomLineKey(a.FabricPurpose, a.BomLineKey, rollGoods)
 		scope := a.Scope(rollGoods)
 		key := ciKey(scope.Key, a.BlockName)
 		if prev, exists := existingByKey[key]; exists {

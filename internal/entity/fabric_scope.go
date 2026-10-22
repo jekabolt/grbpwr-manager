@@ -50,8 +50,8 @@ type FabricScope struct {
 	// LineKeys are the roll-goods BOM lines this binding addresses, in the order the card lists
 	// them. A purpose legitimately owns SEVERAL — that is the whole point of the field. EMPTY means
 	// the binding dangles: the purpose has no lines sorted into it yet, or the legacy line was
-	// deleted / reclassified out of roll goods. Dangling is a UI STATE («слот удалён»), not an
-	// error — the store only refuses a binding that dangles the moment it is first written.
+	// deleted / reclassified out of roll goods. A stored dangling row remains a UI state («слот
+	// удалён») and stays repairable; a save may not create another one.
 	LineKeys []string
 }
 
@@ -131,6 +131,46 @@ func FabricScopeReadKeys(line RollGoodsLine, lines []RollGoodsLine) []string {
 		out = append(out, legacy)
 	}
 	return out
+}
+
+// FabricScopeKeyLive reports whether scopeKey is an effective scope of the card today. This is
+// deliberately stricter than resolving scopeKey as a legacy line binding: once an ordinary line
+// has a purpose, its raw line key still names a BOM row but it is no longer a scope that an area or
+// size-index row may be filed under. The optional singleton-INTERLINING purpose fallback remains
+// live because readers still support that complete legacy bucket.
+func FabricScopeKeyLive(scopeKey string, lines []RollGoodsLine) bool {
+	want := strings.TrimSpace(scopeKey)
+	if want == "" {
+		return false
+	}
+	for _, line := range lines {
+		for _, key := range FabricScopeReadKeys(line, lines) {
+			if strings.EqualFold(strings.TrimSpace(key), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// NormalizeFabricBomLineKey removes a compatibility line key that no longer belongs to a live
+// purpose binding. Purpose-bound rows legitimately carry the concrete line that was selected when
+// the binding was made, but that echo must not invalidate the purpose after the line is deleted or
+// moved to another purpose. A purpose that is itself dead is left untouched so legacy orphan rows
+// remain identifiable and repairable rather than being silently rewritten.
+func NormalizeFabricBomLineKey(purpose, bomLineKey string, lines []RollGoodsLine) string {
+	p := strings.TrimSpace(purpose)
+	key := strings.TrimSpace(bomLineKey)
+	if p == "" || key == "" || !ResolveFabricScope(p, "", lines).Live() {
+		return key
+	}
+	for _, line := range lines {
+		if strings.EqualFold(strings.TrimSpace(line.LineKey), key) &&
+			strings.EqualFold(strings.TrimSpace(line.Purpose), p) {
+			return key
+		}
+	}
+	return ""
 }
 
 // FabricArtifact is one sheet, block alias or other scope-bound value together with the binding

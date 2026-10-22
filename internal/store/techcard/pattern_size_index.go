@@ -85,6 +85,10 @@ func (s *Store) PutTechCardPatternSizeIndex(ctx context.Context, in entity.Patte
 		if err != nil {
 			return err
 		}
+		if !entity.FabricScopeKeyLive(scopeKey, lines) {
+			return entity.NewFieldViolation("scope_key", "scope_not_live", scopeKey,
+				"choose a fabric purpose or unsorted/interlining BOM line that is still a live scope on this card")
+		}
 		// The scope's CURRENT membership, bucketed by the ТКАНЬ each sheet addresses — the same
 		// grouping the panel shows and the same key dto.patternScopesOfCard reads this row back
 		// under. Bucketing by what the sheet itself names would strand every sheet of a card the

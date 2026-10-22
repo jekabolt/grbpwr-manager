@@ -519,13 +519,10 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // livePieceKeysOfSizedAreas keeps only the sized areas whose scope STILL resolves to cloth on the
 // card, and returns the pieces they belong to.
 //
-// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. scope_key — это ВЕДРО ЗАПИСИ
-// (COALESCE(fabric_purpose, bom_line_key)), и оно намеренно не двигается вслед за BOM. Значит
-// назначение, присвоенное или переименованное ПОСЛЕ замера, оставляет пер-размерные строки под
-// ключом, которого на карточке больше нет. Предписанное лекарство «перемерьте» на них не действует:
-// полная замена работает по одному ЖИВОМУ скоупу (пустой набор отвергается, мёртвый не пройдёт
-// scope_has_no_sheets), то есть деталь стала бы непомечаемой навсегда, без единого способа это
-// расшить.
+// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. SaveTechCard now rekeys one-destination
+// scope moves and deletes dead buckets in the SAME transaction as the BOM edit. Rows predating that
+// hygiene can still exist, though, and this guard must not turn one into a permanent UNI blocker:
+// a dead scope cannot be replaced through the side RPC and the operator has no direct delete action.
 //
 // А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
 // ЖИВОЙ строки (dto.slotAreaEstimate считает его как EffectiveFabricScopeKey(строка)),
@@ -778,6 +775,10 @@ func (s *Store) SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaW
 		lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 		if err != nil {
 			return err
+		}
+		if !entity.FabricScopeKeyLive(scopeKey, lines) {
+			return entity.NewFieldViolation("scope_key", "scope_not_live", scopeKey,
+				"choose a fabric purpose or unsorted/interlining BOM line that is still a live scope on this card")
 		}
 		sheetsByScope, err := scopeSheetRefs(ctx, db, in.TechCardId, lines)
 		if err != nil {
