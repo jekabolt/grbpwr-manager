@@ -2015,9 +2015,26 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 				return err
 			}
 			if !entity.ResolveFabricScope(fabricPurpose.String, "", lines).Live() {
+				reason := fmt.Sprintf("no fabric line of this card carries purpose %q", fabricPurpose.String)
+				howToFix := "set that purpose on the line you need on the BOM tab (the “purpose” field), then bind the pattern piece to it — or leave the sheet unbound"
+				interliningMatches := 0
+				hasOrdinaryMatch := false
+				for _, line := range lines {
+					if !strings.EqualFold(strings.TrimSpace(line.Purpose), strings.TrimSpace(fabricPurpose.String)) {
+						continue
+					}
+					if line.Section == entity.BomSectionInterlining {
+						interliningMatches++
+					} else {
+						hasOrdinaryMatch = true
+					}
+				}
+				if interliningMatches > 1 && !hasOrdinaryMatch {
+					reason = fmt.Sprintf("purpose %q belongs to more than one INTERLINING BOM line", fabricPurpose.String)
+					howToFix = "bind this interlining sheet to the specific BOM line on the PATTERNS tab — a purpose shared by several interlining lines cannot identify its material"
+				}
 				return entity.NewFieldViolation(fmt.Sprintf("patterns[%d].fabric_purpose", i),
-					fmt.Sprintf("no fabric line of this card carries purpose %q", fabricPurpose.String), "",
-					"set that purpose on the line you need on the BOM tab (the “purpose” field), then bind the pattern piece to it — or leave the sheet unbound")
+					reason, "", howToFix)
 			}
 		}
 		if bomLineKey.Valid && bomLineKey.String != "" &&

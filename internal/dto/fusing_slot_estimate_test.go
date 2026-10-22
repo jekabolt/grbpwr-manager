@@ -252,6 +252,12 @@ func TestLegacyInterliningAreaFallbackIsUnambiguousAndLineDataWins(t *testing.T)
 	if est := fusingSlotEstimate(t, tc); !est.perGarment.Equal(decimal.RequireFromString("0.1")) {
 		t.Fatalf("line-scoped area did not suppress legacy fallback: got %s, want 0.1", est.perGarment)
 	}
+	lineScoped.Stale = true
+	tc.PieceAreaScopes["FUSEKEY"] = lineScoped
+	if est := fusingSlotEstimate(t, tc); !est.normDerived || !est.perGarment.Equal(decimal.RequireFromString("0.14")) {
+		t.Fatalf("stale line scope masked the fresh singleton fallback: got %s (refusal %q), want 0.14",
+			est.perGarment, est.refusal)
+	}
 
 	delete(tc.PieceAreaScopes, "FUSEKEY")
 	tc.BomItems = append(tc.BomItems, entity.TechCardBomItem{
@@ -262,6 +268,25 @@ func TestLegacyInterliningAreaFallbackIsUnambiguousAndLineDataWins(t *testing.T)
 	est := fusingSlotEstimate(t, tc)
 	if est.normDerived || est.refusal != entity.AreaEstimateNoAreas {
 		t.Fatalf("ambiguous legacy purpose area was used: norm=%s refusal=%q, want no areas", est.perGarment, est.refusal)
+	}
+}
+
+func TestMeasuredInterliningDoesNotGiveEveryColorwayAnOwnRecipe(t *testing.T) {
+	tc := fusedCard(entity.PieceFusingModeFull, "")
+	tc.PieceAreaScopes["FUSEKEY"] = entity.PieceAreaScope{
+		ScopeKey: "FUSEKEY",
+		Rows: []entity.PieceAreaRow{{
+			PieceLineKey: "PIECE1",
+			SizeId:       sql.NullInt64{Int64: 4, Valid: true},
+			AreaCm2:      decimal.RequireFromString("1400"),
+		}},
+	}
+	tc.Colorways = append(tc.Colorways, entity.TechCardColorway{Id: 36, Name: "ecru"})
+	if colorwayHasOwnRecipe(tc, &tc.Colorways[1]) {
+		t.Fatal("a colourway with no piece-assignment row claimed the shared measured interlining as its own recipe")
+	}
+	if !colorwayHasOwnRecipe(tc, &tc.Colorways[0]) {
+		t.Fatal("the colourway that owns the interlining piece-assignment row lost its own recipe")
 	}
 }
 

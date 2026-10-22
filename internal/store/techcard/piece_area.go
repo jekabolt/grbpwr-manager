@@ -179,9 +179,21 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 		})
 	}
 	// The selected INTERLINING line lives on the piece itself and may have no duplicate recipe row.
-	// Once geometry exists it changes which slot consumes that contour, so COSTING must see it.
-	// Cards without areas remain byte-identical: no area-derived cost can use the selection yet.
+	// It changes costing only when the card has a CHOICE of fusibles. With one interlining line the
+	// selection was already implicit before L11, so adding these rows would stale every measured
+	// single-line card's COSTING approval on deploy without changing one computed number.
+	interliningLineCount := 0
+	var fusingAssignments []entity.PieceFabricAssignment
 	if len(areas) > 0 {
+		interliningLineCount, err = storeutil.QueryCountNamed(ctx, s.DB, `
+			SELECT COUNT(*)
+			FROM tech_card_bom_item
+			WHERE tech_card_id = :id AND section = 'interlining'`, map[string]any{"id": techCardID})
+		if err != nil {
+			return "", fmt.Errorf("count interlining BOM lines of tech card %d: %w", techCardID, err)
+		}
+	}
+	if interliningLineCount > 1 {
 		fusingRows, err := storeutil.QueryListNamed[struct {
 			PieceKey         string `db:"piece_key"`
 			FusingBomKey     string `db:"fusing_bom_key"`
@@ -208,13 +220,14 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 			return "", fmt.Errorf("load piece→fusing assignments of tech card %d: %w", techCardID, err)
 		}
 		for _, r := range fusingRows {
-			assignments = append(assignments, entity.PieceFabricAssignment{
+			fusingAssignments = append(fusingAssignments, entity.PieceFabricAssignment{
 				PieceKey: r.PieceKey, FusingBomKey: r.FusingBomKey,
 				PiecesPerGarment: r.PiecesPerGarment, FusingMarking: r.FusingMarking,
 			})
 		}
 	}
-	return entity.DerivedCostInputsDigest(areas, assignments), nil
+	return entity.DerivedCostInputsDigestWithFusing(
+		areas, assignments, fusingAssignments, interliningLineCount), nil
 }
 
 // scopeFingerprints computes TODAY's source fingerprint for every fabric scope of a card — sheets
@@ -261,34 +274,26 @@ func scopeSheetRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
 		}
 		out[k] = append(out[k], ref)
-		// Preserve the fingerprint of legacy purpose-keyed area rows. An old singleton binding often
-		// stores both purpose and compatibility line; its effective identity is now the line, while
-		// the already measured area remains under the raw purpose key.
-		if raw := entity.FabricScopeKey(sh.FabricPurpose, sh.BomLineKey); raw != "" && raw != k {
-			out[raw] = append(out[raw], ref)
-		}
 	}
-	applyLegacyInterliningReadFallback(out, lines)
+	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
 }
 
-// applyLegacyInterliningReadFallback exposes old purpose-keyed artefacts to their one unambiguous
-// interlining line. A line-scoped set always wins wholesale; mixing the two sets would let stale
-// aliases or sheets from the old bucket contaminate a newly generated per-line fingerprint.
-func applyLegacyInterliningReadFallback[T any](byScope map[string][]T, lines []entity.RollGoodsLine) {
+// addLegacyInterliningPurposeBuckets keeps stored purpose-keyed measurements/indexes fresh for the
+// one unambiguous legacy case. Every binding of that singleton line first resolves to its line
+// identity; this compatibility bucket is then an exact copy of that identity's refs.
+//
+// This deliberately replaces raw COALESCE-key duplication. A line-only binding of an ordinary
+// sorted FABRIC/LINING line has a raw line bucket and a purpose identity, but the line bucket is not
+// a live scope and must not make area/index writes under scope_key=<line> look valid.
+func addLegacyInterliningPurposeBuckets[T any](byScope map[string][]T, lines []entity.RollGoodsLine) {
 	for _, line := range lines {
-		if line.Section != entity.BomSectionInterlining {
-			continue
-		}
 		lineScope := entity.EffectiveFabricScopeKey(line)
-		if lineScope == "" || len(byScope[lineScope]) > 0 {
-			continue
-		}
 		legacyScope, ok := entity.LegacyInterliningPurposeScope(line, lines)
-		if !ok || len(byScope[legacyScope]) == 0 {
+		if !ok || lineScope == "" || legacyScope == "" || len(byScope[lineScope]) == 0 {
 			continue
 		}
-		byScope[lineScope] = byScope[legacyScope]
+		byScope[legacyScope] = append([]T(nil), byScope[lineScope]...)
 	}
 }
 
@@ -326,11 +331,8 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 			BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
 		}
 		out[k] = append(out[k], ref)
-		if raw := entity.FabricScopeKey(r.FabricPurpose, r.BomLineKey); raw != "" && raw != k {
-			out[raw] = append(out[raw], ref)
-		}
 	}
-	applyLegacyInterliningReadFallback(out, lines)
+	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
 }
 

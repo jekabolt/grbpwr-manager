@@ -87,8 +87,10 @@ func EffectiveFabricScopeKey(line RollGoodsLine) string {
 
 // LegacyInterliningPurposeScope returns the purpose bucket an interlining line may read for
 // compatibility. It is intentionally available only when that purpose identifies exactly one
-// interlining line on the card. Callers must prefer the line scope whenever it contains data;
-// this function supplies a fallback, never a second scope to merge.
+// roll-goods line on the whole card and that line is INTERLINING. A non-interlining line sharing
+// the purpose keeps the ordinary purpose group alive, so the purpose cannot also be an alias for
+// one fusible line. Callers must prefer the line scope whenever it contains fresh data; this
+// function supplies a fallback, never a second scope to merge.
 func LegacyInterliningPurposeScope(line RollGoodsLine, lines []RollGoodsLine) (string, bool) {
 	if line.Section != BomSectionInterlining {
 		return "", false
@@ -98,19 +100,19 @@ func LegacyInterliningPurposeScope(line RollGoodsLine, lines []RollGoodsLine) (s
 	if purpose == "" || key == "" {
 		return "", false
 	}
-	match := ""
+	var match *RollGoodsLine
 	for _, candidate := range lines {
-		if candidate.Section != BomSectionInterlining ||
-			!strings.EqualFold(strings.TrimSpace(candidate.Purpose), purpose) ||
-			strings.TrimSpace(candidate.LineKey) == "" {
+		if !strings.EqualFold(strings.TrimSpace(candidate.Purpose), purpose) {
 			continue
 		}
-		if match != "" {
+		if match != nil {
 			return "", false
 		}
-		match = candidate.LineKey
+		candidateCopy := candidate
+		match = &candidateCopy
 	}
-	if !strings.EqualFold(strings.TrimSpace(match), key) {
+	if match == nil || match.Section != BomSectionInterlining ||
+		!strings.EqualFold(strings.TrimSpace(match.LineKey), key) {
 		return "", false
 	}
 	return purpose, true
@@ -150,24 +152,37 @@ func ResolveFabricScope(purpose, bomLineKey string, lines []RollGoodsLine) Fabri
 		}
 	}
 	if p != "" {
-		out := FabricScope{Key: p, ByPurpose: true}
-		legacyInterlining := ""
-		legacyInterliningCount := 0
+		var matches []RollGoodsLine
+		hasOrdinary := false
 		for _, l := range lines {
-			if !strings.EqualFold(strings.TrimSpace(l.Purpose), p) || strings.TrimSpace(l.LineKey) == "" {
+			if !strings.EqualFold(strings.TrimSpace(l.Purpose), p) {
 				continue
 			}
-			if l.Section == BomSectionInterlining {
-				legacyInterlining = l.LineKey
-				legacyInterliningCount++
-				continue
+			matches = append(matches, l)
+			if l.Section != BomSectionInterlining {
+				hasOrdinary = true
 			}
-			out.LineKeys = append(out.LineKeys, l.LineKey)
 		}
-		// A purpose-only interlining binding is a legacy read fallback. It remains live only when it
-		// identifies one line; N same-purpose fusibles must never be merged or guessed between.
-		if legacyInterliningCount == 1 {
-			out.LineKeys = append(out.LineKeys, legacyInterlining)
+		// A purpose-only binding aliases a fusible line only in the one unambiguous legacy case:
+		// exactly one roll-goods line has the purpose, and it is INTERLINING. Returning the line key
+		// here makes purpose-only and line-only artefacts share one physical identity.
+		if len(matches) == 1 && matches[0].Section == BomSectionInterlining {
+			lineKey := strings.TrimSpace(matches[0].LineKey)
+			if lineKey == "" {
+				return FabricScope{Key: p, ByPurpose: true}
+			}
+			return FabricScope{Key: matches[0].LineKey, LineKeys: []string{matches[0].LineKey}}
+		}
+		out := FabricScope{Key: p, ByPurpose: true}
+		// Any ordinary roll-goods member preserves the historical purpose group, including every
+		// interlining member that happens to share its purpose (rib «other» + felt «other»). With
+		// only multiple interlining members the binding is ambiguous and deliberately stays dead.
+		if hasOrdinary {
+			for _, l := range matches {
+				if strings.TrimSpace(l.LineKey) != "" {
+					out.LineKeys = append(out.LineKeys, l.LineKey)
+				}
+			}
 		}
 		return out
 	}

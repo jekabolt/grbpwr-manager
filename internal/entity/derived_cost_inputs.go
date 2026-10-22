@@ -157,6 +157,25 @@ func DerivedCostInputsDigest(areas map[string]PieceAreaScope, assignments []Piec
 	return hex.EncodeToString(sum[:])
 }
 
+// DerivedCostInputsDigestWithFusing adds the piece-level fusible selection only when a card has a
+// real choice between interlining lines. On a card with zero or one such line the selection is
+// implicit and did not enter the pre-L11 digest; preserving that byte shape avoids a deploy-only
+// COSTING staleness wave. Once there are two lines, moving a piece between them changes consumption
+// and therefore must change the approval token.
+func DerivedCostInputsDigestWithFusing(
+	areas map[string]PieceAreaScope,
+	assignments, fusingAssignments []PieceFabricAssignment,
+	interliningLineCount int,
+) string {
+	if interliningLineCount <= 1 || len(fusingAssignments) == 0 {
+		return DerivedCostInputsDigest(areas, assignments)
+	}
+	combined := make([]PieceFabricAssignment, 0, len(assignments)+len(fusingAssignments))
+	combined = append(combined, assignments...)
+	combined = append(combined, fusingAssignments...)
+	return DerivedCostInputsDigest(areas, combined)
+}
+
 func sortRows(rows [][]any) {
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]

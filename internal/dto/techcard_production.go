@@ -1532,6 +1532,12 @@ func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool
 		if !isRollGoodsSection(b.Section) {
 			continue
 		}
+		if b.Section == entity.BomSectionInterlining && !colorwayHasPieceAssignmentForBom(tc, cw, b) {
+			// The piece→fusible selection lives on the card's piece and is shared by every colourway.
+			// It makes the STYLE costable, but it does not prove this colourway authored its own recipe;
+			// without a row of its own the colourway must keep inheriting the style figure.
+			continue
+		}
 		// СПОРЯЩИЕ ПИНЫ РЕЦЕПТ НЕ ОТМЕНЯЮТ. Это ДВА РАЗНЫХ ВОПРОСА, и путать их дорого: «есть ли у
 		// колорвея собственный рецепт» (да — детали назначены, слот измерен) и «считается ли он»
 		// (нет — про это hasUnpriced). Ответив «рецепта нет», мы отправляли бы такой колорвей
@@ -1542,6 +1548,25 @@ func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool
 			if _, sc, ok := pieceAreaScopeForBom(tc, b); ok && len(sc.Rows) > 0 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func colorwayHasPieceAssignmentForBom(tc *entity.TechCard, cw *entity.TechCardColorway, bom *entity.TechCardBomItem) bool {
+	for i := range cw.Usages {
+		u := &cw.Usages[i]
+		if !u.IsPieceMaterialAssignment() {
+			continue
+		}
+		resolved := resolveUsageBom(tc.BomItems, u)
+		if resolved == bom || (resolved != nil && ((resolved.Id > 0 && resolved.Id == bom.Id) ||
+			(strings.TrimSpace(resolved.LineKey) != "" && strings.EqualFold(resolved.LineKey, bom.LineKey)))) {
+			return true
+		}
+		// A not-yet-persisted payload can carry the stable wire key before it has a resolved id.
+		if strings.TrimSpace(u.BomLineKey) != "" && strings.EqualFold(u.BomLineKey, bom.LineKey) {
+			return true
 		}
 	}
 	return false

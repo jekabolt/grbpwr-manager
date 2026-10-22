@@ -1019,11 +1019,7 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 	worst := entity.RunReadinessOK
 	var notes []string
 	for _, sc := range scopes {
-		var rp *entity.PatternSizeIndexRow
-		if r, ok := b.in.PatternSizeIndex[sc.key]; ok {
-			rp = &r
-		}
-		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
+		state, tokens := patternSizeIndexStatusForScope(sc, b.in.PatternSizeIndex)
 		switch state {
 		case entity.PatternSizeIndexMissing:
 			notes = append(notes, fmt.Sprintf("%s: sizes in the files were never checked — press “⌕ sizes in the files” on the patterns tab", sc.key))
@@ -1082,8 +1078,34 @@ func worseReadiness(a, b entity.RunReadinessSeverity) entity.RunReadinessSeverit
 }
 
 type patternScope struct {
-	key    string
-	sheets []entity.PatternSheetRef
+	key       string
+	legacyKey string
+	sheets    []entity.PatternSheetRef
+}
+
+// patternSizeIndexStatusForScope prefers a current line-keyed index, then the one allowed legacy
+// purpose key. A stale/malformed line row must not mask a current legacy row, but remains the most
+// useful verdict when the fallback is absent too.
+func patternSizeIndexStatusForScope(sc patternScope, index map[string]entity.PatternSizeIndexRow) (entity.PatternSizeIndexState, map[string]bool) {
+	fingerprint := entity.PatternSheetFingerprint(sc.sheets)
+	var primary *entity.PatternSizeIndexRow
+	if row, ok := index[sc.key]; ok {
+		primary = &row
+	}
+	primaryState, primaryTokens := entity.PatternSizeIndexStatus(primary, fingerprint)
+	if primaryState == entity.PatternSizeIndexUsable || primaryState == entity.PatternSizeIndexUngraded || sc.legacyKey == "" {
+		return primaryState, primaryTokens
+	}
+	var legacy *entity.PatternSizeIndexRow
+	if row, ok := index[sc.legacyKey]; ok {
+		legacy = &row
+	}
+	legacyState, legacyTokens := entity.PatternSizeIndexStatus(legacy, fingerprint)
+	if legacyState == entity.PatternSizeIndexUsable || legacyState == entity.PatternSizeIndexUngraded ||
+		(primaryState == entity.PatternSizeIndexMissing && legacyState != entity.PatternSizeIndexMissing) {
+		return legacyState, legacyTokens
+	}
+	return primaryState, primaryTokens
 }
 
 // patternScopes groups the card's pattern sheets by the ТКАНЬ each one addresses. The fingerprint
@@ -1118,9 +1140,15 @@ func patternScopesOfCard(card *entity.TechCard) []patternScope {
 		})
 	}
 	sort.Strings(order)
+	legacyByKey := map[string]string{}
+	for _, line := range lines {
+		if legacy, ok := entity.LegacyInterliningPurposeScope(line, lines); ok {
+			legacyByKey[entity.EffectiveFabricScopeKey(line)] = legacy
+		}
+	}
 	out := make([]patternScope, 0, len(order))
 	for _, k := range order {
-		out = append(out, patternScope{key: k, sheets: byKey[k]})
+		out = append(out, patternScope{key: k, legacyKey: legacyByKey[k], sheets: byKey[k]})
 	}
 	return out
 }
@@ -1564,11 +1592,7 @@ func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.P
 	missingSet := map[int]bool{}
 	usable := 0
 	for _, sc := range scopes {
-		var rp *entity.PatternSizeIndexRow
-		if r, found := index[sc.key]; found {
-			rp = &r
-		}
-		state, tokens := entity.PatternSizeIndexStatus(rp, entity.PatternSheetFingerprint(sc.sheets))
+		state, tokens := patternSizeIndexStatusForScope(sc, index)
 		switch state {
 		case entity.PatternSizeIndexMissing:
 			reasons = append(reasons, fmt.Sprintf("%s: sizes in the files were never checked", sc.key))

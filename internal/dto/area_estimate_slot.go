@@ -103,12 +103,27 @@ func pieceAreaScopeForBom(tc *entity.TechCard, bom *entity.TechCardBomItem) (str
 	}
 	line := rollGoodsLineOfBom(bom)
 	lines := entity.RollGoodsLinesOfBom(tc.BomItems)
-	for _, key := range entity.FabricScopeReadKeys(line, lines) {
-		if sc, ok := tc.PieceAreaScopes[key]; ok {
-			return key, sc, true
+	keys := entity.FabricScopeReadKeys(line, lines)
+	if len(keys) == 0 {
+		return "", entity.PieceAreaScope{}, false
+	}
+	lineScope, lineFound := tc.PieceAreaScopes[keys[0]]
+	if lineFound && !lineScope.Stale && len(lineScope.Rows) > 0 {
+		return keys[0], lineScope, true
+	}
+	// Only LegacyInterliningPurposeScope can add this second key, so a purpose shared with rib,
+	// lining or any other roll good never becomes a fallback for one fusible line.
+	if len(keys) > 1 {
+		if legacy, ok := tc.PieceAreaScopes[keys[1]]; ok {
+			return keys[1], legacy, true
 		}
 	}
-	return entity.EffectiveFabricScopeKey(line), entity.PieceAreaScope{}, false
+	// Preserve the useful stale verdict when no legacy bucket can answer. Returning "missing" here
+	// would hide the fact that this exact line was measured and its source later changed.
+	if lineFound {
+		return keys[0], lineScope, true
+	}
+	return keys[0], entity.PieceAreaScope{}, false
 }
 
 // slotAreaEstimate answers «what does this one roll slot consume per garment by estimate, and why

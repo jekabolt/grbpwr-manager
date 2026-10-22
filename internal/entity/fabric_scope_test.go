@@ -182,6 +182,9 @@ func TestInterliningLinesNeverFoldIntoTheirSharedPurpose(t *testing.T) {
 
 func TestInterliningLegacyPurposeFallbackIsSingletonOnly(t *testing.T) {
 	line := RollGoodsLine{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining}
+	if got := ResolveFabricScope("interfacing", "", []RollGoodsLine{line}); got.Key != "FUSE-A" || got.ByPurpose || len(got.LineKeys) != 1 || got.LineKeys[0] != "FUSE-A" {
+		t.Fatalf("singleton purpose-only binding = %#v, want the interlining line identity", got)
+	}
 	if got := FabricScopeReadKeys(line, []RollGoodsLine{line}); len(got) != 2 ||
 		got[0] != "FUSE-A" || got[1] != "interfacing" {
 		t.Fatalf("singleton read keys = %v, want [FUSE-A interfacing]", got)
@@ -192,5 +195,36 @@ func TestInterliningLegacyPurposeFallbackIsSingletonOnly(t *testing.T) {
 	}
 	if got := FabricScopeReadKeys(line, lines); len(got) != 1 || got[0] != "FUSE-A" {
 		t.Fatalf("ambiguous read keys = %v, want only the line scope", got)
+	}
+}
+
+func TestNonInterliningSortedLineHasNoRawLineReadBucket(t *testing.T) {
+	line := RollGoodsLine{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric}
+	if got := FabricScopeReadKeys(line, []RollGoodsLine{line}); len(got) != 1 || got[0] != "other" {
+		t.Fatalf("ordinary sorted-line read keys = %v, want only [other]", got)
+	}
+	if got := FabricScopeIdentity("", line.LineKey, []RollGoodsLine{line}); got != "other" {
+		t.Fatalf("line-only rib identity = %q, want purpose group other", got)
+	}
+}
+
+func TestPurposeSharedByRibAndFeltRemainsAnOrdinaryPurposeGroup(t *testing.T) {
+	lines := []RollGoodsLine{
+		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric},
+		{LineKey: "FELT-A", Purpose: "other", Section: BomSectionInterlining},
+	}
+	scope := ResolveFabricScope("other", "", lines)
+	if scope.Key != "other" || !scope.ByPurpose || len(scope.LineKeys) != 2 ||
+		scope.LineKeys[0] != "RIB-A" || scope.LineKeys[1] != "FELT-A" {
+		t.Fatalf("rib + felt purpose-only binding = %#v, want the original two-line purpose group", scope)
+	}
+	if got := FabricScopeIdentity("other", "", lines); got != "other" {
+		t.Fatalf("purpose-only identity = %q, want other", got)
+	}
+	if _, ok := LegacyInterliningPurposeScope(lines[1], lines); ok {
+		t.Fatal("felt received a legacy purpose fallback even though rib shares the purpose")
+	}
+	if got := FabricScopeIdentity("other", "FELT-A", lines); got != "FELT-A" {
+		t.Fatalf("explicit felt binding = %q, want its own interlining line", got)
 	}
 }

@@ -612,6 +612,25 @@ func TestPatternScopesOfAnUnsortedCardAreUnchanged(t *testing.T) {
 	}
 }
 
+func TestPatternScopeReadsSingletonInterliningIndexFromLegacyPurpose(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems[0].Section = entity.BomSectionInterlining
+	card.BomItems[0].Purpose = sql.NullString{String: "interfacing", Valid: true}
+	scopes := patternScopesOfCard(card)
+	if len(scopes) != 1 || scopes[0].key != rrLineKey || scopes[0].legacyKey != "interfacing" {
+		t.Fatalf("singleton interlining pattern scope = %+v, want line key with interfacing fallback", scopes)
+	}
+	index := map[string]entity.PatternSizeIndexRow{"interfacing": {
+		ScopeKey:         "interfacing",
+		SheetFingerprint: entity.PatternSheetFingerprint(scopes[0].sheets),
+		SizeTokensJSON:   `[]`,
+	}}
+	state, _ := patternSizeIndexStatusForScope(scopes[0], index)
+	if state != entity.PatternSizeIndexUngraded {
+		t.Fatalf("legacy purpose index read as state %v, want current ungraded rather than missing", state)
+	}
+}
+
 // TestRunReadinessUnitCoverageAsksThePairNotOneRow — ПОКРЫТИЕ СЧИТАЕТСЯ ПО ПАРЕ (0333), а не по
 // одной её строке.
 //

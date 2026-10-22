@@ -23,3 +23,20 @@ func TestDerivedCostInputsDigestIncludesPieceFusingLine(t *testing.T) {
 		t.Fatalf("case-only fusing line change moved digest: got %q want %q", got, digestA)
 	}
 }
+
+func TestDerivedCostInputsDigestKeepsSingleInterliningCardByteIdentical(t *testing.T) {
+	areas := map[string]PieceAreaScope{"main": {ScopeKey: "main"}}
+	base := []PieceFabricAssignment{{
+		ColorwayKey: 1, PieceKey: "FRONT", BomKey: "SHELL", PiecesPerGarment: 1,
+	}}
+	fusing := []PieceFabricAssignment{{
+		PieceKey: "FRONT", FusingBomKey: "FUSE-A", PiecesPerGarment: 1,
+	}}
+	want := DerivedCostInputsDigest(areas, base)
+	if got := DerivedCostInputsDigestWithFusing(areas, base, fusing, 1); got != want {
+		t.Fatalf("one implicit interlining line moved the digest: got %q want %q", got, want)
+	}
+	if got := DerivedCostInputsDigestWithFusing(areas, base, fusing, 2); got == want {
+		t.Fatal("a per-piece selection between multiple interlining lines did not move the digest")
+	}
+}

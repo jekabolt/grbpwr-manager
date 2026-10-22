@@ -177,9 +177,10 @@ func (in TechCardSeamInput) PieceLineKeys() []string {
 // way to tell which file draws it, any re-upload may have moved it. Scoping is what keeps a pocketing
 // re-upload from staling the shell seams while a MAIN re-upload stales them all.
 //
-// Sheets and links are bucketed by FabricScopeIdentity by the caller (the same buckets piece areas
-// use), so each sheet and each link appears in exactly one scope and the union is a plain concat;
-// PieceAreaSourceFingerprint sorts, so map order does not matter.
+// Compatibility can expose one physical ref under both a line identity and its legacy purpose.
+// The union therefore deduplicates by the exact projections PieceAreaSourceFingerprint hashes:
+// (line_key, url, version) for sheets and (block, piece) for links. Without this, introducing a
+// compatibility bucket alone would change every affected seam fingerprint on deploy.
 func TechCardSeamSourceFingerprint(pieceKeys []string, sheetsByScope map[string][]PatternSheetRef, blocksByScope map[string][]PieceAreaBlockRef) string {
 	piecesScopes := map[string]map[string]bool{}
 	for scope, blocks := range blocksByScope {
@@ -214,9 +215,23 @@ func TechCardSeamSourceFingerprint(pieceKeys []string, sheetsByScope map[string]
 	}
 	var sheets []PatternSheetRef
 	var blocks []PieceAreaBlockRef
+	seenSheets := map[PatternSheetRef]bool{}
+	seenBlocks := map[PieceAreaBlockRef]bool{}
 	for s := range scopes {
-		sheets = append(sheets, sheetsByScope[s]...)
-		blocks = append(blocks, blocksByScope[s]...)
+		for _, ref := range sheetsByScope[s] {
+			if seenSheets[ref] {
+				continue
+			}
+			seenSheets[ref] = true
+			sheets = append(sheets, ref)
+		}
+		for _, ref := range blocksByScope[s] {
+			if seenBlocks[ref] {
+				continue
+			}
+			seenBlocks[ref] = true
+			blocks = append(blocks, ref)
+		}
 	}
 	return PieceAreaSourceFingerprint(sheets, blocks)
 }
