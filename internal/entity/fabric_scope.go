@@ -133,6 +133,63 @@ func FabricScopeReadKeys(line RollGoodsLine, lines []RollGoodsLine) []string {
 	return out
 }
 
+// FabricArtifact is one sheet, block alias or other scope-bound value together with the binding
+// stored on that row. It exists so aggregate readers can preserve the provenance that
+// FabricScopeIdentity intentionally erases: a legacy purpose-only INTERLINING row and a new
+// line-scoped row address the same physical material, but they are alternative complete sets and
+// must never be appended into one.
+type FabricArtifact[T any] struct {
+	FabricPurpose string
+	BomLineKey    string
+	Value         T
+}
+
+// PreferredFabricArtifactsByScope groups scope-bound rows by today's fabric identity. For the one
+// supported legacy INTERLINING case, purpose-only rows are held aside as a whole-set fallback: any
+// line-scoped rows for that line win, otherwise the complete legacy set is used. Ordinary
+// roll-goods bindings retain the historical identity grouping, including line-only rows that later
+// acquired a purpose.
+func PreferredFabricArtifactsByScope[T any](artifacts []FabricArtifact[T], lines []RollGoodsLine) map[string][]T {
+	primary := make(map[string][]T, len(artifacts))
+	legacy := make(map[string][]T)
+	for _, artifact := range artifacts {
+		key := FabricScopeIdentity(artifact.FabricPurpose, artifact.BomLineKey, lines)
+		target := primary
+		if legacyPurposeOnlyInterliningBinding(artifact.FabricPurpose, artifact.BomLineKey, lines) {
+			target = legacy
+		}
+		target[key] = append(target[key], artifact.Value)
+	}
+	for key, fallback := range legacy {
+		if len(primary[key]) == 0 {
+			primary[key] = fallback
+		}
+	}
+	return primary
+}
+
+// legacyPurposeOnlyInterliningBinding reports only the provenance distinction needed by
+// PreferredFabricArtifactsByScope. A non-empty purpose makes the row's stored scope purpose-based
+// even when bom_line_key carries the old compatibility echo (the database bucket is
+// COALESCE(fabric_purpose, bom_line_key)). Resolution is therefore performed without that echo;
+// only a row whose stored purpose unambiguously aliases one interlining line is legacy fallback.
+func legacyPurposeOnlyInterliningBinding(purpose, _ string, lines []RollGoodsLine) bool {
+	if strings.TrimSpace(purpose) == "" {
+		return false
+	}
+	scope := ResolveFabricScope(purpose, "", lines)
+	if scope.ByPurpose || len(scope.LineKeys) != 1 {
+		return false
+	}
+	for _, line := range lines {
+		if line.Section == BomSectionInterlining &&
+			strings.EqualFold(strings.TrimSpace(line.LineKey), strings.TrimSpace(scope.LineKeys[0])) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveFabricScope resolves one binding against the card's roll-goods lines.
 //
 // Purpose wins for every ordinary roll-goods line even when no line carries it yet. A named
@@ -174,12 +231,13 @@ func ResolveFabricScope(purpose, bomLineKey string, lines []RollGoodsLine) Fabri
 			return FabricScope{Key: matches[0].LineKey, LineKeys: []string{matches[0].LineKey}}
 		}
 		out := FabricScope{Key: p, ByPurpose: true}
-		// Any ordinary roll-goods member preserves the historical purpose group, including every
-		// interlining member that happens to share its purpose (rib «other» + felt «other»). With
-		// only multiple interlining members the binding is ambiguous and deliberately stays dead.
+		// An ordinary purpose group contains ordinary roll goods only. An INTERLINING line that
+		// happens to carry the same purpose remains its own physical scope (rib «other» + felt
+		// «other»); it participates here only in the singleton legacy fallback above. With only
+		// multiple interlining members the purpose binding is ambiguous and deliberately stays dead.
 		if hasOrdinary {
 			for _, l := range matches {
-				if strings.TrimSpace(l.LineKey) != "" {
+				if l.Section != BomSectionInterlining && strings.TrimSpace(l.LineKey) != "" {
 					out.LineKeys = append(out.LineKeys, l.LineKey)
 				}
 			}

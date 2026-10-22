@@ -108,7 +108,7 @@ func pieceAreaScopeForBom(tc *entity.TechCard, bom *entity.TechCardBomItem) (str
 		return "", entity.PieceAreaScope{}, false
 	}
 	lineScope, lineFound := tc.PieceAreaScopes[keys[0]]
-	if lineFound && !lineScope.Stale && len(lineScope.Rows) > 0 {
+	if lineFound && len(lineScope.Rows) > 0 {
 		return keys[0], lineScope, true
 	}
 	// Only LegacyInterliningPurposeScope can add this second key, so a purpose shared with rib,

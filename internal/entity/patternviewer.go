@@ -52,10 +52,12 @@ type PatternViewerSheet struct {
 	FabricPurpose string       `db:"fabric_purpose"`
 }
 
-// PatternViewerBomLine is one roll-goods BOM line as the manifest's grouping sees it:
-// stable line_key, display name, and its назначение ("" = not sorted yet).
+// PatternViewerBomLine is one roll-goods BOM line as the manifest's grouping sees it: stable
+// line_key, display name, section and its назначение ("" = not sorted yet). Section is required to
+// keep INTERLINING line-scoped even when an ordinary fabric carries the same purpose.
 type PatternViewerBomLine struct {
-	LineKey string `db:"line_key"`
-	Name    string `db:"name"`
-	Purpose string `db:"purpose"`
+	LineKey string             `db:"line_key"`
+	Name    string             `db:"name"`
+	Purpose string             `db:"purpose"`
+	Section TechCardBomSection `db:"section"`
 }

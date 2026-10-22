@@ -110,9 +110,9 @@ func TestPatternViewerManifest(t *testing.T) {
 	// Roll-goods lines only, in BOM order, with the post-update purposes; the hardware
 	// line and the deleted line are absent.
 	require.Equal(t, []entity.PatternViewerBomLine{
-		{LineKey: lineMain, Name: "Основная", Purpose: "main"},
-		{LineKey: linePocket, Name: "Карманка", Purpose: ""},
-		{LineKey: lineContrast, Name: "Контраст", Purpose: ""},
+		{LineKey: lineMain, Name: "Основная", Purpose: "main", Section: entity.BomSectionFabric},
+		{LineKey: linePocket, Name: "Карманка", Purpose: "", Section: entity.BomSectionFabric},
+		{LineKey: lineContrast, Name: "Контраст", Purpose: "", Section: entity.BomSectionFabric},
 	}, m.BomLines)
 
 	require.Len(t, m.Sheets, 7)

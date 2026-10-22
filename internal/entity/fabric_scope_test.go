@@ -208,15 +208,14 @@ func TestNonInterliningSortedLineHasNoRawLineReadBucket(t *testing.T) {
 	}
 }
 
-func TestPurposeSharedByRibAndFeltRemainsAnOrdinaryPurposeGroup(t *testing.T) {
+func TestPurposeSharedByRibAndFeltKeepsFeltInItsOwnScope(t *testing.T) {
 	lines := []RollGoodsLine{
 		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric},
 		{LineKey: "FELT-A", Purpose: "other", Section: BomSectionInterlining},
 	}
 	scope := ResolveFabricScope("other", "", lines)
-	if scope.Key != "other" || !scope.ByPurpose || len(scope.LineKeys) != 2 ||
-		scope.LineKeys[0] != "RIB-A" || scope.LineKeys[1] != "FELT-A" {
-		t.Fatalf("rib + felt purpose-only binding = %#v, want the original two-line purpose group", scope)
+	if scope.Key != "other" || !scope.ByPurpose || len(scope.LineKeys) != 1 || scope.LineKeys[0] != "RIB-A" {
+		t.Fatalf("rib + felt purpose-only binding = %#v, want the rib-only purpose group", scope)
 	}
 	if got := FabricScopeIdentity("other", "", lines); got != "other" {
 		t.Fatalf("purpose-only identity = %q, want other", got)
@@ -226,5 +225,42 @@ func TestPurposeSharedByRibAndFeltRemainsAnOrdinaryPurposeGroup(t *testing.T) {
 	}
 	if got := FabricScopeIdentity("other", "FELT-A", lines); got != "FELT-A" {
 		t.Fatalf("explicit felt binding = %q, want its own interlining line", got)
+	}
+}
+
+func TestPreferredFabricArtifactsKeepLineAndLegacyInterliningSetsExclusive(t *testing.T) {
+	line := RollGoodsLine{LineKey: "FUSE-A", Purpose: "interfacing", Section: BomSectionInterlining}
+	lines := []RollGoodsLine{line}
+
+	got := PreferredFabricArtifactsByScope([]FabricArtifact[string]{
+		{FabricPurpose: "interfacing", Value: "legacy-a"},
+		// A purpose-scoped row may retain the compatibility line; its raw DB scope is still the
+		// purpose because scope_key is COALESCE(fabric_purpose, bom_line_key).
+		{FabricPurpose: "interfacing", BomLineKey: "FUSE-A", Value: "legacy-b"},
+		{BomLineKey: "FUSE-A", Value: "line-a"},
+		{BomLineKey: "FUSE-A", Value: "line-b"},
+	}, lines)
+	if values := got["FUSE-A"]; len(values) != 2 || values[0] != "line-a" || values[1] != "line-b" {
+		t.Fatalf("line-scoped set did not replace the legacy set wholesale: %v", values)
+	}
+
+	got = PreferredFabricArtifactsByScope([]FabricArtifact[string]{
+		{FabricPurpose: "interfacing", Value: "legacy-a"},
+		{FabricPurpose: "interfacing", Value: "legacy-b"},
+	}, lines)
+	if values := got["FUSE-A"]; len(values) != 2 || values[0] != "legacy-a" || values[1] != "legacy-b" {
+		t.Fatalf("empty line set did not fall back to the complete singleton legacy set: %v", values)
+	}
+}
+
+func TestPreferredFabricArtifactsLeaveOrdinaryPurposeGroupingUnchanged(t *testing.T) {
+	lines := []RollGoodsLine{{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric}}
+	got := PreferredFabricArtifactsByScope([]FabricArtifact[string]{
+		{FabricPurpose: "other", Value: "purpose"},
+		{BomLineKey: "RIB-A", Value: "line"},
+	}, lines)
+	values := got["other"]
+	if len(values) != 2 || values[0] != "purpose" || values[1] != "line" {
+		t.Fatalf("ordinary purpose grouping changed: %v", values)
 	}
 }

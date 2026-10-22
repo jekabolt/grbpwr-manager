@@ -254,8 +254,8 @@ func TestLegacyInterliningAreaFallbackIsUnambiguousAndLineDataWins(t *testing.T)
 	}
 	lineScoped.Stale = true
 	tc.PieceAreaScopes["FUSEKEY"] = lineScoped
-	if est := fusingSlotEstimate(t, tc); !est.normDerived || !est.perGarment.Equal(decimal.RequireFromString("0.14")) {
-		t.Fatalf("stale line scope masked the fresh singleton fallback: got %s (refusal %q), want 0.14",
+	if est := fusingSlotEstimate(t, tc); est.normDerived || est.refusal != entity.AreaEstimateStale {
+		t.Fatalf("present stale line scope was replaced by legacy data: norm=%s refusal=%q, want stale",
 			est.perGarment, est.refusal)
 	}
 

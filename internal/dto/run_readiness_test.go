@@ -631,6 +631,58 @@ func TestPatternScopeReadsSingletonInterliningIndexFromLegacyPurpose(t *testing.
 	}
 }
 
+func TestPatternScopePrefersCompleteInterliningLineSheetSet(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems[0].Section = entity.BomSectionInterlining
+	card.BomItems[0].Purpose = sql.NullString{String: "interfacing", Valid: true}
+	legacy := entity.TechCardSizePattern{
+		LineKey: "LEGACY-SHEET", URL: "s3://patterns/legacy.dxf", Version: 1,
+		FabricPurpose: sql.NullString{String: "interfacing", Valid: true},
+		BomLineKey:    sql.NullString{String: rrLineKey, Valid: true},
+	}
+	line := entity.TechCardSizePattern{
+		LineKey: "LINE-SHEET", URL: "s3://patterns/line.dxf", Version: 1,
+		BomLineKey: sql.NullString{String: rrLineKey, Valid: true},
+	}
+	card.Patterns = []entity.TechCardSizePattern{legacy, line}
+
+	scopes := patternScopesOfCard(card)
+	if len(scopes) != 1 || scopes[0].key != rrLineKey || len(scopes[0].sheets) != 1 ||
+		scopes[0].sheets[0].LineKey != "LINE-SHEET" {
+		t.Fatalf("line sheets must suppress the complete legacy set, got %+v", scopes)
+	}
+
+	card.Patterns = []entity.TechCardSizePattern{legacy}
+	scopes = patternScopesOfCard(card)
+	if len(scopes) != 1 || scopes[0].key != rrLineKey || len(scopes[0].sheets) != 1 ||
+		scopes[0].sheets[0].LineKey != "LEGACY-SHEET" {
+		t.Fatalf("empty line set must use the singleton legacy sheets, got %+v", scopes)
+	}
+}
+
+func TestPatternSizeIndexDoesNotReplacePresentLineRowWithLegacy(t *testing.T) {
+	card := rrHealthyCard()
+	card.BomItems[0].Section = entity.BomSectionInterlining
+	card.BomItems[0].Purpose = sql.NullString{String: "interfacing", Valid: true}
+	scopes := patternScopesOfCard(card)
+	if len(scopes) != 1 {
+		t.Fatalf("want one pattern scope, got %+v", scopes)
+	}
+	fingerprint := entity.PatternSheetFingerprint(scopes[0].sheets)
+	index := map[string]entity.PatternSizeIndexRow{
+		rrLineKey: {
+			ScopeKey: rrLineKey, SheetFingerprint: "stale-line-fingerprint", SizeTokensJSON: `["s"]`,
+		},
+		"interfacing": {
+			ScopeKey: "interfacing", SheetFingerprint: fingerprint, SizeTokensJSON: `["s"]`,
+		},
+	}
+	state, _ := patternSizeIndexStatusForScope(scopes[0], index)
+	if state != entity.PatternSizeIndexStale {
+		t.Fatalf("present line index must suppress current legacy index, got state %v", state)
+	}
+}
+
 // TestRunReadinessUnitCoverageAsksThePairNotOneRow — ПОКРЫТИЕ СЧИТАЕТСЯ ПО ПАРЕ (0333), а не по
 // одной её строке.
 //

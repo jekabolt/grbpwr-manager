@@ -1083,29 +1083,21 @@ type patternScope struct {
 	sheets    []entity.PatternSheetRef
 }
 
-// patternSizeIndexStatusForScope prefers a current line-keyed index, then the one allowed legacy
-// purpose key. A stale/malformed line row must not mask a current legacy row, but remains the most
-// useful verdict when the fallback is absent too.
+// patternSizeIndexStatusForScope treats the line and legacy purpose indexes as alternative complete
+// artifacts. Any line-keyed row wins wholesale, including a stale or malformed one; the singleton
+// legacy purpose row is consulted only when the line row is absent.
 func patternSizeIndexStatusForScope(sc patternScope, index map[string]entity.PatternSizeIndexRow) (entity.PatternSizeIndexState, map[string]bool) {
 	fingerprint := entity.PatternSheetFingerprint(sc.sheets)
-	var primary *entity.PatternSizeIndexRow
 	if row, ok := index[sc.key]; ok {
-		primary = &row
+		return entity.PatternSizeIndexStatus(&row, fingerprint)
 	}
-	primaryState, primaryTokens := entity.PatternSizeIndexStatus(primary, fingerprint)
-	if primaryState == entity.PatternSizeIndexUsable || primaryState == entity.PatternSizeIndexUngraded || sc.legacyKey == "" {
-		return primaryState, primaryTokens
+	if sc.legacyKey == "" {
+		return entity.PatternSizeIndexMissing, nil
 	}
-	var legacy *entity.PatternSizeIndexRow
 	if row, ok := index[sc.legacyKey]; ok {
-		legacy = &row
+		return entity.PatternSizeIndexStatus(&row, fingerprint)
 	}
-	legacyState, legacyTokens := entity.PatternSizeIndexStatus(legacy, fingerprint)
-	if legacyState == entity.PatternSizeIndexUsable || legacyState == entity.PatternSizeIndexUngraded ||
-		(primaryState == entity.PatternSizeIndexMissing && legacyState != entity.PatternSizeIndexMissing) {
-		return legacyState, legacyTokens
-	}
-	return primaryState, primaryTokens
+	return entity.PatternSizeIndexMissing, nil
 }
 
 // patternScopes groups the card's pattern sheets by the ТКАНЬ each one addresses. The fingerprint
@@ -1122,22 +1114,25 @@ func (b *runReadinessBuilder) patternScopes() []patternScope {
 
 func patternScopesOfCard(card *entity.TechCard) []patternScope {
 	lines := entity.RollGoodsLinesOfBom(card.BomItems)
-	byKey := map[string][]entity.PatternSheetRef{}
-	var order []string
+	artifacts := make([]entity.FabricArtifact[entity.PatternSheetRef], 0, len(card.Patterns))
 	for i := range card.Patterns {
 		p := &card.Patterns[i]
-		key := entity.FabricScopeIdentity(p.FabricPurpose.String, p.BomLineKey.String, lines)
-		if key == "" {
-			// A sheet bound to nothing at all (uploaded before 0260). pattern_binding_resolved already
-			// names it; indexing it under "" would let one unbound sheet answer for every cloth.
-			continue
-		}
-		if _, ok := byKey[key]; !ok {
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PatternSheetRef]{
+			FabricPurpose: p.FabricPurpose.String,
+			BomLineKey:    p.BomLineKey.String,
+			Value: entity.PatternSheetRef{
+				LineKey: p.LineKey, URL: p.URL, Version: p.Version,
+			},
+		})
+	}
+	byKey := entity.PreferredFabricArtifactsByScope(artifacts, lines)
+	order := make([]string, 0, len(byKey))
+	for key := range byKey {
+		if key != "" {
+			// A sheet bound to nothing at all (uploaded before 0260) stays out: indexing it would let
+			// one unbound sheet answer for every cloth.
 			order = append(order, key)
 		}
-		byKey[key] = append(byKey[key], entity.PatternSheetRef{
-			LineKey: p.LineKey, URL: p.URL, Version: p.Version,
-		})
 	}
 	sort.Strings(order)
 	legacyByKey := map[string]string{}

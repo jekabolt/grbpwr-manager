@@ -44,7 +44,11 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 	if len(rows) == 0 {
 		return map[string]entity.PieceAreaScope{}, nil
 	}
-	current, err := s.scopeFingerprints(ctx, s.DB, techCardID)
+	lines, err := loadRollGoodsLines(ctx, s.DB, techCardID)
+	if err != nil {
+		return nil, err
+	}
+	current, err := s.scopeFingerprints(ctx, s.DB, techCardID, lines)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +65,24 @@ func (s *Store) GetTechCardPieceAreas(ctx context.Context, techCardID int) (map[
 		sc.Stale = sc.Stale || current[r.ScopeKey] != r.SheetFingerprint
 		out[r.ScopeKey] = sc
 	}
+	preferLineScopedAreaSets(out, lines)
 	return out, nil
+}
+
+// preferLineScopedAreaSets applies the same whole-artifact precedence as sheets and aliases. Area
+// rows already arrive grouped by their stored scope_key, so no rebucketing is needed: when the
+// singleton interlining line has a non-empty line set, its legacy purpose set is simply invisible.
+func preferLineScopedAreaSets(byScope map[string]entity.PieceAreaScope, lines []entity.RollGoodsLine) {
+	for _, line := range lines {
+		legacyScope, ok := entity.LegacyInterliningPurposeScope(line, lines)
+		if !ok {
+			continue
+		}
+		lineScope := entity.EffectiveFabricScopeKey(line)
+		if scoped, found := byScope[lineScope]; found && len(scoped.Rows) > 0 {
+			delete(byScope, legacyScope)
+		}
+	}
 }
 
 // GetTechCardDerivedCostInputsDigest fingerprints the cost inputs appended to COSTING: measured
@@ -235,11 +256,7 @@ func (s *Store) GetTechCardDerivedCostInputsDigest(ctx context.Context, techCard
 //
 // A scope with no sheets simply does not appear: its stored areas then compare against "" and read
 // as stale, which is the honest answer — the files they were measured from are gone.
-func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCardID int) (map[string]string, error) {
-	lines, err := loadRollGoodsLines(ctx, db, techCardID)
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) scopeFingerprints(ctx context.Context, db dependency.DB, techCardID int, lines []entity.RollGoodsLine) (map[string]string, error) {
 	byScope, err := scopeSheetRefs(ctx, db, techCardID, lines)
 	if err != nil {
 		return nil, err
@@ -267,21 +284,25 @@ func scopeSheetRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	if err != nil {
 		return nil, fmt.Errorf("load pattern sheets of tech card %d: %w", techCardID, err)
 	}
-	out := map[string][]entity.PatternSheetRef{}
+	artifacts := make([]entity.FabricArtifact[entity.PatternSheetRef], 0, len(sheets))
 	for _, sh := range sheets {
-		k := entity.FabricScopeIdentity(sh.FabricPurpose, sh.BomLineKey, lines)
-		ref := entity.PatternSheetRef{
-			LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
-		}
-		out[k] = append(out[k], ref)
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PatternSheetRef]{
+			FabricPurpose: sh.FabricPurpose,
+			BomLineKey:    sh.BomLineKey,
+			Value: entity.PatternSheetRef{
+				LineKey: sh.LineKey, URL: sh.URL, Version: sh.Version,
+			},
+		})
 	}
+	out := entity.PreferredFabricArtifactsByScope(artifacts, lines)
 	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
 }
 
 // addLegacyInterliningPurposeBuckets keeps stored purpose-keyed measurements/indexes fresh for the
-// one unambiguous legacy case. Every binding of that singleton line first resolves to its line
-// identity; this compatibility bucket is then an exact copy of that identity's refs.
+// one unambiguous legacy case. PreferredFabricArtifactsByScope has already selected exactly one
+// complete source set under the line identity; this compatibility bucket is an exact copy, never a
+// merge of line and legacy refs.
 //
 // This deliberately replaces raw COALESCE-key duplication. A line-only binding of an ordinary
 // sorted FABRIC/LINING line has a raw line bucket and a purpose identity, but the line bucket is not
@@ -324,14 +345,17 @@ func scopeBlockRefs(ctx context.Context, db dependency.DB, techCardID int, lines
 	if err != nil {
 		return nil, fmt.Errorf("load dxf block links of tech card %d: %w", techCardID, err)
 	}
-	out := make(map[string][]entity.PieceAreaBlockRef, len(rows))
+	artifacts := make([]entity.FabricArtifact[entity.PieceAreaBlockRef], 0, len(rows))
 	for _, r := range rows {
-		k := entity.FabricScopeIdentity(r.FabricPurpose, r.BomLineKey, lines)
-		ref := entity.PieceAreaBlockRef{
-			BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
-		}
-		out[k] = append(out[k], ref)
+		artifacts = append(artifacts, entity.FabricArtifact[entity.PieceAreaBlockRef]{
+			FabricPurpose: r.FabricPurpose,
+			BomLineKey:    r.BomLineKey,
+			Value: entity.PieceAreaBlockRef{
+				BlockName: r.BlockName, PieceLineKey: r.PieceLineKey,
+			},
+		})
 	}
+	out := entity.PreferredFabricArtifactsByScope(artifacts, lines)
 	addLegacyInterliningPurposeBuckets(out, lines)
 	return out, nil
 }

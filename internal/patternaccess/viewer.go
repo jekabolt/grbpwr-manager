@@ -296,11 +296,9 @@ type viewerGroupDef struct {
 // membership or the caption lies.
 //
 // Groups come from the card's roll-goods BOM LINES, not from the sheets: one group per
-// назначение actually present on those lines, then one group per line that has no
-// назначение (keyed by its line_key, labelled with its name), then _unbound. A sheet
-// resolves to: its own fabric_purpose IF some line carries it; else the group owning its
-// bom_line_key (that line's purpose group when the line has one, else the line's own
-// group); else _unbound.
+// назначение actually present on non-interlining lines, then one group per unsorted ordinary line
+// and per INTERLINING line (keyed by its line_key), then _unbound. A purpose-only sheet may fall
+// back to one INTERLINING line only when that line is the sole roll-goods carrier of the purpose.
 //
 // This deliberately does NOT match entity.ResolveFabricScope, whose purpose wins even
 // when no line carries it. That rule is right for STORAGE buckets (scope_key, the 0280
@@ -321,6 +319,7 @@ func viewerGroups(lines []entity.PatternViewerBomLine) ([]viewerGroupDef, func(e
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 	purposes := make(map[string]bool, len(lines))
+	interliningByPurpose := make(map[string][]string)
 	// Line keys are uppercased ULIDs on entry; fold case on the LOOKUP side only
 	// (sheetSetDiff precedent) and keep the stored spelling as the group key.
 	lineByKey := make(map[string]entity.PatternViewerBomLine, len(lines))
@@ -339,8 +338,12 @@ func viewerGroups(lines []entity.PatternViewerBomLine) ([]viewerGroupDef, func(e
 		if strings.TrimSpace(l.LineKey) == "" {
 			continue
 		}
-		if p := norm(l.Purpose); p != "" && !purposes[p] {
-			purposes[p] = true
+		if p := norm(l.Purpose); p != "" {
+			if l.Section == entity.BomSectionInterlining {
+				interliningByPurpose[p] = append(interliningByPurpose[p], strings.TrimSpace(l.LineKey))
+			} else {
+				purposes[p] = true
+			}
 		}
 	}
 	// Purpose groups come out in the VOCABULARY's order, not in BOM order, because that is the
@@ -369,7 +372,8 @@ func viewerGroups(lines []entity.PatternViewerBomLine) ([]viewerGroupDef, func(e
 	seenLine := make(map[string]bool, len(lines))
 	for _, l := range lines {
 		lk := strings.TrimSpace(l.LineKey)
-		if lk == "" || norm(l.Purpose) != "" || seenLine[strings.ToUpper(lk)] {
+		if lk == "" || (l.Section != entity.BomSectionInterlining && norm(l.Purpose) != "") ||
+			seenLine[strings.ToUpper(lk)] {
 			continue
 		}
 		seenLine[strings.ToUpper(lk)] = true
@@ -378,9 +382,18 @@ func viewerGroups(lines []entity.PatternViewerBomLine) ([]viewerGroupDef, func(e
 	defs = append(defs, viewerGroupDef{key: unboundGroupKey})
 
 	keyOf := func(sh entity.PatternViewerSheet) string {
+		// A named INTERLINING line wins even when a stale client also echoed its purpose.
+		if lk := strings.TrimSpace(sh.BomLineKey); lk != "" {
+			if l, ok := lineByKey[strings.ToUpper(lk)]; ok && l.Section == entity.BomSectionInterlining {
+				return strings.TrimSpace(l.LineKey)
+			}
+		}
 		if p := norm(sh.FabricPurpose); p != "" {
 			if purposes[p] {
 				return p
+			}
+			if keys := interliningByPurpose[p]; len(keys) == 1 {
+				return keys[0]
 			}
 			return unboundGroupKey
 		}

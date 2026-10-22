@@ -523,6 +523,21 @@ func TestMarkerFabricScopeDoesNotMergeSamePurposeInterliningLines(t *testing.T) 
 	}
 }
 
+func TestMarkerFabricScopeDoesNotPullInterliningIntoAnOrdinaryPurpose(t *testing.T) {
+	lines := []FabricDirectionLine{
+		{LineKey: "RIB-A", Purpose: "other", Section: BomSectionFabric, Direction: "any"},
+		{LineKey: "FELT-A", Purpose: "other", Section: BomSectionInterlining, Direction: "one_way"},
+	}
+	rib := MarkerFabricScope("RIB-A", lines)
+	if rib.Key != "other" || len(rib.LineKeys) != 1 || rib.LineKeys[0] != "RIB-A" {
+		t.Fatalf("rib marker scope = %#v, want ordinary purpose with RIB-A only", rib)
+	}
+	felt := MarkerFabricScope("FELT-A", lines)
+	if felt.Key != "FELT-A" || len(felt.LineKeys) != 1 || felt.LineKeys[0] != "FELT-A" {
+		t.Fatalf("felt marker scope = %#v, want FELT-A only", felt)
+	}
+}
+
 func requireFieldViolation(t *testing.T, err error, field, reason string) *ValidationError {
 	t.Helper()
 	var ve *ValidationError
