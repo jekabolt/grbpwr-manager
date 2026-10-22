@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -115,7 +116,8 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 		Name:        "Coat",
 		SizeIds:     []int32{4, 5},
 		Patterns: []*pb_common.TechCardSizePattern{
-			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234, Name: stringPointer("  перед  "),
+			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4.pdf", Filename: "front-m.pdf", SizeBytes: 1234,
+				Name: stringPointer("  перед  "), Sha256: stringPointer(strings.Repeat("A", 64)),
 				LineKey: " 01SHEETKEY0000000000000001 ", BomLineKey: stringPointer("01FABRICSLOT00000000000001")},
 			{SizeId: 4, Url: "https://cdn/tech-card-patterns/x4b.dxf"},                                                        // multiple per size is allowed; name absent
 			{SizeId: 5, Url: "https://cdn/tech-card-patterns/x5.pdf", Name: stringPointer(""), BomLineKey: stringPointer("")}, // present-empty = explicit clear/unbind
@@ -131,6 +133,9 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	// name presence survives dto→entity: present is Valid (trimmed), absent is not.
 	if !ent.Patterns[0].Name.Valid || ent.Patterns[0].Name.String != "перед" {
 		t.Fatalf("present name not parsed/trimmed: %+v", ent.Patterns[0].Name)
+	}
+	if !ent.Patterns[0].SHA256.Valid || ent.Patterns[0].SHA256.String != strings.Repeat("a", 64) {
+		t.Fatalf("sha256 not parsed and normalized: %+v", ent.Patterns[0].SHA256)
 	}
 	if ent.Patterns[1].Name.Valid {
 		t.Fatalf("absent name must stay invalid (carry-forward marker): %+v", ent.Patterns[1].Name)
@@ -162,9 +167,93 @@ func TestTechCardPatternsRoundTrip(t *testing.T) {
 	if out.TechCard.Patterns[0].GetName() != "перед" || out.TechCard.Patterns[1].Name != nil {
 		t.Fatalf("name round-trip mismatch: %+v", out.TechCard.Patterns)
 	}
+	if out.TechCard.Patterns[0].GetSha256() != strings.Repeat("a", 64) || out.TechCard.Patterns[1].Sha256 != nil {
+		t.Fatalf("sha256 round-trip mismatch: %+v", out.TechCard.Patterns)
+	}
 	if out.TechCard.Patterns[0].LineKey != "01SHEETKEY0000000000000001" ||
 		out.TechCard.Patterns[0].GetBomLineKey() != "01FABRICSLOT00000000000001" {
 		t.Fatalf("line keys round-trip mismatch: %+v", out.TechCard.Patterns[0])
+	}
+}
+
+func TestTechCardPatternHistoryMapping(t *testing.T) {
+	newer := time.Date(2026, time.October, 20, 12, 30, 0, 0, time.UTC)
+	older := newer.Add(-24 * time.Hour)
+	out := techCardPatternsToPb([]entity.TechCardSizePattern{{
+		Version: 3,
+		History: []entity.TechCardPatternRevision{
+			{
+				HistoryID: 912,
+				Revision:  2,
+				URL:       "https://cdn/tech-card-patterns/front-v2.dxf",
+				SHA256:    sql.NullString{String: strings.Repeat("b", 64), Valid: true},
+				Filename:  sql.NullString{String: "front-v2.dxf", Valid: true},
+				CreatedAt: sql.NullTime{Time: newer, Valid: true},
+				// 0425: the snapshot the save that replaced v2 froze — «restore v2» restores it.
+				SnapshotID: sql.NullInt64{Int64: 4711, Valid: true},
+			},
+			{
+				Revision:  1,
+				URL:       "https://cdn/tech-card-patterns/front-v1.dxf",
+				CreatedAt: sql.NullTime{Time: older, Valid: true},
+			},
+		},
+	}})
+	if len(out) != 1 || out[0].Version != 3 || len(out[0].History) != 2 {
+		t.Fatalf("pattern history not mapped: %+v", out)
+	}
+	got := out[0].History
+	if got[0].Revision != 2 || got[0].Url != "https://cdn/tech-card-patterns/front-v2.dxf" ||
+		got[0].Sha256 != strings.Repeat("b", 64) || got[0].FileName != "front-v2.dxf" ||
+		!got[0].CreatedAt.AsTime().Equal(newer) || got[0].SnapshotId != 4711 || got[0].HistoryId != 912 {
+		t.Fatalf("newest history revision mismatch: %+v", got[0])
+	}
+	// A revision archived without a snapshot (NULL) is not restorable: 0 on the wire.
+	if got[1].Revision != 1 || got[1].Sha256 != "" || got[1].FileName != "" ||
+		!got[1].CreatedAt.AsTime().Equal(older) || got[1].SnapshotId != 0 {
+		t.Fatalf("oldest history revision mismatch: %+v", got[1])
+	}
+}
+
+func TestTechCardRemovedPatternHistoryMapping(t *testing.T) {
+	created := time.Date(2026, time.October, 22, 9, 0, 0, 0, time.UTC)
+	out := ConvertEntityTechCardToPb(&entity.TechCard{
+		RemovedPatternHistory: []entity.TechCardPatternRevision{{
+			HistoryID:  51,
+			Revision:   4,
+			URL:        "https://cdn/tech-card-patterns/removed-v4.dxf",
+			CreatedAt:  sql.NullTime{Time: created, Valid: true},
+			SnapshotID: sql.NullInt64{Int64: 81, Valid: true},
+		}},
+	}, CostingFx{})
+	if len(out.GetRemovedPatternHistory()) != 1 {
+		t.Fatalf("removed history not mapped: %+v", out.GetRemovedPatternHistory())
+	}
+	got := out.GetRemovedPatternHistory()[0]
+	if got.GetHistoryId() != 51 || got.GetRevision() != 4 || got.GetSnapshotId() != 81 ||
+		got.GetUrl() != "https://cdn/tech-card-patterns/removed-v4.dxf" || !got.GetCreatedAt().AsTime().Equal(created) {
+		t.Fatalf("removed history mismatch: %+v", got)
+	}
+}
+
+func TestTechCardPatternHistoryIgnoredOnWrite(t *testing.T) {
+	in := &pb_common.TechCardInsert{
+		StyleNumber: "ST-HISTORY",
+		Name:        "Coat",
+		Patterns: []*pb_common.TechCardSizePattern{{
+			Url: "https://cdn/tech-card-patterns/current.dxf",
+			History: []*pb_common.TechCardPatternRevision{{
+				Revision: 99,
+				Url:      "not-an-upload-url",
+			}},
+		}},
+	}
+	ent, err := ConvertPbTechCardInsertToEntity(in)
+	if err != nil {
+		t.Fatalf("history must be ignored on write: %v", err)
+	}
+	if len(ent.Patterns) != 1 || len(ent.Patterns[0].History) != 0 {
+		t.Fatalf("history leaked into the write entity: %+v", ent.Patterns)
 	}
 }
 

@@ -2249,6 +2249,34 @@ type TechCardSizeQuantity struct {
 	OrderQty int `db:"order_qty"`
 }
 
+// TechCardPatternRevision is one superseded pattern object. Revision is the version the object had
+// while it was active; CreatedAt is that version's original upload time (or its archive time for
+// legacy rows that do not carry uploaded_at).
+type TechCardPatternRevision struct {
+	HistoryID int64          `db:"history_id"`
+	Revision  int            `db:"revision"`
+	URL       string         `db:"url"`
+	SHA256    sql.NullString `db:"sha256"`
+	Filename  sql.NullString `db:"file_name"`
+	CreatedAt sql.NullTime   `db:"created_at"`
+	// SnapshotID is the tech_card_snapshot the save that archived this revision froze in the same
+	// transaction: the whole card as it was while this revision was the current sheet. NULL = no
+	// snapshot was taken (an ordinary save, or a row archived before 0425) — not restorable.
+	SnapshotID sql.NullInt64 `db:"snapshot_id"`
+}
+
+// TechCardSnapshot is one immutable tech_card_snapshot row (0424): the card's read model frozen
+// before the save that wrote it. Snapshot is protojson of common.TechCard.
+type TechCardSnapshot struct {
+	Id          int64          `db:"id"`
+	TechCardId  int            `db:"tech_card_id"`
+	LockVersion int            `db:"lock_version"`
+	Reason      string         `db:"reason"`
+	Snapshot    string         `db:"snapshot"`
+	CreatedBy   sql.NullString `db:"created_by"`
+	CreatedAt   time.Time      `db:"created_at"`
+}
+
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
 // the url's extension. A graded DXF carries the whole range at once, so a sheet is filed under one
 // size of the card or under none at all (SizeId 0); see the field.
@@ -2288,6 +2316,9 @@ type TechCardSizePattern struct {
 	// as given, with an empty string clearing the name (stored as NULL).
 	Name      sql.NullString `db:"name"`
 	SizeBytes sql.NullInt64  `db:"size_bytes"`
+	// SHA256 is the lowercase hex digest of the uploaded object's bytes. NULL means an older upload
+	// whose bytes the backend never observed; it must never be guessed from the URL.
+	SHA256 sql.NullString `db:"sha256"`
 	// Version is the sheet's revision within its (style, size). 0 on the wire means "assign one":
 	// patterns are a full-replace child, so the store re-derives this on every save from the rows it
 	// is about to delete — a url it has seen keeps its number, a new one takes MAX+1.
@@ -2295,6 +2326,9 @@ type TechCardSizePattern struct {
 	// UploadedAt is when the PDF was first attached. Server-owned: carried across the full-replace by
 	// matching the url, so it means what it says instead of drifting to "last card save".
 	UploadedAt sql.NullTime `db:"uploaded_at"`
+	// History is a newest-first read model. It is never populated from an UpdateTechCard payload and
+	// is not persisted by the active-row upsert.
+	History []TechCardPatternRevision `db:"-"`
 }
 
 // TechCardDetail is one aspect of the construction description (Sheet «Титул», lower
@@ -3413,6 +3447,9 @@ type TechCardOperation struct {
 	// старые шаги = не черновик, и это правда. В дайджест НЕ входит (techcard_section_digest.go его
 	// не проецирует; голден в internal/dto это держит): проверка шага карточку не переподписывает.
 	Draft bool `db:"draft"`
+	// Review is a closed DXF-reconciliation reason (0422). NULL means no human review is pending.
+	// Like Draft it is workflow metadata, not an instruction, and stays outside section digests.
+	Review sql.NullString `db:"review"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -4239,6 +4276,19 @@ type TechCardInsert struct {
 	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
 	CreatedBy string `db:"created_by"`
 	UpdatedBy string `db:"updated_by"`
+	// Snapshot* are write-command metadata, never card content. UpdateTechCard fills them after
+	// serialising the stored pre-update card with the release-snapshot builder; the store persists
+	// them atomically with the document rewrite.
+	SnapshotReason string `db:"-"`
+	SnapshotJSON   string `db:"-"`
+	// SnapshotLockVersion is the lock_version of the card SnapshotJSON was serialised from. The store
+	// refuses the write (ErrTechCardConflict) unless the row it locks is still at that version, so
+	// the frozen blob is provably the state this very save replaces — never an older read.
+	SnapshotLockVersion int `db:"-"`
+	// RestoreSeams is set by RestoreTechCardSnapshot only: non-nil makes the save also bring
+	// tech_card_seam to exactly this list inside its transaction. nil (every other save) leaves the
+	// seams alone — they are written by Upsert/DeleteTechCardSeams, never by the card form.
+	RestoreSeams *TechCardSeamsRestore `db:"-"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
@@ -4601,6 +4651,8 @@ type TechCardReadinessFacts struct {
 	Sizes      int `db:"sizes"`
 	Pieces     int `db:"pieces"`
 	Operations int `db:"operations"`
+	// OperationReviews is the number of DXF-reconciliation marks a person has not cleared yet.
+	OperationReviews int `db:"operation_reviews"`
 
 	BomLines       int `db:"bom_lines"`
 	BomFabricLines int `db:"bom_fabric_lines"`
@@ -4695,6 +4747,10 @@ type TechCard struct {
 	// RoleAssignments is the card's responsible-account roles (Q5), populated on the single-card read
 	// (GetTechCardById); empty on list views.
 	RoleAssignments []TechCardRoleAssignment `db:"-"`
+	// RemovedPatternHistory is the newest-first history of sheets whose line no longer exists among
+	// the active patterns. It is a read-only projection; the history rows remain the object/snapshot
+	// retention roots and are never accepted through TechCardInsert.
+	RemovedPatternHistory []TechCardPatternRevision `db:"-"`
 	// CompositionEntries is the style's structured fibre composition (S17/M1 fix), populated on the
 	// single-card read alongside the legacy free-text Composition (TechCardInsert.Composition) — never
 	// instead of it. Empty when the style has no style_composition rows yet.

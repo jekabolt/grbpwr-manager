@@ -1383,6 +1383,14 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 		if err != nil {
 			return nil, err
 		}
+		var sha256 sql.NullString
+		if p.Sha256 != nil {
+			digest := strings.ToLower(strings.TrimSpace(p.GetSha256()))
+			if digest != "" && !isLowerHexSHA256(digest) {
+				return nil, fmt.Errorf("patterns[%d].sha256 must be 64 hexadecimal characters", len(out))
+			}
+			sha256 = sql.NullString{String: digest, Valid: true}
+		}
 		// uploaded_at is server-owned and deliberately dropped here: the store carries the original
 		// forward by url, so accepting a client value would only let a save rewrite history.
 		out = append(out, entity.TechCardSizePattern{
@@ -1394,10 +1402,23 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			Filename:      nullStringFromPb(p.Filename),
 			Name:          name,
 			SizeBytes:     nullInt64FromPb(p.SizeBytes),
+			SHA256:        sha256,
 			Version:       int(p.Version),
 		})
 	}
 	return out, nil
+}
+
+func isLowerHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ConvertEntityTechCardToPb converts an entity.TechCard to pb_common.TechCard. fx supplies the
@@ -1490,15 +1511,16 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 	flatWords := pbStringFromNull(tc.FlatWords)
 
 	return &pb_common.TechCard{
-		Id:              int32(tc.Id),
-		LockVersion:     int32(tc.LockVersion),
-		CreatedAt:       timestamppb.New(tc.CreatedAt),
-		UpdatedAt:       timestamppb.New(tc.UpdatedAt),
-		CreatedBy:       tc.CreatedBy,
-		UpdatedBy:       tc.UpdatedBy,
-		RoleAssignments: techCardRoleAssignmentsToPb(tc.RoleAssignments),
-		Revisions:       techCardRevisionsToPb(tc.Revisions),
-		Guided:          tc.Guided, // 0407, output-only
+		Id:                    int32(tc.Id),
+		LockVersion:           int32(tc.LockVersion),
+		CreatedAt:             timestamppb.New(tc.CreatedAt),
+		UpdatedAt:             timestamppb.New(tc.UpdatedAt),
+		CreatedBy:             tc.CreatedBy,
+		UpdatedBy:             tc.UpdatedBy,
+		RoleAssignments:       techCardRoleAssignmentsToPb(tc.RoleAssignments),
+		Revisions:             techCardRevisionsToPb(tc.Revisions),
+		RemovedPatternHistory: techCardPatternHistoryToPb(tc.RemovedPatternHistory),
+		Guided:                tc.Guided, // 0407, output-only
 		TechCard: &pb_common.TechCardInsert{
 			StyleNumber:       tc.StyleNumber.String,
 			StyleNumberSource: styleNumberSourceToPb(tc.StyleNumberSource),
@@ -2579,11 +2601,37 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			Filename:      pbStringFromNull(p.Filename),
 			Name:          pbOptStringFromNull(p.Name),
 			SizeBytes:     p.SizeBytes.Int64,
+			Sha256:        pbOptStringFromNull(p.SHA256),
 			Version:       int32(p.Version),
 			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
+			History:       techCardPatternHistoryToPb(p.History),
 		})
 	}
 	return out
+}
+
+func techCardPatternHistoryToPb(history []entity.TechCardPatternRevision) []*pb_common.TechCardPatternRevision {
+	out := make([]*pb_common.TechCardPatternRevision, 0, len(history))
+	for _, revision := range history {
+		out = append(out, &pb_common.TechCardPatternRevision{
+			HistoryId: revision.HistoryID,
+			Revision:  int32(revision.Revision),
+			Url:       revision.URL,
+			Sha256:    pbStringFromNull(revision.SHA256),
+			FileName:  pbStringFromNull(revision.Filename),
+			CreatedAt: pbTimestampFromNullTime(revision.CreatedAt),
+			// 0 = no snapshot (NULL): the revision can be re-attached as a file but not restored as a card.
+			SnapshotId: snapshotIDToPb(revision.SnapshotID),
+		})
+	}
+	return out
+}
+
+func snapshotIDToPb(id sql.NullInt64) int64 {
+	if !id.Valid || id.Int64 <= 0 {
+		return 0
+	}
+	return id.Int64
 }
 
 // ConvertEntityTechCardToListItemPb converts a header-only entity.TechCard to a

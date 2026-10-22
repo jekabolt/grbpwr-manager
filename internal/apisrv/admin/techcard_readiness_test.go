@@ -334,7 +334,7 @@ func assertReadiness(t *testing.T, list string, got map[string]*pb_admin.TechCar
 	}
 }
 
-// TestGetTechCardReadinessReleaseListIsStable: the release checklist is the same seven conditions
+// TestGetTechCardReadinessReleaseListIsStable: the release checklist is the same conditions
 // for every card, whatever its stage — a client can render it as a fixed table.
 func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 	for _, stage := range []entity.TechCardStage{
@@ -361,9 +361,18 @@ func TestGetTechCardReadinessReleaseListIsStable(t *testing.T) {
 		}
 		require.Equal(t, []string{
 			"style_number", "size_range", "bom_fabric", "costing", "costing_computes",
-			"colorway_linked", "lab_dip", "signoffs", "construction_graph",
+			"colorway_linked", "lab_dip", "signoffs", "operation_reviews", "construction_graph",
 		}, keys, "release checklist for stage %s", stage)
 	}
+}
+
+func TestOperationReviewsBlockReleaseReadiness(t *testing.T) {
+	rows := releaseRequirements(entity.TechCardReadinessFacts{OperationReviews: 2}, nil, nil, "")
+	row := readinessByKey(rows)["operation_reviews"]
+	require.NotNil(t, row)
+	require.False(t, row.Met)
+	require.Equal(t, "2 operations still need review after DXF reconciliation", row.Detail)
+	require.False(t, allReadinessMet(rows))
 }
 
 func TestGetTechCardReadinessNotFound(t *testing.T) {

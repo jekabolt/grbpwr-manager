@@ -1453,6 +1453,24 @@ message TechCardSizeQuantity {
   int32 order_qty = 2; // typical calculation quantity, not an order
 }
 
+// TechCardPatternRevision is one superseded file of a pattern sheet. The active file stays on
+// TechCardSizePattern; this read-only history lets a client restore an older file by sending its url
+// back through the ordinary UpdateTechCard flow.
+message TechCardPatternRevision {
+  int32 revision = 1;
+  string url = 2;
+  string sha256 = 3;
+  string file_name = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // The tech_card_snapshot frozen by the save that replaced or removed this file: the whole card as
+  // it was while this file was the current sheet. Admin.RestoreTechCardSnapshot takes it to bring the
+  // card back to that state (operations, pieces, aliases, sheets). 0 = no snapshot, not restorable.
+  int64 snapshot_id = 6;
+  // Stable id of tech_card_size_pattern_history. Required by
+  // Admin.DeleteTechCardPatternRevision; 0 only for an older snapshot/read model that predates it.
+  int64 history_id = 7;
+}
+
 // TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
 // tech card — the FINAL pattern for that size. A size can carry many patterns (pieces
 // split across sheets). The file is a PDF or a DXF, uploaded via Admin.UploadPattern,
@@ -1526,6 +1544,13 @@ message TechCardSizePattern {
   // carried by at least one roll-goods BOM line of this card, except when it round-trips the row's
   // stored value unchanged.
   optional TechCardBomPurpose fabric_purpose = 12;
+  // Lowercase hex SHA-256 of the uploaded object's bytes. Presence is explicit: omission preserves
+  // the stored digest only while the URL is unchanged; a replacement without a digest clears it,
+  // as does a present empty string. Used to stop an identical DXF re-upload before minting a revision.
+  optional string sha256 = 13;
+  // Superseded files, newest first. OUTPUT-ONLY: ignored when this message comes back through
+  // UpdateTechCard; restoring one means putting its url into the active fields above.
+  repeated TechCardPatternRevision history = 14;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).
@@ -2861,6 +2886,11 @@ message TechCardOperation {
   // сборки — это пометка для команды, а не инструкция.
   bool draft = 68;
 
+  // Why this step needs a human pass after DXF reconciliation. Empty means reviewed; non-empty is
+  // one of reshaped|remapped|split|orphan and blocks release readiness. This is deliberately a
+  // string rather than an enum so an older protojson client cannot silently drop a future reason.
+  string review = 69;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3716,6 +3746,12 @@ message TechCardInsert {
   // импорт архива) ставят его явно. ТРАНСПОРТ, НЕ СОДЕРЖАНИЕ: не входит ни в один дайджест.
   bool operation_draft_aware = 125;
 
+  // ЩИТ СВЕРКИ DXF для TechCardOperation.review (69). Операции пишутся полной заменой без
+  // стабильного ключа строки, поэтому неосведомлённая вкладка не может безопасно сохранить
+  // карточку с review-метками: без этого флага сервер отказывает, а не стирает их. Транспорт,
+  // не содержание; ни в один дайджест не входит.
+  bool operation_review_aware = 126;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -3834,6 +3870,10 @@ message TechCard {
   // DeleteTechCardSeams — never through TechCardInsert, so a full card save cannot erase them, the
   // seams RPCs never bump lock_version, and they enter no section digest. Ignored on write.
   repeated TechCardSeam seams = 32;
+  // OUTPUT-ONLY pattern-history rows whose stable sheet identity no longer has a live pattern row.
+  // These are deleted sheets, newest first. They stay visible here so snapshot_id can restore the
+  // whole pre-delete card and history_id can remove an unwanted retained revision.
+  repeated TechCardPatternRevision removed_pattern_history = 33;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.

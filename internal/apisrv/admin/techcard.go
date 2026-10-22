@@ -141,6 +141,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationDraftWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationReviewWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Щит количеств на связях шага (0334), тот же довод и тот же момент. Стор-гейта на создании у
 	// него нет по той же причине, что у щита видов: парного `*_cleared` он не несёт, а сказать про
 	// несуществующую карточку ему больше нечего.
@@ -170,6 +173,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, techCardConvertErr(err)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
+		return nil, err
+	}
+	if err := operationReviewReleaseGate(tc); err != nil {
 		return nil, err
 	}
 	// 101 Ф4: a new card has no flat input either — any reference row goes onto the board.
@@ -290,7 +296,24 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	tc, err := s.repo.TechCards().GetTechCardById(ctx, int(req.Id))
+	pbTc, err := s.readTechCardForResponse(ctx, int(req.Id), req.GetVatCountryCode())
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.GetTechCardResponse{
+		TechCard: pbTc,
+		// The card-viewer token rides the response for the same reason the urls above do:
+		// it must never land on common.TechCard, which release snapshots persist. Best
+		// effort — "" on any failure, never a failed read.
+		PatternViewerToken: s.patternURLs.MintCardViewerToken(ctx, int(req.Id)),
+	}, nil
+}
+
+// readTechCardForResponse is the card exactly as GetTechCard answers it: costing stripped for an
+// account without costing:read, tokenized pattern urls minted on the response only. Every RPC that
+// answers with the full card owes the same three steps.
+func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountryCode string) (*pb_common.TechCard, error) {
+	tc, err := s.repo.TechCards().GetTechCardById(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
@@ -300,20 +323,14 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
-	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, req.GetVatCountryCode()))
+	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, vatCountryCode))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
 	}
 	// Tokenized read urls are minted on the RESPONSE only — the release-snapshot path
 	// converts the entity separately and must stay token-free (persisted blobs).
 	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, pbTc.GetTechCard().GetPatterns())
-	return &pb_admin.GetTechCardResponse{
-		TechCard: pbTc,
-		// The card-viewer token rides the response for the same reason the urls above do:
-		// it must never land on common.TechCard, which release snapshots persist. Best
-		// effort — "" on any failure, never a failed read.
-		PatternViewerToken: s.patternURLs.MintCardViewerToken(ctx, int(req.Id)),
-	}, nil
+	return pbTc, nil
 }
 
 // prepareTechCardWrite IS THE HANDLER-SIDE PIPELINE OF A TECH-CARD WRITE — everything that happens
@@ -338,7 +355,24 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 //
 // It returns the entity ready for the store; the caller owns the transaction and the post-commit
 // work (finalizeTechCardWrite).
-func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert) (*entity.TechCardInsert, error) {
+func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string) (*entity.TechCardInsert, error) {
+	return s.prepareTechCardWriteFrom(ctx, id, in, snapshotReason, techCardWriteSource{})
+}
+
+// techCardWriteSource is what a SERVER-BUILT write (RestoreTechCardSnapshot) hands the one pipeline
+// instead of letting it start from the wire alone. Both members are optional; the zero value is the
+// ordinary client save.
+type techCardWriteSource struct {
+	// stored is the card the caller already read to BUILD the payload. Passing it makes the gates,
+	// the carries and the snapshot blob judge the very state the payload was built against — a
+	// second read could see a newer card than the one the payload answers.
+	stored *entity.TechCard
+	// readdress runs right after the conversion, before anything reads the entity: it may only
+	// re-express references (an id the payload cannot keep → the stable key the store resolves).
+	readdress func(tc *entity.TechCardInsert)
+}
+
+func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string, src techCardWriteSource) (*entity.TechCardInsert, error) {
 	canReadCosting, canWriteCosting := s.costingAccess(ctx)
 	if !canWriteCosting && techCardInsertHasCostingData(in) {
 		return nil, status.Error(codes.PermissionDenied, "costing:write is required to modify cost data (costing block or BOM prices)")
@@ -370,6 +404,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err := operationDraftWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationReviewWireGate(in); err != nil {
+		return nil, err
+	}
 	// Тот же довод, тот же момент — щит количеств на связях шага (0334).
 	if err := bomQtyWireGate(in); err != nil {
 		return nil, err
@@ -378,17 +415,26 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
+	if src.readdress != nil {
+		src.readdress(tc)
+	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
-	stored, err := s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, status.Errorf(codes.NotFound, "tech card not found")
+	if err := operationReviewReleaseGate(tc); err != nil {
+		return nil, err
+	}
+	stored := src.stored
+	if stored == nil {
+		stored, err = s.repo.TechCards().GetTechCardByIdConsistent(ctx, id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, status.Errorf(codes.NotFound, "tech card not found")
+			}
+			slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
+				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load tech card; try again")
 		}
-		slog.Default().ErrorContext(ctx, "can't load stored tech card before update",
-			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
 	if stored == nil {
 		slog.Default().ErrorContext(ctx, "stored tech card reload returned nil before update",
@@ -427,6 +473,9 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 	}
 	// Щит черновика каркаса (0410) — правило 2: устаревшая вкладка стёрла бы метки «не проверено».
 	if err := operationDraftStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	if err := operationReviewStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит количеств на связях шага (0334) — правило 2, то самое, что срабатывает на практике:
@@ -546,6 +595,19 @@ func (s *Server) prepareTechCardWrite(ctx context.Context, id int, in *pb_common
 			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't finalize sign-off approval; try again")
 	}
+	if snapshotReason != "" {
+		blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
+				slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
+		}
+		tc.SnapshotReason = snapshotReason
+		tc.SnapshotJSON = blob
+		// The blob is `stored`; the store writes it only if the row is still at this version, so the
+		// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
+		tc.SnapshotLockVersion = stored.LockVersion
+	}
 	return tc, nil
 }
 
@@ -606,7 +668,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	if cache.IsModelPhotoTechCard(int(req.Id)) {
 		return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 	}
-	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard)
+	snapshotReason := strings.TrimSpace(req.GetSnapshotReason())
+	if utf8.RuneCountInString(snapshotReason) > 255 {
+		return nil, apierr.Invalid(entity.NewFieldViolation("snapshot_reason", "too_long", snapshotReason,
+			"keep the snapshot reason to 255 characters or fewer"))
+	}
+	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
 	if err != nil {
 		return nil, err
 	}
@@ -620,6 +687,34 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// server labels them in the background (never blocks the save, never writes the form).
 	s.designBoardLabelKick(ctx, int(req.Id))
 	return &pb_admin.UpdateTechCardResponse{}, nil
+}
+
+func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, error) {
+	pb := dto.ConvertEntityTechCardToPb(card, fx)
+	blob, err := protojson.Marshal(pb)
+	if err != nil {
+		return "", err
+	}
+	if len(pb.GetSeams()) == 0 {
+		// protojson omits an empty repeated field, and then «the card had no seams» would read like a
+		// snapshot older than the seams (which a restore must not touch). Say the empty list.
+		if blob, err = withEmptySnapshotSeams(blob); err != nil {
+			return "", err
+		}
+	}
+	return string(blob), nil
+}
+
+// snapshotSeamsField is TechCard.seams' JSON name; protojson also accepts the proto name, the same here.
+const snapshotSeamsField = "seams"
+
+func withEmptySnapshotSeams(blob []byte) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &top); err != nil {
+		return nil, err
+	}
+	top[snapshotSeamsField] = json.RawMessage(`[]`)
+	return json.Marshal(top)
 }
 
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the
@@ -1262,7 +1357,7 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 		return
 	}
 	fx := s.costingFx(ctx)
-	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(card, fx))
+	blob, err := marshalTechCardSnapshot(card, fx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "release snapshot: can't marshal snapshot",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
@@ -1281,7 +1376,7 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 			UnitCost:   unit,
 			Currency:   sql.NullString{String: currency, Valid: unit.Valid && currency != ""},
 		},
-		Snapshot: string(blob),
+		Snapshot: blob,
 	}
 	if err := s.repo.TechCards().SaveTechCardRelease(ctx, rel); err != nil {
 		slog.Default().ErrorContext(ctx, "RELEASE SNAPSHOT LOST: released card has no immutable snapshot",

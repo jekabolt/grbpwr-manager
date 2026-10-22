@@ -72,6 +72,11 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err != nil {
 		return err
 	}
+	patternHistories, err := s.patternHistoriesByTechCardIds(ctx, ids)
+	if err != nil {
+		return err
+	}
+	removedPatternHistories := attachPatternHistories(patterns, patternHistories)
 
 	for i := range cards {
 		id := cards[i].Id
@@ -82,6 +87,7 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 		cards[i].Callouts = callouts[id]
 		cards[i].Revisions = revisions[id]
 		cards[i].Patterns = patterns[id]
+		cards[i].RemovedPatternHistory = removedPatternHistories[id]
 	}
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
@@ -376,6 +382,19 @@ type techCardPatternRow struct {
 	entity.TechCardSizePattern
 }
 
+type techCardPatternHistoryRow struct {
+	TechCardID int            `db:"tech_card_id"`
+	LineKey    sql.NullString `db:"line_key"`
+	ScopeKey   sql.NullString `db:"scope_key"`
+	SizeID     int            `db:"size_id"`
+	entity.TechCardPatternRevision
+}
+
+type techCardPatternLegacyKey struct {
+	ScopeKey string
+	SizeID   int
+}
+
 // patternsByTechCardIds loads the выкройки grouped by tech card. size_id is COALESCEd because a
 // graded sheet is filed under NO size (NULL since 0281) and the entity spells that 0 — the same
 // value the wire uses.
@@ -385,7 +404,7 @@ func (s *Store) patternsByTechCardIds(ctx context.Context, ids []int) (map[int][
 	}
 	rows, err := storeutil.QueryListNamed[techCardPatternRow](ctx, s.DB, `
 		SELECT tech_card_id, COALESCE(size_id, 0) AS size_id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
-		       url, filename, name, size_bytes, version, uploaded_at
+		       url, filename, name, size_bytes, sha256, version, uploaded_at
 		FROM tech_card_size_pattern
 		WHERE tech_card_id IN (:ids)
 		ORDER BY tech_card_id, display_order`, map[string]any{"ids": ids})
@@ -397,6 +416,86 @@ func (s *Store) patternsByTechCardIds(ctx context.Context, ids []int) (map[int][
 		out[r.TechCardID] = append(out[r.TechCardID], r.TechCardSizePattern)
 	}
 	return out, nil
+}
+
+// patternHistoriesByTechCardIds loads every superseded pattern revision in one query for the whole
+// card batch. A keyed history row follows the sheet's stable identity; rows predating line keys use
+// the binding scope and filed size that were captured with the archived object.
+func (s *Store) patternHistoriesByTechCardIds(ctx context.Context, ids []int) ([]techCardPatternHistoryRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := storeutil.QueryListNamed[techCardPatternHistoryRow](ctx, s.DB, `
+		SELECT id AS history_id, tech_card_id, line_key, scope_key, COALESCE(size_id, 0) AS size_id,
+		       version AS revision, url, sha256, filename AS file_name,
+		       COALESCE(uploaded_at, replaced_at) AS created_at, snapshot_id
+		FROM tech_card_size_pattern_history
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, replaced_at DESC, id DESC`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card pattern history: %w", err)
+	}
+	return rows, nil
+}
+
+func attachPatternHistories(patterns map[int][]entity.TechCardSizePattern, rows []techCardPatternHistoryRow) map[int][]entity.TechCardPatternRevision {
+	removed := make(map[int][]entity.TechCardPatternRevision)
+	lineIndexes := make(map[int]map[string]int, len(patterns))
+	legacyIndexes := make(map[int]map[techCardPatternLegacyKey]int, len(patterns))
+	for techCardID, cardPatterns := range patterns {
+		byLine := make(map[string]int, len(cardPatterns))
+		byLegacyKey := make(map[techCardPatternLegacyKey]int, len(cardPatterns))
+		for i := range cardPatterns {
+			p := &cardPatterns[i]
+			if p.LineKey != "" {
+				byLine[p.LineKey] = i
+			}
+			key := techCardPatternLegacyKey{
+				ScopeKey: entity.FabricScopeKey(p.FabricPurpose.String, p.BomLineKey.String),
+				SizeID:   p.SizeId,
+			}
+			// Legacy history had no stable identity. A pair shared by several live sheets is
+			// irreducibly ambiguous, so mark it unusable rather than offering the wrong file as a
+			// restore revision of an arbitrary sheet.
+			if _, exists := byLegacyKey[key]; !exists {
+				byLegacyKey[key] = i
+			} else {
+				byLegacyKey[key] = -1
+			}
+		}
+		patterns[techCardID] = cardPatterns
+		lineIndexes[techCardID] = byLine
+		legacyIndexes[techCardID] = byLegacyKey
+	}
+
+	for _, row := range rows {
+		var (
+			index int
+			ok    bool
+		)
+		if row.LineKey.Valid && row.LineKey.String != "" {
+			index, ok = lineIndexes[row.TechCardID][row.LineKey.String]
+		} else {
+			index, ok = legacyIndexes[row.TechCardID][techCardPatternLegacyKey{
+				ScopeKey: row.ScopeKey.String,
+				SizeID:   row.SizeID,
+			}]
+		}
+		if !ok || index < 0 {
+			removed[row.TechCardID] = append(removed[row.TechCardID], row.TechCardPatternRevision)
+			continue
+		}
+		cardPatterns := patterns[row.TechCardID]
+		// The file the sheet carries NOW is not a superseded revision of it. It is in the history only
+		// because it once left and came back (RestoreTechCardSnapshot, or the old re-attach of a url);
+		// offering «restore» of the file already on the sheet would restore a card nobody is looking at.
+		if row.URL == cardPatterns[index].URL {
+			continue
+		}
+		cardPatterns[index].History = append(cardPatterns[index].History, row.TechCardPatternRevision)
+		patterns[row.TechCardID] = cardPatterns
+	}
+	return removed
 }
 
 func (s *Store) revisionsByTechCardIds(ctx context.Context, ids []int) (map[int][]entity.TechCardRevision, error) {

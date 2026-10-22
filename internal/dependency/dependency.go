@@ -1039,6 +1039,13 @@ type (
 		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
+		// GetTechCardSnapshot loads one tech_card_snapshot row OF THIS CARD; a missing id or one owned by
+		// another card is sql.ErrNoRows.
+		GetTechCardSnapshot(ctx context.Context, techCardID int, snapshotID int64) (*entity.TechCardSnapshot, error)
+		// DeleteTechCardPatternRevisionAndListOrphanedPatternURLs removes one retained pattern
+		// revision under the card's optimistic lock and returns its object URL only when no live row,
+		// history row, card snapshot or release snapshot references that object after commit.
+		DeleteTechCardPatternRevisionAndListOrphanedPatternURLs(ctx context.Context, techCardID int, historyID int64, expectedLockVersion int, actor string) ([]string, error)
 		GetTechCardLockVersion(ctx context.Context, id int) (int, error)
 		ListTechCards(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, filter entity.TechCardListFilter) ([]entity.TechCard, int, error)
 		// GetStylePipeline returns the development board: one column per lifecycle stage with its count
