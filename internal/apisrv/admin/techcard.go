@@ -690,11 +690,31 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 }
 
 func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, error) {
-	blob, err := protojson.Marshal(dto.ConvertEntityTechCardToPb(card, fx))
+	pb := dto.ConvertEntityTechCardToPb(card, fx)
+	blob, err := protojson.Marshal(pb)
 	if err != nil {
 		return "", err
 	}
+	if len(pb.GetSeams()) == 0 {
+		// protojson omits an empty repeated field, and then «the card had no seams» would read like a
+		// snapshot older than the seams (which a restore must not touch). Say the empty list.
+		if blob, err = withEmptySnapshotSeams(blob); err != nil {
+			return "", err
+		}
+	}
 	return string(blob), nil
+}
+
+// snapshotSeamsField is TechCard.seams' JSON name; protojson also accepts the proto name, the same here.
+const snapshotSeamsField = "seams"
+
+func withEmptySnapshotSeams(blob []byte) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &top); err != nil {
+		return nil, err
+	}
+	top[snapshotSeamsField] = json.RawMessage(`[]`)
+	return json.Marshal(top)
 }
 
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the

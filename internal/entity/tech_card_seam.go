@@ -137,6 +137,19 @@ type TechCardSeamsWrite struct {
 	By         string
 }
 
+// TechCardSeamsRestore is the seam list a RestoreTechCardSnapshot brings the card back to. It rides
+// the card save (TechCardInsert.RestoreSeams) so the seams move in the SAME transaction as the card,
+// through the same store write as Upsert/DeleteTechCardSeams: every seam not in Seams is deleted,
+// every seam in Seams is upserted. An empty Seams deletes them all.
+type TechCardSeamsRestore struct {
+	// Seams already passed ValidateTechCardSeamsWrite (keys normalised).
+	Seams []TechCardSeamInput
+	// Stale names the seam keys the snapshot reported stale. They are written with a fingerprint that
+	// matches no source, so the restore never re-stamps «decided on these patterns» for a decision
+	// that was not.
+	Stale map[string]bool
+}
+
 // PieceLineKeys returns the distinct piece line keys of both sides, upper-cased and sorted — the set
 // whose fabric scopes the seam's source fingerprint covers.
 func (in TechCardSeamInput) PieceLineKeys() []string {

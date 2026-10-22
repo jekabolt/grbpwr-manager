@@ -163,98 +163,8 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
 			return err
 		}
-		// Every anchor must name a piece of THIS card. Matched case-insensitively (ULIDs; the column
-		// collation is case-insensitive anyway).
-		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT line_key FROM tech_card_piece
-			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": in.TechCardId})
-		if err != nil {
-			return fmt.Errorf("load piece keys of tech card %d: %w", in.TechCardId, err)
-		}
-		mine := make(map[string]bool, len(pieces))
-		for _, p := range pieces {
-			mine[strings.ToUpper(strings.TrimSpace(p))] = true
-		}
-		for i, seam := range in.Seams {
-			for _, side := range []struct {
-				name    string
-				anchors []entity.TechCardSeamAnchor
-			}{{"side_a", seam.SideA}, {"side_b", seam.SideB}} {
-				for j, a := range side.anchors {
-					if !mine[strings.ToUpper(a.PieceLineKey)] {
-						return entity.NewFieldViolation(
-							fmt.Sprintf("seams[%d].%s.parts[%d].piece_line_key", i, side.name, j),
-							"piece_not_on_card", a.PieceLineKey,
-							"the anchor names a piece this card does not have — reload the card; the piece may have been removed")
-					}
-				}
-			}
-		}
-		// The per-card cap counts what the card WILL hold: existing rows not named here + this call.
-		existing, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT seam_key FROM tech_card_seam WHERE tech_card_id = :id`,
-			map[string]any{"id": in.TechCardId})
-		if err != nil {
-			return fmt.Errorf("load seam keys of tech card %d: %w", in.TechCardId, err)
-		}
-		named := make(map[string]bool, len(in.Seams))
-		for _, seam := range in.Seams {
-			named[seam.SeamKey] = true
-		}
-		total := len(in.Seams)
-		for _, k := range existing {
-			if !named[strings.ToUpper(k)] {
-				total++
-			}
-		}
-		if total > entity.TechCardSeamMaxRowsPerCard {
-			return entity.NewFieldViolation("seams", "too_many", "",
-				fmt.Sprintf("a card holds at most %d seams; delete orphan or obsolete rows first", entity.TechCardSeamMaxRowsPerCard))
-		}
-		src, err := loadSeamSources(ctx, db, in.TechCardId)
-		if err != nil {
+		if err := writeTechCardSeamsTx(ctx, db, in.TechCardId, in.Seams, in.By, seamWriteOpts{}); err != nil {
 			return err
-		}
-		for _, seam := range in.Seams {
-			sideA, err := json.Marshal(seam.SideA)
-			if err != nil {
-				return fmt.Errorf("encode seam %s side_a: %w", seam.SeamKey, err)
-			}
-			sideB, err := json.Marshal(seam.SideB)
-			if err != nil {
-				return fmt.Errorf("encode seam %s side_b: %w", seam.SeamKey, err)
-			}
-			// size_id stays NULL (v1 has no per-size rows), so the key is (card, seam_key, 0).
-			// created_* survive a replace; updated_* name the latest decision.
-			if err := storeutil.ExecNamed(ctx, db, `
-				INSERT INTO tech_card_seam
-					(tech_card_id, seam_key, status, kind, direction, source, side_a, side_b,
-					 anchored_size, note, source_fingerprint, created_by, updated_by)
-				VALUES
-					(:tech_card_id, :seam_key, :status, :kind, :direction, :source, :side_a, :side_b,
-					 :anchored_size, :note, :source_fingerprint, :by, :by)
-				ON DUPLICATE KEY UPDATE
-					status = VALUES(status), kind = VALUES(kind), direction = VALUES(direction),
-					source = VALUES(source), side_a = VALUES(side_a), side_b = VALUES(side_b),
-					anchored_size = VALUES(anchored_size), note = VALUES(note),
-					source_fingerprint = VALUES(source_fingerprint), updated_by = VALUES(updated_by),
-					updated_at = CURRENT_TIMESTAMP`,
-				map[string]any{
-					"tech_card_id":       in.TechCardId,
-					"seam_key":           seam.SeamKey,
-					"status":             string(seam.Status),
-					"kind":               string(seam.Kind),
-					"direction":          string(seam.Direction),
-					"source":             string(seam.Source),
-					"side_a":             string(sideA),
-					"side_b":             string(sideB),
-					"anchored_size":      seam.AnchoredSize,
-					"note":               seam.Note,
-					"source_fingerprint": src.fingerprint(seam.PieceLineKeys()),
-					"by":                 in.By,
-				}); err != nil {
-				return fmt.Errorf("upsert seam %s of tech card %d: %w", seam.SeamKey, in.TechCardId, err)
-			}
 		}
 		// The echo is read in the same transaction: the client re-syncs from what was committed,
 		// not from its optimistic copy. Assigned, never appended — txFunc may retry this closure.
@@ -269,6 +179,127 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		return nil, 0, err
 	}
 	return out, len(in.Seams), nil
+}
+
+// seamWriteOpts are the two ways a restore writes differently from a reviewer (see
+// entity.TechCardSeamsRestore). The zero value is the reviewer's write.
+type seamWriteOpts struct {
+	// skipPieceCheck: the snapshot's rows are what the card held, and a row orphaned by a deleted
+	// piece was a legal row then (0411: no FK to the piece) — refusing it would make that snapshot
+	// unrestorable. The screen offers to remove an orphan, as it did before.
+	skipPieceCheck bool
+	// stale: seam keys written with seamFingerprintStale instead of today's fingerprint.
+	stale map[string]bool
+}
+
+// seamFingerprintStale is stamped on a seam a restore brings back stale. CHAR(64) holds it and no
+// computed fingerprint (64 hex chars) equals it, so every read reports the row stale again until a
+// reviewer re-confirms it — the restore never forges «decided on these patterns».
+const seamFingerprintStale = "restored-stale"
+
+// writeTechCardSeamsTx IS THE SEAM WRITE — UpsertTechCardSeams and the restore's sync both run it,
+// inside a transaction whose caller already holds the card row and has checked it is mutable.
+func writeTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int, seams []entity.TechCardSeamInput, by string, opts seamWriteOpts) error {
+	if !opts.skipPieceCheck {
+		// Every anchor must name a piece of THIS card. Matched case-insensitively (ULIDs; the column
+		// collation is case-insensitive anyway).
+		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT line_key FROM tech_card_piece
+			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load piece keys of tech card %d: %w", techCardID, err)
+		}
+		mine := make(map[string]bool, len(pieces))
+		for _, p := range pieces {
+			mine[strings.ToUpper(strings.TrimSpace(p))] = true
+		}
+		for i, seam := range seams {
+			for _, side := range []struct {
+				name    string
+				anchors []entity.TechCardSeamAnchor
+			}{{"side_a", seam.SideA}, {"side_b", seam.SideB}} {
+				for j, a := range side.anchors {
+					if !mine[strings.ToUpper(a.PieceLineKey)] {
+						return entity.NewFieldViolation(
+							fmt.Sprintf("seams[%d].%s.parts[%d].piece_line_key", i, side.name, j),
+							"piece_not_on_card", a.PieceLineKey,
+							"the anchor names a piece this card does not have — reload the card; the piece may have been removed")
+					}
+				}
+			}
+		}
+	}
+	// The per-card cap counts what the card WILL hold: existing rows not named here + this call.
+	existing, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT seam_key FROM tech_card_seam WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return fmt.Errorf("load seam keys of tech card %d: %w", techCardID, err)
+	}
+	named := make(map[string]bool, len(seams))
+	for _, seam := range seams {
+		named[seam.SeamKey] = true
+	}
+	total := len(seams)
+	for _, k := range existing {
+		if !named[strings.ToUpper(k)] {
+			total++
+		}
+	}
+	if total > entity.TechCardSeamMaxRowsPerCard {
+		return entity.NewFieldViolation("seams", "too_many", "",
+			fmt.Sprintf("a card holds at most %d seams; delete orphan or obsolete rows first", entity.TechCardSeamMaxRowsPerCard))
+	}
+	src, err := loadSeamSources(ctx, db, techCardID)
+	if err != nil {
+		return err
+	}
+	for _, seam := range seams {
+		sideA, err := json.Marshal(seam.SideA)
+		if err != nil {
+			return fmt.Errorf("encode seam %s side_a: %w", seam.SeamKey, err)
+		}
+		sideB, err := json.Marshal(seam.SideB)
+		if err != nil {
+			return fmt.Errorf("encode seam %s side_b: %w", seam.SeamKey, err)
+		}
+		fingerprint := src.fingerprint(seam.PieceLineKeys())
+		if opts.stale[seam.SeamKey] {
+			fingerprint = seamFingerprintStale
+		}
+		// size_id stays NULL (v1 has no per-size rows), so the key is (card, seam_key, 0).
+		// created_* survive a replace; updated_* name the latest decision.
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT INTO tech_card_seam
+				(tech_card_id, seam_key, status, kind, direction, source, side_a, side_b,
+				 anchored_size, note, source_fingerprint, created_by, updated_by)
+			VALUES
+				(:tech_card_id, :seam_key, :status, :kind, :direction, :source, :side_a, :side_b,
+				 :anchored_size, :note, :source_fingerprint, :by, :by)
+			ON DUPLICATE KEY UPDATE
+				status = VALUES(status), kind = VALUES(kind), direction = VALUES(direction),
+				source = VALUES(source), side_a = VALUES(side_a), side_b = VALUES(side_b),
+				anchored_size = VALUES(anchored_size), note = VALUES(note),
+				source_fingerprint = VALUES(source_fingerprint), updated_by = VALUES(updated_by),
+				updated_at = CURRENT_TIMESTAMP`,
+			map[string]any{
+				"tech_card_id":       techCardID,
+				"seam_key":           seam.SeamKey,
+				"status":             string(seam.Status),
+				"kind":               string(seam.Kind),
+				"direction":          string(seam.Direction),
+				"source":             string(seam.Source),
+				"side_a":             string(sideA),
+				"side_b":             string(sideB),
+				"anchored_size":      seam.AnchoredSize,
+				"note":               seam.Note,
+				"source_fingerprint": fingerprint,
+				"by":                 by,
+			}); err != nil {
+			return fmt.Errorf("upsert seam %s of tech card %d: %w", seam.SeamKey, techCardID, err)
+		}
+	}
+	return nil
 }
 
 // DeleteTechCardSeams removes seams by key and returns the card's full list and the removed count.
@@ -308,15 +339,9 @@ func (s *Store) DeleteTechCardSeams(ctx context.Context, techCardID int, seamKey
 		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
 			return err
 		}
-		n := 0
-		for _, k := range keys {
-			affected, err := storeutil.ExecNamedRows(ctx, db, `
-				DELETE FROM tech_card_seam WHERE tech_card_id = :id AND seam_key = :k`,
-				map[string]any{"id": techCardID, "k": k})
-			if err != nil {
-				return fmt.Errorf("delete seam %s of tech card %d: %w", k, techCardID, err)
-			}
-			n += int(affected)
+		n, err := deleteTechCardSeamsTx(ctx, db, techCardID, keys)
+		if err != nil {
+			return err
 		}
 		list, err := listTechCardSeams(ctx, db, techCardID)
 		if err != nil {
@@ -329,4 +354,54 @@ func (s *Store) DeleteTechCardSeams(ctx context.Context, techCardID int, seamKey
 		return nil, 0, err
 	}
 	return out, deleted, nil
+}
+
+// deleteTechCardSeamsTx IS THE SEAM DELETE — DeleteTechCardSeams and the restore's sync both run it.
+// keys are normalised; the caller holds the card row.
+func deleteTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int, keys []string) (int, error) {
+	n := 0
+	for _, k := range keys {
+		affected, err := storeutil.ExecNamedRows(ctx, db, `
+			DELETE FROM tech_card_seam WHERE tech_card_id = :id AND seam_key = :k`,
+			map[string]any{"id": techCardID, "k": k})
+		if err != nil {
+			return 0, fmt.Errorf("delete seam %s of tech card %d: %w", k, techCardID, err)
+		}
+		n += int(affected)
+	}
+	return n, nil
+}
+
+// restoreTechCardSeamsTx brings tech_card_seam to exactly the snapshot's list, inside the card save
+// of RestoreTechCardSnapshot (UpdateTechCardTx — the card row is already locked and its release state
+// checked there). Through the same delete and write as the seam RPCs: rows the snapshot does not have
+// go, rows it has are upserted (created_* of a surviving row are kept; updated_by names the restorer).
+// No lock_version bump and no digest, as for every seam write.
+func restoreTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int, r *entity.TechCardSeamsRestore, by string) error {
+	keep := make(map[string]bool, len(r.Seams))
+	for _, seam := range r.Seams {
+		keep[seam.SeamKey] = true
+	}
+	existing, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT seam_key FROM tech_card_seam WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return fmt.Errorf("load seam keys of tech card %d: %w", techCardID, err)
+	}
+	var drop []string
+	for _, k := range existing {
+		if k = entity.NormalizeTechCardSeamKey(k); !keep[k] {
+			drop = append(drop, k)
+		}
+	}
+	if len(drop) > 0 {
+		if _, err := deleteTechCardSeamsTx(ctx, db, techCardID, drop); err != nil {
+			return err
+		}
+	}
+	if len(r.Seams) == 0 {
+		return nil
+	}
+	return writeTechCardSeamsTx(ctx, db, techCardID, r.Seams, by,
+		seamWriteOpts{skipPieceCheck: true, stale: r.Stale})
 }

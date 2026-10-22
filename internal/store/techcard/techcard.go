@@ -765,6 +765,14 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if err := remintCardProducts(ctx, rep.DB(), id, prevProductLinks); err != nil {
 		return nil, err
 	}
+	// A restore brings the seams back with the card, in this transaction and after the pieces and
+	// sheets above are the snapshot's (the fingerprints are taken from them). Every other save leaves
+	// RestoreSeams nil and the seams to their own RPCs.
+	if tc.RestoreSeams != nil {
+		if err := restoreTechCardSeamsTx(ctx, rep.DB(), id, tc.RestoreSeams, tc.UpdatedBy); err != nil {
+			return nil, err
+		}
+	}
 	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 	action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
 	if tc.SnapshotReason != "" {

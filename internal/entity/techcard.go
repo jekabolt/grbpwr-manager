@@ -4285,6 +4285,10 @@ type TechCardInsert struct {
 	// refuses the write (ErrTechCardConflict) unless the row it locks is still at that version, so
 	// the frozen blob is provably the state this very save replaces — never an older read.
 	SnapshotLockVersion int `db:"-"`
+	// RestoreSeams is set by RestoreTechCardSnapshot only: non-nil makes the save also bring
+	// tech_card_seam to exactly this list inside its transaction. nil (every other save) leaves the
+	// seams alone — they are written by Upsert/DeleteTechCardSeams, never by the card form.
+	RestoreSeams *TechCardSeamsRestore `db:"-"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.

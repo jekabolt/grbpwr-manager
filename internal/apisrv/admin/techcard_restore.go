@@ -3,12 +3,14 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -36,6 +38,10 @@ const restoreCarryDigest = "restore-carry"
 // and post-commit work as UpdateTechCard. The transaction first freezes the CURRENT card as a new
 // snapshot (reason «restore:<id>»), so a restore is itself undoable, and the sheets it replaces go to
 // the history pointing at that new snapshot.
+//
+// SEAMS. tech_card_seam is not part of the card payload; the save carries the snapshot's seam list
+// (restoreSeamsFromSnapshot) and the store brings the table to it in the same transaction, through
+// the seam RPCs' own write and delete. Still outside lock_version and every digest.
 //
 // What the restore does NOT take from the snapshot is the card's identity and lifecycle — approval
 // state and its stamps, sign-offs, stage, style number and its source, season, category, purpose,
@@ -113,6 +119,9 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	if err != nil {
 		return nil, err
 	}
+	if tc.RestoreSeams, err = restoreSeamsFromSnapshot(id, snap.Snapshot, frozen, authsrv.GetAdminUsername(ctx)); err != nil {
+		return nil, err
+	}
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, id, tc, int(req.GetExpectedLockVersion()))
 	if err != nil {
@@ -145,6 +154,40 @@ func decodeTechCardSnapshot(snap *entity.TechCardSnapshot) (*pb_common.TechCard,
 		return nil, errors.New("the snapshot belongs to another card")
 	}
 	return &card, nil
+}
+
+// restoreSeamsFromSnapshot is the seam list the restore brings the card back to, or nil to leave the
+// seams as they are.
+//
+// ABSENT ≠ EMPTY. The snapshot is protojson, which omits an empty repeated field, so a parsed
+// TechCard cannot tell «no seams» from «written before seams were frozen». The raw JSON can: the
+// snapshot writer (marshalTechCardSnapshot) always names `seams`, as `[]` when the card had none.
+// A snapshot without the key is an older one — the seams then are unknown, and unknown is not
+// «delete them all»: nil, the restore does not touch tech_card_seam.
+func restoreSeamsFromSnapshot(techCardID int, raw string, frozen *pb_common.TechCard, by string) (*entity.TechCardSeamsRestore, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return nil, status.Error(codes.FailedPrecondition, "this snapshot cannot be restored: "+err.Error())
+	}
+	if _, ok := top[snapshotSeamsField]; !ok {
+		return nil, nil
+	}
+	out := &entity.TechCardSeamsRestore{Stale: map[string]bool{}}
+	if len(frozen.GetSeams()) == 0 {
+		return out, nil
+	}
+	// The same conversion and validation as UpsertTechCardSeams (it normalises the keys).
+	in, err := dto.TechCardSeamsWriteFromPb(techCardID, frozen.GetSeams(), by)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, "this snapshot's seams cannot be restored: "+err.Error())
+	}
+	out.Seams = in.Seams
+	for _, seam := range frozen.GetSeams() {
+		if seam.GetStale() {
+			out.Stale[entity.NormalizeTechCardSeamKey(seam.GetSeamKey())] = true
+		}
+	}
+	return out, nil
 }
 
 // restoreTechCardPayload builds the UpdateTechCard payload that makes the card read like `frozen`.
