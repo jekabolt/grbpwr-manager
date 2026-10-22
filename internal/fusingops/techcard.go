@@ -125,38 +125,255 @@ func FusingStateChanged(stored, incoming *entity.TechCardInsert) bool {
 		!reflect.DeepEqual(storedInterlinings, incomingInterlinings)
 }
 
-func carryAutoFusingLineKeys(stored, incoming *entity.TechCardInsert) {
-	if stored == nil || incoming == nil {
-		return
+// linksAutoFusingGroup reports whether an operation, by its own content, is the automatic FUSING
+// step of group key: linked to that INTERLINING line or, for the unresolved group (key ""), linkless
+// and not an orphan. The wire carries no operation id, so this is the identity that survives a client
+// renumbering or reordering its steps.
+func linksAutoFusingGroup(op *entity.TechCardOperation, key string) bool {
+	if key == "" {
+		return len(op.BomLineKeys) == 0 && !(op.Review.Valid && op.Review.String == ReviewOrphan)
 	}
-	byNumber := make(map[int32]sql.NullString, len(stored.Operations))
+	for _, raw := range op.BomLineKeys {
+		if strings.TrimSpace(raw) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// matchAutoFusingOps pairs every stored automatic FUSING operation (auto_fusing_line_key set) with at
+// most one incoming FUSING operation and copies the private group key onto it. Returned is the set of
+// stored indexes that found a counterpart.
+//
+// The matching rule, in order:
+//  1. an incoming operation that already carries the key (server-built writers);
+//  2. content identity: the incoming FUSING step links the group's INTERLINING line (or, for the
+//     unresolved group, is linkless and not an orphan), at any operation number;
+//  3. operation number, but only for an edited (non-draft) stored step. An edited orphan may have
+//     lost its dead line link, so its number is its only address. A draft step's links are exactly
+//     its group, so a same-numbered step without them is a different step that a stale payload
+//     shifted onto that number: adopting it would hand a legacy step an automatic identity and hide
+//     the missing draft from carryMissingAutoFusingOps.
+//
+// Among several candidates the one at the stored operation number wins, so an up-to-date echo always
+// pairs with itself.
+func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) map[int]bool {
+	matched := make(map[int]bool)
+	if stored == nil || incoming == nil {
+		return matched
+	}
+	autoIdx := make([]int, 0)
 	for i := range stored.Operations {
 		op := &stored.Operations[i]
-		if op.OperationType == entity.OpTypeFusing && op.OperationNumber.Valid && op.AutoFusingLineKey.Valid {
-			byNumber[op.OperationNumber.Int32] = op.AutoFusingLineKey
+		if op.OperationType == entity.OpTypeFusing && op.AutoFusingLineKey.Valid {
+			autoIdx = append(autoIdx, i)
 		}
 	}
-	for i := range incoming.Operations {
-		op := &incoming.Operations[i]
-		if op.OperationType != entity.OpTypeFusing || op.AutoFusingLineKey.Valid || !op.OperationNumber.Valid {
+	if len(autoIdx) == 0 {
+		return matched
+	}
+	taken := make(map[int]bool, len(incoming.Operations))
+	pick := func(s *entity.TechCardOperation, accept func(*entity.TechCardOperation) bool) int {
+		best := -1
+		for j := range incoming.Operations {
+			in := &incoming.Operations[j]
+			if taken[j] || in.OperationType != entity.OpTypeFusing || !accept(in) {
+				continue
+			}
+			if s.OperationNumber.Valid && in.OperationNumber == s.OperationNumber {
+				return j
+			}
+			if best < 0 {
+				best = j
+			}
+		}
+		return best
+	}
+	pass := func(eligible func(*entity.TechCardOperation) bool,
+		accept func(s, in *entity.TechCardOperation) bool,
+	) {
+		for _, i := range autoIdx {
+			s := &stored.Operations[i]
+			if matched[i] || !eligible(s) {
+				continue
+			}
+			j := pick(s, func(in *entity.TechCardOperation) bool { return accept(s, in) })
+			if j < 0 {
+				continue
+			}
+			taken[j] = true
+			matched[i] = true
+			if !incoming.Operations[j].AutoFusingLineKey.Valid {
+				incoming.Operations[j].AutoFusingLineKey = s.AutoFusingLineKey
+			}
+		}
+	}
+	groupKey := func(op *entity.TechCardOperation) string { return strings.TrimSpace(op.AutoFusingLineKey.String) }
+	always := func(*entity.TechCardOperation) bool { return true }
+	pass(always, func(s, in *entity.TechCardOperation) bool {
+		return in.AutoFusingLineKey.Valid && groupKey(in) == groupKey(s)
+	})
+	pass(always, func(s, in *entity.TechCardOperation) bool {
+		return !in.AutoFusingLineKey.Valid && linksAutoFusingGroup(in, groupKey(s))
+	})
+	pass(func(s *entity.TechCardOperation) bool { return !s.Draft && s.OperationNumber.Valid },
+		func(s, in *entity.TechCardOperation) bool {
+			return !in.AutoFusingLineKey.Valid && in.OperationNumber == s.OperationNumber
+		})
+	return matched
+}
+
+// carriedAutoFusingOp copies a stored draft automatic step into the write model in wire shape: links
+// by durable key only (the store re-resolves ids), and only to pieces and BOM lines this payload still
+// holds, so a carried step can never be the reason a save fails to resolve a reference.
+func carriedAutoFusingOp(op entity.TechCardOperation, pieceKeys, bomKeys map[string]bool) entity.TechCardOperation {
+	op.PieceIds, op.BomIds = nil, nil
+	source := op.AssemblyInputs
+	if len(source) == 0 {
+		source = nil // never append into a backing array shared with the stored card
+		for _, key := range op.PieceLineKeys {
+			source = append(source, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: key})
+		}
+	}
+	// nil rather than empty slices, as the read path and the converter produce them: the section
+	// digest marshals these lists and must hash a carried step exactly as it hashes the stored one.
+	op.AssemblyInputs, op.InputKeys, op.PieceLineKeys = nil, nil, nil
+	for _, input := range source {
+		if input.Kind == entity.AssemblyInputPiece && !pieceKeys[input.Key] {
 			continue
 		}
-		if key, ok := byNumber[op.OperationNumber.Int32]; ok {
-			op.AutoFusingLineKey = key
+		op.AssemblyInputs = append(op.AssemblyInputs, input)
+		op.InputKeys = append(op.InputKeys, input.Key)
+		if input.Kind == entity.AssemblyInputPiece {
+			op.PieceLineKeys = append(op.PieceLineKeys, input.Key)
 		}
 	}
+	lineKeys := op.BomLineKeys
+	op.BomLineKeys = nil
+	for _, key := range lineKeys {
+		if bomKeys[strings.TrimSpace(key)] {
+			op.BomLineKeys = append(op.BomLineKeys, key)
+		}
+	}
+	quantities := op.BomQuantities
+	op.BomQuantities = nil
+	for _, qty := range quantities {
+		if bomKeys[strings.TrimSpace(qty.LineKey)] {
+			op.BomQuantities = append(op.BomQuantities, qty)
+		}
+	}
+	op.Media = append([]entity.TechCardOperationMedia(nil), op.Media...)
+	return op
+}
+
+// carryMissingAutoFusingOps puts back the draft automatic FUSING steps a payload lacks. They are
+// server-owned: a client that saved before the server inserted them (and never reloaded its step
+// list) would otherwise delete them on its next unrelated save while the pieces stay fused, and the
+// assembly order would silently lose Fusing. Only draft steps come back — an edited (non-draft) step
+// the client dropped was deleted by a person and stays deleted; legacy steps (no automatic identity)
+// are never candidates.
+//
+// A carried step returns to its stored index, capped at the leading run of FUSING steps so it stays
+// at the front of the order. Every step is then renumbered 10, 20, … and the payload's issue
+// references follow their step's new number, exactly as ReconcileTechCard renumbers.
+func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched map[int]bool) bool {
+	if stored == nil || incoming == nil {
+		return false
+	}
+	missing := make([]int, 0)
+	for i := range stored.Operations {
+		op := &stored.Operations[i]
+		if op.OperationType == entity.OpTypeFusing && op.Draft && op.AutoFusingLineKey.Valid && !matched[i] {
+			missing = append(missing, i)
+		}
+	}
+	if len(missing) == 0 {
+		return false
+	}
+
+	pieceKeys := make(map[string]bool, len(incoming.Pieces))
+	for i := range incoming.Pieces {
+		pieceKeys[incoming.Pieces[i].LineKey] = true
+	}
+	bomKeys := make(map[string]bool, len(incoming.BomItems))
+	for i := range incoming.BomItems {
+		bomKeys[strings.TrimSpace(incoming.BomItems[i].LineKey)] = true
+	}
+
+	type slot struct {
+		op        entity.TechCardOperation
+		oldNumber sql.NullInt32 // payload numbering; invalid for a carried step
+	}
+	slots := make([]slot, 0, len(incoming.Operations)+len(missing))
+	for _, op := range incoming.Operations {
+		slots = append(slots, slot{op: op, oldNumber: op.OperationNumber})
+	}
+	for _, i := range missing {
+		position := i
+		lead := 0
+		for lead < len(slots) && slots[lead].op.OperationType == entity.OpTypeFusing {
+			lead++
+		}
+		if position > lead {
+			position = lead
+		}
+		carried := slot{op: carriedAutoFusingOp(stored.Operations[i], pieceKeys, bomKeys)}
+		slots = append(slots[:position], append([]slot{carried}, slots[position:]...)...)
+	}
+
+	newNumberByOld := make(map[int32]int32, len(slots))
+	operations := make([]entity.TechCardOperation, 0, len(slots))
+	for i, s := range slots {
+		newNumber := int32((i + 1) * 10)
+		if s.oldNumber.Valid {
+			if _, seen := newNumberByOld[s.oldNumber.Int32]; !seen {
+				newNumberByOld[s.oldNumber.Int32] = newNumber
+			}
+		}
+		s.op.OperationNumber = sql.NullInt32{Int32: newNumber, Valid: true}
+		operations = append(operations, s.op)
+	}
+	for i := range incoming.Issues {
+		if current := incoming.Issues[i].OperationNumber; current.Valid {
+			if next, ok := newNumberByOld[current.Int32]; ok {
+				incoming.Issues[i].OperationNumber = sql.NullInt32{Int32: next, Valid: true}
+			}
+		}
+	}
+	incoming.Operations = operations
+	return true
+}
+
+// UpdateOutcome is what an update's FUSING pass did to the write model.
+type UpdateOutcome struct {
+	// Reconcile: piece fusing or INTERLINING membership changed. The write model is reconciled and
+	// the store must repeat the reconciliation against rows (entity.TechCardInsert.ReconcileFusing).
+	Reconcile bool
+	// Carried: nothing fusing-relevant changed, but the payload lacked draft automatic FUSING steps
+	// and they were put back (operations renumbered, issue references remapped).
+	Carried bool
 }
 
 // ReconcileTechCardUpdate is the update-only trigger. Create and clone paths call ReconcileTechCard
-// directly; an unrelated update returns false without touching a single operation or issue.
-func ReconcileTechCardUpdate(stored, incoming *entity.TechCardInsert) (bool, *entity.ValidationError) {
-	// This private identity is intentionally absent from the wire, so carry it across the operation
-	// full-replace even on a no-op save. It changes no instruction or workflow state.
-	carryAutoFusingLineKeys(stored, incoming)
-	if !FusingStateChanged(stored, incoming) {
-		return false, nil
+// directly. An unrelated update never reconciles (legacy/manual FUSING steps are not touched); it only
+// restores the draft automatic steps a stale payload dropped. Either way the caller must re-run
+// assembly validation when the outcome reports a change, since a step moved to the front can now
+// consume a unit produced later.
+func ReconcileTechCardUpdate(stored, incoming *entity.TechCardInsert) (UpdateOutcome, *entity.ValidationError) {
+	if incoming == nil {
+		return UpdateOutcome{}, nil
 	}
-	return true, ReconcileTechCard(incoming)
+	// This private identity is intentionally absent from the wire, so carry it across the operation
+	// full-replace even on a no-op save. It changes no instruction or workflow state. The store's
+	// number-only fallback must not second-guess this identity match.
+	matched := matchAutoFusingOps(stored, incoming)
+	incoming.AutoFusingKeysResolved = true
+	if FusingStateChanged(stored, incoming) {
+		// The reconcile recreates every group still used by a fused piece, so automatic steps a
+		// stale payload dropped come back here too (as fresh drafts at the front).
+		return UpdateOutcome{Reconcile: true}, ReconcileTechCard(incoming)
+	}
+	return UpdateOutcome{Carried: carryMissingAutoFusingOps(stored, incoming, matched)}, nil
 }
 
 // ReconcileTechCard applies the same FUSING transition to the in-memory write model. The API calls

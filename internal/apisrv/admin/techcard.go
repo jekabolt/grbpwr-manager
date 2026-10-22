@@ -576,15 +576,18 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	carryOmittedPieceFusingDetailsFrom(stored, tc)
 	// Reconcile after every presence carry, but only if a fusing field or INTERLINING membership
 	// actually changed. This protects historical FUSING steps from unrelated full-document saves.
-	// The store receives the same verdict and skips its SQL pass on the same no-op path.
-	changed, reconcileErr := fusingops.ReconcileTechCardUpdate(&stored.TechCardInsert, tc)
+	// The store receives the same verdict and skips its SQL pass on the same no-op path. An
+	// unrelated save from a client holding a stale step list instead gets the draft automatic
+	// FUSING steps it dropped put back (they are server-owned; the pieces are still fused).
+	fusing, reconcileErr := fusingops.ReconcileTechCardUpdate(&stored.TechCardInsert, tc)
 	if reconcileErr != nil {
 		return nil, apierr.Invalid(reconcileErr)
 	}
-	tc.ReconcileFusing = changed
-	if changed {
-		// Reconciliation can move a FUSING step ahead of a unit it consumes. Re-run the exact
-		// canonicalization and release convergence gates before any fresh sign-off is restamped.
+	tc.ReconcileFusing = fusing.Reconcile
+	if fusing.Reconcile || fusing.Carried {
+		// Reconciliation (or a carried step returning to the front) can move a FUSING step ahead of
+		// a unit it consumes. Re-run the exact canonicalization and release convergence gates before
+		// any fresh sign-off is restamped.
 		if err := dto.RevalidateTechCardAssembly(tc); err != nil {
 			return nil, apierr.Invalid(err)
 		}

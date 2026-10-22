@@ -4621,6 +4621,11 @@ type TechCardInsert struct {
 	// It keeps the transaction-side reconciliation aligned with the in-memory pass, so an unrelated
 	// full-document save cannot reorder, unlink, or review-mark historical FUSING operations.
 	ReconcileFusing bool `db:"-"`
+	// AutoFusingKeysResolved is write-command metadata: the API update path already matched every
+	// incoming FUSING step to the stored automatic steps by identity (fusingops.ReconcileTechCardUpdate)
+	// and possibly renumbered the list, so the store's operation-number fallback for direct writers
+	// must not re-match it.
+	AutoFusingKeysResolved bool `db:"-"`
 	// PieceDxfAliases maps DXF block names to cut-pieces, scoped per fabric slot (§2.2). Presence is
 	// carried separately (proto3 cannot tell empty-repeated from absent): PieceDxfAliasesSet=false
 	// means the payload did not speak — the store preserves stored aliases, so a stale client cannot
