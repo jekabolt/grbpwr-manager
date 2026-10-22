@@ -45,9 +45,67 @@ const (
 	errFusingSplineTooLarge = fusingSplineGeometryError("coordinates are too large")
 )
 
-// flattenPieceFusingSpline copies the editor's rule exactly: a non-corner tangent is half the span
-// between neighbouring points, while a corner tangent is zero. Each Hermite segment emits t=0
-// through t=(steps-1)/steps at equal intervals, so control points appear once and closure is implicit.
+// fusingSplineCentripetalTangents returns the [0,1]-scaled tangents for segment i. Distances and
+// their alpha=0.5 intervals are deliberately evaluated before the zero-length check: the editor
+// follows the same operation order so its flattened area and DXF vertices match bit for bit.
+func fusingSplineCentripetalTangents(
+	points []fusingSplineFloatPoint,
+	controls []TechCardPieceFusingSplinePoint,
+	i int,
+) (m1, m2 fusingSplineFloatPoint, zeroLength bool) {
+	n := len(points)
+	p0 := points[(i-1+n)%n]
+	p1 := points[i]
+	p2 := points[(i+1)%n]
+	p3 := points[(i+2)%n]
+	d01 := math.Hypot(p1.x-p0.x, p1.y-p0.y)
+	d12 := math.Hypot(p2.x-p1.x, p2.y-p1.y)
+	d23 := math.Hypot(p3.x-p2.x, p3.y-p2.y)
+	t01 := math.Sqrt(d01)
+	t12 := math.Sqrt(d12)
+	t23 := math.Sqrt(d23)
+	if d12 == 0 {
+		return fusingSplineFloatPoint{}, fusingSplineFloatPoint{}, true
+	}
+	if !controls[i].Corner {
+		if d01 == 0 {
+			m1 = fusingSplineFloatPoint{x: p2.x - p1.x, y: p2.y - p1.y}
+		} else {
+			m1 = fusingSplineFloatPoint{
+				x: t12 * ((p1.x-p0.x)/t01 - (p2.x-p0.x)/(t01+t12) + (p2.x-p1.x)/t12),
+				y: t12 * ((p1.y-p0.y)/t01 - (p2.y-p0.y)/(t01+t12) + (p2.y-p1.y)/t12),
+			}
+		}
+	}
+	if !controls[(i+1)%n].Corner {
+		if d23 == 0 {
+			m2 = fusingSplineFloatPoint{x: p2.x - p1.x, y: p2.y - p1.y}
+		} else {
+			m2 = fusingSplineFloatPoint{
+				x: t12 * ((p2.x-p1.x)/t12 - (p3.x-p1.x)/(t12+t23) + (p3.x-p2.x)/t23),
+				y: t12 * ((p2.y-p1.y)/t12 - (p3.y-p1.y)/(t12+t23) + (p3.y-p2.y)/t23),
+			}
+		}
+	}
+	return m1, m2, false
+}
+
+func fusingSplineHermitePoint(p1, m1, p2, m2 fusingSplineFloatPoint, t float64) fusingSplineFloatPoint {
+	t2 := t * t
+	t3 := t2 * t
+	h00 := 2*t3 - 3*t2 + 1
+	h10 := t3 - 2*t2 + t
+	h01 := -2*t3 + 3*t2
+	h11 := t3 - t2
+	return fusingSplineFloatPoint{
+		x: h00*p1.x + h10*m1.x + h01*p2.x + h11*m2.x,
+		y: h00*p1.y + h10*m1.y + h01*p2.y + h11*m2.y,
+	}
+}
+
+// flattenPieceFusingSpline copies the editor's centripetal Catmull-Rom rule exactly. Each Hermite
+// segment emits t=0 through t=(steps-1)/steps at equal intervals, so control points appear once and
+// closure is implicit. A zero-length segment emits only its start point.
 func flattenPieceFusingSpline(spline *TechCardPieceFusingSpline) ([]fusingSplineFloatPoint, error) {
 	points := make([]fusingSplineFloatPoint, len(spline.Points))
 	for i, point := range spline.Points {
@@ -59,31 +117,18 @@ func flattenPieceFusingSpline(spline *TechCardPieceFusingSpline) ([]fusingSpline
 	if len(points) < 3 {
 		return points, nil
 	}
-	tangent := func(i int) fusingSplineFloatPoint {
-		if spline.Points[i].Corner {
-			return fusingSplineFloatPoint{}
-		}
-		prev := points[(i-1+len(points))%len(points)]
-		next := points[(i+1)%len(points)]
-		return fusingSplineFloatPoint{x: (next.x - prev.x) / 2, y: (next.y - prev.y) / 2}
-	}
 	out := make([]fusingSplineFloatPoint, 0, len(points)*4)
 	for i, p1 := range points {
 		p2 := points[(i+1)%len(points)]
-		m0, m1 := tangent(i), tangent((i+1)%len(points))
-		steps := fusingSplineSteps(p1, m0, p2, m1, fusingSplineChordErrorMm)
+		m1, m2, zeroLength := fusingSplineCentripetalTangents(points, spline.Points, i)
+		if zeroLength {
+			out = append(out, p1)
+			continue
+		}
+		steps := fusingSplineSteps(p1, m1, p2, m2, fusingSplineChordErrorMm)
 		for k := 0; k < steps; k++ {
 			t := float64(k) / float64(steps)
-			t2 := t * t
-			t3 := t2 * t
-			h00 := 2*t3 - 3*t2 + 1
-			h10 := t3 - 2*t2 + t
-			h01 := -2*t3 + 3*t2
-			h11 := t3 - t2
-			out = append(out, fusingSplineFloatPoint{
-				x: h00*p1.x + h10*m0.x + h01*p2.x + h11*m1.x,
-				y: h00*p1.y + h10*m0.y + h01*p2.y + h11*m1.y,
-			})
+			out = append(out, fusingSplineHermitePoint(p1, m1, p2, m2, t))
 		}
 	}
 	return out, nil
