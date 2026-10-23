@@ -2,6 +2,8 @@ package entity
 
 import (
 	"database/sql"
+	"fmt"
+	"math"
 	"strconv"
 	"testing"
 
@@ -145,6 +147,21 @@ func splineTestPiece(points ...TechCardPieceFusingSplinePoint) *TechCardPiece {
 	}
 }
 
+func splineTestFloatPoints(spline *TechCardPieceFusingSpline) []fusingSplineFloatPoint {
+	points := make([]fusingSplineFloatPoint, len(spline.Points))
+	for i, point := range spline.Points {
+		points[i] = fusingSplineFloatPoint{x: point.X.InexactFloat64(), y: point.Y.InexactFloat64()}
+	}
+	return points
+}
+
+func splineTestPointNear(t *testing.T, label string, got, want fusingSplineFloatPoint, tolerance float64) {
+	t.Helper()
+	if math.Abs(got.x-want.x) > tolerance || math.Abs(got.y-want.y) > tolerance {
+		t.Errorf("%s = (%.17g, %.17g), want (%.17g, %.17g)", label, got.x, got.y, want.x, want.y)
+	}
+}
+
 func TestValidatePieceFusingSplineGeometry(t *testing.T) {
 	valid := splineTestPiece(
 		splineTestPoint("0", "0", true), splineTestPoint("20", "0", true),
@@ -166,30 +183,112 @@ func TestValidatePieceFusingSplineGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("flatten rounded spline: %v", err)
 	}
-	points := []fusingSplineFloatPoint{{0, 0}, {20, 0}, {20, 10}, {0, 10}}
-	tangents := []fusingSplineFloatPoint{{10, -5}, {10, 5}, {-10, 5}, {-10, -5}}
-	for i, want := range []int{4, 4, 4, 4} {
-		got := fusingSplineSteps(points[i], tangents[i], points[(i+1)%4], tangents[(i+1)%4], fusingSplineChordErrorMm)
+	points := splineTestFloatPoints(curved.FusingZone.Spline)
+	wantSteps := []int{5, 3, 5, 3}
+	offset := 0
+	for i, want := range wantSteps {
+		m1, m2, zeroLength := fusingSplineCentripetalTangents(points, curved.FusingZone.Spline.Points, i)
+		if zeroLength {
+			t.Fatalf("segment %d unexpectedly has zero length", i)
+		}
+		got := fusingSplineSteps(points[i], m1, points[(i+1)%len(points)], m2, fusingSplineChordErrorMm)
 		if got != want {
 			t.Errorf("segment %d steps = %d, want TypeScript stepsOf result %d", i, got, want)
 		}
+		if flat[offset] != points[i] {
+			t.Errorf("vertex %d = %+v, want control point %+v", offset, flat[offset], points[i])
+		}
+		offset += want
 	}
-	if got := fusingSplineSteps(points[0], tangents[0], points[1], tangents[1], 0); got != 1 {
+	m1, m2, _ := fusingSplineCentripetalTangents(points, curved.FusingZone.Spline.Points, 0)
+	if got := fusingSplineSteps(points[0], m1, points[1], m2, 0); got != 1 {
 		t.Errorf("non-finite step calculation = %d, want TypeScript fallback 1", got)
 	}
 	if len(flat) != 16 {
 		t.Fatalf("flattened vertex count = %d, want TypeScript flattenSpline result 16", len(flat))
 	}
-	for i, want := range []fusingSplineFloatPoint{{0, 0}, {20, 0}, {20, 10}, {0, 10}} {
-		if got := flat[i*4]; got != want {
-			t.Errorf("vertex %d = %+v, want control point %+v", i*4, got, want)
-		}
-	}
-	if got, want := flat[1], (fusingSplineFloatPoint{x: 4.0625, y: -0.9375}); got != want {
-		t.Errorf("first t=1/4 vertex = %+v, want TypeScript result %+v", got, want)
+	if got, want := flat[1], (fusingSplineFloatPoint{x: 2.8752900397563432, y: -1.3254833995939042}); got != want {
+		t.Errorf("first t=1/5 vertex = %+v, want TypeScript result %+v", got, want)
 	}
 	if flat[len(flat)-1] == flat[0] {
 		t.Fatal("flattened spline duplicated its closing point")
+	}
+}
+
+func TestFlattenPieceFusingSplineCentripetalGolden(t *testing.T) {
+	spline := splineTestPiece(
+		splineTestPoint("0", "0", false), splineTestPoint("100", "0", false),
+		splineTestPoint("101", "1", false), splineTestPoint("101", "100", false),
+	).FusingZone.Spline
+	points := splineTestFloatPoints(spline)
+	wantSteps := []int{12, 2, 12, 14}
+	offset := 0
+	for i, want := range wantSteps {
+		m1, m2, zeroLength := fusingSplineCentripetalTangents(points, spline.Points, i)
+		if zeroLength {
+			t.Fatalf("segment %d unexpectedly has zero length", i)
+		}
+		got := fusingSplineSteps(points[i], m1, points[(i+1)%len(points)], m2, fusingSplineChordErrorMm)
+		if got != want {
+			t.Errorf("segment %d steps = %d, want %d", i, got, want)
+		}
+		offset += want
+	}
+	flat, err := flattenPieceFusingSpline(spline)
+	if err != nil {
+		t.Fatalf("flatten golden spline: %v", err)
+	}
+	if len(flat) != offset || len(flat) != 40 {
+		t.Fatalf("flattened vertex count = %d, want %d", len(flat), offset)
+	}
+	offset = 0
+	for i, steps := range wantSteps {
+		if flat[offset] != points[i] {
+			t.Errorf("segment %d starts at %+v, want %+v", i, flat[offset], points[i])
+		}
+		offset += steps
+	}
+
+	m1, m2, _ := fusingSplineCentripetalTangents(points, spline.Points, 1)
+	half := fusingSplineHermitePoint(points[1], m1, points[2], m2, 0.5)
+	wantHalf := fusingSplineFloatPoint{x: 100.65804836398324, y: 0.34215574839178853}
+	splineTestPointNear(t, "segment 1 H(0.5)", half, wantHalf, 1e-12)
+	wantSegment := []fusingSplineFloatPoint{
+		{x: 100, y: 0},
+		{x: 100.65804836398324, y: 0.34215574839178853},
+	}
+	segment := flat[wantSteps[0] : wantSteps[0]+wantSteps[1]]
+	for i, want := range wantSegment {
+		splineTestPointNear(t, fmt.Sprintf("segment 1 vertex %d", i), segment[i], want, 1e-12)
+	}
+}
+
+func TestFlattenPieceFusingSplineCornerMidpointRectangle(t *testing.T) {
+	spline := splineTestPiece(
+		splineTestPoint("0", "0", true), splineTestPoint("10", "0", false),
+		splineTestPoint("20", "0", true), splineTestPoint("20", "5", false),
+		splineTestPoint("20", "10", true), splineTestPoint("10", "10", false),
+		splineTestPoint("0", "10", true), splineTestPoint("0", "5", false),
+	).FusingZone.Spline
+	flat, err := flattenPieceFusingSpline(spline)
+	if err != nil {
+		t.Fatalf("flatten corner-midpoint rectangle: %v", err)
+	}
+	const boundaryTolerance = 1e-12
+	for i, point := range flat {
+		onBoundary := math.Abs(point.x) <= boundaryTolerance || math.Abs(point.x-20) <= boundaryTolerance ||
+			math.Abs(point.y) <= boundaryTolerance || math.Abs(point.y-10) <= boundaryTolerance
+		if !onBoundary {
+			t.Errorf("vertex %d = (%.17g, %.17g), not on rectangle boundary", i, point.x, point.y)
+		}
+	}
+	area2 := 0.0
+	for i, point := range flat {
+		next := flat[(i+1)%len(flat)]
+		area2 += point.x*next.y - next.x*point.y
+	}
+	if area := math.Abs(area2) / 2; math.Abs(area-200) > 1e-9 {
+		t.Errorf("corner-midpoint rectangle area = %.17g, want 200", area)
 	}
 }
 
