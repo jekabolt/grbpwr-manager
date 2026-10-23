@@ -98,7 +98,7 @@ const (
 
 // The vocabularies of the request (the client's own words) and of the answer's warnings.
 var (
-	skeletonAICloths     = map[string]bool{"": true, "main": true, "lining": true, "pocketing": true, "interfacing": true, "insulation": true, "contrast": true, "mesh": true, "other": true}
+	skeletonAICloths     = map[string]bool{"": true, "main": true, "lining": true, "pocketing": true, "interfacing": true, "insulation": true, "contrast": true, "binding": true, "mesh": true, "other": true}
 	skeletonAIHands      = map[string]bool{"": true, "L": true, "R": true}
 	skeletonAISeamKinds  = map[string]bool{"edge": true, "partial": true, "composite": true, "surface": true, "closure": true}
 	skeletonAIOperations = map[string]bool{"MACHINE": true, "PRESS": true, "PRESS_OPEN": true, "FUSING": true, "HANDWORK": true}
@@ -631,7 +631,7 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 		case in.pieceByKey[key] != nil:
 			return bad("%s: key %q is listed twice", field, key)
 		case !skeletonAICloths[p.GetCloth()]:
-			return bad("%s: cloth %q is not one of main lining pocketing interfacing insulation contrast mesh other", field, designPartsTrim(p.GetCloth(), 16))
+			return bad("%s: cloth %q is not one of main lining pocketing interfacing insulation contrast binding mesh other", field, designPartsTrim(p.GetCloth(), 16))
 		case !skeletonAIHands[p.GetHand()]:
 			return bad("%s: hand must be L, R or empty", field)
 		case p.GetCount() < 0 || p.GetCount() > skeletonAIMaxCount:

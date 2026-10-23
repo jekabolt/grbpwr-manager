@@ -130,6 +130,7 @@ func TestCountsTowardStyleComposition(t *testing.T) {
 	counts := []TechCardBomPurpose{
 		BomPurposeMain,
 		BomPurposeContrast,
+		BomPurposeBinding,
 		BomPurposeMesh,
 		BomPurposeOther, // role lives in a free-text note — undecidable, so it keeps contributing
 		"",              // NULL column: "не разобрано", the state most lines on file are in today

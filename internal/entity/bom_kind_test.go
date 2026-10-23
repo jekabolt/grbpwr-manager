@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -58,17 +59,17 @@ func TestBomKindAnySectionIsNotAValueOnEitherAxis(t *testing.T) {
 	require.False(t, ok, "an unknown kind must report itself as unknown, not fall back to a section")
 }
 
-// purpose and kind classify DISJOINT halves of the BOM and must never be conflated, but they share
-// one spelling by design: `other`, the escape hatch of both, so an operator learns the pattern once.
-// Nothing else may overlap — a value in both vocabularies would be a coin flip in any code that
-// resolved a bare string against "the classification", which is how the two axes would start to
-// merge back together.
-func TestBomKindAndPurposeVocabulariesOnlyShareOther(t *testing.T) {
-	shared := make([]string, 0, 1)
+// purpose and kind classify DISJOINT halves of the BOM and must never be conflated, but two tokens
+// intentionally name the same physical idea on opposite halves: `other` is the escape hatch of
+// both, while `binding` is either a roll-goods PURPOSE (bias binding cut by length) or a discrete
+// trim KIND. No other spelling may overlap.
+func TestBomKindAndPurposeVocabulariesOnlyShareIntentionalTokens(t *testing.T) {
+	shared := make([]string, 0, 2)
 	for k := range ValidTechCardBomKinds {
 		if ValidTechCardBomPurposes[TechCardBomPurpose(k)] {
 			shared = append(shared, string(k))
 		}
 	}
-	require.Equal(t, []string{string(BomKindOther)}, shared)
+	sort.Strings(shared)
+	require.Equal(t, []string{string(BomKindBinding), string(BomKindOther)}, shared)
 }

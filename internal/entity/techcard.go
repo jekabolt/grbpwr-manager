@@ -971,6 +971,7 @@ const (
 	BomPurposeInterfacing TechCardBomPurpose = "interfacing" // бортовка / прокладка
 	BomPurposeInsulation  TechCardBomPurpose = "insulation"  // утеплитель
 	BomPurposeContrast    TechCardBomPurpose = "contrast"    // контраст / отделочная
+	BomPurposeBinding     TechCardBomPurpose = "binding"     // бейка / окантовка
 	BomPurposeMesh        TechCardBomPurpose = "mesh"        // сетка / второй слой
 	BomPurposeOther       TechCardBomPurpose = "other"       // другое — meaning lives in PurposeNote
 )
@@ -987,6 +988,7 @@ var BomPurposeOrder = []TechCardBomPurpose{
 	BomPurposeInterfacing,
 	BomPurposeInsulation,
 	BomPurposeContrast,
+	BomPurposeBinding,
 	BomPurposeMesh,
 	BomPurposeOther,
 }
@@ -1000,6 +1002,7 @@ var ValidTechCardBomPurposes = map[TechCardBomPurpose]bool{
 	BomPurposeInterfacing: true,
 	BomPurposeInsulation:  true,
 	BomPurposeContrast:    true,
+	BomPurposeBinding:     true,
 	BomPurposeMesh:        true,
 	BomPurposeOther:       true,
 }
@@ -1852,7 +1855,7 @@ type TechCardBomItem struct {
 	// Позитивный «Set» с дефолтом false молча превратил бы их всех в ничего-не-пишущих.
 	PurposeOmitted bool `db:"-"`
 	// PurposeNote explains a BomPurposeOther line. Legal only alongside that purpose — the DB CHECK
-	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a ninth purpose.
+	// chk_bom_item_purpose_note enforces it — so the note can never quietly become a tenth purpose.
 	PurposeNote sql.NullString `db:"purpose_note"`
 	// Kind (0278) is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror of Purpose on the other half of the BOM, see
 	// TechCardBomKind. Accepted only on a line that is NEITHER roll goods NOR a label, and only in

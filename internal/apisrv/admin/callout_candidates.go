@@ -427,7 +427,7 @@ func (b *calloutBuilder) bomLines() {
 			}
 		case entity.BomSectionFabric:
 			p := entity.TechCardBomPurpose(line.Purpose.String)
-			if !line.Purpose.Valid || p == entity.BomPurposeMain || p == entity.BomPurposeContrast {
+			if !line.Purpose.Valid || p == entity.BomPurposeMain || p == entity.BomPurposeContrast || p == entity.BomPurposeBinding {
 				rank = calloutRankFabric
 			}
 		}

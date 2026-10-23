@@ -86,6 +86,7 @@ var pieceLayerRoleLabels = map[TechCardBomPurpose]string{
 	BomPurposeInterfacing: "interfacing",
 	BomPurposeInsulation:  "insulation",
 	BomPurposeContrast:    "contrast",
+	BomPurposeBinding:     "binding",
 	BomPurposeMesh:        "mesh",
 	BomPurposeOther:       "other",
 }

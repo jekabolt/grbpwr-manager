@@ -323,7 +323,7 @@ func TestEnumDriftExtractorsDetectTamperedInput(t *testing.T) {
 // way round) a line lands in a bucket no screen renders, and the grouping stops being trustworthy
 // without failing anywhere visible.
 func TestBomPurposeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0265_bom_item_purpose.sql")
+	content := readMigrationFile(t, "0430_bom_purpose_binding.sql")
 	dbValues := extractDBEnumValues(t, content, "purpose REGEXP", 120)
 	assertSameSet(t, "TechCardBomPurpose", dbValues, mapKeysAsStrings(entity.ValidTechCardBomPurposes))
 }
@@ -355,7 +355,7 @@ func TestBomPurposeOrderCoversVocabulary(t *testing.T) {
 // «not bound» while the row insists it is. Both CHECKs are asserted, and asserted to be IDENTICAL —
 // a drift between the pattern's list and the alias's would split one vocabulary in two.
 func TestFabricPurposeDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0267_pattern_purpose_binding.sql")
+	content := readMigrationFile(t, "0430_bom_purpose_binding.sql")
 	const anchor = "fabric_purpose REGEXP"
 	if n := strings.Count(content, anchor); n != 2 {
 		t.Fatalf("expected exactly 2 fabric_purpose CHECKs (pattern + alias), found %d", n)
