@@ -418,7 +418,7 @@ func TestUniqueSamePieceEditKeepsAutoIdentity(t *testing.T) {
 	}
 }
 
-func TestAmbiguousSamePieceEditsKeepStoreFallbackEnabled(t *testing.T) {
+func TestAmbiguousSamePieceManualEditsAreOverriddenWithoutGuessingIdentity(t *testing.T) {
 	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
 	edited.Draft = false
 	stored := fusedCard([]entity.TechCardOperation{edited, machineOp(20, "join")})
@@ -429,20 +429,19 @@ func TestAmbiguousSamePieceEditsKeepStoreFallbackEnabled(t *testing.T) {
 	incoming := staleCopy(stored, []entity.TechCardOperation{first, second, machineOp(30, "join")})
 
 	outcome, err := ReconcileTechCardUpdate(stored, incoming)
-	if err != nil || outcome.Carried || outcome.Reconcile {
-		t.Fatalf("outcome = %+v err = %v, want no ambiguous content match", outcome, err)
+	if err != nil || outcome.Carried || !outcome.Reconcile {
+		t.Fatalf("outcome = %+v err = %v, want override reconciliation", outcome, err)
 	}
 	if incoming.AutoFusingKeysResolved {
 		t.Fatal("ambiguous same-piece candidates disabled the store fallback")
 	}
-	for i := 0; i < 2; i++ {
-		if incoming.Operations[i].AutoFusingPieceKey.Valid || incoming.Operations[i].AutoFusingLineKey.Valid {
-			t.Fatalf("candidate %d inherited an ambiguous identity: %#v", i, incoming.Operations[i])
-		}
+	if len(incoming.Operations) != 2 || incoming.Operations[0].AutoFusingPieceKey != autoKey("FRONT") ||
+		!incoming.Operations[0].Draft || incoming.Operations[1].OperationType != entity.OpTypeMachine {
+		t.Fatalf("operations = %#v, want a fresh automatic FRONT step and the machine step", incoming.Operations)
 	}
 }
 
-func TestReorderedEditedAutoAndSameShapeManualKeepTheirIdentities(t *testing.T) {
+func TestReorderedEditedAutoOverridesSamePieceManual(t *testing.T) {
 	edited := storedAutoFusing(10, "INTERLINING-A", "FRONT")
 	edited.Draft = false
 	edited.Note = sql.NullString{String: "automatic settings", Valid: true}
@@ -453,17 +452,16 @@ func TestReorderedEditedAutoAndSameShapeManualKeepTheirIdentities(t *testing.T) 
 	})
 
 	outcome, err := ReconcileTechCardUpdate(stored, incoming)
-	if err != nil || outcome.Carried || outcome.Reconcile {
-		t.Fatalf("outcome = %+v err = %v, want a content-matched reorder", outcome, err)
+	if err != nil || outcome.Carried || !outcome.Reconcile {
+		t.Fatalf("outcome = %+v err = %v, want override reconciliation", outcome, err)
 	}
 	if !incoming.AutoFusingKeysResolved {
 		t.Fatal("unambiguous full-content echoes left the store fallback enabled")
 	}
-	if got := incoming.Operations[0]; got.AutoFusingPieceKey.Valid || got.AutoFusingLineKey.Valid ||
-		got.Note.String != "by hand" {
-		t.Fatalf("manual step inherited automatic identity: %#v", got)
+	if len(incoming.Operations) != 2 {
+		t.Fatalf("operations = %#v, want automatic step and machine only", incoming.Operations)
 	}
-	if got := incoming.Operations[1]; got.AutoFusingPieceKey != autoKey("FRONT") ||
+	if got := incoming.Operations[0]; got.AutoFusingPieceKey != autoKey("FRONT") ||
 		got.AutoFusingLineKey.Valid || got.Note.String != "automatic settings" {
 		t.Fatalf("edited automatic step lost its identity: %#v", got)
 	}

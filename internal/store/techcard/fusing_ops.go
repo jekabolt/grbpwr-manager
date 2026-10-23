@@ -321,9 +321,11 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	plan := fusingops.ReconcileFusingOps(pieces, operations)
 	for _, operationID := range plan.DeletedIDs {
 		if err := storeutil.ExecNamed(ctx, db,
-			`DELETE FROM tech_card_operation WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing' AND draft = 1`,
+			`DELETE FROM tech_card_operation
+			 WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing'
+			   AND (draft = 1 OR (auto_fusing_line_key IS NULL AND auto_fusing_piece_key IS NULL))`,
 			map[string]any{"tech_card_id": techCardID, "id": operationID}); err != nil {
-			return fmt.Errorf("delete draft fusing operation %d: %w", operationID, err)
+			return fmt.Errorf("delete reconciled fusing operation %d: %w", operationID, err)
 		}
 	}
 
@@ -361,12 +363,16 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	}
 
 	for _, op := range plan.Operations {
-		if op.Kind != fusingops.KindAuto {
-			continue
-		}
-		if err := applyAutoFusingOp(ctx, db, techCardID, op, rowByID[op.ID], piecesOf[op.ID], linksOf[op.ID],
-			pieceKeyByID, lineIDOf); err != nil {
-			return err
+		switch op.Kind {
+		case fusingops.KindAuto:
+			if err := applyAutoFusingOp(ctx, db, techCardID, op, rowByID[op.ID], piecesOf[op.ID], linksOf[op.ID],
+				pieceKeyByID, lineIDOf); err != nil {
+				return err
+			}
+		case fusingops.KindManual, fusingops.KindAdoptable:
+			if err := applyManualFusingInputs(ctx, db, op, piecesOf[op.ID]); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -386,6 +392,32 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 			"tech_card_id": techCardID, "id": op.ID,
 		}); err != nil {
 			return fmt.Errorf("order reconciled operation %d: %w", op.ID, err)
+		}
+	}
+	return nil
+}
+
+// applyManualFusingInputs removes only piece links covered by automatic FUSING steps. Unit inputs
+// stay in place, as do the display_order values of every retained input.
+func applyManualFusingInputs(ctx context.Context, db dependency.DB, op fusingops.Operation, currentPieces []int) error {
+	wanted := make(map[int]bool, len(op.PieceIDs))
+	for _, pieceID := range op.PieceIDs {
+		wanted[pieceID] = true
+	}
+	for _, pieceID := range currentPieces {
+		if wanted[pieceID] {
+			continue
+		}
+		params := map[string]any{"operation_id": op.ID, "piece_id": pieceID}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_operation_piece WHERE operation_id = :operation_id AND piece_id = :piece_id`,
+			params); err != nil {
+			return fmt.Errorf("unlink overridden piece %d from legacy fusing operation %d: %w", pieceID, op.ID, err)
+		}
+		if err := storeutil.ExecNamed(ctx, db,
+			`DELETE FROM tech_card_operation_input WHERE operation_id = :operation_id AND piece_id = :piece_id`,
+			params); err != nil {
+			return fmt.Errorf("unlink overridden piece %d from fusing operation %d: %w", pieceID, op.ID, err)
 		}
 	}
 	return nil

@@ -97,7 +97,7 @@ func TestReconcileFusingOps(t *testing.T) {
 			},
 		},
 		{
-			name:   "skeleton step is adopted in place, its duplicate draft deleted, an edited duplicate kept",
+			name:   "skeleton step is adopted in place and both duplicate manual steps are deleted",
 			pieces: []Piece{{ID: 11, Fused: true}, {ID: 12, Fused: true}},
 			operations: []Operation{
 				{ID: 1, Kind: KindOther},
@@ -110,11 +110,10 @@ func TestReconcileFusingOps(t *testing.T) {
 				Operations: []Operation{
 					{ID: 1, Kind: KindOther},
 					{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
-					{ID: 4, Kind: KindAdoptable, PieceIDs: []int{11}},
 					{Kind: KindAuto, Owner: 12, Draft: true, PieceIDs: []int{12}},
 					{ID: 5, Kind: KindOther, PieceIDs: []int{11, 12}},
 				},
-				DeletedIDs: []int{3},
+				DeletedIDs: []int{3, 4},
 			},
 		},
 		{
@@ -157,15 +156,53 @@ func TestReconcileFusingOps(t *testing.T) {
 			want:       Plan{Operations: []Operation{{ID: 2, Kind: KindAuto, Owner: 11, PieceIDs: []int{11}}}},
 		},
 		{
-			name:   "manual steps are never touched",
+			name:   "automatic input is removed from a manual step while its unit input keeps it alive",
 			pieces: []Piece{{ID: 11, Fused: true}},
 			operations: []Operation{
 				{ID: 1, Kind: KindManual, PieceIDs: []int{11}, UnitInputs: true},
 				{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
 			},
 			want: Plan{Operations: []Operation{
-				{ID: 1, Kind: KindManual, PieceIDs: []int{11}, UnitInputs: true},
+				{ID: 1, Kind: KindManual, UnitInputs: true},
 				{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
+			}},
+		},
+		{
+			name:   "manual step keeps uncovered pieces",
+			pieces: []Piece{{ID: 11, Fused: true}, {ID: 12}},
+			operations: []Operation{
+				{ID: 1, Kind: KindManual, PieceIDs: []int{11, 12}},
+				{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
+			},
+			want: Plan{Operations: []Operation{
+				{ID: 1, Kind: KindManual, PieceIDs: []int{12}},
+				{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
+			}},
+		},
+		{
+			name:   "manual step emptied by automatic override is deleted even when edited",
+			pieces: []Piece{{ID: 11, Fused: true}},
+			operations: []Operation{
+				{ID: 1, Kind: KindManual, PieceIDs: []int{11}},
+				{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
+			},
+			want: Plan{
+				Operations: []Operation{{ID: 2, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}}},
+				DeletedIDs: []int{1},
+			},
+		},
+		{
+			name:   "already empty manual step and non-fusing inputs are untouched",
+			pieces: []Piece{{ID: 11, Fused: true}},
+			operations: []Operation{
+				{ID: 1, Kind: KindManual},
+				{ID: 2, Kind: KindOther, PieceIDs: []int{11}},
+				{ID: 3, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
+			},
+			want: Plan{Operations: []Operation{
+				{ID: 1, Kind: KindManual},
+				{ID: 2, Kind: KindOther, PieceIDs: []int{11}},
+				{ID: 3, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
 			}},
 		},
 	}
@@ -300,7 +337,7 @@ func TestPerPieceIdentityDropsLegacyLineKeyForRollbackSafety(t *testing.T) {
 	assertPerPieceStep(t, card.Operations[0], "FRONT", "INTERLINING-A", "INTERLINING-A")
 }
 
-func TestMultiPieceManualFusingIsNeverAdoptedOrSplit(t *testing.T) {
+func TestMultiPieceManualFusingCoveredOnlyByAutoStepsIsRemoved(t *testing.T) {
 	manual := manualFusing(10, []string{"INTERLINING-A"}, "FRONT", "BACK")
 	card := fusedCard([]entity.TechCardOperation{manual})
 	card.Pieces[1].Fused = true
@@ -309,16 +346,42 @@ func TestMultiPieceManualFusingIsNeverAdoptedOrSplit(t *testing.T) {
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("ReconcileTechCard() error = %v", err)
 	}
-	if len(card.Operations) != 3 {
-		t.Fatalf("operations = %#v, want two automatic steps plus the untouched manual step", card.Operations)
+	if len(card.Operations) != 2 {
+		t.Fatalf("operations = %#v, want only the two automatic steps", card.Operations)
 	}
 	assertPerPieceStep(t, card.Operations[0], "FRONT", "INTERLINING-A", "INTERLINING-A")
 	assertPerPieceStep(t, card.Operations[1], "BACK", "INTERLINING-A", "INTERLINING-A")
-	got := card.Operations[2]
-	if got.AutoFusingPieceKey.Valid || got.AutoFusingLineKey.Valid || got.Draft ||
-		!reflect.DeepEqual(got.PieceLineKeys, []string{"FRONT", "BACK"}) {
-		t.Fatalf("multi-piece manual step was adopted or split: %#v", got)
+	assertConverged(t, card)
+}
+
+func TestWriteModelOverrideKeepsManualUnitAndUncoveredPieceInputs(t *testing.T) {
+	manual := manualFusing(30, []string{"INTERLINING-A"}, "FRONT", "BACK")
+	manual.InputKeys = []string{"SHELL", "FRONT", "BACK"}
+	manual.AssemblyInputs = []entity.OperationInput{
+		{Kind: entity.AssemblyInputUnit, Key: "SHELL"},
+		{Kind: entity.AssemblyInputPiece, Key: "FRONT"},
+		{Kind: entity.AssemblyInputPiece, Key: "BACK"},
 	}
+	card := fusedCard([]entity.TechCardOperation{
+		joinOp(10, "SHELL", nil, "FRONT", "BACK"),
+		storedAutoFusing(20, "INTERLINING-A", "FRONT"),
+		manual,
+	})
+
+	if err := ReconcileTechCard(card); err != nil {
+		t.Fatalf("ReconcileTechCard() error = %v", err)
+	}
+	if len(card.Operations) != 3 {
+		t.Fatalf("operations = %#v, want join, auto, and retained manual step", card.Operations)
+	}
+	got := card.Operations[2]
+	if got.AutoFusingPieceKey.Valid || got.AutoFusingLineKey.Valid ||
+		!reflect.DeepEqual(got.InputKeys, []string{"SHELL", "BACK"}) ||
+		!reflect.DeepEqual(got.PieceLineKeys, []string{"BACK"}) || len(got.AssemblyInputs) != 2 ||
+		got.AssemblyInputs[0].Kind != entity.AssemblyInputUnit || got.AssemblyInputs[1].Key != "BACK" {
+		t.Fatalf("manual step after override = %#v, want SHELL + BACK only", got)
+	}
+	assertConverged(t, card)
 }
 
 func TestPostReconcileStepPrecedesTheStepConsumingAProducedUnit(t *testing.T) {

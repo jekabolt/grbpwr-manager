@@ -19,7 +19,8 @@ const (
 	// KindOther is not a FUSING step. Never changed; its piece inputs place new FUSING steps.
 	KindOther Kind = iota
 	// KindManual is a FUSING step without automatic identity that is not shaped like a pre-fuse
-	// step (output unit, unit inputs, or non-interlining links). Never changed.
+	// step (output unit, unit inputs, or non-interlining links). Automatic steps override its
+	// duplicate piece inputs; its other inputs and content stay untouched.
 	KindManual
 	// KindAdoptable is a FUSING step without automatic identity shaped like a pre-fuse step: pieces
 	// only, no output, no BOM link or one INTERLINING link (the assembly skeleton's steps). It is
@@ -46,9 +47,10 @@ type Operation struct {
 	CopyOf     int
 }
 
-// Plan is the reconciled operation list in assembly order plus the ids of draft steps to delete.
+// Plan is the reconciled operation list in assembly order plus the ids of steps to delete.
 // Every operation of KindAuto in it is server-owned: an orphan (Review == ReviewOrphan) has no piece
-// inputs, any other one has exactly [Owner]. Operations of any other kind are returned untouched.
+// inputs, any other one has exactly [Owner]. Manual FUSING steps lose inputs already owned by an
+// automatic step and are deleted when that override leaves them with no inputs.
 type Plan struct {
 	Operations []Operation
 	DeletedIDs []int
@@ -67,6 +69,9 @@ func (o Operation) IsOrphan() bool { return o.Kind == KindAuto && o.Review == Re
 //     deleted when draft and kept as an orphan when edited. An adoptable draft whose pieces are all
 //     fused (and so all claimed) is a duplicate and is deleted; any other adoptable step is kept.
 //  3. Every fused piece still unclaimed gets a new draft step.
+//  4. Automatic ownership wins over manual FUSING: covered piece inputs are removed from every
+//     remaining manual step. A step made empty by those removals is deleted; a step that was already
+//     empty is not. Non-FUSING operations are never changed.
 //
 // Retained steps keep their order. New steps, and grouped legacy rows the old model had forced to the
 // front (unless they have unit inputs), go immediately before the first retained step whose inputs
@@ -90,6 +95,7 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 	}
 
 	out := make([]Operation, len(operations))
+	originalPieces := make(map[int][]int, len(operations))
 	keep := make([]bool, len(operations))
 	move := make([]bool, len(operations))
 	claimed := make(map[int]bool, len(fusedOrder))
@@ -118,6 +124,9 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 
 	for i, operation := range operations {
 		operation.PieceIDs = append([]int(nil), operation.PieceIDs...)
+		if operation.ID > 0 {
+			originalPieces[operation.ID] = operation.PieceIDs
+		}
 		operation.CopyOf = 0
 		out[i], keep[i] = operation, true
 		if operation.Kind != KindAuto {
@@ -176,6 +185,35 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 		fresh = append(fresh, Operation{Kind: KindAuto, Owner: pieceID, Draft: true, PieceIDs: []int{pieceID}})
 	}
 
+	// All fused pieces now have an automatic owner (pre-existing, adopted, or fresh). Strip those
+	// pieces from manual FUSING steps so the same cut piece can never be fused twice. Do this only
+	// after adoption: a compatible single-piece skeleton/manual step may itself become the automatic
+	// owner under the established adoption rule.
+	for i, operation := range out {
+		if !keep[i] || (operation.Kind != KindManual && operation.Kind != KindAdoptable) {
+			continue
+		}
+		var remaining []int
+		removed := false
+		for _, pieceID := range operation.PieceIDs {
+			if claimed[pieceID] {
+				removed = true
+				continue
+			}
+			remaining = append(remaining, pieceID)
+		}
+		if !removed {
+			continue // in particular, an already-empty manual step stays untouched
+		}
+		out[i].PieceIDs = remaining
+		if len(remaining) == 0 && !operation.UnitInputs {
+			keep[i] = false
+			if operation.ID > 0 {
+				deleted = append(deleted, operation.ID)
+			}
+		}
+	}
+
 	retained := make([]Operation, 0, len(out)+len(fresh))
 	placed := make([]Operation, 0, len(fresh))
 	for i := range out {
@@ -196,7 +234,12 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 	for p := range placed {
 		owner := placed[p].Owner
 		for j := range retained {
-			if containsInt(retained[j].PieceIDs, owner) {
+			inputs := retained[j].PieceIDs
+			if original, ok := originalPieces[retained[j].ID]; ok &&
+				(retained[j].Kind == KindManual || retained[j].Kind == KindAdoptable) {
+				inputs = original
+			}
+			if containsInt(inputs, owner) {
 				anchor[p] = j
 				break
 			}
