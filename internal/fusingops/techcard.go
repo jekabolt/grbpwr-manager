@@ -606,10 +606,25 @@ func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched 
 	if stored == nil || incoming == nil {
 		return false
 	}
+	livePieces := make(map[string]bool, len(incoming.Pieces))
+	for i := range incoming.Pieces {
+		livePieces[strings.TrimSpace(incoming.Pieces[i].LineKey)] = incoming.Pieces[i].Fused
+	}
+	liveSections, _ := bomSections(incoming)
+	stillOwned := func(op *entity.TechCardOperation) bool {
+		if op.AutoFusingPieceKey.Valid {
+			return livePieces[strings.TrimSpace(op.AutoFusingPieceKey.String)]
+		}
+		if op.AutoFusingLineKey.Valid {
+			return liveSections[strings.TrimSpace(op.AutoFusingLineKey.String)] == entity.BomSectionInterlining
+		}
+		return false
+	}
 	missing := make([]int, 0)
 	for i := range stored.Operations {
 		op := &stored.Operations[i]
-		if _, auto := autoIdentity(op); op.OperationType == entity.OpTypeFusing && op.Draft && auto && !matched[i] {
+		if _, auto := autoIdentity(op); op.OperationType == entity.OpTypeFusing && op.Draft && auto &&
+			!matched[i] && stillOwned(op) {
 			missing = append(missing, i)
 		}
 	}

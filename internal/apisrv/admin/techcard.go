@@ -334,6 +334,11 @@ func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountry
 		)
 		return nil, status.Errorf(codes.Internal, "can't get tech card")
 	}
+	// Old cards may already contain a half-deleted fusing slot. Repair the response so it loads; a
+	// subsequent full-document save persists the same clean model.
+	if tc != nil {
+		fusingops.DropDanglingFusingRefs(&tc.TechCardInsert)
+	}
 	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, vatCountryCode))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
@@ -445,6 +450,8 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		// Private keys are absent from protobuf. Restore them before the converter's first assembly
 		// pass so a keyed FUSING echo cannot make deletion of its piece fail on a stale input.
 		fusingops.PrepareTechCardUpdateAssembly(&stored.TechCardInsert, tc)
+		// INTERLINING deletion is one command, not a graph state validation may observe halfway.
+		fusingops.CascadeRemovedInterlining(&stored.TechCardInsert, tc)
 	})
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -580,6 +587,8 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// optional for the same stale-tab reason. Carry each omitted value before restamping the
 	// CONSTRUCTION digest so the signature describes what the store's guarded UPDATE will retain.
 	carryOmittedPieceFusingDetailsFrom(stored, tc)
+	// A stale client must not carry an omitted fusing field back from the line this save removes.
+	fusingops.CascadeRemovedInterlining(&stored.TechCardInsert, tc)
 	// Reconcile after every presence carry, but only if a fusing field or INTERLINING membership
 	// actually changed. This protects historical FUSING steps from unrelated full-document saves.
 	// The store receives the same verdict and skips its SQL pass on the same no-op path. An
