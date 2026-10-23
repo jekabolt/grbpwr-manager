@@ -35,7 +35,11 @@ func addSnapshotHistoryCard(t *testing.T, ctx context.Context, s *MYSQLStore, na
 		ApprovalState:   entity.TechCardApprovalDraft,
 		MeasurementUnit: entity.TechCardUnitMm,
 		Purpose:         entity.TechCardPurposeSellable,
-		CreatedBy:       "snapshot.fixture@example.com", UpdatedBy: "snapshot.fixture@example.com",
+		Pieces: []entity.TechCardPiece{
+			{LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ0", Name: "front", PiecesPerGarment: 1, Grainline: "lengthwise"},
+			{LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", Name: "back", PiecesPerGarment: 1, Grainline: "lengthwise"},
+		},
+		CreatedBy: "snapshot.fixture@example.com", UpdatedBy: "snapshot.fixture@example.com",
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -78,16 +82,85 @@ func saveSnapshotHistoryCard(
 	write.Name = name
 	write.UpdatedBy = author
 	write.SnapshotReason = ""
-	write.SnapshotJSON = preimage
 	write.SnapshotSaveSessionId = sessionID
 	write.SnapshotChangedPaths = append([]string(nil), changedPaths...)
 	write.SnapshotPinned = false
-	write.SnapshotLockVersion = before.LockVersion
+	write.BuildSnapshotFromLockedCard = func(locked *entity.TechCard) (string, error) {
+		return snapshotHistoryJSON(t, locked), nil
+	}
 	require.NoError(t, s.TechCards().UpdateTechCard(ctx, id, &write, before.LockVersion))
 
 	after, err := s.TechCards().GetTechCardById(ctx, id)
 	require.NoError(t, err)
 	return after, preimage
+}
+
+// A seam write deliberately leaves lock_version unchanged. This widens the production race into a
+// deterministic sequence: the card payload is built, a seam commits, then the card save starts with
+// the still-valid expected version. The autosave must freeze the seam from the locked transactional
+// reload, not the seam-less handler read; otherwise restoring the row would erase that newer review.
+func TestTechCardSnapshotPreimageReloadsVersionlessSeams(t *testing.T) {
+	requireSnapshotHistoryIntegrationDB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	rig := newRTRig(t, ctx)
+	T := rig.store.TechCards()
+	id := addSnapshotHistoryCard(t, ctx, rig.store, "Snapshot Seam Initial")
+
+	before, err := T.GetTechCardById(ctx, id)
+	require.NoError(t, err)
+	require.Empty(t, before.Seams)
+	stalePreimage := snapshotHistoryJSON(t, before)
+
+	anchor := func(piece string) entity.TechCardSeamAnchor {
+		return entity.TechCardSeamAnchor{
+			PieceLineKey: piece,
+			Samples: []entity.TechCardSeamSample{
+				{U: 0, V: 0}, {U: 0.25, V: 0.1}, {U: 0.5, V: 0.2}, {U: 0.75, V: 0.3}, {U: 1, V: 0.4},
+			},
+			PerimShare: 0.25, LenMm: 120, Notches: 1, TurnDeg: -2,
+		}
+	}
+	const seamKey = "01JABCDEFGHJKMNPQRSTVWXYZ2"
+	_, written, err := T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+		TechCardId: id,
+		By:         "seam.reviewer@example.com",
+		Seams: []entity.TechCardSeamInput{{
+			SeamKey: seamKey, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
+			Direction: entity.TechCardSeamReversed, Source: entity.TechCardSeamSourceManual,
+			SideA: []entity.TechCardSeamAnchor{anchor("01JABCDEFGHJKMNPQRSTVWXYZ0")},
+			SideB: []entity.TechCardSeamAnchor{anchor("01JABCDEFGHJKMNPQRSTVWXYZ1")},
+		}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+	afterSeam, err := T.GetTechCardById(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, before.LockVersion, afterSeam.LockVersion, "seam writes do not bump the card version")
+
+	write := before.TechCardInsert
+	write.Name = "Snapshot Seam Saved"
+	write.UpdatedBy = "card.editor@example.com"
+	write.SnapshotSaveSessionId = "33333333-3333-4333-8333-333333333333"
+	write.SnapshotChangedPaths = []string{"overview"}
+	write.BuildSnapshotFromLockedCard = func(locked *entity.TechCard) (string, error) {
+		require.Len(t, locked.Seams, 1, "the builder must receive the post-seam state under the card lock")
+		return snapshotHistoryJSON(t, locked), nil
+	}
+	require.NoError(t, T.UpdateTechCard(ctx, id, &write, before.LockVersion))
+
+	rows, err := T.ListTechCardSnapshots(ctx, id, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	snapshot, err := T.GetTechCardSnapshot(ctx, id, rows[0].Id)
+	require.NoError(t, err)
+	require.NotEqual(t, stalePreimage, snapshot.Snapshot)
+	var frozen pb_common.TechCard
+	require.NoError(t, protojson.Unmarshal([]byte(snapshot.Snapshot), &frozen))
+	require.Len(t, frozen.GetSeams(), 1)
+	require.Equal(t, seamKey, frozen.GetSeams()[0].GetSeamKey())
 }
 
 func snapshotIDs(rows []entity.TechCardSnapshot) []int64 {

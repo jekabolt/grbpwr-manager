@@ -448,6 +448,10 @@ func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 // here, for the reason stated there.
 func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
 	var orphanedPatternURLs []string
+	// THE CARD ROW LOCK — FIRST ACTION, BEFORE ANY PLAIN READ. Versionless sidecar writers (seams and
+	// piece areas) take this same lock before touching their rows. Taking it here makes the complete
+	// read below the exact pre-image at the document serialization point, while preserving the common
+	// lock order card -> children and avoiding a sidecar/card deadlock.
 	cur, err := storeutil.QueryNamedOne[struct {
 		LockVersion     int            `db:"lock_version"`
 		ApprovalState   string         `db:"approval_state"`
@@ -460,7 +464,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	}](ctx, rep.DB(),
 		`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit,
 		        create_request_id
-		 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+		 FROM tech_card WHERE id = :id FOR UPDATE`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
@@ -483,6 +487,25 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	}
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
+	}
+	// The handler's first read is still needed for gates and carries, but it is not a safe snapshot:
+	// seams can commit without changing lock_version. Re-read the complete card now that their writers
+	// cannot pass the card-row lock, and build the blob from this transaction's state. Direct store
+	// callers that supplied SnapshotJSON keep their existing path and version validation below.
+	if tc.BuildSnapshotFromLockedCard != nil {
+		locked, err := rep.TechCards().GetTechCardById(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload locked tech card for snapshot: %w", err)
+		}
+		if locked == nil {
+			return nil, fmt.Errorf("locked tech card %d snapshot reload returned nil", id)
+		}
+		blob, err := tc.BuildSnapshotFromLockedCard(locked)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build locked tech card snapshot: %w", err)
+		}
+		tc.SnapshotJSON = blob
+		tc.SnapshotLockVersion = cur.LockVersion
 	}
 	// A client-requested snapshot keeps its existing eager semantics: it is an explicit journalled
 	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
@@ -2524,9 +2547,9 @@ func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, autho
 }
 
 // memoizedTechCardSnapshotID returns the id of this save's pre-update snapshot, inserting it at
-// most once. The handler's blob came from a read outside the transaction, so it can be attached to
-// outgoing rows only while the locked card is still at that read's version. A caller with no blob
-// (notably cmd/assembly_clear.go) keeps the old no-snapshot behaviour.
+// most once. API writes build the blob from the locked transactional read; the version comparison
+// remains load-bearing for direct writers that supplied a blob from an earlier read. A caller with
+// no blob (notably cmd/assembly_clear.go) keeps the old no-snapshot behaviour.
 func memoizedTechCardSnapshotID(tc *entity.TechCardInsert, currentLockVersion int, appendSnapshot func(string) (int64, error)) func(string) (int64, error) {
 	var snapshotID int64
 	return func(reason string) (int64, error) {

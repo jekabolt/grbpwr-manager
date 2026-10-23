@@ -1,41 +1,24 @@
 -- +migrate Up
 
--- Autosave history metadata. Every ALTER is guarded independently because MySQL DDL commits each
--- statement: a retry after a partial deploy must finish the migration rather than fail on the first
--- column that already exists. All columns are additive and nullable except the safe boolean default.
+-- Autosave history metadata. Build one guarded ALTER from whichever columns are still absent, so a
+-- retry after partial/manual DDL finishes safely. These are tail adds without AFTER clauses, allowing
+-- MySQL's instant-add path where supported. All columns are additive and nullable except the boolean.
 
 SET @snapshot_save_session_col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_snapshot' AND COLUMN_NAME = 'save_session_id');
-SET @ddl := IF(@snapshot_save_session_col_exists = 0,
-    'ALTER TABLE tech_card_snapshot ADD COLUMN save_session_id VARCHAR(36) NULL AFTER created_by',
-    'SELECT 1');
-PREPARE stmt FROM @ddl;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
 SET @snapshot_bucket_start_col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_snapshot' AND COLUMN_NAME = 'bucket_start');
-SET @ddl := IF(@snapshot_bucket_start_col_exists = 0,
-    'ALTER TABLE tech_card_snapshot ADD COLUMN bucket_start DATETIME NULL AFTER save_session_id',
-    'SELECT 1');
-PREPARE stmt FROM @ddl;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
 SET @snapshot_changed_paths_col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_snapshot' AND COLUMN_NAME = 'changed_paths');
-SET @ddl := IF(@snapshot_changed_paths_col_exists = 0,
-    'ALTER TABLE tech_card_snapshot ADD COLUMN changed_paths JSON NULL AFTER bucket_start',
-    'SELECT 1');
-PREPARE stmt FROM @ddl;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
 SET @snapshot_pinned_col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_snapshot' AND COLUMN_NAME = 'pinned');
-SET @ddl := IF(@snapshot_pinned_col_exists = 0,
-    'ALTER TABLE tech_card_snapshot ADD COLUMN pinned BOOL NOT NULL DEFAULT FALSE AFTER changed_paths',
-    'SELECT 1');
+SET @snapshot_add_columns := CONCAT_WS(', ',
+    IF(@snapshot_save_session_col_exists = 0, 'ADD COLUMN save_session_id VARCHAR(36) NULL', NULL),
+    IF(@snapshot_bucket_start_col_exists = 0, 'ADD COLUMN bucket_start DATETIME NULL', NULL),
+    IF(@snapshot_changed_paths_col_exists = 0, 'ADD COLUMN changed_paths JSON NULL', NULL),
+    IF(@snapshot_pinned_col_exists = 0, 'ADD COLUMN pinned BOOL NOT NULL DEFAULT FALSE', NULL));
+SET @ddl := IF(@snapshot_add_columns = '', 'SELECT 1',
+    CONCAT('ALTER TABLE tech_card_snapshot ', @snapshot_add_columns));
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;

@@ -4475,11 +4475,16 @@ type TechCardInsert struct {
 	// wire — the handler overwrites them — and surfaces them read-only on the TechCard message.
 	CreatedBy string `db:"created_by"`
 	UpdatedBy string `db:"updated_by"`
-	// Snapshot* are write-command metadata, never card content. UpdateTechCard fills them after
-	// serialising the stored pre-update card with the release-snapshot builder; the store persists
-	// them atomically with the document rewrite.
+	// Snapshot* are write-command metadata, never card content. UpdateTechCard supplies the builder;
+	// the store invokes it only after locking and re-reading the card in the document transaction, then
+	// persists its exact pre-image atomically with the rewrite. Direct/maintenance writers may still
+	// supply SnapshotJSON themselves.
 	SnapshotReason string `db:"-"`
 	SnapshotJSON   string `db:"-"`
+	// BuildSnapshotFromLockedCard serialises the complete card re-read by UpdateTechCardTx after it
+	// owns the card-row lock. In particular, this captures versionless sidecars such as seams at the
+	// same serialization point as the document they accompany. It is write-command behaviour only.
+	BuildSnapshotFromLockedCard func(*TechCard) (string, error) `db:"-" json:"-"`
 	// SnapshotSaveSessionId enables ordinary UpdateTechCard autosave history. The store coalesces
 	// rows by this client-minted UUID and a server-time five-minute bucket. ChangedPaths are short,
 	// stable UI labels for the sections changed by this save; Pinned exempts lifecycle/restore rows
@@ -4488,8 +4493,8 @@ type TechCardInsert struct {
 	SnapshotChangedPaths  []string `db:"-"`
 	SnapshotPinned        bool     `db:"-"`
 	// SnapshotLockVersion is the lock_version of the card SnapshotJSON was serialised from. The store
-	// refuses the write (ErrTechCardConflict) unless the row it locks is still at that version, so
-	// the frozen blob is provably the state this very save replaces — never an older read.
+	// sets it after BuildSnapshotFromLockedCard, and still validates it for direct writers that supply
+	// SnapshotJSON themselves.
 	SnapshotLockVersion int `db:"-"`
 	// RestoreSeams is set by RestoreTechCardSnapshot only: non-nil makes the save also bring
 	// tech_card_seam to exactly this list inside its transaction. nil (every other save) leaves the
