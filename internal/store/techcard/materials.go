@@ -67,6 +67,7 @@ type pieceFusingEdgeJSON struct {
 type pieceFusingZoneJSON struct {
 	Rect        []json.Number           `json:"rect,omitempty"`
 	Spline      *pieceFusingSplineJSON  `json:"spline,omitempty"`
+	Islands     []pieceFusingSplineJSON `json:"islands,omitempty"`
 	Holes       []pieceFusingSplineJSON `json:"holes,omitempty"`
 	DxfPieceKey string                  `json:"dxf_piece_key,omitempty"`
 }
@@ -120,6 +121,12 @@ func pieceFusingZoneJSONValue(zone *entity.TechCardPieceFusingZone) (any, error)
 	if zone.Spline != nil {
 		spline := pieceFusingSplineJSONValue(zone.Spline)
 		row.Spline = &spline
+	}
+	if len(zone.Islands) > 0 {
+		row.Islands = make([]pieceFusingSplineJSON, 0, len(zone.Islands))
+		for i := range zone.Islands {
+			row.Islands = append(row.Islands, pieceFusingSplineJSONValue(&zone.Islands[i]))
+		}
 	}
 	if len(zone.Holes) > 0 {
 		row.Holes = make([]pieceFusingSplineJSON, 0, len(zone.Holes))
@@ -195,12 +202,28 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 	if shapeCount != 1 {
 		return fmt.Errorf("decode fusing_zone of piece %q: want exactly one of rect, spline, or dxf_piece_key", p.LineKey)
 	}
-	if len(row.Holes) > 0 && row.Spline == nil {
-		return fmt.Errorf("decode fusing_zone of piece %q: holes require spline", p.LineKey)
+	if (len(row.Islands) > 0 || len(row.Holes) > 0) && row.Spline == nil {
+		return fmt.Errorf("decode fusing_zone of piece %q: islands and holes require spline", p.LineKey)
+	}
+	outerCount := 0
+	if row.Spline != nil {
+		outerCount = 1 + len(row.Islands)
+	}
+	if outerCount > entity.TechCardPieceFusingZoneMaxOuterRings {
+		return fmt.Errorf("decode fusing_zone of piece %q: has %d outer rings, want at most %d",
+			p.LineKey, outerCount, entity.TechCardPieceFusingZoneMaxOuterRings)
 	}
 	if len(row.Holes) > entity.TechCardPieceFusingZoneMaxHoles {
 		return fmt.Errorf("decode fusing_zone of piece %q: has %d holes, want at most %d",
 			p.LineKey, len(row.Holes), entity.TechCardPieceFusingZoneMaxHoles)
+	}
+	islands := make([]entity.TechCardPieceFusingSpline, 0, len(row.Islands))
+	for i, islandRow := range row.Islands {
+		island, err := decodePieceFusingSplineJSON(islandRow, fmt.Sprintf("island %d", i), p.LineKey)
+		if err != nil {
+			return err
+		}
+		islands = append(islands, island)
 	}
 	holes := make([]entity.TechCardPieceFusingSpline, 0, len(row.Holes))
 	for i, holeRow := range row.Holes {
@@ -225,15 +248,15 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 		}
 		p.FusingZone = &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: coords[0], Y0: coords[1], X1: coords[2], Y1: coords[3],
-		}, Holes: holes}
+		}, Islands: islands, Holes: holes}
 	case row.Spline != nil:
 		spline, err := decodePieceFusingSplineJSON(*row.Spline, "spline", p.LineKey)
 		if err != nil {
 			return err
 		}
-		p.FusingZone = &entity.TechCardPieceFusingZone{Spline: &spline, Holes: holes}
+		p.FusingZone = &entity.TechCardPieceFusingZone{Spline: &spline, Islands: islands, Holes: holes}
 	case row.DxfPieceKey != "":
-		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey, Holes: holes}
+		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey, Islands: islands, Holes: holes}
 	}
 	return nil
 }

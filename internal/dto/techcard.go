@@ -3112,6 +3112,14 @@ func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.Tec
 	if zone == nil {
 		return nil, true, nil
 	}
+	islands := make([]entity.TechCardPieceFusingSpline, 0, len(zone.GetIslands()))
+	for i, wireIsland := range zone.GetIslands() {
+		island, err := parsePieceFusingSpline(wireIsland, fmt.Sprintf("%s.fusing_zone.islands[%d]", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		islands = append(islands, *island)
+	}
 	holes := make([]entity.TechCardPieceFusingSpline, 0, len(zone.GetHoles()))
 	for i, wireHole := range zone.GetHoles() {
 		hole, err := parsePieceFusingSpline(wireHole, fmt.Sprintf("%s.fusing_zone.holes[%d]", field, i))
@@ -3122,17 +3130,17 @@ func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.Tec
 	}
 	switch shape := zone.GetShape().(type) {
 	case nil:
-		if len(holes) == 0 {
+		if len(islands) == 0 && len(holes) == 0 {
 			return nil, false, nil // present empty message is the explicit clear
 		}
-		return &entity.TechCardPieceFusingZone{Holes: holes}, false, nil
+		return &entity.TechCardPieceFusingZone{Islands: islands, Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_DxfPieceKey:
 		key := strings.TrimSpace(shape.DxfPieceKey)
 		if key == "" {
 			return nil, false, entity.NewFieldViolation(field+".fusing_zone.dxf_piece_key",
 				"DXF piece key is empty", "", "select a dedicated DXF piece, or clear the zone")
 		}
-		return &entity.TechCardPieceFusingZone{DxfPieceKey: key, Holes: holes}, false, nil
+		return &entity.TechCardPieceFusingZone{DxfPieceKey: key, Islands: islands, Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_Rect:
 		if shape.Rect == nil {
 			return nil, false, entity.NewFieldViolation(field+".fusing_zone.rect",
@@ -3150,13 +3158,13 @@ func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.Tec
 		}
 		return &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: values[0], Y0: values[1], X1: values[2], Y1: values[3],
-		}, Holes: holes}, false, nil
+		}, Islands: islands, Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_Spline:
 		spline, err := parsePieceFusingSpline(shape.Spline, field+".fusing_zone.spline")
 		if err != nil {
 			return nil, false, err
 		}
-		return &entity.TechCardPieceFusingZone{Spline: spline, Holes: holes}, false, nil
+		return &entity.TechCardPieceFusingZone{Spline: spline, Islands: islands, Holes: holes}, false, nil
 	default:
 		return nil, false, entity.NewFieldViolation(field+".fusing_zone", "unknown zone shape", "",
 			"draw a rectangle or spline, or select a dedicated DXF piece")
@@ -4106,12 +4114,16 @@ func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCa
 	if zone == nil {
 		return nil
 	}
+	islands := make([]*pb_common.TechCardPieceFusingSpline, 0, len(zone.Islands))
+	for i := range zone.Islands {
+		islands = append(islands, pieceFusingSplineToPb(&zone.Islands[i]))
+	}
 	holes := make([]*pb_common.TechCardPieceFusingSpline, 0, len(zone.Holes))
 	for i := range zone.Holes {
 		holes = append(holes, pieceFusingSplineToPb(&zone.Holes[i]))
 	}
 	if zone.Rect != nil {
-		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Rect{
+		return &pb_common.TechCardPieceFusingZone{Islands: islands, Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Rect{
 			Rect: &pb_common.TechCardPieceFusingRect{
 				X0: pbDecimalFromDecimal(zone.Rect.X0), Y0: pbDecimalFromDecimal(zone.Rect.Y0),
 				X1: pbDecimalFromDecimal(zone.Rect.X1), Y1: pbDecimalFromDecimal(zone.Rect.Y1),
@@ -4119,12 +4131,12 @@ func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCa
 		}}
 	}
 	if zone.Spline != nil {
-		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Spline{
+		return &pb_common.TechCardPieceFusingZone{Islands: islands, Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Spline{
 			Spline: pieceFusingSplineToPb(zone.Spline),
 		}}
 	}
 	if zone.DxfPieceKey != "" {
-		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_DxfPieceKey{
+		return &pb_common.TechCardPieceFusingZone{Islands: islands, Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_DxfPieceKey{
 			DxfPieceKey: zone.DxfPieceKey,
 		}}
 	}

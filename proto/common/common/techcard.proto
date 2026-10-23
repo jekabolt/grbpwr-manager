@@ -3287,8 +3287,12 @@ message TechCardPieceFusingZone {
     string dxf_piece_key = 2;
     TechCardPieceFusingSpline spline = 3;
   }
-  // Cut-outs entirely inside the spline fill. Valid only with spline; at most 16 non-overlapping holes.
+  // Flat cut-out list for all outer rings. Valid only with spline; at most 16 non-overlapping holes.
+  // Every hole must lie strictly inside exactly one of spline or islands.
   repeated TechCardPieceFusingSpline holes = 4;
+  // Additional disjoint outer rings beside spline. Valid only with spline; spline plus islands has
+  // at most 16 outer rings, which may neither overlap, touch, nor nest.
+  repeated TechCardPieceFusingSpline islands = 5;
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):

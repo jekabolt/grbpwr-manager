@@ -342,12 +342,43 @@ func TestValidatePieceFusingSplineHoles(t *testing.T) {
 	}
 
 	valid := outer()
+	valid.FusingZone.Islands = []TechCardPieceFusingSpline{
+		hole("30", "0", "40", "10"),
+	}
 	valid.FusingZone.Holes = []TechCardPieceFusingSpline{
 		hole("2", "2", "6", "5"),
 		hole("10", "2", "14", "5"),
+		hole("32", "2", "36", "5"),
 	}
 	if err := ValidatePieceFusingDetails("pieces[0]", valid); err != nil {
-		t.Fatalf("valid holes rejected: %v", err)
+		t.Fatalf("valid disjoint outer rings and holes rejected: %v", err)
+	}
+
+	islandTests := map[string][]TechCardPieceFusingSpline{
+		"too few island points": {
+			splineTestRing(splineTestPoint("30", "0", true), splineTestPoint("40", "0", true)),
+		},
+		"overlapping outer rings": {hole("18", "2", "24", "8")},
+		"touching outer rings":    {hole("20", "2", "26", "8")},
+		"nested outer rings":      {hole("2", "2", "6", "5")},
+		"overlapping islands": {
+			hole("30", "0", "40", "10"), hole("38", "2", "45", "8"),
+		},
+	}
+	for name, islands := range islandTests {
+		t.Run(name, func(t *testing.T) {
+			piece := outer()
+			piece.FusingZone.Islands = islands
+			if err := ValidatePieceFusingDetails("pieces[0]", piece); err == nil {
+				t.Fatal("invalid outer rings accepted")
+			}
+		})
+	}
+
+	tooManyOuters := outer()
+	tooManyOuters.FusingZone.Islands = make([]TechCardPieceFusingSpline, TechCardPieceFusingZoneMaxOuterRings)
+	if err := ValidatePieceFusingDetails("pieces[0]", tooManyOuters); err == nil {
+		t.Fatal("too many outer rings accepted")
 	}
 
 	tests := map[string][]TechCardPieceFusingSpline{
@@ -392,13 +423,24 @@ func TestValidatePieceFusingSplineHoles(t *testing.T) {
 	if err := ValidatePieceFusingDetails("pieces[0]", rect); err == nil {
 		t.Fatal("holes on a rectangle zone accepted")
 	}
+	rect.FusingZone.Holes = nil
+	rect.FusingZone.Islands = []TechCardPieceFusingSpline{hole("30", "0", "40", "10")}
+	if err := ValidatePieceFusingDetails("pieces[0]", rect); err == nil {
+		t.Fatal("islands on a rectangle zone accepted")
+	}
 }
 
-func TestPieceFusingSplineZoneAreaSubtractsHoles(t *testing.T) {
+func TestPieceFusingSplineZoneAreaSumsOutersAndSubtractsHoles(t *testing.T) {
 	piece := splineTestPiece(
 		splineTestPoint("0", "0", true), splineTestPoint("20", "0", true),
 		splineTestPoint("20", "10", true), splineTestPoint("0", "10", true),
 	)
+	piece.FusingZone.Islands = []TechCardPieceFusingSpline{
+		splineTestRing(
+			splineTestPoint("30", "0", true), splineTestPoint("40", "0", true),
+			splineTestPoint("40", "5", true), splineTestPoint("30", "5", true),
+		),
+	}
 	piece.FusingZone.Holes = []TechCardPieceFusingSpline{
 		splineTestRing(
 			splineTestPoint("2", "2", true), splineTestPoint("6", "2", true),
@@ -408,12 +450,16 @@ func TestPieceFusingSplineZoneAreaSubtractsHoles(t *testing.T) {
 			splineTestPoint("10", "2", true), splineTestPoint("14", "2", true),
 			splineTestPoint("14", "5", true), splineTestPoint("10", "5", true),
 		),
+		splineTestRing(
+			splineTestPoint("32", "1", true), splineTestPoint("35", "1", true),
+			splineTestPoint("35", "3", true), splineTestPoint("32", "3", true),
+		),
 	}
 	got, err := pieceFusingSplineZoneAreaMm2(piece.FusingZone)
 	if err != nil {
 		t.Fatalf("zone area: %v", err)
 	}
-	if math.Abs(got-176) > 1e-9 {
-		t.Fatalf("zone area = %.17g mm², want 200 - 12 - 12 = 176", got)
+	if math.Abs(got-220) > 1e-9 {
+		t.Fatalf("zone area = %.17g mm², want 200 + 50 - 12 - 12 - 6 = 220", got)
 	}
 }
