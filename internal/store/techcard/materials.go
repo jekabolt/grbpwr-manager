@@ -744,8 +744,8 @@ func resolveBomRef(res bomResolver, lineKey string, idx sql.NullInt32, keyField 
 type bomExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
-	// Section rides only the recipe path's SELECT (roll-goods guard for marker provenance);
-	// the BOM upsert's own query leaves it zero.
+	// Section also lets the BOM upsert distinguish the explicit INTERLINING cascade from ordinary
+	// lines whose colourway recipes continue to block deletion.
 	Section sql.NullString `db:"section"`
 	// Purpose and Name ride the same recipe-path SELECT only (T4): purpose feeds the derived layer
 	// role (entity.DerivePieceLayerRole) behind the «две основные на одной детали» refusal, and the
@@ -934,7 +934,7 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 	}
 
 	existingRows, err := storeutil.QueryListNamed[bomExistingRow](ctx, db,
-		`SELECT id, line_key, unit_price, currency, price_source, price_snapshot_at,
+		`SELECT id, line_key, section, unit_price, currency, price_source, price_snapshot_at,
 		        wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at, wastage_applied_percent
 		 FROM tech_card_bom_item WHERE tech_card_id = :id`, map[string]any{"id": tcID})
 	if err != nil {
@@ -1017,11 +1017,19 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		seen[key] = true
 	}
 
-	// Delete lines that vanished from the payload. FK RESTRICT blocks a line still referenced by an
-	// operation/piece/colourway recipe — surface that as an actionable field-tagged error.
+	// Delete lines that vanished from the payload. INTERLINING deletion is the explicit fusing
+	// cascade: its recipe usages leave in this transaction before the stable line. Every other family
+	// keeps the FK RESTRICT and its actionable error.
 	for key, id := range existingByKey {
 		if seen[key] {
 			continue
+		}
+		if row := existingRowByKey[key]; row != nil && row.Section.Valid &&
+			row.Section.String == string(entity.BomSectionInterlining) {
+			if err := storeutil.ExecNamed(ctx, db,
+				`DELETE FROM tech_card_colorway_usage WHERE bom_item_id = :id`, map[string]any{"id": id}); err != nil {
+				return res, fmt.Errorf("failed to cascade interlining colourway usages: %w", err)
+			}
 		}
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_bom_item WHERE id = :id`, map[string]any{"id": id}); err != nil {
