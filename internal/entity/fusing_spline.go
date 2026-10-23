@@ -1,10 +1,15 @@
 package entity
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 const (
 	fusingSplineChordErrorMm = 0.5
 	fusingSplineMaxSteps     = 64
+	// TechCardPieceFusingZoneMaxHoles caps the complexity of one generated fusible shape.
+	TechCardPieceFusingZoneMaxHoles = 16
 )
 
 type fusingSplineFloatPoint struct {
@@ -176,6 +181,15 @@ func fusingSegmentsIntersect(a, b, c, d fusingSplineFloatPoint) bool {
 		(math.Abs(o4) <= epsilon && fusingPointOnSegment(c, d, b))
 }
 
+func fusingPolygonSignedArea(points []fusingSplineFloatPoint) float64 {
+	area2 := 0.0
+	for i, point := range points {
+		next := points[(i+1)%len(points)]
+		area2 += point.x*next.y - next.x*point.y
+	}
+	return area2 / 2
+}
+
 func validateFlattenedFusingPolygon(points []fusingSplineFloatPoint) (selfIntersects bool, hasArea bool) {
 	points, scale := normalizeFusingPolygon(points)
 	if len(points) < 3 || scale == 0 || math.IsInf(scale, 0) {
@@ -202,12 +216,104 @@ func validateFlattenedFusingPolygon(points []fusingSplineFloatPoint) (selfInters
 			}
 		}
 	}
-	area2 := 0.0
-	for i, point := range points {
-		next := points[(i+1)%len(points)]
-		area2 += point.x*next.y - next.x*point.y
+	return false, math.Abs(fusingPolygonSignedArea(points)) > epsilon
+}
+
+func normalizeFusingRingPair(a, b []fusingSplineFloatPoint) ([]fusingSplineFloatPoint, []fusingSplineFloatPoint, bool) {
+	if len(a) == 0 || len(b) == 0 {
+		return nil, nil, false
 	}
-	return false, math.Abs(area2) > epsilon
+	minX, maxX, minY, maxY := a[0].x, a[0].x, a[0].y, a[0].y
+	for _, ring := range [][]fusingSplineFloatPoint{a, b} {
+		for _, point := range ring {
+			minX, maxX = math.Min(minX, point.x), math.Max(maxX, point.x)
+			minY, maxY = math.Min(minY, point.y), math.Max(maxY, point.y)
+		}
+	}
+	scale := math.Max(maxX-minX, maxY-minY)
+	if scale == 0 || math.IsInf(scale, 0) {
+		return nil, nil, false
+	}
+	normalize := func(ring []fusingSplineFloatPoint) []fusingSplineFloatPoint {
+		out := make([]fusingSplineFloatPoint, len(ring))
+		for i, point := range ring {
+			out[i] = fusingSplineFloatPoint{x: (point.x - minX) / scale, y: (point.y - minY) / scale}
+		}
+		return out
+	}
+	return normalize(a), normalize(b), true
+}
+
+func fusingPointStrictlyInsideRing(point fusingSplineFloatPoint, ring []fusingSplineFloatPoint) bool {
+	inside := false
+	for i, a := range ring {
+		b := ring[(i+1)%len(ring)]
+		if fusingPointOnSegment(a, b, point) {
+			return false
+		}
+		if (a.y > point.y) != (b.y > point.y) &&
+			point.x < (b.x-a.x)*(point.y-a.y)/(b.y-a.y)+a.x {
+			inside = !inside
+		}
+	}
+	return inside
+}
+
+func fusingRingStrictlyInside(inner, outer []fusingSplineFloatPoint) bool {
+	inner, outer, ok := normalizeFusingRingPair(inner, outer)
+	if !ok {
+		return false
+	}
+	for i := range inner {
+		for j := range outer {
+			if fusingSegmentsIntersect(inner[i], inner[(i+1)%len(inner)], outer[j], outer[(j+1)%len(outer)]) {
+				return false
+			}
+		}
+	}
+	for _, point := range inner {
+		if !fusingPointStrictlyInsideRing(point, outer) {
+			return false
+		}
+	}
+	return true
+}
+
+func fusingRingsOverlap(a, b []fusingSplineFloatPoint) bool {
+	a, b, ok := normalizeFusingRingPair(a, b)
+	if !ok {
+		return true
+	}
+	for i := range a {
+		for j := range b {
+			if fusingSegmentsIntersect(a[i], a[(i+1)%len(a)], b[j], b[(j+1)%len(b)]) {
+				return true
+			}
+		}
+	}
+	return fusingPointStrictlyInsideRing(a[0], b) || fusingPointStrictlyInsideRing(b[0], a)
+}
+
+// pieceFusingSplineZoneAreaMm2 is the drawn ring area before clipping/insetting: outer minus every
+// cut-out. Consumption deliberately does not use it; generated per-size fusing sheets are measured
+// after contour-following, clipping and inset rules have been applied.
+func pieceFusingSplineZoneAreaMm2(zone *TechCardPieceFusingZone) (float64, error) {
+	outer, err := flattenPieceFusingSpline(zone.Spline)
+	if err != nil {
+		return 0, err
+	}
+	area := math.Abs(fusingPolygonSignedArea(outer))
+	for i := range zone.Holes {
+		hole, err := flattenPieceFusingSpline(&zone.Holes[i])
+		if err != nil {
+			return 0, err
+		}
+		area -= math.Abs(fusingPolygonSignedArea(hole))
+	}
+	if math.IsNaN(area) || math.IsInf(area, 0) {
+		return 0, errFusingSplineTooLarge
+	}
+	return area, nil
 }
 
 func validatePieceFusingSpline(field string, spline *TechCardPieceFusingSpline) error {
@@ -228,6 +334,54 @@ func validatePieceFusingSpline(field string, spline *TechCardPieceFusingSpline) 
 	if !hasArea {
 		return NewFieldViolation(field+".points", "the fusing spline must have an area", "",
 			"move the points so the closed outline encloses material")
+	}
+	return nil
+}
+
+func validatePieceFusingSplineZone(field string, zone *TechCardPieceFusingZone) error {
+	if err := validatePieceFusingSpline(field+".spline", zone.Spline); err != nil {
+		return err
+	}
+	if len(zone.Holes) > TechCardPieceFusingZoneMaxHoles {
+		return NewFieldViolation(field+".holes", "a fusing zone has too many holes",
+			fmt.Sprintf("%d", len(zone.Holes)), fmt.Sprintf("keep at most %d cut-outs", TechCardPieceFusingZoneMaxHoles))
+	}
+	outer, err := flattenPieceFusingSpline(zone.Spline)
+	if err != nil {
+		return NewFieldViolation(field+".spline.points", "the fusing spline cannot be flattened safely", err.Error(),
+			"keep the outline within practical millimetre coordinates and simplify it")
+	}
+	flatHoles := make([][]fusingSplineFloatPoint, 0, len(zone.Holes))
+	for i := range zone.Holes {
+		holeField := fmt.Sprintf("%s.holes[%d]", field, i)
+		if err := validatePieceFusingSpline(holeField, &zone.Holes[i]); err != nil {
+			return err
+		}
+		hole, err := flattenPieceFusingSpline(&zone.Holes[i])
+		if err != nil {
+			return NewFieldViolation(holeField+".points", "the fusing hole cannot be flattened safely", err.Error(),
+				"keep the cut-out within practical millimetre coordinates and simplify it")
+		}
+		if !fusingRingStrictlyInside(hole, outer) {
+			return NewFieldViolation(holeField+".points", "a fusing hole must stay strictly inside the spline zone", "",
+				"move the cut-out away from the outer edge")
+		}
+		for j, other := range flatHoles {
+			if fusingRingsOverlap(hole, other) {
+				return NewFieldViolation(holeField+".points", "fusing holes cannot overlap or touch",
+					fmt.Sprintf("overlaps holes[%d]", j), "move or merge the cut-outs")
+			}
+		}
+		flatHoles = append(flatHoles, hole)
+	}
+	area, err := pieceFusingSplineZoneAreaMm2(zone)
+	if err != nil || !(area > 0) {
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+		}
+		return NewFieldViolation(field+".holes", "the holes remove the whole fusing zone", detail,
+			"make the cut-outs smaller")
 	}
 	return nil
 }

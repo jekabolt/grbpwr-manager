@@ -771,7 +771,9 @@ func fusingGeometryFor(tc *entity.TechCard, cw *entity.TechCardColorway, bom *en
 		}
 		return mmToCm(std), false, scope
 	case entity.PieceFusingModeZone:
-		// A rectangle, spline, or dedicated DXF contour has no derivable area in the legacy piece-area table.
+		// A rectangle, spline (including its holes), or dedicated DXF contour has no derivable area in
+		// the legacy piece-area table. The generated sheet's measured polygon area is already net of
+		// every cut-out and wins in ownMeasuredContour above.
 		// Treating it as FULL would silently overbuy interlining; the fusing-sheet geometry is the
 		// authority, so the old estimator must report the measurement as unavailable.
 		return decimal.NullDecimal{}, true, scope
