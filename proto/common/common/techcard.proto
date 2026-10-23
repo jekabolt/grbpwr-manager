@@ -1472,12 +1472,13 @@ message TechCardPatternRevision {
   int64 history_id = 7;
 }
 
-// TechCardSizePattern is a downloadable выкройка (cut pattern) file for one size of a
-// tech card — the FINAL pattern for that size. A size can carry many patterns (pieces
-// split across sheets). The file is a PDF or a DXF, uploaded via Admin.UploadPattern,
-// which returns the url stored here; the binary lives in object storage, not the media
-// library. The file type is carried by the url's extension (.pdf / .dxf), which the
-// server derives from the uploaded bytes — there is no separate content-type field.
+// TechCardSizePattern is a downloadable выкройка (cut pattern) file for one material slot of a
+// tech card. A material slot holds at most ONE pattern file. Its binding is fabric_purpose (trimmed,
+// lowercase), otherwise the legacy bom_line_key (trimmed, uppercase); rows with neither are unbound
+// and are not limited. The file is a PDF or a DXF, uploaded via Admin.UploadPattern, which returns
+// the url stored here; the binary lives in object storage, not the media library. The file type is
+// carried by the url's extension (.pdf / .dxf), which the server derives from the uploaded bytes —
+// there is no separate content-type field.
 message TechCardSizePattern {
   // size_id is the size the sheet is FILED UNDER, and 0 means it is filed under none — the sheet is
   // graded and its sizes live in the DXF's block names, which only the client reads. A non-zero
@@ -3554,7 +3555,9 @@ message TechCardInsert {
   repeated TechCardIssue issues = 50; // maker-flagged construction issues
   repeated TechCardSizeQuantity size_quantities = 51; // per-size order quantity (size run)
   repeated TechCardSignoff signoffs = 52; // per-section sign-off
-  repeated TechCardSizePattern patterns = 53; // per-size PDF выкройки (cut patterns)
+  // Full-replace cut-pattern files. At most one file may bind to each material slot; unbound rows
+  // (neither fabric_purpose nor bom_line_key) are not limited.
+  repeated TechCardSizePattern patterns = 53;
 
   // construction-description aspects with reference images (replaces the flat strings).
   repeated TechCardDetail details = 54;

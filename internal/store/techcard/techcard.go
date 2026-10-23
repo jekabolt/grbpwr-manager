@@ -17,6 +17,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
@@ -1784,6 +1785,11 @@ func patternObjectIdentity(raw string) string {
 // below: every row is new on the destination card, but its binding is the source's, unchanged, and a
 // source sheet that was already an unresolved (grandfathered) orphan must not abort the whole create.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotIDForArchive func(string) (int64, error), bindingsCopied bool) error {
+	// The API has already checked explicit bindings, but this is the single write funnel for creates,
+	// updates, restores, clones and archive imports. Keep the guard here for every direct store caller.
+	if err := patternslot.Validate(patterns); err != nil {
+		return err
+	}
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
@@ -1868,6 +1874,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	seenPayload := make(map[string]struct{}, len(patterns))
 	seenKeys := make(map[string]struct{}, len(patterns))
 	consumed := make(map[int]struct{}, len(prior))
+	resolvedPatterns := make([]entity.TechCardSizePattern, 0, len(patterns))
 	// Pass 1: reserve every EXPLICIT payload line_key before any keyless adoption runs, so payload
 	// order cannot change the outcome — with a keyless row first, single-pass matching would let it
 	// adopt a stored row that a later keyed row names, silently dropping that keyed row. A keyless
@@ -2059,6 +2066,15 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			}
 			normalized := entity.NormalizeFabricBomLineKey(fabricPurpose.String, bomLineKey.String, lines)
 			bomLineKey = sql.NullString{String: normalized, Valid: normalized != ""}
+		}
+		// Omitted binding fields mean "carry the stored value", so only this reconciled view can catch
+		// a stale-client payload that would put two rows into one slot. The write runs in a transaction;
+		// if a later row conflicts, prior row updates from this loop are rolled back with the refusal.
+		resolvedPatterns = append(resolvedPatterns, entity.TechCardSizePattern{
+			BomLineKey: bomLineKey, FabricPurpose: fabricPurpose,
+		})
+		if err := patternslot.Validate(resolvedPatterns); err != nil {
+			return err
 		}
 		// A present, non-empty value that CHANGES the binding must name something live; an unchanged
 		// round-trip passes even when the target has gone away since.

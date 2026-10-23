@@ -12,6 +12,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -1412,6 +1413,9 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			SHA256:        sha256,
 			Version:       int(p.Version),
 		})
+	}
+	if err := patternslot.Validate(out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
