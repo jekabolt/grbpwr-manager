@@ -4010,11 +4010,13 @@ type TechCardPieceFusingSpline struct {
 }
 
 // TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. All shape arms may be empty
-// only to represent a deliberate clear on write; a stored non-NULL zone has exactly one. Holes are
-// cut-outs inside Spline and are invalid for the rectangle and dedicated-DXF arms.
+// only to represent a deliberate clear on write; a stored non-NULL zone has exactly one. Islands are
+// additional disjoint outer rings beside Spline; Holes are one flat cut-out list for all outer rings.
+// Both are invalid for the rectangle and dedicated-DXF arms.
 type TechCardPieceFusingZone struct {
 	Rect        *TechCardPieceFusingRect
 	Spline      *TechCardPieceFusingSpline
+	Islands     []TechCardPieceFusingSpline
 	Holes       []TechCardPieceFusingSpline
 	DxfPieceKey string
 }
@@ -4401,6 +4403,10 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 		hasRect := p.FusingZone.Rect != nil
 		hasSpline := p.FusingZone.Spline != nil
 		hasDXF := strings.TrimSpace(p.FusingZone.DxfPieceKey) != ""
+		if len(p.FusingZone.Islands) > 0 && !hasSpline {
+			return NewFieldViolation(field+".fusing_zone.islands", "zone islands require a spline outline", "",
+				"draw a spline zone before adding disjoint outer rings")
+		}
 		if len(p.FusingZone.Holes) > 0 && !hasSpline {
 			return NewFieldViolation(field+".fusing_zone.holes", "zone holes require a spline outline", "",
 				"draw a spline zone before adding cut-outs")

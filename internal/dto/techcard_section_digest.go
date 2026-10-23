@@ -641,6 +641,17 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 					points = append(points, []any{point.X.String(), point.Y.String(), point.Corner})
 				}
 				zoneSpline := []any{"zone_spline", points}
+				if len(p.FusingZone.Islands) > 0 {
+					islands := make([]any, 0, len(p.FusingZone.Islands))
+					for _, island := range p.FusingZone.Islands {
+						islandPoints := make([]any, 0, len(island.Points))
+						for _, point := range island.Points {
+							islandPoints = append(islandPoints, []any{point.X.String(), point.Y.String(), point.Corner})
+						}
+						islands = append(islands, islandPoints)
+					}
+					zoneSpline = append(zoneSpline, []any{"islands", islands})
+				}
 				if len(p.FusingZone.Holes) > 0 {
 					holes := make([]any, 0, len(p.FusingZone.Holes))
 					for _, hole := range p.FusingZone.Holes {

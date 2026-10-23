@@ -23,6 +23,10 @@ func TestTechCardPieceFusingSplineRoundTrip(t *testing.T) {
 		pbSplinePoint("0", "0", true), pbSplinePoint("20.5", "0", false),
 		pbSplinePoint("20", "10", true), pbSplinePoint("0", "10", false),
 	)
+	zone.Islands = []*pb_common.TechCardPieceFusingSpline{{Points: []*pb_common.TechCardPieceFusingSplinePoint{
+		pbSplinePoint("30", "0", true), pbSplinePoint("40", "0", true),
+		pbSplinePoint("40", "10", true), pbSplinePoint("30", "10", true),
+	}}}
 	zone.Holes = []*pb_common.TechCardPieceFusingSpline{{Points: []*pb_common.TechCardPieceFusingSplinePoint{
 		pbSplinePoint("2", "2", true), pbSplinePoint("5", "2", true),
 		pbSplinePoint("5", "5", true), pbSplinePoint("2", "5", true),
@@ -44,6 +48,10 @@ func TestTechCardPieceFusingSplineRoundTrip(t *testing.T) {
 	if len(holes) != 1 || len(holes[0].Points) != 4 || holes[0].Points[2].X.String() != "5" {
 		t.Fatalf("entity holes mismatch: %#v", holes)
 	}
+	islands := got.Pieces[0].FusingZone.Islands
+	if len(islands) != 1 || len(islands[0].Points) != 4 || islands[0].Points[2].X.String() != "40" {
+		t.Fatalf("entity islands mismatch: %#v", islands)
+	}
 
 	out := ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *got}, CostingFx{})
 	outZone := out.TechCard.Pieces[0].GetFusingZone()
@@ -54,6 +62,10 @@ func TestTechCardPieceFusingSplineRoundTrip(t *testing.T) {
 	if len(outZone.GetHoles()) != 1 || len(outZone.GetHoles()[0].GetPoints()) != 4 ||
 		outZone.GetHoles()[0].GetPoints()[2].GetX().GetValue() != "5" {
 		t.Fatalf("wire holes mismatch: %#v", outZone.GetHoles())
+	}
+	if len(outZone.GetIslands()) != 1 || len(outZone.GetIslands()[0].GetPoints()) != 4 ||
+		outZone.GetIslands()[0].GetPoints()[2].GetX().GetValue() != "40" {
+		t.Fatalf("wire islands mismatch: %#v", outZone.GetIslands())
 	}
 }
 
@@ -97,5 +109,18 @@ func TestFusingSplineMovesConstructionDigest(t *testing.T) {
 	changedHole := TechCardSectionDigests(fusingCard(piece))[entity.SignoffConstruction]
 	if withHole == changedHole {
 		t.Fatal("changing a spline hole did not move the construction digest")
+	}
+	piece.FusingZone.Islands = []entity.TechCardPieceFusingSpline{{Points: []entity.TechCardPieceFusingSplinePoint{
+		{X: decimal.NewFromInt(20), Y: decimal.NewFromInt(0), Corner: true},
+		{X: decimal.NewFromInt(30), Y: decimal.NewFromInt(0), Corner: true},
+		{X: decimal.NewFromInt(20), Y: decimal.NewFromInt(10), Corner: true},
+	}}}
+	withIsland := TechCardSectionDigests(fusingCard(piece))[entity.SignoffConstruction]
+	if changedHole == withIsland {
+		t.Fatal("adding a spline island did not move the construction digest")
+	}
+	piece.FusingZone.Islands[0].Points[1].X = decimal.NewFromInt(31)
+	if changedIsland := TechCardSectionDigests(fusingCard(piece))[entity.SignoffConstruction]; withIsland == changedIsland {
+		t.Fatal("changing a spline island did not move the construction digest")
 	}
 }
