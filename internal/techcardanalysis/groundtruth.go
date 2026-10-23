@@ -175,6 +175,7 @@ func ComputeGroundTruth(card *entity.TechCard) GroundTruth {
 			Inputs:         op.AssemblyInputs,
 			OutputUnitKey:  op.OutputUnitKey.String,
 			OutputUnitName: op.OutputUnitName.String,
+			Detached:       op.AssemblyBlockDetached,
 		}
 		gt.Steps[i] = StepFact{
 			Index:           i,

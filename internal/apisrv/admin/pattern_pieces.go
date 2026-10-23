@@ -617,7 +617,7 @@ For every mark listed in the request return one object:
 - mark: the number.
 - code: a PREFIX plus optional modifiers, joined by "_", uppercase. The PREFIX must be one of the allowed codes listed in the request. Modifiers, all optional, in this order: L or R (the wearer's left or right piece), F or B (the front or back version of a piece that exists on both, e.g. a front pocket and a back pocket), a part number 1..20 (when one piece is made of numbered parts), # (the main piece among several with the same code). Use only the modifiers the request allows. NEVER put a size in the code ("FP_M", "SL_44", "BP_XS" are wrong): the software adds the size later.
 - human_name_en: lowercase English, at most 5 words ("front piece", "upper sleeve", "pocket bag").
-- fabric_purposes: the fabrics this piece is cut from, each one of: main, lining, pocketing, interfacing, insulation, contrast, mesh, other. A piece cut from two fabrics (main and interfacing) lists both.
+- fabric_purposes: the fabrics this piece is cut from, each one of: main, lining, pocketing, interfacing, insulation, contrast, binding, mesh, other. A piece cut from two fabrics (main and interfacing) lists both.
 - cut_quantity: how many of this piece ONE garment needs, counting both halves of a pair (a pair is 2). 0 when nothing shows it.
 - fold: true when the piece is cut on the fold (a fold line, "on fold", "im Bruch", "сгиб").
 - pair: true when this one pattern piece is cut twice as a mirrored left + right ("cut 2", "2x", "paarig", "1 пара").

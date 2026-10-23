@@ -75,6 +75,17 @@ func TestAssemblyDigestAppearsOnlyWithUnits(t *testing.T) {
 		"разметка узла — содержательная правка, отпечаток обязан двинуться")
 }
 
+func TestAssemblyBlockDetachmentMovesConstructionDigest(t *testing.T) {
+	plain := asmPlainOp("FR")
+	detached := plain
+	detached.AssemblyBlockDetached = true
+
+	require.NotEqual(t,
+		TechCardSectionDigests(asmDigestCard(plain))[entity.SignoffConstruction],
+		TechCardSectionDigests(asmDigestCard(detached))[entity.SignoffConstruction],
+		"placing an operation outside its assembly block changes the signed assembly instruction")
+}
+
 // TestAssemblyDigestIgnoresUnitName — имя узла в отпечаток не входит: оно разрешается по первому
 // производителю и фактом цеха не является. Хешируй его, и невидимая правка на поглощающем шаге
 // протухала бы подпись.

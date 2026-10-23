@@ -244,8 +244,8 @@ enum TechCardBomSection {
 // a раскладка may bind to, and a pocket-bag / contrast / mesh fabric is genuinely fabric on all
 // three counts — it differs only in role. It is not free text either: the field exists to GROUP, and
 // a free-text role stops grouping the moment two operators spell it differently. Hence a closed
-// eight-value list, with `other` carrying its meaning in the SEPARATE purpose_note field so a note
-// can never become a shadow purpose on one of the seven real values.
+// nine-value list, with `other` carrying its meaning in the SEPARATE purpose_note field so a note
+// can never become a shadow purpose on one of the eight real values.
 //
 // UNSET (0) is a first-class state meaning "not sorted yet", not a default. Every line that existed
 // before 0265 is UNSET on purpose: section='fabric' is exactly where pocket-bag, contrast and mesh
@@ -260,6 +260,7 @@ enum TechCardBomPurpose {
   TECH_CARD_BOM_PURPOSE_CONTRAST = 6; // контраст / отделочная
   TECH_CARD_BOM_PURPOSE_MESH = 7; // сетка / второй слой
   TECH_CARD_BOM_PURPOSE_OTHER = 8; // другое — the free-text explanation goes in purpose_note
+  TECH_CARD_BOM_PURPOSE_BINDING = 9; // бейка / окантовка
 }
 
 // TechCardBomKind is ЧТО ЭТО ЗА ПОЗИЦИЯ — the mirror image of TechCardBomPurpose (0265). Purpose
@@ -913,7 +914,7 @@ message TechCardBomItem {
   // real answer, and demanding one just farms junk text.
   // Optional по той же причине, что и purpose — отсутствие означает «не трогай».
   optional string purpose_note = 32;
-  // Семпловая: this line is the yardage the SAMPLE is sewn from. A flag, not a ninth purpose — a
+  // Семпловая: this line is the yardage the SAMPLE is sewn from. A flag, not a tenth purpose — a
   // sample is assembled from a sample MAIN plus a sample LINING, and as a purpose value both would
   // collapse into one bucket and lose the role that makes them useful.
   // Optional по той же причине: голый bool от старого бандла приходит как false и снял бы признак
@@ -2893,6 +2894,9 @@ message TechCardOperation {
   // string rather than an enum so an older protojson client cannot silently drop a future reason.
   string review = 69;
 
+  // Keeps a piece-processing step between assembly blocks without making it part of either block.
+  bool assembly_block_detached = 70;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3821,6 +3825,9 @@ message TechCardInsert {
   // карточку с review-метками: без этого флага сервер отказывает, а не стирает их. Транспорт,
   // не содержание; ни в один дайджест не входит.
   bool operation_review_aware = 126;
+
+  // Declares support for TechCardOperation.assembly_block_detached on full-replace writes.
+  bool operation_block_membership_aware = 127;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

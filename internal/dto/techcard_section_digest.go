@@ -494,6 +494,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if operationHasAssemblyTail(o) {
 			row = append(row, []any{"assembly", o.OutputUnitKey.String, assemblyInputTail(o)})
 		}
+		// Block detachment changes the assembly instruction, but false stays absent so the rollout
+		// does not invalidate every existing CONSTRUCTION signature.
+		if o.AssemblyBlockDetached {
+			row = append(row, []any{"assembly_block_detached", true})
+		}
 		// ФОТОГРАФИИ ШАГА С ВЫНОСКАМИ (0308) — ТОЖЕ ХВОСТОМ, И ТОЖЕ ТОЛЬКО ПРИ ЗАПОЛНЕННОСТИ.
 		//
 		// Довод дословно тот же, что у двух хвостов выше: json.Marshal кодирует []any позиционно,

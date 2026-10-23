@@ -302,6 +302,7 @@ var techCardBomPurposePbToEntity = map[pb_common.TechCardBomPurpose]entity.TechC
 	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INTERFACING: entity.BomPurposeInterfacing,
 	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_INSULATION:  entity.BomPurposeInsulation,
 	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_CONTRAST:    entity.BomPurposeContrast,
+	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_BINDING:     entity.BomPurposeBinding,
 	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_MESH:        entity.BomPurposeMesh,
 	pb_common.TechCardBomPurpose_TECH_CARD_BOM_PURPOSE_OTHER:       entity.BomPurposeOther,
 }

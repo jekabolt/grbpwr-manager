@@ -393,7 +393,7 @@ func FabricScopeIdentity(purpose, bomLineKey string, lines []RollGoodsLine) stri
 
 // PurposesOfRollGoods lists the назначения actually present on a card's cloth lines, deduplicated,
 // in the order the lines appear. This is what a binding may legally name — offering the full
-// eight-value vocabulary would let an operator bind a sheet to a purpose the card does not use.
+// nine-value vocabulary would let an operator bind a sheet to a purpose the card does not use.
 func PurposesOfRollGoods(lines []RollGoodsLine) []string {
 	seen := make(map[string]bool, len(lines))
 	out := make([]string, 0, len(lines))

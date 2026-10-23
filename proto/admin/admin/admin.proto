@@ -11486,7 +11486,7 @@ message PatternPieceSuggestion {
   // refused (the reason is in warnings) or the model gave none.
   string code = 2;
   string human_name_en = 3; // lowercase English, e.g. "front piece left"
-  repeated string fabric_purposes = 4; // BOM purposes: main lining pocketing interfacing insulation contrast mesh other
+  repeated string fabric_purposes = 4; // BOM purposes: main lining pocketing interfacing insulation contrast binding mesh other
   int32 cut_quantity = 5; // pieces cut per garment, 1..20; 0 = unknown
   bool fold = 6; // cut on the fold
   bool pair = 7; // cut as a mirrored pair (left + right)
@@ -11554,7 +11554,7 @@ message ClassifyPatternPagesResponse {
 message AssemblySkeletonPiece {
   string key = 1; // the card's piece key (lineKey), unique in the request, ≤ 64 runes
   string name = 2; // the piece's name on the card, ≤ 80 runes
-  string cloth = 3; // main lining pocketing interfacing insulation contrast mesh other, "" = unknown
+  string cloth = 3; // main lining pocketing interfacing insulation contrast binding mesh other, "" = unknown
   string hand = 4; // "L", "R" or "" (no side)
   int32 count = 5; // pieces per garment (×n), 1..20; 0 = 1
   bool fused = 6; // fused with interfacing

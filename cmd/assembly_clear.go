@@ -151,6 +151,7 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 			Inputs:         op.AssemblyInputs,
 			OutputUnitKey:  op.OutputUnitKey.String,
 			OutputUnitName: op.OutputUnitName.String,
+			Detached:       op.AssemblyBlockDetached,
 		})
 	}
 	sweepPieces := make([]entity.AssemblyPiece, 0, len(card.Pieces))

@@ -154,6 +154,25 @@ func TestOperationWorkIsInAllFiveLists(t *testing.T) {
 	}
 }
 
+func TestAssemblyBlockDetachedIsInStoreWriteAndReadLists(t *testing.T) {
+	if !operationInsertColumns(t)["assembly_block_detached"] {
+		t.Error("assembly_block_detached is absent from insertTechCardOperations")
+	}
+	if !operationSelectColumns(t)["assembly_block_detached"] {
+		t.Error("assembly_block_detached is absent from techCardOperationsQuery")
+	}
+	found := false
+	for _, col := range operationDBColumns() {
+		if col == "assembly_block_detached" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("entity.TechCardOperation has no db:\"assembly_block_detached\" field")
+	}
+}
+
 func slicesContains(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {
