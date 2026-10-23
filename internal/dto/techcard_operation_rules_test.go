@@ -144,10 +144,12 @@ func TestTopstitchAndSeamClassMustAgree(t *testing.T) {
 			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].topstitch_mode/required", ve.Field, ve.Reason)
 		}
 	})
-	t.Run("режим при НЕНАЗВАННОМ классе отвергается", func(t *testing.T) {
-		ve := kindRefusal(t, step(classUnset, modeEdge))
-		if ve.Field != "operations[0].seam_class" || ve.Reason != "required" {
-			t.Errorf("отказ назвал %q/%q, ожидалось operations[0].seam_class/required", ve.Field, ve.Reason)
+	t.Run("режим при НЕНАЗВАННОМ классе — законно, класс наследует стандарт карточки", func(t *testing.T) {
+		// Правило снято 2026-10-24: краевая отстрочка — обычный шов плюс строчка, и её класс
+		// честно наследует стандарт карточки. Иначе пункт Topstitch вынуждал ставить орнамент.
+		op := kindParse(t, step(classUnset, modeEdge)).Operations[0]
+		if op.SeamClass.Valid || op.TopstitchMode.String != "edge" {
+			t.Errorf("пара не доехала: %v / %q", op.SeamClass, op.TopstitchMode.String)
 		}
 	})
 	t.Run("отделочный класс с режимом — законно", func(t *testing.T) {
