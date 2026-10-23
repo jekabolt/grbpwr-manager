@@ -488,6 +488,9 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
 	// first outgoing pattern row, so ordinary saves without an archive do not grow the snapshot table.
 	snapshotIDForArchive := memoizedTechCardSnapshotID(tc, cur.LockVersion, func(reason string) (int64, error) {
+		if reason == "autosave" && tc.SnapshotSaveSessionId != "" {
+			return appendOrMergeAutosaveSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc)
+		}
 		return appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, reason, tc)
 	})
 	if tc.SnapshotReason != "" {
@@ -647,6 +650,14 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// under us — make the WHERE guard load-bearing, not just the in-Go check.
 	if rows == 0 {
 		return nil, entity.ErrTechCardConflict
+	}
+	// The successful optimistic UPDATE above is the card-row serialization point. Coalesce only
+	// after it, so concurrent requests cannot both observe an empty session bucket and insert two
+	// pre-images; a losing stale writer returns above and writes no history row.
+	if tc.SnapshotReason == "" && tc.SnapshotSaveSessionId != "" {
+		if _, err := snapshotIDForArchive("autosave"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Re-derive the top/sub/type triple from the category_id just written, BEFORE the children are
@@ -2544,22 +2555,31 @@ func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersi
 	if tc.SnapshotJSON == "" {
 		return 0, fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
 	}
+	changedPaths, err := json.Marshal(mergeSnapshotChanges(nil, tc.SnapshotChangedPaths))
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode tech card snapshot changed paths: %w", err)
+	}
 	snapshotID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO tech_card_snapshot
-			(tech_card_id, lock_version, reason, snapshot, created_by)
+			(tech_card_id, lock_version, reason, snapshot, created_by, changed_paths, pinned)
 		VALUES
-			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by)`, map[string]any{
-		"tech_card_id": id,
-		"lock_version": lockVersion,
-		"reason":       reason,
-		"snapshot":     tc.SnapshotJSON,
-		"created_by":   sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
+			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by, :changed_paths, :pinned)`, map[string]any{
+		"tech_card_id":  id,
+		"lock_version":  lockVersion,
+		"reason":        reason,
+		"snapshot":      tc.SnapshotJSON,
+		"created_by":    sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
+		"changed_paths": string(changedPaths),
+		"pinned":        tc.SnapshotPinned,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to append tech card snapshot: %w", err)
 	}
 	if snapshotID <= 0 {
 		return 0, fmt.Errorf("tech card snapshot insert returned no id")
+	}
+	if err := pruneTechCardAutosaveSnapshots(ctx, db, id); err != nil {
+		return 0, err
 	}
 	return int64(snapshotID), nil
 }

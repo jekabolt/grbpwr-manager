@@ -2271,13 +2271,17 @@ type TechCardPatternRevision struct {
 // TechCardSnapshot is one immutable tech_card_snapshot row (0424): the card's read model frozen
 // before the save that wrote it. Snapshot is protojson of common.TechCard.
 type TechCardSnapshot struct {
-	Id          int64          `db:"id"`
-	TechCardId  int            `db:"tech_card_id"`
-	LockVersion int            `db:"lock_version"`
-	Reason      string         `db:"reason"`
-	Snapshot    string         `db:"snapshot"`
-	CreatedBy   sql.NullString `db:"created_by"`
-	CreatedAt   time.Time      `db:"created_at"`
+	Id            int64          `db:"id"`
+	TechCardId    int            `db:"tech_card_id"`
+	LockVersion   int            `db:"lock_version"`
+	Reason        string         `db:"reason"`
+	Snapshot      string         `db:"snapshot"`
+	CreatedBy     sql.NullString `db:"created_by"`
+	SaveSessionId sql.NullString `db:"save_session_id"`
+	BucketStart   sql.NullTime   `db:"bucket_start"`
+	ChangedPaths  []string       `db:"-"`
+	Pinned        bool           `db:"pinned"`
+	CreatedAt     time.Time      `db:"created_at"`
 }
 
 // TechCardSizePattern is a final cut pattern (выкройка) file — PDF or DXF, told apart by
@@ -4476,6 +4480,13 @@ type TechCardInsert struct {
 	// them atomically with the document rewrite.
 	SnapshotReason string `db:"-"`
 	SnapshotJSON   string `db:"-"`
+	// SnapshotSaveSessionId enables ordinary UpdateTechCard autosave history. The store coalesces
+	// rows by this client-minted UUID and a server-time five-minute bucket. ChangedPaths are short,
+	// stable UI labels for the sections changed by this save; Pinned exempts lifecycle/restore rows
+	// from retention.
+	SnapshotSaveSessionId string   `db:"-"`
+	SnapshotChangedPaths  []string `db:"-"`
+	SnapshotPinned        bool     `db:"-"`
 	// SnapshotLockVersion is the lock_version of the card SnapshotJSON was serialised from. The store
 	// refuses the write (ErrTechCardConflict) unless the row it locks is still at that version, so
 	// the frozen blob is provably the state this very save replaces — never an older read.

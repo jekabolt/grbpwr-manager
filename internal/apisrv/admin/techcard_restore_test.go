@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -125,7 +126,7 @@ func restoreSnapshotRow(t *testing.T, card *entity.TechCard) *entity.TechCardSna
 	blob, err := marshalTechCardSnapshot(card, dto.CostingFx{})
 	require.NoError(t, err)
 	return &entity.TechCardSnapshot{Id: restoreSnapshotID, TechCardId: restoreCardID, LockVersion: card.LockVersion,
-		Reason: "dxf-reupload", Snapshot: blob}
+		Reason: "dxf-reupload", Snapshot: blob, CreatedAt: time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)}
 }
 
 func restoreCtx() context.Context {
@@ -270,6 +271,8 @@ func TestRestoreWritesTheSnapshotThroughTheSave(t *testing.T) {
 
 	// (3) the undo point.
 	require.Equal(t, "restore:42", written.SnapshotReason)
+	require.Equal(t, []string{"restored 23.10 10:00"}, written.SnapshotChangedPaths)
+	require.True(t, written.SnapshotPinned)
 	require.Equal(t, 3, written.SnapshotLockVersion, "the snapshot is valid only at the version it was read at")
 	var frozenNow pb_common.TechCard
 	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozenNow))
@@ -434,6 +437,33 @@ func TestSaveWithoutSnapshotReasonStillFreezesTheOutgoingCardForPatternHistory(t
 	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozen))
 	require.Equal(t, restoreSheetV6, frozen.GetTechCard().GetPatterns()[0].GetUrl(),
 		"the lazy store snapshot must restore the outgoing sheet, not the incoming replacement")
+}
+
+func TestSaveSessionEnablesAutosaveHistoryWithoutChangingExplicitSnapshotSemantics(t *testing.T) {
+	restoreHosts(t)
+	rig := newRestoreRig(t)
+	stored := restoreCardAtV6()
+	stored.LockVersion = 3
+	rig.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, restoreCardID).Return(stored, nil)
+	var written *entity.TechCardInsert
+	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
+		mock.AnythingOfType("*entity.TechCardInsert"), 3).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Return(nil, entity.ErrTechCardConflict)
+
+	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
+	payload.OperationReviewAware = true
+	payload.MachineFieldsAware = true
+	payload.LabelsAware = true
+	_, err := rig.srv.UpdateTechCard(restoreCtx(), &pb_admin.UpdateTechCardRequest{
+		Id: restoreCardID, ExpectedLockVersion: 3, TechCard: payload,
+		SaveSessionId: "68d21d4d-5c6f-4e4f-9290-0c70e62395c7",
+	})
+	require.Equal(t, codes.Aborted, status.Code(err), "%v", err)
+	require.NotNil(t, written)
+	require.Empty(t, written.SnapshotReason, "autosave history must not create an explicit journal reason")
+	require.Equal(t, "68d21d4d-5c6f-4e4f-9290-0c70e62395c7", written.SnapshotSaveSessionId)
+	require.NotEmpty(t, written.SnapshotChangedPaths)
 }
 
 // TestRestorePayloadSpeaksEveryField — the read model is not a write payload: for a dozen fields an

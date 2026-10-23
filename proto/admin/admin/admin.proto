@@ -2076,8 +2076,14 @@ service AdminService {
     };
   }
 
-  // RestoreTechCardSnapshot brings a card back to one of its own snapshots
-  // (TechCardPatternRevision.snapshot_id). One transaction: the current card is snapshotted first
+  // ListTechCardSnapshots returns the light server-side save history, newest first. The current
+  // card is not repeated here: clients render it as their own top row from GetTechCard.
+  rpc ListTechCardSnapshots(ListTechCardSnapshotsRequest) returns (ListTechCardSnapshotsResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/snapshots"};
+  }
+
+  // RestoreTechCardSnapshot brings a card back to any one of its own snapshots, including autosave
+  // history and TechCardPatternRevision.snapshot_id rows. One transaction: the current card is snapshotted first
   // (reason «restore:<snapshot_id>»), then rewritten through the UpdateTechCard write path. Approval,
   // sign-offs, stage, style number, category and measurement unit stay as they are now. Errors:
   // NotFound (no such snapshot on this card), Aborted (expected_lock_version is stale),
@@ -9869,13 +9875,37 @@ message UpdateTechCardRequest {
   // Non-empty only for an atomic, history-worthy rewrite such as DXF reconciliation. The server
   // stores the pre-update card snapshot and a matching revision-journal line in the same transaction.
   string snapshot_reason = 4;
+  // UUID minted when the edit screen opens. Non-empty ordinary saves coalesce their pre-images into
+  // one autosave snapshot per server-side five-minute bucket; absent keeps legacy save behaviour.
+  string save_session_id = 5;
 }
 
 message UpdateTechCardResponse {}
 
+message ListTechCardSnapshotsRequest {
+  int32 tech_card_id = 1;
+  int32 page_size = 2; // default and maximum 100
+  int64 before_snapshot_id = 3; // keyset cursor; 0 starts at the newest row
+}
+
+message TechCardSnapshotListItem {
+  int64 snapshot_id = 1;
+  int32 lock_version = 2;
+  string reason = 3;
+  google.protobuf.Timestamp created_at = 4;
+  string author_label = 5;
+  repeated string changes = 6;
+  bool pinned = 7;
+}
+
+message ListTechCardSnapshotsResponse {
+  repeated TechCardSnapshotListItem items = 1;
+  int64 next_before_snapshot_id = 2; // 0 when there is no older page
+}
+
 message RestoreTechCardSnapshotRequest {
   int32 tech_card_id = 1;
-  int64 snapshot_id = 2; // TechCardPatternRevision.snapshot_id of THIS card
+  int64 snapshot_id = 2; // any tech_card_snapshot.id of THIS card
   int32 expected_lock_version = 3; // from GetTechCard; a mismatch means a concurrent edit -> Aborted
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/accounting"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -659,13 +660,18 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// so lazily only if pattern reconciliation is about to archive an outgoing sheet. This closes the
 	// restore gap for clients that replace or remove a sheet without sending snapshot_reason, while
 	// leaving SnapshotReason empty so those saves do not gain a second revision-journal entry.
-	blob, err := marshalTechCardSnapshot(stored, s.costingFx(ctx))
+	fx := s.costingFx(ctx)
+	blob, err := marshalTechCardSnapshot(stored, fx)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't build pre-update tech card snapshot",
 			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't snapshot tech card; nothing was written")
 	}
 	tc.SnapshotJSON = blob
+	tc.SnapshotChangedPaths = techCardChangedSections(
+		dto.ConvertEntityTechCardToPb(stored, fx).GetTechCard(), in)
+	tc.SnapshotPinned = (tc.ApprovalState == entity.TechCardApprovalApproved ||
+		tc.ApprovalState == entity.TechCardApprovalReleased) && tc.ApprovalState != stored.ApprovalState
 	// The blob is `stored`; the store writes it only if the row is still at this version, so the
 	// snapshot is exactly the state this save replaces (and the sheets it archives point at it).
 	tc.SnapshotLockVersion = stored.LockVersion
@@ -737,9 +743,23 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		return nil, apierr.Invalid(entity.NewFieldViolation("snapshot_reason", "too_long", snapshotReason,
 			"keep the snapshot reason to 255 characters or fewer"))
 	}
+	saveSessionID := strings.TrimSpace(req.GetSaveSessionId())
+	if saveSessionID != "" {
+		parsed, parseErr := uuid.Parse(saveSessionID)
+		if parseErr != nil {
+			return nil, apierr.Invalid(entity.NewFieldViolation("save_session_id", "invalid_uuid", saveSessionID,
+				"send the UUID minted when this tech-card screen opened"))
+		}
+		saveSessionID = parsed.String()
+	}
 	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
 	if err != nil {
 		return nil, err
+	}
+	// An explicit checkpoint remains one eager, journalled row exactly as before this API gained
+	// autosave sessions. The session is intentionally ignored for that save rather than coalescing it.
+	if snapshotReason == "" {
+		tc.SnapshotSaveSessionId = saveSessionID
 	}
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
