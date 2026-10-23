@@ -29,6 +29,7 @@ func appendOrMergeAutosaveSnapshot(
 	ctx context.Context,
 	db dependency.DB,
 	id, lockVersion int,
+	now time.Time,
 	tc *entity.TechCardInsert,
 ) (int64, error) {
 	if tc == nil || strings.TrimSpace(tc.SnapshotSaveSessionId) == "" {
@@ -37,7 +38,7 @@ func appendOrMergeAutosaveSnapshot(
 	if tc.SnapshotJSON == "" {
 		return 0, fmt.Errorf("autosave snapshot requires a pre-update card snapshot")
 	}
-	bucket := techCardSnapshotBucket(time.Now())
+	bucket := techCardSnapshotBucket(now)
 	row, err := storeutil.QueryNamedOne[autosaveSnapshotRow](ctx, db, `
 		SELECT id, CAST(changed_paths AS CHAR) AS changed_paths, pinned
 		FROM tech_card_snapshot

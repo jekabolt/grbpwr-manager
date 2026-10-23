@@ -489,7 +489,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// first outgoing pattern row, so ordinary saves without an archive do not grow the snapshot table.
 	snapshotIDForArchive := memoizedTechCardSnapshotID(tc, cur.LockVersion, func(reason string) (int64, error) {
 		if reason == "autosave" && tc.SnapshotSaveSessionId != "" {
-			return appendOrMergeAutosaveSnapshot(ctx, rep.DB(), id, cur.LockVersion, tc)
+			return appendOrMergeAutosaveSnapshot(ctx, rep.DB(), id, cur.LockVersion, rep.Now(), tc)
 		}
 		return appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, reason, tc)
 	})
