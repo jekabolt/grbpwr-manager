@@ -42,6 +42,7 @@ type zoneState struct {
 	X0, Y0, X1, Y1 string
 	Spline         bool
 	Points         []splinePointState
+	Holes          [][]splinePointState
 }
 
 type pieceFusingState struct {
@@ -97,6 +98,15 @@ func pieceState(piece entity.TechCardPiece) pieceFusingState {
 				state.Zone.Points = append(state.Zone.Points, splinePointState{
 					X: point.X.String(), Y: point.Y.String(), Corner: point.Corner,
 				})
+			}
+			for i := range piece.FusingZone.Holes {
+				hole := make([]splinePointState, 0, len(piece.FusingZone.Holes[i].Points))
+				for _, point := range piece.FusingZone.Holes[i].Points {
+					hole = append(hole, splinePointState{
+						X: point.X.String(), Y: point.Y.String(), Corner: point.Corner,
+					})
+				}
+				state.Zone.Holes = append(state.Zone.Holes, hole)
 			}
 		}
 	}

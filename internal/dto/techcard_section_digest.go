@@ -640,7 +640,19 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 				for _, point := range p.FusingZone.Spline.Points {
 					points = append(points, []any{point.X.String(), point.Y.String(), point.Corner})
 				}
-				fusingDetails = append(fusingDetails, []any{"zone_spline", points})
+				zoneSpline := []any{"zone_spline", points}
+				if len(p.FusingZone.Holes) > 0 {
+					holes := make([]any, 0, len(p.FusingZone.Holes))
+					for _, hole := range p.FusingZone.Holes {
+						holePoints := make([]any, 0, len(hole.Points))
+						for _, point := range hole.Points {
+							holePoints = append(holePoints, []any{point.X.String(), point.Y.String(), point.Corner})
+						}
+						holes = append(holes, holePoints)
+					}
+					zoneSpline = append(zoneSpline, []any{"holes", holes})
+				}
+				fusingDetails = append(fusingDetails, zoneSpline)
 			case p.FusingZone.DxfPieceKey != "":
 				fusingDetails = append(fusingDetails, []any{"zone_dxf", p.FusingZone.DxfPieceKey})
 			}

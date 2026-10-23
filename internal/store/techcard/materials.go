@@ -65,13 +65,28 @@ type pieceFusingEdgeJSON struct {
 }
 
 type pieceFusingZoneJSON struct {
-	Rect        []json.Number          `json:"rect,omitempty"`
-	Spline      *pieceFusingSplineJSON `json:"spline,omitempty"`
-	DxfPieceKey string                 `json:"dxf_piece_key,omitempty"`
+	Rect        []json.Number           `json:"rect,omitempty"`
+	Spline      *pieceFusingSplineJSON  `json:"spline,omitempty"`
+	Holes       []pieceFusingSplineJSON `json:"holes,omitempty"`
+	DxfPieceKey string                  `json:"dxf_piece_key,omitempty"`
 }
 
 type pieceFusingSplineJSON struct {
 	Pts [][]json.Number `json:"pts"`
+}
+
+func pieceFusingSplineJSONValue(spline *entity.TechCardPieceFusingSpline) pieceFusingSplineJSON {
+	row := pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(spline.Points))}
+	for _, point := range spline.Points {
+		corner := json.Number("0")
+		if point.Corner {
+			corner = json.Number("1")
+		}
+		row.Pts = append(row.Pts, []json.Number{
+			json.Number(point.X.String()), json.Number(point.Y.String()), corner,
+		})
+	}
+	return row
 }
 
 func pieceFusingEdgesJSON(edges []entity.TechCardPieceFusingEdge) (any, error) {
@@ -103,15 +118,13 @@ func pieceFusingZoneJSONValue(zone *entity.TechCardPieceFusingZone) (any, error)
 		}
 	}
 	if zone.Spline != nil {
-		row.Spline = &pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(zone.Spline.Points))}
-		for _, point := range zone.Spline.Points {
-			corner := json.Number("0")
-			if point.Corner {
-				corner = json.Number("1")
-			}
-			row.Spline.Pts = append(row.Spline.Pts, []json.Number{
-				json.Number(point.X.String()), json.Number(point.Y.String()), corner,
-			})
+		spline := pieceFusingSplineJSONValue(zone.Spline)
+		row.Spline = &spline
+	}
+	if len(zone.Holes) > 0 {
+		row.Holes = make([]pieceFusingSplineJSON, 0, len(zone.Holes))
+		for i := range zone.Holes {
+			row.Holes = append(row.Holes, pieceFusingSplineJSONValue(&zone.Holes[i]))
 		}
 	}
 	raw, err := json.Marshal(row)
@@ -119,6 +132,30 @@ func pieceFusingZoneJSONValue(zone *entity.TechCardPieceFusingZone) (any, error)
 		return nil, fmt.Errorf("marshal piece fusing zone: %w", err)
 	}
 	return string(raw), nil
+}
+
+func decodePieceFusingSplineJSON(row pieceFusingSplineJSON, field, pieceKey string) (entity.TechCardPieceFusingSpline, error) {
+	points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(row.Pts))
+	for i, tuple := range row.Pts {
+		if len(tuple) != 3 {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s point %d of piece %q: has %d values, want 3", field, i, pieceKey, len(tuple))
+		}
+		x, err := decimal.NewFromString(tuple[0].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s point %d x of piece %q: %w", field, i, pieceKey, err)
+		}
+		y, err := decimal.NewFromString(tuple[1].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s point %d y of piece %q: %w", field, i, pieceKey, err)
+		}
+		if tuple[2].String() != "0" && tuple[2].String() != "1" {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s point %d corner of piece %q: got %q, want 0 or 1", field, i, pieceKey, tuple[2])
+		}
+		points = append(points, entity.TechCardPieceFusingSplinePoint{
+			X: x, Y: y, Corner: tuple[2].String() == "1",
+		})
+	}
+	return entity.TechCardPieceFusingSpline{Points: points}, nil
 }
 
 func decodePieceFusingJSON(p *entity.TechCardPiece) error {
@@ -158,6 +195,21 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 	if shapeCount != 1 {
 		return fmt.Errorf("decode fusing_zone of piece %q: want exactly one of rect, spline, or dxf_piece_key", p.LineKey)
 	}
+	if len(row.Holes) > 0 && row.Spline == nil {
+		return fmt.Errorf("decode fusing_zone of piece %q: holes require spline", p.LineKey)
+	}
+	if len(row.Holes) > entity.TechCardPieceFusingZoneMaxHoles {
+		return fmt.Errorf("decode fusing_zone of piece %q: has %d holes, want at most %d",
+			p.LineKey, len(row.Holes), entity.TechCardPieceFusingZoneMaxHoles)
+	}
+	holes := make([]entity.TechCardPieceFusingSpline, 0, len(row.Holes))
+	for i, holeRow := range row.Holes {
+		hole, err := decodePieceFusingSplineJSON(holeRow, fmt.Sprintf("hole %d", i), p.LineKey)
+		if err != nil {
+			return err
+		}
+		holes = append(holes, hole)
+	}
 	switch {
 	case len(row.Rect) > 0:
 		if len(row.Rect) != 4 {
@@ -173,31 +225,15 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 		}
 		p.FusingZone = &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: coords[0], Y0: coords[1], X1: coords[2], Y1: coords[3],
-		}}
+		}, Holes: holes}
 	case row.Spline != nil:
-		points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(row.Spline.Pts))
-		for i, tuple := range row.Spline.Pts {
-			if len(tuple) != 3 {
-				return fmt.Errorf("decode fusing_zone spline point %d of piece %q: has %d values, want 3", i, p.LineKey, len(tuple))
-			}
-			x, err := decimal.NewFromString(tuple[0].String())
-			if err != nil {
-				return fmt.Errorf("decode fusing_zone spline point %d x of piece %q: %w", i, p.LineKey, err)
-			}
-			y, err := decimal.NewFromString(tuple[1].String())
-			if err != nil {
-				return fmt.Errorf("decode fusing_zone spline point %d y of piece %q: %w", i, p.LineKey, err)
-			}
-			if tuple[2].String() != "0" && tuple[2].String() != "1" {
-				return fmt.Errorf("decode fusing_zone spline point %d corner of piece %q: got %q, want 0 or 1", i, p.LineKey, tuple[2])
-			}
-			points = append(points, entity.TechCardPieceFusingSplinePoint{
-				X: x, Y: y, Corner: tuple[2].String() == "1",
-			})
+		spline, err := decodePieceFusingSplineJSON(*row.Spline, "spline", p.LineKey)
+		if err != nil {
+			return err
 		}
-		p.FusingZone = &entity.TechCardPieceFusingZone{Spline: &entity.TechCardPieceFusingSpline{Points: points}}
+		p.FusingZone = &entity.TechCardPieceFusingZone{Spline: &spline, Holes: holes}
 	case row.DxfPieceKey != "":
-		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey}
+		p.FusingZone = &entity.TechCardPieceFusingZone{DxfPieceKey: row.DxfPieceKey, Holes: holes}
 	}
 	return nil
 }

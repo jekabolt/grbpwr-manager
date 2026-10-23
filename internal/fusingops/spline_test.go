@@ -16,7 +16,11 @@ func fusingSplineCard(corner bool) *entity.TechCardInsert {
 				{X: decimal.NewFromInt(10), Y: decimal.Zero, Corner: corner},
 				{X: decimal.Zero, Y: decimal.NewFromInt(10), Corner: true},
 			},
-		}},
+		}, Holes: []entity.TechCardPieceFusingSpline{{Points: []entity.TechCardPieceFusingSplinePoint{
+			{X: decimal.NewFromInt(1), Y: decimal.NewFromInt(1), Corner: true},
+			{X: decimal.NewFromInt(2), Y: decimal.NewFromInt(1), Corner: true},
+			{X: decimal.NewFromInt(1), Y: decimal.NewFromInt(2), Corner: true},
+		}}}},
 	}}}
 }
 
@@ -34,5 +38,10 @@ func TestFusingStateChangedIncludesSpline(t *testing.T) {
 	changed.Pieces[0].FusingZone.Spline.Points[1].X = decimal.NewFromInt(11)
 	if !FusingStateChanged(stored, changed) {
 		t.Fatal("spline coordinate change was absent from fusing state")
+	}
+	changed = fusingSplineCard(true)
+	changed.Pieces[0].FusingZone.Holes[0].Points[1].X = decimal.NewFromInt(3)
+	if !FusingStateChanged(stored, changed) {
+		t.Fatal("spline hole change was absent from fusing state")
 	}
 }

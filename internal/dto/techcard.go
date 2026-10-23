@@ -3082,21 +3082,57 @@ func parsePieceFusingEdges(p *pb_common.TechCardPiece, field string) ([]entity.T
 	return out, false, nil
 }
 
+func parsePieceFusingSpline(spline *pb_common.TechCardPieceFusingSpline, field string) (*entity.TechCardPieceFusingSpline, error) {
+	if spline == nil {
+		return nil, entity.NewFieldViolation(field, "fusing spline is empty", "",
+			"draw a closed outline with 3 to 64 points, or clear it")
+	}
+	points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(spline.GetPoints()))
+	for i, point := range spline.GetPoints() {
+		pointField := fmt.Sprintf("%s.points[%d]", field, i)
+		if point == nil {
+			return nil, entity.NewFieldViolation(pointField, "fusing spline point is empty", "",
+				"remove the empty point or place it on the outline")
+		}
+		x, err := fusingDecimalFromPb(point.GetX(), pointField+".x")
+		if err != nil {
+			return nil, err
+		}
+		y, err := fusingDecimalFromPb(point.GetY(), pointField+".y")
+		if err != nil {
+			return nil, err
+		}
+		points = append(points, entity.TechCardPieceFusingSplinePoint{X: x, Y: y, Corner: point.GetCorner()})
+	}
+	return &entity.TechCardPieceFusingSpline{Points: points}, nil
+}
+
 func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.TechCardPieceFusingZone, bool, error) {
 	zone := p.GetFusingZone()
 	if zone == nil {
 		return nil, true, nil
 	}
+	holes := make([]entity.TechCardPieceFusingSpline, 0, len(zone.GetHoles()))
+	for i, wireHole := range zone.GetHoles() {
+		hole, err := parsePieceFusingSpline(wireHole, fmt.Sprintf("%s.fusing_zone.holes[%d]", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		holes = append(holes, *hole)
+	}
 	switch shape := zone.GetShape().(type) {
 	case nil:
-		return nil, false, nil // present empty message is the explicit clear
+		if len(holes) == 0 {
+			return nil, false, nil // present empty message is the explicit clear
+		}
+		return &entity.TechCardPieceFusingZone{Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_DxfPieceKey:
 		key := strings.TrimSpace(shape.DxfPieceKey)
 		if key == "" {
 			return nil, false, entity.NewFieldViolation(field+".fusing_zone.dxf_piece_key",
 				"DXF piece key is empty", "", "select a dedicated DXF piece, or clear the zone")
 		}
-		return &entity.TechCardPieceFusingZone{DxfPieceKey: key}, false, nil
+		return &entity.TechCardPieceFusingZone{DxfPieceKey: key, Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_Rect:
 		if shape.Rect == nil {
 			return nil, false, entity.NewFieldViolation(field+".fusing_zone.rect",
@@ -3114,30 +3150,13 @@ func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.Tec
 		}
 		return &entity.TechCardPieceFusingZone{Rect: &entity.TechCardPieceFusingRect{
 			X0: values[0], Y0: values[1], X1: values[2], Y1: values[3],
-		}}, false, nil
+		}, Holes: holes}, false, nil
 	case *pb_common.TechCardPieceFusingZone_Spline:
-		if shape.Spline == nil {
-			return nil, false, entity.NewFieldViolation(field+".fusing_zone.spline",
-				"fusing spline is empty", "", "draw a closed outline with 3 to 64 points, or clear the zone")
+		spline, err := parsePieceFusingSpline(shape.Spline, field+".fusing_zone.spline")
+		if err != nil {
+			return nil, false, err
 		}
-		points := make([]entity.TechCardPieceFusingSplinePoint, 0, len(shape.Spline.GetPoints()))
-		for i, point := range shape.Spline.GetPoints() {
-			pointField := fmt.Sprintf("%s.fusing_zone.spline.points[%d]", field, i)
-			if point == nil {
-				return nil, false, entity.NewFieldViolation(pointField, "fusing spline point is empty", "",
-					"remove the empty point or place it on the outline")
-			}
-			x, err := fusingDecimalFromPb(point.GetX(), pointField+".x")
-			if err != nil {
-				return nil, false, err
-			}
-			y, err := fusingDecimalFromPb(point.GetY(), pointField+".y")
-			if err != nil {
-				return nil, false, err
-			}
-			points = append(points, entity.TechCardPieceFusingSplinePoint{X: x, Y: y, Corner: point.GetCorner()})
-		}
-		return &entity.TechCardPieceFusingZone{Spline: &entity.TechCardPieceFusingSpline{Points: points}}, false, nil
+		return &entity.TechCardPieceFusingZone{Spline: spline, Holes: holes}, false, nil
 	default:
 		return nil, false, entity.NewFieldViolation(field+".fusing_zone", "unknown zone shape", "",
 			"draw a rectangle or spline, or select a dedicated DXF piece")
@@ -4070,12 +4089,29 @@ func pieceFusingEdgesToPb(edges []entity.TechCardPieceFusingEdge) *pb_common.Tec
 	return out
 }
 
+func pieceFusingSplineToPb(spline *entity.TechCardPieceFusingSpline) *pb_common.TechCardPieceFusingSpline {
+	if spline == nil {
+		return nil
+	}
+	points := make([]*pb_common.TechCardPieceFusingSplinePoint, 0, len(spline.Points))
+	for _, point := range spline.Points {
+		points = append(points, &pb_common.TechCardPieceFusingSplinePoint{
+			X: pbDecimalFromDecimal(point.X), Y: pbDecimalFromDecimal(point.Y), Corner: point.Corner,
+		})
+	}
+	return &pb_common.TechCardPieceFusingSpline{Points: points}
+}
+
 func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCardPieceFusingZone {
 	if zone == nil {
 		return nil
 	}
+	holes := make([]*pb_common.TechCardPieceFusingSpline, 0, len(zone.Holes))
+	for i := range zone.Holes {
+		holes = append(holes, pieceFusingSplineToPb(&zone.Holes[i]))
+	}
 	if zone.Rect != nil {
-		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_Rect{
+		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Rect{
 			Rect: &pb_common.TechCardPieceFusingRect{
 				X0: pbDecimalFromDecimal(zone.Rect.X0), Y0: pbDecimalFromDecimal(zone.Rect.Y0),
 				X1: pbDecimalFromDecimal(zone.Rect.X1), Y1: pbDecimalFromDecimal(zone.Rect.Y1),
@@ -4083,18 +4119,12 @@ func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCa
 		}}
 	}
 	if zone.Spline != nil {
-		points := make([]*pb_common.TechCardPieceFusingSplinePoint, 0, len(zone.Spline.Points))
-		for _, point := range zone.Spline.Points {
-			points = append(points, &pb_common.TechCardPieceFusingSplinePoint{
-				X: pbDecimalFromDecimal(point.X), Y: pbDecimalFromDecimal(point.Y), Corner: point.Corner,
-			})
-		}
-		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_Spline{
-			Spline: &pb_common.TechCardPieceFusingSpline{Points: points},
+		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_Spline{
+			Spline: pieceFusingSplineToPb(zone.Spline),
 		}}
 	}
 	if zone.DxfPieceKey != "" {
-		return &pb_common.TechCardPieceFusingZone{Shape: &pb_common.TechCardPieceFusingZone_DxfPieceKey{
+		return &pb_common.TechCardPieceFusingZone{Holes: holes, Shape: &pb_common.TechCardPieceFusingZone_DxfPieceKey{
 			DxfPieceKey: zone.DxfPieceKey,
 		}}
 	}

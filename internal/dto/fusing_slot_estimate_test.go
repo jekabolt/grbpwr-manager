@@ -175,6 +175,21 @@ func TestOwnGeneratedFusingAreaIsUsedDirectly(t *testing.T) {
 	} {
 		t.Run(string(mode), func(t *testing.T) {
 			tc := fusedCard(mode, "25")
+			if mode == entity.PieceFusingModeZone {
+				point := func(x, y int64) entity.TechCardPieceFusingSplinePoint {
+					return entity.TechCardPieceFusingSplinePoint{
+						X: decimal.NewFromInt(x), Y: decimal.NewFromInt(y), Corner: true,
+					}
+				}
+				tc.Pieces[0].FusingZone = &entity.TechCardPieceFusingZone{
+					Spline: &entity.TechCardPieceFusingSpline{Points: []entity.TechCardPieceFusingSplinePoint{
+						point(0, 0), point(20, 0), point(20, 10), point(0, 10),
+					}},
+					Holes: []entity.TechCardPieceFusingSpline{{Points: []entity.TechCardPieceFusingSplinePoint{
+						point(2, 2), point(6, 2), point(6, 5), point(2, 5),
+					}}},
+				}
+			}
 			tc.PieceAreaScopes["FUSEKEY"] = entity.PieceAreaScope{
 				ScopeKey: "FUSEKEY", Rows: []entity.PieceAreaRow{{
 					PieceLineKey: "PIECE1",
@@ -187,8 +202,9 @@ func TestOwnGeneratedFusingAreaIsUsedDirectly(t *testing.T) {
 				}},
 			}
 			est := fusingSlotEstimate(t, tc)
-			// The generated fusing sheet already describes the strip/zone itself: 1400 cm² / 100 cm.
-			// Applying strip perimeter×width would yield 0.0375 m; refusing zone would yield no norm.
+			// The generated fusing sheet already describes the strip/zone itself: for ZONE its 1400
+			// cm² is already net of the stored hole. Applying strip perimeter×width would yield
+			// 0.0375 m; recomputing the tiny base-size zone or refusing it would give the wrong norm.
 			if !est.normDerived || !est.perGarment.Equal(decimal.RequireFromString("0.14")) {
 				t.Fatalf("mode %s gave %s (refusal %q), want direct measured area 0.14 m",
 					mode, est.perGarment, est.refusal)
