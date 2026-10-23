@@ -2894,6 +2894,9 @@ message TechCardOperation {
   // string rather than an enum so an older protojson client cannot silently drop a future reason.
   string review = 69;
 
+  // Keeps a piece-processing step between assembly blocks without making it part of either block.
+  bool assembly_block_detached = 70;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3822,6 +3825,9 @@ message TechCardInsert {
   // карточку с review-метками: без этого флага сервер отказывает, а не стирает их. Транспорт,
   // не содержание; ни в один дайджест не входит.
   bool operation_review_aware = 126;
+
+  // Declares support for TechCardOperation.assembly_block_detached on full-replace writes.
+  bool operation_block_membership_aware = 127;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

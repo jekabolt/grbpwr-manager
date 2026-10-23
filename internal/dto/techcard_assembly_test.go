@@ -473,6 +473,76 @@ func TestAssemblyParsedFromWire(t *testing.T) {
 	}
 }
 
+func TestDetachedAssemblyBlockOperationRulesAndRoundTrip(t *testing.T) {
+	t.Run("piece processing after its piece joined remains valid", func(t *testing.T) {
+		ops := []entity.TechCardOperation{
+			asmOp([]string{"FR", "BK"}, "SHELL"),
+			{InputKeys: []string{"FR"}, AssemblyBlockDetached: true},
+		}
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+			t.Fatalf("valid detached processing rejected: %v", verr)
+		}
+		if len(ops[1].AssemblyInputs) != 1 || ops[1].AssemblyInputs[0].Kind != entity.AssemblyInputPiece {
+			t.Fatalf("piece input was not retained as processing metadata: %+v", ops[1].AssemblyInputs)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		ops    []entity.TechCardOperation
+		reason string
+	}{
+		{
+			name: "producing step",
+			ops: []entity.TechCardOperation{{
+				InputKeys: []string{"FR", "BK"}, OutputUnitKey: nullStringFromPb("SHELL"),
+				AssemblyBlockDetached: true,
+			}},
+			reason: "detached_step_produces_unit",
+		},
+		{
+			name: "unit input",
+			ops: []entity.TechCardOperation{
+				asmOp([]string{"FR", "BK"}, "SHELL"),
+				{InputKeys: []string{"SHELL"}, AssemblyBlockDetached: true},
+			},
+			reason: "detached_step_has_unit_input",
+		},
+		{
+			name:   "no piece inputs",
+			ops:    []entity.TechCardOperation{{AssemblyBlockDetached: true}},
+			reason: "detached_step_has_no_piece_inputs",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verr := canonicalizeAssembly(tc.ops, asmPieces("FR", "BK"), true)
+			if verr == nil || verr.Reason != tc.reason {
+				t.Fatalf("got validation error %v, want reason %q", verr, tc.reason)
+			}
+		})
+	}
+
+	pbOps := []*pb_common.TechCardOperation{{
+		OperationType:         pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_MACHINE,
+		MachineType:           pb_common.TechCardMachineType_TECH_CARD_MACHINE_TYPE_LOCKSTITCH,
+		Zone:                  pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_OTHER,
+		InputKeys:             []string{"FR"},
+		AssemblyBlockDetached: true,
+	}}
+	parsed, err := parseTechCardOperations(pbOps, map[int]bool{}, 0, nil, nil, true)
+	if err != nil {
+		t.Fatalf("parse detached operation: %v", err)
+	}
+	if len(parsed) != 1 || !parsed[0].AssemblyBlockDetached {
+		t.Fatalf("detachment did not reach entity: %+v", parsed)
+	}
+	emitted := techCardOperationsToPb(parsed)
+	if len(emitted) != 1 || !emitted[0].GetAssemblyBlockDetached() {
+		t.Fatalf("detachment did not survive entity-to-proto: %+v", emitted)
+	}
+}
+
 // TestAssemblyCloneRequiresAwareFlag фиксирует, ЗАЧЕМ клон принудительно ставит assembly_aware.
 //
 // Источник входов выбирается по флагу. Убери флаг из клон-пути — и серверный round-trip возьмёт

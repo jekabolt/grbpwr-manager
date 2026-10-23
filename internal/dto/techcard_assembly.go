@@ -49,7 +49,8 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 		// Имя узла считается сборочным фактом наравне с ключом. Иначе payload, несущий ТОЛЬКО
 		// имя (без ключа и без входов), проскакивал бы мимо прохода и оседал в колонке
 		// output_unit_name — теневое значение, которое контракт обещает отклонять.
-		if ops[i].OutputUnitKey.String != "" || ops[i].OutputUnitName.String != "" || len(ops[i].InputKeys) > 0 {
+		if ops[i].OutputUnitKey.String != "" || ops[i].OutputUnitName.String != "" ||
+			len(ops[i].InputKeys) > 0 || ops[i].AssemblyBlockDetached {
 			marked = true
 			break
 		}
@@ -122,10 +123,30 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 			raw = ops[i].PieceLineKeys
 		}
 		ops[i].AssemblyInputs = entity.ClassifyAssemblyInputs(pieceKeys, raw)
+		if ops[i].AssemblyBlockDetached {
+			if ops[i].OutputUnitKey.String != "" || ops[i].OutputUnitName.String != "" {
+				return entity.NewFieldViolation(stepPath(i)+".assembly_block_detached",
+					"detached_step_produces_unit", ops[i].OutputUnitKey.String,
+					"a detached assembly-block step is piece processing only: clear its output unit before detaching it")
+			}
+			if len(ops[i].AssemblyInputs) == 0 {
+				return entity.NewFieldViolation(stepPath(i)+".assembly_block_detached",
+					"detached_step_has_no_piece_inputs", "true",
+					"a detached assembly-block step needs at least one cut-piece input")
+			}
+			for j, in := range ops[i].AssemblyInputs {
+				if in.Kind == entity.AssemblyInputPiece {
+					continue
+				}
+				return entity.NewFieldViolation(inputPath(i, j), "detached_step_has_unit_input", in.Key,
+					"a detached assembly-block step may take cut pieces only, not an assembled unit")
+			}
+		}
 		steps[i] = entity.AssemblyStep{
 			Inputs:         ops[i].AssemblyInputs,
 			OutputUnitKey:  ops[i].OutputUnitKey.String,
 			OutputUnitName: ops[i].OutputUnitName.String,
+			Detached:       ops[i].AssemblyBlockDetached,
 		}
 	}
 
@@ -235,7 +256,7 @@ func RevalidateTechCardAssembly(tc *entity.TechCardInsert) *entity.ValidationErr
 func assemblyReleaseCheck(ops []entity.TechCardOperation, pieces []entity.TechCardPiece) *entity.ValidationError {
 	produces := false
 	for i := range ops {
-		if ops[i].OutputUnitKey.String != "" {
+		if !ops[i].AssemblyBlockDetached && ops[i].OutputUnitKey.String != "" {
 			produces = true
 			break
 		}
@@ -252,6 +273,7 @@ func assemblyReleaseCheck(ops []entity.TechCardOperation, pieces []entity.TechCa
 			Inputs:         ops[i].AssemblyInputs,
 			OutputUnitKey:  ops[i].OutputUnitKey.String,
 			OutputUnitName: ops[i].OutputUnitName.String,
+			Detached:       ops[i].AssemblyBlockDetached,
 		}
 	}
 	p := assemblyPieces(pieces)
@@ -281,7 +303,7 @@ func TechCardAssemblyBlocker(tc *entity.TechCard) string {
 	}
 	produces := false
 	for i := range tc.Operations {
-		if tc.Operations[i].OutputUnitKey.String != "" {
+		if !tc.Operations[i].AssemblyBlockDetached && tc.Operations[i].OutputUnitKey.String != "" {
 			produces = true
 			break
 		}
@@ -311,6 +333,7 @@ func TechCardAssemblyBlocker(tc *entity.TechCard) string {
 			Inputs:         inputs,
 			OutputUnitKey:  op.OutputUnitKey.String,
 			OutputUnitName: op.OutputUnitName.String,
+			Detached:       op.AssemblyBlockDetached,
 		})
 	}
 	p := assemblyPieces(tc.Pieces)

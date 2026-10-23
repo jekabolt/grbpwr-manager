@@ -3494,6 +3494,9 @@ type TechCardOperation struct {
 	// OutputUnitName — имя узла. Живёт на первом производящем шаге; поглощающие могут не
 	// повторять. В дайджест секции НЕ входит: имя не факт цеха.
 	OutputUnitName sql.NullString `db:"output_unit_name"`
+	// AssemblyBlockDetached keeps a piece-processing step at its sequence position while excluding
+	// it from assembly-block membership and the assembly frontier. Its piece inputs remain stored.
+	AssemblyBlockDetached bool `db:"assembly_block_detached"`
 
 	// InputKeys — единый упорядоченный список входов шага СЫРЫМИ ключами, как они пришли с
 	// провода (поле 46). Не персистится: в БД лежит уже классифицированное объединение.

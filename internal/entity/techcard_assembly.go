@@ -85,6 +85,7 @@ type AssemblyStep struct {
 	Inputs         []OperationInput
 	OutputUnitKey  string
 	OutputUnitName string
+	Detached       bool
 }
 
 // AssemblyRule — номер нарушенного правила. Номер, а не строка: сообщение переводит слой
@@ -295,7 +296,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 	// (Ровно этим болен derive() в прототипе: ветка есть, но недостижима.)
 	firstProducer := make(map[string]int, len(steps))
 	for i, s := range steps {
-		if s.OutputUnitKey == "" {
+		if s.Detached || s.OutputUnitKey == "" {
 			continue
 		}
 		if _, seen := firstProducer[s.OutputUnitKey]; !seen {
@@ -313,6 +314,11 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 
 	for i, s := range steps {
 		res.FrontierBefore[i] = filterLive(order, live)
+		if s.Detached {
+			// A detached operation keeps its sequence position and piece-processing inputs, but it is
+			// deliberately outside the assembly graph: it neither reads nor changes the frontier.
+			continue
+		}
 
 		// --- гигиена -----------------------------------------------------------------------
 		if s.OutputUnitKey == "" && s.OutputUnitName != "" {
@@ -493,7 +499,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 func AssemblyReleaseCheck(pieces []AssemblyPiece, steps []AssemblyStep, res AssemblyResult) []AssemblyViolation {
 	marked := false
 	for _, s := range steps {
-		if s.OutputUnitKey != "" {
+		if !s.Detached && s.OutputUnitKey != "" {
 			marked = true
 			break
 		}

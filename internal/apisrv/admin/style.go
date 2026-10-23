@@ -351,6 +351,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	pbInsert.OperationDraftAware = true
 	// DXF-review так же собран самим сервером и должен доехать до клона.
 	pbInsert.OperationReviewAware = true
+	pbInsert.OperationBlockMembershipAware = true
 	pbInsert.LabelsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

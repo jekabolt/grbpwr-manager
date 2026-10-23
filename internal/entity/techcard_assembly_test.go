@@ -216,6 +216,31 @@ func TestAssemblyClassifyInputs(t *testing.T) {
 	}
 }
 
+func TestAssemblySweepSkipsDetachedPieceProcessing(t *testing.T) {
+	pieces := []AssemblyPiece{{LineKey: "FR", Name: "front"}, {LineKey: "BK", Name: "back"}}
+	steps := []AssemblyStep{
+		{
+			Inputs:        []OperationInput{{Kind: AssemblyInputPiece, Key: "FR"}, {Kind: AssemblyInputPiece, Key: "BK"}},
+			OutputUnitKey: "SHELL",
+		},
+		{
+			Inputs:   []OperationInput{{Kind: AssemblyInputPiece, Key: "FR"}},
+			Detached: true,
+		},
+	}
+
+	res := AssemblySweep(pieces, steps)
+	if len(res.Violations) != 0 {
+		t.Fatalf("detached processing must not re-read the assembly frontier: %s", formatViolations(res.Violations))
+	}
+	if got, want := res.Frontier, []string{"SHELL"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("detached processing changed frontier: got %v, want %v", got, want)
+	}
+	if got := AssemblyReleaseCheck(pieces, steps, res); len(got) != 0 {
+		t.Fatalf("detached processing changed release convergence: %s", formatViolations(got))
+	}
+}
+
 func formatViolations(vs []AssemblyViolation) string {
 	if len(vs) == 0 {
 		return "(нет)"
