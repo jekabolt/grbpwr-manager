@@ -248,6 +248,36 @@ func (m *writeModel) materialize(op *entity.TechCardOperation, planned Operation
 	op.Review = sql.NullString{String: planned.Review, Valid: planned.Review != ""}
 }
 
+// materializeManualInputs applies only the pure reconciler's automatic-over-manual override. Unit
+// inputs and uncovered piece inputs keep their relative order; every wire projection is rebuilt so
+// the full-replace store cannot resurrect a removed piece through a legacy field.
+func (m *writeModel) materializeManualInputs(op *entity.TechCardOperation, planned Operation) {
+	allowed := make(map[int]bool, len(planned.PieceIDs))
+	for _, id := range planned.PieceIDs {
+		allowed[id] = true
+	}
+	inputs := make([]entity.OperationInput, 0, len(m.inputsOf(op)))
+	for _, input := range m.inputsOf(op) {
+		if input.Kind == entity.AssemblyInputPiece {
+			id, known := m.pieceIDByKey[input.Key]
+			if known && !allowed[id] {
+				continue
+			}
+		}
+		inputs = append(inputs, input)
+	}
+	op.PieceIds = nil
+	op.AssemblyInputs = nilIfEmptyInputs(inputs)
+	op.InputKeys = nil
+	op.PieceLineKeys = nil
+	for _, input := range inputs {
+		op.InputKeys = append(op.InputKeys, input.Key)
+		if input.Kind == entity.AssemblyInputPiece {
+			op.PieceLineKeys = append(op.PieceLineKeys, input.Key)
+		}
+	}
+}
+
 // isMaterialized reports whether op already holds the state materialize would write.
 func (m *writeModel) isMaterialized(op *entity.TechCardOperation, planned Operation) bool {
 	want := *op
@@ -261,6 +291,18 @@ func (m *writeModel) isMaterialized(op *entity.TechCardOperation, planned Operat
 }
 
 func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalIntIDs(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -328,6 +370,10 @@ func fusingOpsNeedReconcile(tc *entity.TechCardInsert) bool {
 		if planned.Kind != before.Kind || planned.Review != before.Review {
 			return true
 		}
+		if (planned.Kind == KindManual || planned.Kind == KindAdoptable) &&
+			!equalIntIDs(planned.PieceIDs, before.PieceIDs) {
+			return true
+		}
 		if planned.Kind == KindAuto && !m.isMaterialized(&tc.Operations[planned.ID-1], planned) {
 			return true
 		}
@@ -347,7 +393,8 @@ func ReconcileTechCard(tc *entity.TechCardInsert) *entity.ValidationError {
 	if verr != nil {
 		return verr
 	}
-	plan := ReconcileFusingOps(m.pieces, m.operations())
+	operations := m.operations()
+	plan := ReconcileFusingOps(m.pieces, operations)
 
 	oldNumber := func(id int) sql.NullInt32 {
 		if id <= 0 {
@@ -382,6 +429,9 @@ func ReconcileTechCard(tc *entity.TechCardInsert) *entity.ValidationError {
 		}
 		if planned.Kind == KindAuto {
 			m.materialize(&op, planned)
+		} else if planned.ID > 0 && (planned.Kind == KindManual || planned.Kind == KindAdoptable) &&
+			!equalIntIDs(planned.PieceIDs, operations[planned.ID-1].PieceIDs) {
+			m.materializeManualInputs(&op, planned)
 		}
 		newNumber := int32((i + 1) * 10)
 		if old := oldNumber(planned.ID); old.Valid {
