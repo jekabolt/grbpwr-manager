@@ -57,20 +57,20 @@ func stockRestoreModeForCancel(st entity.OrderStatusName) stockRestoreMode {
 	return stockRestoreHistory
 }
 
-func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource, refundReason string) error {
+func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.Order, orderItems []entity.OrderItemInsert, source entity.StockChangeSource, refundReason string) (string, error) {
 	orderStatus, err := getOrderStatus(order.OrderStatusId)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	st := orderStatus.Status.Name
 	if st == entity.Cancelled {
-		return nil
+		return "", nil
 	}
 
 	_, err = validateOrderStatusNot(order, entity.Refunded, entity.PartiallyRefunded, entity.Delivered, entity.Shipped, entity.Confirmed)
 	if err != nil {
-		return fmt.Errorf("order cannot be cancelled: %w", err)
+		return "", fmt.Errorf("order cannot be cancelled: %w", err)
 	}
 
 	// Restore stock only for statuses that actually reduced it; restoring for a
@@ -85,25 +85,26 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 			OrderUUID: order.UUID,
 		}
 		if err := rep.Products().RestoreStockForProductSizes(ctx, orderItems, history); err != nil {
-			return fmt.Errorf("can't restore stock for product sizes: %w", err)
+			return "", fmt.Errorf("can't restore stock for product sizes: %w", err)
 		}
 	}
 
+	var voucherCodeToEnable string
 	if order.PromoId.Int32 != 0 {
-		err := removePromo(ctx, rep.DB(), order.Id)
+		voucherCodeToEnable, err = removePromo(ctx, rep.DB(), order.Id, order.PromoId)
 		if err != nil {
-			return fmt.Errorf("can't remove promo: %w", err)
+			return "", fmt.Errorf("can't remove promo: %w", err)
 		}
 	}
 
 	statusCancelled, ok := cache.GetOrderStatusByName(entity.Cancelled)
 	if !ok {
-		return fmt.Errorf("can't get order status by name %s", entity.Cancelled)
+		return "", fmt.Errorf("can't get order status by name %s", entity.Cancelled)
 	}
 
 	err = updateOrderStatus(ctx, rep.DB(), order.Id, statusCancelled.Status.Id)
 	if err != nil {
-		return fmt.Errorf("can't update order status: %w", err)
+		return "", fmt.Errorf("can't update order status: %w", err)
 	}
 
 	// Release the order's open packaging reservations (PLM rework §2.8, S22) atomically with the stock
@@ -112,10 +113,10 @@ func cancelOrder(ctx context.Context, rep dependency.Repository, order *entity.O
 	// path (admin CancelOrder, user cancel, payment-fail, order-items-validation-fail), so those callers
 	// need not release packaging separately.
 	if err := releaseOpenPackagingClaims(ctx, rep.DB(), order.Id); err != nil {
-		return fmt.Errorf("can't release packaging reservations: %w", err)
+		return "", fmt.Errorf("can't release packaging reservations: %w", err)
 	}
 
-	return nil
+	return voucherCodeToEnable, nil
 }
 
 // releaseOpenPackagingClaims closes an order's still-open packaging reservation claims (a 'reserve'

@@ -29,10 +29,12 @@ func (s *Store) insertOrderInvoice(ctx context.Context, orderUUID string, addrOr
 
 	var itemsChanged bool
 	var orderFull *entity.OrderFull
+	var voucherChanges voucherCacheChanges
 
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		txDB := rep.DB()
 		txStore := &Store{Base: storeutil.Base{DB: txDB, Now: s.Now}, txFunc: s.txFunc, repFunc: func() dependency.Repository { return rep }}
+		voucherChanges = voucherCacheChanges{}
 
 		order, err := getOrderByUUIDForUpdate(ctx, txDB, orderUUID)
 		if err != nil {
@@ -64,7 +66,7 @@ func (s *Store) insertOrderInvoice(ctx context.Context, orderUUID string, addrOr
 				slog.Int("order_id", orderFull.Order.Id),
 				slog.String("currency", orderFull.Order.Currency),
 			)
-			if err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled, ""); err != nil {
+			if _, err := cancelOrder(ctx, rep, &orderFull.Order, orderItems, entity.StockChangeSourceOrderCancelled, ""); err != nil {
 				return fmt.Errorf("cannot cancel order: %w", err)
 			}
 			return fmt.Errorf("total price is zero")
@@ -79,7 +81,7 @@ func (s *Store) insertOrderInvoice(ctx context.Context, orderUUID string, addrOr
 			return fmt.Errorf("order total below currency minimum: %w", err)
 		}
 
-		itemsChanged, err = validateAndUpdateOrderIfNeededForUpdate(ctx, rep, txStore, orderFull, true)
+		itemsChanged, voucherChanges, err = validateAndUpdateOrderIfNeededForUpdate(ctx, rep, txStore, orderFull, true)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "InsertFiatInvoice: order validation failed, cancelling",
 				slog.String("order_uuid", orderUUID),
@@ -110,6 +112,7 @@ func (s *Store) insertOrderInvoice(ctx context.Context, orderUUID string, addrOr
 	if err != nil {
 		return nil, err
 	}
+	voucherChanges.apply()
 	if itemsChanged {
 		return nil, ErrOrderItemsUpdated
 	}
@@ -343,9 +346,11 @@ func getPaymentByOrderUUID(ctx context.Context, db dependency.DB, orderUUID stri
 // ExpireOrderPayment expires an order's payment and restores stock.
 func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*entity.Payment, error) {
 	var payment *entity.Payment
+	var voucherCodeToEnable string
 
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		txDB := rep.DB()
+		voucherCodeToEnable = ""
 
 		order, err := getOrderByUUIDForUpdate(ctx, txDB, orderUUID)
 		if err != nil {
@@ -419,7 +424,8 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 		}
 
 		if order.PromoId.Int32 != 0 {
-			if err := removePromo(ctx, txDB, order.Id); err != nil {
+			voucherCodeToEnable, err = removePromo(ctx, txDB, order.Id, order.PromoId)
+			if err != nil {
 				return fmt.Errorf("can't remove promo: %w", err)
 			}
 		}
@@ -429,6 +435,9 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 
 	if err != nil {
 		return nil, err
+	}
+	if voucherCodeToEnable != "" {
+		cache.EnablePromo(voucherCodeToEnable)
 	}
 
 	return payment, nil
