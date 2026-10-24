@@ -16,6 +16,7 @@ type patternRevisionDeleteRow struct {
 	URL             string         `db:"url"`
 	SnapshotID      sql.NullInt64  `db:"snapshot_id"`
 	SnapshotReason  sql.NullString `db:"snapshot_reason"`
+	SnapshotPinned  bool           `db:"snapshot_pinned"`
 	LockVersion     int            `db:"lock_version"`
 	ApprovalState   string         `db:"approval_state"`
 	CreateRequestID sql.NullString `db:"create_request_id"`
@@ -37,6 +38,7 @@ func (s *Store) DeleteTechCardPatternRevisionAndListOrphanedPatternURLs(
 		orphanedPatternURLs = nil
 		row, err := storeutil.QueryNamedOne[patternRevisionDeleteRow](ctx, rep.DB(), `
 			SELECT h.url, h.snapshot_id, snap.reason AS snapshot_reason,
+			       COALESCE(snap.pinned, FALSE) AS snapshot_pinned,
 			       tc.lock_version, tc.approval_state, tc.create_request_id
 			FROM tech_card_size_pattern_history h
 			JOIN tech_card tc ON tc.id = h.tech_card_id
@@ -108,7 +110,11 @@ func (s *Store) DeleteTechCardPatternRevisionAndListOrphanedPatternURLs(
 			if err != nil {
 				return fmt.Errorf("count remaining pattern history snapshot references: %w", err)
 			}
-			if patternrefs.SnapshotCanBeDeleted(row.SnapshotReason.String, remainingRefs) {
+			// Autosave rows belong to the card-wide retention policy, not to the lifetime of the
+			// pattern-history row that happens to reference them. Pinned lifecycle/restore rows are
+			// durable regardless of reason. Explicit legacy pattern snapshots keep today's cleanup.
+			if !row.SnapshotPinned && row.SnapshotReason.String != "autosave" &&
+				patternrefs.SnapshotCanBeDeleted(row.SnapshotReason.String, remainingRefs) {
 				if err := storeutil.ExecNamed(ctx, rep.DB(), `
 					DELETE FROM tech_card_snapshot
 					WHERE id = :snapshot_id AND tech_card_id = :tech_card_id`, map[string]any{

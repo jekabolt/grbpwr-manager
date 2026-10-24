@@ -334,7 +334,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		// те же семь строк с режимом отстрочки: каждая говорила «это отстрочка» дважды, а сказать
 		// это ОДИН раз было нельзя.
 		//
-		// ВТОРАЯ ПОЛОВИНА ПРАВИЛА ВАЖНЕЕ ПЕРВОЙ. Неназванный seam_class НАСЛЕДУЕТ умолчание
+		// ВТОРАЯ ПОЛОВИНА ПРАВИЛА СНЯТА (2026-10-24): режим отстрочки при NULL законно наследует
+		// стандарт карточки — краевая отстрочка = обычный шов + строчка, а не орнамент.
+		// Прежний довод: Неназванный seam_class НАСЛЕДУЕТ умолчание
 		// карточки, а оно на проде `ss_plain` у трёх карточек. Значит чисто декоративная отстрочка,
 		// у которой заполнили только блок, МОЛЧА объявлялась стачным швом — и уезжала такой в
 		// подпись и на печатный лист. Наследование тут нечем отличить от ответа, поэтому шаг обязан
@@ -346,9 +348,6 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		case seamClass.Valid && seamClass.String == string(entity.SeamClassTopstitch) && !topMode.Valid:
 			return nil, entity.NewFieldViolation(step+".topstitch_mode", "required", "",
 				"a topstitch seam class says the step has no joining seam, only a decorative line — say WHERE that line runs, or pick the seam class the step actually makes")
-		case topMode.Valid && !seamClass.Valid:
-			return nil, entity.NewFieldViolation(step+".seam_class", "required", "",
-				"an unnamed seam class inherits the card default, and this step is topstitched — name the class it makes, or set «os_topstitch» to say it makes no joining seam at all")
 		}
 		// UNKNOWN -> NULL («inherit the profile's foot»), NONE -> 'none' («this step runs bare»).
 		// The two used to be one value here; see parseEquipmentEnum for why they had to come apart

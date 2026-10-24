@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
@@ -125,7 +126,7 @@ func restoreSnapshotRow(t *testing.T, card *entity.TechCard) *entity.TechCardSna
 	blob, err := marshalTechCardSnapshot(card, dto.CostingFx{})
 	require.NoError(t, err)
 	return &entity.TechCardSnapshot{Id: restoreSnapshotID, TechCardId: restoreCardID, LockVersion: card.LockVersion,
-		Reason: "dxf-reupload", Snapshot: blob}
+		Reason: "dxf-reupload", Snapshot: blob, CreatedAt: time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)}
 }
 
 func restoreCtx() context.Context {
@@ -151,6 +152,17 @@ func restoreReq(expected int32) *pb_admin.RestoreTechCardSnapshotRequest {
 	return &pb_admin.RestoreTechCardSnapshotRequest{
 		TechCardId: restoreCardID, SnapshotId: restoreSnapshotID, ExpectedLockVersion: expected,
 	}
+}
+
+// buildCapturedSnapshot mirrors the part of UpdateTechCardTx that a mocked store cannot perform:
+// after locking and transactionally re-reading the card it invokes the handler-supplied builder.
+func buildCapturedSnapshot(t *testing.T, tc *entity.TechCardInsert, locked *entity.TechCard) {
+	t.Helper()
+	require.NotNil(t, tc.BuildSnapshotFromLockedCard)
+	blob, err := tc.BuildSnapshotFromLockedCard(locked)
+	require.NoError(t, err)
+	tc.SnapshotJSON = blob
+	tc.SnapshotLockVersion = locked.LockVersion
 }
 
 // A SNAPSHOT OF ANOTHER CARD IS NOT FOUND. The store reads it by (id, tech_card_id), so a foreign id
@@ -250,7 +262,7 @@ func TestRestoreRefusesASnapshotWithFewerSizes(t *testing.T) {
 // What reaches the store is (1) the v6 content — sheet url and number, pieces, the alias that pointed
 // at the old block, and EXACTLY the review marks v6 had (one «split», one none — not cleared, not
 // re-marked); (2) the card's current identity and lifecycle; (3) a snapshot of the CURRENT card
-// (sheet v7, the «remapped» marks) under reason restore:42, valid only at the version the caller saw.
+// (sheet v7, the «remapped» marks) under reason restore:42, built from the store's locked version.
 func TestRestoreWritesTheSnapshotThroughTheSave(t *testing.T) {
 	restoreHosts(t)
 	rig := newRestoreRig(t)
@@ -261,7 +273,10 @@ func TestRestoreWritesTheSnapshotThroughTheSave(t *testing.T) {
 	var written *entity.TechCardInsert
 	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).
-		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) {
+			buildCapturedSnapshot(t, tc, now)
+			written = tc
+		}).
 		Return(nil, entity.ErrTechCardConflict) // stop before the post-commit work
 
 	_, err := rig.srv.RestoreTechCardSnapshot(restoreCtx(), restoreReq(3))
@@ -270,6 +285,8 @@ func TestRestoreWritesTheSnapshotThroughTheSave(t *testing.T) {
 
 	// (3) the undo point.
 	require.Equal(t, "restore:42", written.SnapshotReason)
+	require.Equal(t, []string{"restored 23.10 10:00"}, written.SnapshotChangedPaths)
+	require.True(t, written.SnapshotPinned)
 	require.Equal(t, 3, written.SnapshotLockVersion, "the snapshot is valid only at the version it was read at")
 	var frozenNow pb_common.TechCard
 	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozenNow))
@@ -366,9 +383,9 @@ func TestRestoreWithoutCostingWrite(t *testing.T) {
 
 // THE LINK BETWEEN A SNAPSHOT AND THE SHEET IT RETIRES, HANDLER HALF.
 //
-// A save with snapshot_reason freezes the card it REPLACES: the blob is the stored card (sheet v6),
-// never the payload (sheet v7), and it carries the version it was read at, so the store writes it only
-// if the row is still that card. The store half — the snapshot row is inserted first in the same
+// A save with snapshot_reason freezes the card it REPLACES: the blob is the transactionally re-read
+// card (sheet v6), never the payload (sheet v7), and carries the version held by the card-row lock.
+// The store half — the snapshot row is inserted first in the same
 // transaction and its id goes onto the history row of v6, the OUTGOING sheet, while v7 gets no history
 // row — is UpdateTechCardTx → insertTechCardChildren(…, snapshotIDForArchive) → insertTechCardPatterns →
 // archiveTechCardPattern, which only ever archives replaced or removed rows.
@@ -381,7 +398,10 @@ func TestSaveWithSnapshotReasonFreezesTheOutgoingCard(t *testing.T) {
 	var written *entity.TechCardInsert
 	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).
-		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) {
+			buildCapturedSnapshot(t, tc, stored)
+			written = tc
+		}).
 		Return(nil, entity.ErrTechCardConflict)
 
 	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
@@ -416,7 +436,10 @@ func TestSaveWithoutSnapshotReasonStillFreezesTheOutgoingCardForPatternHistory(t
 	var written *entity.TechCardInsert
 	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).
-		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) {
+			buildCapturedSnapshot(t, tc, stored)
+			written = tc
+		}).
 		Return(nil, entity.ErrTechCardConflict)
 
 	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
@@ -434,6 +457,33 @@ func TestSaveWithoutSnapshotReasonStillFreezesTheOutgoingCardForPatternHistory(t
 	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozen))
 	require.Equal(t, restoreSheetV6, frozen.GetTechCard().GetPatterns()[0].GetUrl(),
 		"the lazy store snapshot must restore the outgoing sheet, not the incoming replacement")
+}
+
+func TestSaveSessionEnablesAutosaveHistoryWithoutChangingExplicitSnapshotSemantics(t *testing.T) {
+	restoreHosts(t)
+	rig := newRestoreRig(t)
+	stored := restoreCardAtV6()
+	stored.LockVersion = 3
+	rig.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, restoreCardID).Return(stored, nil)
+	var written *entity.TechCardInsert
+	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
+		mock.AnythingOfType("*entity.TechCardInsert"), 3).
+		Run(func(_ context.Context, _ int, tc *entity.TechCardInsert, _ int) { written = tc }).
+		Return(nil, entity.ErrTechCardConflict)
+
+	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
+	payload.OperationReviewAware = true
+	payload.MachineFieldsAware = true
+	payload.LabelsAware = true
+	_, err := rig.srv.UpdateTechCard(restoreCtx(), &pb_admin.UpdateTechCardRequest{
+		Id: restoreCardID, ExpectedLockVersion: 3, TechCard: payload,
+		SaveSessionId: "68d21d4d-5c6f-4e4f-9290-0c70e62395c7",
+	})
+	require.Equal(t, codes.Aborted, status.Code(err), "%v", err)
+	require.NotNil(t, written)
+	require.Empty(t, written.SnapshotReason, "autosave history must not create an explicit journal reason")
+	require.Equal(t, "68d21d4d-5c6f-4e4f-9290-0c70e62395c7", written.SnapshotSaveSessionId)
+	require.NotEmpty(t, written.SnapshotChangedPaths)
 }
 
 // TestRestorePayloadSpeaksEveryField — the read model is not a write payload: for a dozen fields an

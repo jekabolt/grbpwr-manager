@@ -448,6 +448,10 @@ func (s *Store) UpdateTechCardAndListOrphanedPatternURLs(ctx context.Context, id
 // here, for the reason stated there.
 func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository, id int, tc *entity.TechCardInsert, expectedLockVersion int) ([]string, error) {
 	var orphanedPatternURLs []string
+	// THE CARD ROW LOCK — FIRST ACTION, BEFORE ANY PLAIN READ. Versionless sidecar writers (seams and
+	// piece areas) take this same lock before touching their rows. Taking it here makes the complete
+	// read below the exact pre-image at the document serialization point, while preserving the common
+	// lock order card -> children and avoiding a sidecar/card deadlock.
 	cur, err := storeutil.QueryNamedOne[struct {
 		LockVersion     int            `db:"lock_version"`
 		ApprovalState   string         `db:"approval_state"`
@@ -460,7 +464,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	}](ctx, rep.DB(),
 		`SELECT lock_version, approval_state, approved_at, released_at, purpose, stage, measurement_unit,
 		        create_request_id
-		 FROM tech_card WHERE id = :id`, map[string]any{"id": id})
+		 FROM tech_card WHERE id = :id FOR UPDATE`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
@@ -484,10 +488,32 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
+	// The handler's first read is still needed for gates and carries, but it is not a safe snapshot:
+	// seams can commit without changing lock_version. Re-read the complete card now that their writers
+	// cannot pass the card-row lock, and build the blob from this transaction's state. Direct store
+	// callers that supplied SnapshotJSON keep their existing path and version validation below.
+	if tc.BuildSnapshotFromLockedCard != nil {
+		locked, err := rep.TechCards().GetTechCardById(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload locked tech card for snapshot: %w", err)
+		}
+		if locked == nil {
+			return nil, fmt.Errorf("locked tech card %d snapshot reload returned nil", id)
+		}
+		blob, err := tc.BuildSnapshotFromLockedCard(locked)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build locked tech card snapshot: %w", err)
+		}
+		tc.SnapshotJSON = blob
+		tc.SnapshotLockVersion = cur.LockVersion
+	}
 	// A client-requested snapshot keeps its existing eager semantics: it is an explicit journalled
 	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
 	// first outgoing pattern row, so ordinary saves without an archive do not grow the snapshot table.
 	snapshotIDForArchive := memoizedTechCardSnapshotID(tc, cur.LockVersion, func(reason string) (int64, error) {
+		if reason == "autosave" && tc.SnapshotSaveSessionId != "" {
+			return appendOrMergeAutosaveSnapshot(ctx, rep.DB(), id, cur.LockVersion, rep.Now(), tc)
+		}
 		return appendTechCardSnapshot(ctx, rep.DB(), id, cur.LockVersion, reason, tc)
 	})
 	if tc.SnapshotReason != "" {
@@ -647,6 +673,14 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// under us — make the WHERE guard load-bearing, not just the in-Go check.
 	if rows == 0 {
 		return nil, entity.ErrTechCardConflict
+	}
+	// The successful optimistic UPDATE above is the card-row serialization point. Coalesce only
+	// after it, so concurrent requests cannot both observe an empty session bucket and insert two
+	// pre-images; a losing stale writer returns above and writes no history row.
+	if tc.SnapshotReason == "" && tc.SnapshotSaveSessionId != "" {
+		if _, err := snapshotIDForArchive("autosave"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Re-derive the top/sub/type triple from the category_id just written, BEFORE the children are
@@ -2513,9 +2547,9 @@ func appendTechCardRevision(ctx context.Context, db dependency.DB, id int, autho
 }
 
 // memoizedTechCardSnapshotID returns the id of this save's pre-update snapshot, inserting it at
-// most once. The handler's blob came from a read outside the transaction, so it can be attached to
-// outgoing rows only while the locked card is still at that read's version. A caller with no blob
-// (notably cmd/assembly_clear.go) keeps the old no-snapshot behaviour.
+// most once. API writes build the blob from the locked transactional read; the version comparison
+// remains load-bearing for direct writers that supplied a blob from an earlier read. A caller with
+// no blob (notably cmd/assembly_clear.go) keeps the old no-snapshot behaviour.
 func memoizedTechCardSnapshotID(tc *entity.TechCardInsert, currentLockVersion int, appendSnapshot func(string) (int64, error)) func(string) (int64, error) {
 	var snapshotID int64
 	return func(reason string) (int64, error) {
@@ -2544,22 +2578,31 @@ func appendTechCardSnapshot(ctx context.Context, db dependency.DB, id, lockVersi
 	if tc.SnapshotJSON == "" {
 		return 0, fmt.Errorf("snapshot reason was provided without a pre-update card snapshot")
 	}
+	changedPaths, err := json.Marshal(mergeSnapshotChanges(nil, tc.SnapshotChangedPaths))
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode tech card snapshot changed paths: %w", err)
+	}
 	snapshotID, err := storeutil.ExecNamedLastId(ctx, db, `
 		INSERT INTO tech_card_snapshot
-			(tech_card_id, lock_version, reason, snapshot, created_by)
+			(tech_card_id, lock_version, reason, snapshot, created_by, changed_paths, pinned)
 		VALUES
-			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by)`, map[string]any{
-		"tech_card_id": id,
-		"lock_version": lockVersion,
-		"reason":       reason,
-		"snapshot":     tc.SnapshotJSON,
-		"created_by":   sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
+			(:tech_card_id, :lock_version, :reason, :snapshot, :created_by, :changed_paths, :pinned)`, map[string]any{
+		"tech_card_id":  id,
+		"lock_version":  lockVersion,
+		"reason":        reason,
+		"snapshot":      tc.SnapshotJSON,
+		"created_by":    sql.NullString{String: tc.UpdatedBy, Valid: tc.UpdatedBy != ""},
+		"changed_paths": string(changedPaths),
+		"pinned":        tc.SnapshotPinned,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to append tech card snapshot: %w", err)
 	}
 	if snapshotID <= 0 {
 		return 0, fmt.Errorf("tech card snapshot insert returned no id")
+	}
+	if err := pruneTechCardAutosaveSnapshots(ctx, db, id); err != nil {
+		return 0, err
 	}
 	return int64(snapshotID), nil
 }

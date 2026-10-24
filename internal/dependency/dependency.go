@@ -1042,6 +1042,9 @@ type (
 		// GetTechCardSnapshot loads one tech_card_snapshot row OF THIS CARD; a missing id or one owned by
 		// another card is sql.ErrNoRows.
 		GetTechCardSnapshot(ctx context.Context, techCardID int, snapshotID int64) (*entity.TechCardSnapshot, error)
+		// ListTechCardSnapshots returns lightweight history rows newest-first. beforeSnapshotID is an
+		// exclusive keyset cursor; the body JSON is deliberately not loaded.
+		ListTechCardSnapshots(ctx context.Context, techCardID int, beforeSnapshotID int64, limit int) ([]entity.TechCardSnapshot, error)
 		// DeleteTechCardPatternRevisionAndListOrphanedPatternURLs removes one retained pattern
 		// revision under the card's optimistic lock and returns its object URL only when no live row,
 		// history row, card snapshot or release snapshot references that object after commit.
