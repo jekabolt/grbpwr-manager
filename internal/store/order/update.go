@@ -129,9 +129,123 @@ func updateOrderTotalPromo(ctx context.Context, db dependency.DB, orderId int, p
 	})
 }
 
-func updateTotalAmount(ctx context.Context, db dependency.DB, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment, currency string) (decimal.Decimal, error) {
-	if !promo.IsAllowed() {
+type voucherCacheChanges struct {
+	disableCode string
+	enableCode  string
+}
+
+func (c voucherCacheChanges) apply() {
+	if c.enableCode != "" {
+		cache.EnablePromo(c.enableCode)
+	}
+	if c.disableCode != "" {
+		cache.DisablePromo(c.disableCode)
+	}
+}
+
+func promoNotAllowedError() error {
+	return &entity.ValidationError{Message: "promo code is not allowed"}
+}
+
+// voucherWithinWindow checks the stable start/expiration rules without trusting
+// the cache's Allowed bit. Voucher availability is arbitrated by the conditional
+// UPDATE in claimVoucherInTx so a stale cache cannot grant or permanently hide a
+// voucher released by another process.
+func voucherWithinWindow(promo entity.PromoCode) bool {
+	promo.Allowed = true
+	return promo.IsAllowed()
+}
+
+// claimVoucherInTx atomically claims a single-use voucher on the caller's
+// transaction connection. The allowed=true predicate is the concurrency gate:
+// exactly one concurrent attachment can affect a row. Cache mutation is left to
+// the caller and must happen only after the surrounding transaction commits.
+func claimVoucherInTx(ctx context.Context, db dependency.DB, promo entity.PromoCode) (string, error) {
+	if !promo.Voucher {
+		return "", nil
+	}
+	rows, err := storeutil.ExecNamedRows(ctx, db, `
+		UPDATE promo_code
+		SET allowed = false
+		WHERE id = :id AND voucher = true AND allowed = true`, map[string]any{
+		"id": promo.Id,
+	})
+	if err != nil {
+		return "", fmt.Errorf("can't claim voucher: %w", err)
+	}
+	if rows != 1 {
+		return "", promoNotAllowedError()
+	}
+	return promo.Code, nil
+}
+
+// releaseVoucherInTx releases a claimed voucher on the caller's transaction
+// connection. Reusable promo rows are excluded by the voucher=true predicate.
+// The returned code is for a post-commit in-memory cache update.
+func releaseVoucherInTx(ctx context.Context, db dependency.DB, promoID sql.NullInt32) (string, error) {
+	if !promoID.Valid || promoID.Int32 == 0 {
+		return "", nil
+	}
+	promo, ok := cache.GetPromoById(int(promoID.Int32))
+	if !ok || !promo.Voucher {
+		return "", nil
+	}
+	rows, err := storeutil.ExecNamedRows(ctx, db, `
+		UPDATE promo_code
+		SET allowed = true
+		WHERE id = :id AND voucher = true AND allowed = false`, map[string]any{
+		"id": promoID.Int32,
+	})
+	if err != nil {
+		return "", fmt.Errorf("can't release voucher: %w", err)
+	}
+	if rows == 0 {
+		return "", nil
+	}
+	return promo.Code, nil
+}
+
+func updateTotalAmount(ctx context.Context, db dependency.DB, orderId int, subtotal decimal.Decimal, promo entity.PromoCode, shipment entity.Shipment, currency string) (decimal.Decimal, voucherCacheChanges, error) {
+	changes := voucherCacheChanges{}
+
+	// Lock the order before deciding whether this is a no-op recalculation, a
+	// removal, or a replacement. A voucher already attached to this order is
+	// already claimed and remains usable by this order even though allowed=false.
+	var currentPromoID sql.NullInt32
+	if err := db.GetContext(ctx, &currentPromoID,
+		`SELECT promo_id FROM customer_order WHERE id = ? FOR UPDATE`, orderId); err != nil {
+		return decimal.Zero, changes, fmt.Errorf("can't get current order promo: %w", err)
+	}
+
+	if promo.Voucher && promo.Id != 0 {
+		if !voucherWithinWindow(promo) {
+			return decimal.Zero, changes, promoNotAllowedError()
+		}
+		// CalculateTotalWithPromo checks Allowed itself. Once the DB claim has
+		// succeeded (or this order already owns it), the local copy must reflect
+		// that entitlement while the shared cache remains disabled.
+		promo.Allowed = true
+	} else if !promo.IsAllowed() {
 		promo = entity.PromoCode{}
+	}
+
+	currentPromo := int(currentPromoID.Int32)
+	if !currentPromoID.Valid {
+		currentPromo = 0
+	}
+	if promo.Id != currentPromo {
+		if promo.Voucher {
+			code, err := claimVoucherInTx(ctx, db, promo)
+			if err != nil {
+				return decimal.Zero, changes, err
+			}
+			changes.disableCode = code
+		}
+		code, err := releaseVoucherInTx(ctx, db, currentPromoID)
+		if err != nil {
+			return decimal.Zero, changes, err
+		}
+		changes.enableCode = code
 	}
 
 	shipmentCost := shipment.CostDecimal(currency)
@@ -156,17 +270,17 @@ func updateTotalAmount(ctx context.Context, db dependency.DB, orderId int, subto
 	}
 
 	if err := updateShipmentCostAndFreeShipping(ctx, db, shipment.Id, shipmentCost, freeShipping); err != nil {
-		return decimal.Zero, fmt.Errorf("can't update shipment cost: %w", err)
+		return decimal.Zero, changes, fmt.Errorf("can't update shipment cost: %w", err)
 	}
 
 	subtotal = promo.SubtotalWithPromo(subtotal, shipmentCost, dto.DecimalPlacesForCurrency(currency))
 
 	err := updateOrderTotalPromo(ctx, db, orderId, promo.Id, subtotal)
 	if err != nil {
-		return decimal.Zero, fmt.Errorf("can't update order total promo: %w", err)
+		return decimal.Zero, changes, fmt.Errorf("can't update order total promo: %w", err)
 	}
 
-	return subtotal, nil
+	return subtotal, changes, nil
 }
 
 func updateOrderShipment(ctx context.Context, db dependency.DB, shipment *entity.Shipment) error {
@@ -192,15 +306,19 @@ func updateOrderShipment(ctx context.Context, db dependency.DB, shipment *entity
 	return nil
 }
 
-func removePromo(ctx context.Context, db dependency.DB, orderId int) error {
+func removePromo(ctx context.Context, db dependency.DB, orderId int, promoID sql.NullInt32) (string, error) {
+	code, err := releaseVoucherInTx(ctx, db, promoID)
+	if err != nil {
+		return "", err
+	}
 	query := `UPDATE customer_order SET promo_id = NULL WHERE id = :orderId`
-	err := storeutil.ExecNamed(ctx, db, query, map[string]any{
+	err = storeutil.ExecNamed(ctx, db, query, map[string]any{
 		"orderId": orderId,
 	})
 	if err != nil {
-		return fmt.Errorf("can't remove promo: %w", err)
+		return "", fmt.Errorf("can't remove promo: %w", err)
 	}
-	return nil
+	return code, nil
 }
 
 // disableVoucherInTx disables a single-use voucher in the DB on the caller's

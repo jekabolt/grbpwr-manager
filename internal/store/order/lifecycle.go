@@ -491,7 +491,9 @@ func (s *Store) DeliverOrderWithSource(ctx context.Context, orderUUID, changedBy
 
 // CancelOrder cancels an order (admin-initiated). Restores stock and sets status to Cancelled.
 func (s *Store) CancelOrder(ctx context.Context, orderUUID string) error {
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	var voucherCodeToEnable string
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		voucherCodeToEnable = ""
 		order, err := getOrderByUUIDForUpdate(ctx, rep.DB(), orderUUID)
 		if err != nil {
 			return fmt.Errorf("can't get order: %w", err)
@@ -502,8 +504,13 @@ func (s *Store) CancelOrder(ctx context.Context, orderUUID string) error {
 			return fmt.Errorf("can't get order items: %w", err)
 		}
 
-		return cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, "")
+		voucherCodeToEnable, err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, "")
+		return err
 	})
+	if err == nil && voucherCodeToEnable != "" {
+		cache.EnablePromo(voucherCodeToEnable)
+	}
+	return err
 }
 
 // SetOrderStatusToPendingReturn sets order status to PendingReturn (admin-initiated).
@@ -524,7 +531,9 @@ func (s *Store) SetOrderStatusToPendingReturn(ctx context.Context, orderUUID str
 
 // CancelOrderByUser allows a user to cancel or request a refund for their order.
 func (s *Store) CancelOrderByUser(ctx context.Context, orderUUID string, email string, reason string) (*entity.OrderFull, error) {
+	var voucherCodeToEnable string
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		voucherCodeToEnable = ""
 		order, err := getOrderByUUIDAndEmailForUpdate(ctx, rep.DB(), orderUUID, email)
 		if err != nil {
 			return fmt.Errorf("order not found: %w", err)
@@ -551,7 +560,8 @@ func (s *Store) CancelOrderByUser(ctx context.Context, orderUUID string, email s
 			if err != nil {
 				return fmt.Errorf("can't get order items: %w", err)
 			}
-			if err := cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, reason); err != nil {
+			voucherCodeToEnable, err = cancelOrder(ctx, rep, order, orderItems, entity.StockChangeSourceOrderCancelled, reason)
+			if err != nil {
 				return fmt.Errorf("can't cancel order: %w", err)
 			}
 		case entity.Confirmed:
@@ -596,6 +606,9 @@ func (s *Store) CancelOrderByUser(ctx context.Context, orderUUID string, email s
 	})
 	if err != nil {
 		return nil, err
+	}
+	if voucherCodeToEnable != "" {
+		cache.EnablePromo(voucherCodeToEnable)
 	}
 
 	orderFull, err := s.repFunc().Order().GetOrderByUUIDAndEmail(ctx, orderUUID, email)

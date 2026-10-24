@@ -762,16 +762,17 @@ func (s *Store) validateOrderItemsInsertForUpdate(ctx context.Context, items []e
 }
 
 // validateAndUpdateOrderIfNeeded validates order items and updates them if they've changed.
-func validateAndUpdateOrderIfNeeded(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool) (bool, error) {
+func validateAndUpdateOrderIfNeeded(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool) (bool, voucherCacheChanges, error) {
 	return validateAndUpdateOrderIfNeededWithLock(ctx, rep, os, orderFull, cancelOnValidationFailure, false)
 }
 
 // validateAndUpdateOrderIfNeededForUpdate is like validateAndUpdateOrderIfNeeded but locks product_size rows.
-func validateAndUpdateOrderIfNeededForUpdate(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool) (bool, error) {
+func validateAndUpdateOrderIfNeededForUpdate(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool) (bool, voucherCacheChanges, error) {
 	return validateAndUpdateOrderIfNeededWithLock(ctx, rep, os, orderFull, cancelOnValidationFailure, true)
 }
 
-func validateAndUpdateOrderIfNeededWithLock(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool, lockStock bool) (bool, error) {
+func validateAndUpdateOrderIfNeededWithLock(ctx context.Context, rep dependency.Repository, os *Store, orderFull *entity.OrderFull, cancelOnValidationFailure bool, lockStock bool) (bool, voucherCacheChanges, error) {
+	changes := voucherCacheChanges{}
 	items := entity.ConvertOrderItemToOrderItemInsert(orderFull.OrderItems)
 
 	var oiv *entity.OrderItemValidation
@@ -785,28 +786,28 @@ func validateAndUpdateOrderIfNeededWithLock(ctx context.Context, rep dependency.
 
 	if err != nil {
 		if cancelOnValidationFailure {
-			if cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items, entity.StockChangeSourceOrderCancelled, ""); cancelErr != nil {
-				return false, fmt.Errorf("cannot cancel order after validation failure: %w", cancelErr)
+			if _, cancelErr := cancelOrder(ctx, rep, &orderFull.Order, items, entity.StockChangeSourceOrderCancelled, ""); cancelErr != nil {
+				return false, changes, fmt.Errorf("cannot cancel order after validation failure: %w", cancelErr)
 			}
 		}
-		return false, fmt.Errorf("error validating order items: %w", err)
+		return false, changes, fmt.Errorf("error validating order items: %w", err)
 	}
 
 	validItemsInsert := entity.ConvertOrderItemToOrderItemInsert(oiv.ValidItems)
 
 	if !compareItems(items, validItemsInsert, false) {
 		if err := updateOrderItems(ctx, rep.DB(), validItemsInsert, orderFull.Order.Id); err != nil {
-			return false, fmt.Errorf("error updating order items: %w", err)
+			return false, changes, fmt.Errorf("error updating order items: %w", err)
 		}
 
-		if _, err := updateTotalAmount(ctx, rep.DB(), orderFull.Order.Id, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment, orderFull.Order.Currency); err != nil {
-			return false, fmt.Errorf("error updating total amount: %w", err)
+		if _, changes, err = updateTotalAmount(ctx, rep.DB(), orderFull.Order.Id, oiv.SubtotalDecimal(), orderFull.PromoCode, orderFull.Shipment, orderFull.Order.Currency); err != nil {
+			return false, voucherCacheChanges{}, fmt.Errorf("error updating total amount: %w", err)
 		}
 
-		return true, nil
+		return true, changes, nil
 	}
 
-	return false, nil
+	return false, changes, nil
 }
 
 func validatePaymentMethod(pmn entity.PaymentMethodName) (*cache.PaymentMethod, error) {
@@ -877,16 +878,19 @@ func (s *Store) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.O
 	}
 
 	var itemsChanged bool
+	var voucherChanges voucherCacheChanges
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		txOrderStore := &Store{Base: storeutil.Base{DB: rep.DB(), Now: s.Now}, txFunc: s.txFunc, repFunc: func() dependency.Repository { return rep }}
+		voucherChanges = voucherCacheChanges{}
 		var err error
-		itemsChanged, err = validateAndUpdateOrderIfNeeded(ctx, rep, txOrderStore, orderFull, true)
+		itemsChanged, voucherChanges, err = validateAndUpdateOrderIfNeeded(ctx, rep, txOrderStore, orderFull, true)
 		return err
 	})
 
 	if err != nil {
 		return nil, err
 	}
+	voucherChanges.apply()
 
 	if itemsChanged {
 		return nil, ErrOrderItemsUpdated

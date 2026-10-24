@@ -434,6 +434,16 @@ func DisablePromo(code string) {
 	}
 }
 
+func EnablePromo(code string) {
+	promoCodesMu.Lock()
+	defer promoCodesMu.Unlock()
+	p, ok := promoCodes[code]
+	if ok {
+		p.Allowed = true
+		promoCodes[code] = p
+	}
+}
+
 func GetPromoByCode(code string) (entity.PromoCode, bool) {
 	promoCodesMu.RLock()
 	defer promoCodesMu.RUnlock()
