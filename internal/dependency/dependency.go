@@ -1943,7 +1943,7 @@ type (
 		AddAccount(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error
 		// SetAccountPermissions replaces an account's super flag and permission set.
 		SetAccountPermissions(ctx context.Context, username string, isSuper bool, perms []entity.AdminPermission) error
-		// SetAccountDisabled toggles whether an account may log in (get new tokens).
+		// SetAccountDisabled toggles whether an account may authenticate or use existing tokens.
 		SetAccountDisabled(ctx context.Context, username string, disabled bool) error
 		DeleteAdmin(ctx context.Context, username string) error
 		ChangePassword(ctx context.Context, un, newHash string) error

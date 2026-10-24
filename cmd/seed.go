@@ -15,14 +15,9 @@ import (
 // sections, analytics + order volume) so every admin screen has representative
 // data to look at. It talks ONLY to backend-beta.grbpwr.com (the betaseed client
 // refuses any other host) — it can never touch prod.
-//
-// Throwaway beta bot credentials (NOT a real secret — a disposable test account
-// on the beta env only). The admin account is bootstrapped on first run via the
-// master password read from the DO beta app spec.
 const (
-	defaultSeedUser     = "beta-seed-bot"
-	defaultSeedPassword = "Seedb0t-beta-2026!"
-	defaultMasterYAML   = ".do/app-beta.yaml"
+	defaultSeedUser   = "beta-seed-bot"
+	defaultMasterYAML = ".do/app-beta.yaml"
 )
 
 var (
@@ -47,7 +42,7 @@ func init() {
 	seedCmd.Flags().StringVar(&seedVolume, "volume", "dense", "data volume: single | moderate | dense")
 	seedCmd.Flags().StringVar(&seedOnly, "only", "all", "comma list of phases to run: catalog,plm,extras,analytics,enrich,accounting (or all); 'verify' = read-only coverage")
 	seedCmd.Flags().StringVar(&seedUser, "user", defaultSeedUser, "admin username to log in / bootstrap")
-	seedCmd.Flags().StringVar(&seedPassword, "password", "", "admin password (default: throwaway beta bot pw, or $BETA_SEED_PASSWORD)")
+	seedCmd.Flags().StringVar(&seedPassword, "password", "", "admin password (required; or $BETA_SEED_PASSWORD)")
 	seedCmd.Flags().StringVar(&seedMasterYAML, "master-yaml", defaultMasterYAML, "DO app spec YAML to read AUTH_MASTER_PASSWORD from (for first-run bootstrap)")
 	seedCmd.Flags().BoolVar(&seedVerbose, "verbose", false, "log every RPC (method, path, HTTP code)")
 	rootCmd.AddCommand(seedCmd)
@@ -103,8 +98,8 @@ func runSeed(cmd *cobra.Command, args []string) error {
 	if pw == "" {
 		pw = os.Getenv("BETA_SEED_PASSWORD")
 	}
-	if pw == "" {
-		pw = defaultSeedPassword
+	if strings.TrimSpace(pw) == "" {
+		return fmt.Errorf("beta seed password is required: set --password or BETA_SEED_PASSWORD")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)

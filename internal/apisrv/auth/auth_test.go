@@ -98,6 +98,8 @@ func TestAuth(t *testing.T) {
 	})
 
 	handlerAuth := authsrv.WithAuth(nextHandler)
+	as.EXPECT().GetAdminByUsername(mock.Anything, lowercaseUsername).
+		Return(&entity.Admin{Id: 1, Username: lowercaseUsername}, nil).Once()
 
 	// create a mock request to use
 	req := httptest.NewRequest("GET", "http://testing", nil)
@@ -121,6 +123,32 @@ func TestAuth(t *testing.T) {
 		MasterPassword: c.MasterPassword,
 	})
 	assert.NoError(t, err)
+}
+
+func TestChangePasswordRefusesDisabledAccount(t *testing.T) {
+	as := mocks.NewMockAdmin(t)
+	authsrv, err := New(&Config{
+		JWTSecret:                jwtSecret,
+		MasterPassword:           masterPassword,
+		PasswordHasherSaltSize:   16,
+		PasswordHasherIterations: 1000,
+		JWTTTL:                   "60m",
+	}, as)
+	assert.NoError(t, err)
+	t.Cleanup(authsrv.StopRateLimiter)
+
+	disabled := account("disabled", "unused", true)
+	disabled.Disabled = true
+	as.EXPECT().GetAccountWithPermissions(mock.Anything, "disabled").Return(disabled, nil).Once()
+
+	_, err = authsrv.ChangePassword(context.Background(), &pb_auth.ChangePasswordRequest{
+		Username:        "Disabled",
+		CurrentPassword: masterPassword,
+		NewPassword:     "a-new-password",
+	})
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+	assert.Equal(t, "not authenticated", status.Convert(err).Message())
+	as.AssertNotCalled(t, "ChangePassword", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestCreateWithInvalidMasterPassword(t *testing.T) {
@@ -283,6 +311,64 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 	})
 }
 
+func TestAdminAccountStateDatabaseErrorPolicy(t *testing.T) {
+	as := mocks.NewMockAdmin(t)
+	authsrv, err := New(&Config{
+		JWTSecret:                jwtSecret,
+		MasterPassword:           masterPassword,
+		PasswordHasherSaltSize:   16,
+		PasswordHasherIterations: 1000,
+		JWTTTL:                   "60m",
+	}, as)
+	assert.NoError(t, err)
+	t.Cleanup(authsrv.StopRateLimiter)
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	authsrv.now = func() time.Time { return now }
+	authsrv.adminStateTTL = time.Second
+	authsrv.adminStateStaleTTL = 10 * time.Second
+
+	token, err := authjwt.NewAdminToken(authsrv.JwtAuth, time.Hour, "worker", true, nil, nil)
+	assert.NoError(t, err)
+	as.EXPECT().GetAdminByUsername(mock.Anything, "worker").
+		Return(&entity.Admin{Id: 1, Username: "worker"}, nil).Once()
+	as.EXPECT().GetAdminByUsername(mock.Anything, "worker").
+		Return(nil, fmt.Errorf("db is down")).Once()
+	as.EXPECT().GetAdminByUsername(mock.Anything, "worker").
+		Return(nil, fmt.Errorf("db is still down")).Once()
+
+	call := func() (bool, error) {
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.New(map[string]string{
+			strings.ToLower(AuthMetadataKey): "Bearer " + token,
+		}))
+		called := false
+		_, err := authsrv.UnaryAdminAuthInterceptor()(ctx, nil,
+			&grpc.UnaryServerInfo{FullMethod: "/admin.AdminService/GetDictionary"},
+			func(context.Context, any) (any, error) {
+				called = true
+				return "ok", nil
+			})
+		return called, err
+	}
+
+	called, err := call()
+	assert.NoError(t, err)
+	assert.True(t, called)
+
+	// A refresh failure inside the bounded stale window uses the last verified enabled state.
+	now = now.Add(2 * time.Second)
+	called, err = call()
+	assert.NoError(t, err)
+	assert.True(t, called)
+
+	// An explicit mutation evicts that fallback. A DB error then fails closed as Unavailable,
+	// preserving the session token while refusing the request until account state can be read.
+	authsrv.InvalidateAdminAccount("worker")
+	called, err = call()
+	assert.False(t, called)
+	assert.Equal(t, codes.Unavailable, status.Code(err))
+}
+
 // TestInterceptorEnforcesSections drives the interceptor with tokens minted
 // directly (bypassing Login) to assert per-section, per-access enforcement,
 // allowlisting, fail-closed on unmapped methods, super bypass, and legacy grace.
@@ -307,6 +393,8 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 	}
 	// Legacy token: pre-RBAC, carries no super/perms claims → full access.
 	legacyTok, err := authjwt.NewTokenWithSubject(authsrv.JwtAuth, time.Hour, "legacy")
+	assert.NoError(t, err)
+	legacyNoSubject, err := authjwt.NewToken(authsrv.JwtAuth, time.Hour)
 	assert.NoError(t, err)
 
 	scoped := mint(false, []string{"orders:read", "content:write"})
@@ -340,6 +428,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"super on accounts", super, "/admin.AdminService/CreateAccount", true},
 		{"scoped cannot manage accounts", scoped, "/admin.AdminService/CreateAccount", false},
 		{"legacy full access", legacyTok, "/admin.AdminService/UpsertProduct", true},
+		{"legacy token without username", legacyNoSubject, "/admin.AdminService/UpsertProduct", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

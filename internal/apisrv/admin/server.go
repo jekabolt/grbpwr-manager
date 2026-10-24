@@ -88,6 +88,9 @@ type Server struct {
 	shipFrom      entity.LabelAddress
 	// pwhash hashes passwords for admin-account management RPCs (create / reset).
 	pwhash *pwhash.PasswordHasher
+	// invalidateAdminAuth evicts one username from the auth server's account-state cache after a
+	// successful account mutation. Nil is safe for isolated handler tests.
+	invalidateAdminAuth func(string)
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
 	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
 	revalidateSem chan struct{}
@@ -387,4 +390,15 @@ func (s *Server) SetRunPackTokenService(svc *runpackaccess.Service) {
 // потом разбирает.
 func (s *Server) SetFileLinkService(svc *fileaccess.Service) {
 	s.fileLinks = svc
+}
+
+// SetAdminAuthInvalidator wires account mutations to the auth server's account-state cache.
+func (s *Server) SetAdminAuthInvalidator(invalidate func(string)) {
+	s.invalidateAdminAuth = invalidate
+}
+
+func (s *Server) invalidateAccountAuth(username string) {
+	if s.invalidateAdminAuth != nil {
+		s.invalidateAdminAuth(username)
+	}
 }

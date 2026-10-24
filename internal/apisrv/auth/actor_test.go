@@ -94,6 +94,13 @@ func newActorHarness(t *testing.T) *actorHarness {
 	t.Cleanup(srv.StopRateLimiter)
 	h := &actorHarness{srv: srv, store: store, now: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
 	srv.now = func() time.Time { return h.now }
+	// These tests isolate the separate AI-actor id cache. Account-state enforcement has its own
+	// tests; pre-verifying the subjects here keeps its repository reads out of these call counts.
+	for _, username := range []string{"alice", "bob", "carol"} {
+		srv.adminStates[username] = adminAccountStateEntry{
+			exists: true, expires: h.now.Add(24 * time.Hour), staleUntil: h.now.Add(24 * time.Hour),
+		}
+	}
 	return h
 }
 

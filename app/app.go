@@ -909,6 +909,7 @@ func (a *App) Start(ctx context.Context) error {
 		)
 		return err
 	}
+	adminS.SetAdminAuthInvalidator(authS.InvalidateAdminAccount)
 	// THE PAID HANDLERS READ THE SAME FLAG THE WORKER WAS GATED ON, AND FROM THE SAME VALUE.
 	//
 	// Not from a second os.Getenv, and not from a copy of the string: the two are one decision.
