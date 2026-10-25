@@ -99,7 +99,8 @@ func TestSlogErrorReachesSentryOnce(t *testing.T) {
 	var out bytes.Buffer
 	log := slog.New(observability.NewSlogHandler(slog.NewJSONHandler(&out, nil))).With("worker", "fx")
 	log.Info("not an error")
-	log.Error("sync failed", slog.Any("err", errors.New("upstream 502 for ops@example.com")), slog.String("api_token", "s3cr3t"))
+	log.Error("sync failed", slog.Any("err", errors.New(`upstream 502 for ops@example.com: Get "https://maps.example.com/geo?key=k3y#f": EOF`)),
+		slog.String("api_token", "s3cr3t"), slog.String("callback", "https://hooks.example.com/cb?token=t0k"))
 	log.Error("sync failed", slog.String("err", "again")) // same line within the window: held back
 	log.ErrorContext(observability.MarkReported(context.Background()), "already reported")
 	require.True(t, observability.Flush(5*time.Second))
@@ -115,8 +116,9 @@ func TestSlogErrorReachesSentryOnce(t *testing.T) {
 	require.Equal(t, "beta", ev["environment"])
 	require.Equal(t, []any{"slog", "sync failed"}, ev["fingerprint"])
 	exc := ev["exception"].([]any)[0].(map[string]any)
-	require.Equal(t, "upstream 502 for [email]", exc["value"])
+	require.Equal(t, `upstream 502 for [email]: Get "https://maps.example.com/geo": EOF`, exc["value"])
 	attrs := ev["contexts"].(map[string]any)["log"].(map[string]any)
+	require.Equal(t, "https://hooks.example.com/cb", attrs["callback"])
 	require.Equal(t, "fx", attrs["worker"])
 	require.Equal(t, "[Filtered]", attrs["api_token"])
 }

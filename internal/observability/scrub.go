@@ -7,7 +7,12 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-var emailRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+var (
+	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	// A URL's query string or fragment inside free text: net/http errors quote the whole request
+	// URL, API keys and tokens included.
+	urlTailRe = regexp.MustCompile(`(https?://[^\s?#"'<>]+)[?#][^\s"'<>]*`)
+)
 
 // sensitiveKey matches attribute names whose values must never leave the process.
 func sensitiveKey(k string) bool {
@@ -20,10 +25,12 @@ func sensitiveKey(k string) bool {
 	return false
 }
 
-func scrubString(s string) string { return emailRe.ReplaceAllString(s, "[email]") }
+func scrubString(s string) string {
+	return emailRe.ReplaceAllString(urlTailRe.ReplaceAllString(s, "${1}"), "[email]")
+}
 
-// scrubEvent is BeforeSend: emails out of every free-text field, secrets out of log attributes, and no
-// request headers, cookies or query strings at all.
+// scrubEvent is BeforeSend: emails and URL query strings out of every free-text field, secrets out
+// of log attributes, and no request headers, cookies or query strings at all.
 func scrubEvent(ev *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	ev.Message = scrubString(ev.Message)
 	for i := range ev.Exception {
