@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	goruntime "runtime"
 	"runtime/debug"
 	"strings"
@@ -84,8 +85,11 @@ type Config struct {
 	// AllowDevOrigins, when true, additionally permits localhost/127.0.0.1 CORS
 	// origins. It must stay false (unset) in prod/beta since CORS allows
 	// credentials; enable it only for local development.
-	AllowDevOrigins bool   `mapstructure:"allow_dev_origins"`
-	CommitHash      string `mapstructure:"commit_hash"`
+	AllowDevOrigins bool `mapstructure:"allow_dev_origins"`
+	// BlockLocalOriginWrites: beta sets it false; prod leaves it at the safe default.
+	// Ignored when AllowDevOrigins is true (a local backend serving a local client).
+	BlockLocalOriginWrites bool   `mapstructure:"block_local_origin_writes"`
+	CommitHash             string `mapstructure:"commit_hash"`
 }
 
 // HTTP server timeouts used to harden against slow-loris style DoS without
@@ -402,6 +406,57 @@ func recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func localDevWriteGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isStateChangingMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		sourceURL := r.Header.Get("Origin")
+		if sourceURL == "" {
+			sourceURL = r.Header.Get("Referer")
+		}
+		if !isLocalDevURL(sourceURL) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// This is a dev-safety fence, not authentication or authorization.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"error": "local development origins cannot modify this backend",
+		}); err != nil {
+			slog.Default().ErrorContext(r.Context(), "failed to write local development origin error",
+				slog.String("err", err.Error()),
+			)
+		}
+	})
+}
+
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func isLocalDevURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || (!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
+		return false
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return host == "localhost" ||
+		host == "127.0.0.1" ||
+		host == "::1" ||
+		strings.HasSuffix(host, ".localhost")
+}
+
 func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Handler) http.Handler {
 	origins := make([]string, 0, len(allowedOrigins)+len(corsDevOrigins))
 
@@ -543,6 +598,9 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
 		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
+		if s.c.BlockLocalOriginWrites && !s.c.AllowDevOrigins {
+			r.Use(localDevWriteGuard)
+		}
 		// Admin carries base64-encoded media uploads, so it gets a cap sized for the
 		// base64-expanded video payload (see maxAdminJSONBodyBytes); frontend/auth JSON
 		// is bounded tightly.

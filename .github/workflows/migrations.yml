@@ -106,7 +106,7 @@ jobs:
 
       - name: Replay new migrations over boundary data
         env:
-          MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_replay_test?parseTime=true&charset=utf8mb4
+          MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_replay_test?parseTime=true&charset=utf8
           MIGREPLAY_BASE_REF: ${{ needs.immutability.outputs.base_ref }}
         run: make migration-replay
 
