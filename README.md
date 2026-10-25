@@ -76,13 +76,16 @@ file overlaid by **environment variables, which take precedence**.
   `STRIPE_PAYMENT_SECRET_KEY`, `MAILER_SENDGRID_API_KEY`). For local dev these live in `.env` (gitignored)
   and are sourced by `make run`.
 - The full set of variables is documented by the production app spec, `.do/app.yaml`.
+- Error reporting (Sentry, `internal/observability`): `SENTRY_DSN` (secret; empty or unset = Sentry off,
+  no init and no outgoing requests) and `SENTRY_ENVIRONMENT` (`beta` when unset; set `prod` on the prod
+  app). Set both in the DigitalOcean app settings, never in code. Release is the build commit hash.
 
 <details>
 <summary>Config groups</summary>
 
 `mysql.*`, `http.*`, `auth.*` (admin JWT), `storefront_auth.*` (customer JWT / magic link),
 `bucket.*` (Spaces), `mailer.*` (Resend), `stripe_payment.*` / `stripe_payment_test.*`,
-`revalidation.*` (Vercel ISR), `ga4.*` / `ga4mp.*` / `bigquery.*`, and worker intervals.
+`revalidation.*` (Vercel ISR), `sentry.*` (error reporting), `ga4.*` / `ga4mp.*` / `bigquery.*`, and worker intervals.
 </details>
 
 ## Development

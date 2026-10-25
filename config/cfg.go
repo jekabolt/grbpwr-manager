@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
@@ -132,6 +133,9 @@ type Config struct {
 	// AI is the provider-neutral AI layer (internal/aiprov): today only the master key that seals
 	// provider keys stored in the database. See AIConfig.
 	AI AIConfig `mapstructure:"ai"`
+	// Sentry is error reporting (internal/observability): SENTRY_DSN unset = off, nothing is sent.
+	// SENTRY_ENVIRONMENT defaults to "beta" in code; the prod app sets it to "prod".
+	Sentry observability.Config `mapstructure:"sentry"`
 }
 
 // AIConfig configures internal/aiprov.
@@ -404,6 +408,10 @@ func bindEnvVars() {
 	// Logger
 	viper.BindEnv("logger.level", "LOGGER_LEVEL")
 	viper.BindEnv("logger.add_source", "LOGGER_ADD_SOURCE")
+
+	// Sentry (internal/observability). Set in the DO dashboard as SECRET, never in .do/app.yaml.
+	viper.BindEnv("sentry.dsn", "SENTRY_DSN")
+	viper.BindEnv("sentry.environment", "SENTRY_ENVIRONMENT")
 
 	// HTTP
 	viper.BindEnv("http.port", "HTTP_PORT")

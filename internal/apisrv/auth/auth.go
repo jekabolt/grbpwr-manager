@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -785,7 +786,10 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 			// WHO a provider call is made for — the AI spend ledger's actor. The username is what
 			// design_run.author already stores; the id survives a rename. A failed id lookup never
 			// fails the RPC: the actor then carries the username alone.
-			ctx = aiprov.WithActor(ctx, aiprov.Actor{Username: sub, AdminID: s.adminIDFor(ctx, sub)})
+			adminID := s.adminIDFor(ctx, sub)
+			ctx = aiprov.WithActor(ctx, aiprov.Actor{Username: sub, AdminID: adminID})
+			// The same admin on the call's Sentry hub (a no-op without SENTRY_DSN).
+			observability.SetAdmin(ctx, sub, adminID)
 		}
 		ctx = putAdminAuthz(ctx, AdminAuthz{Legacy: legacy, Super: super, Perms: perms})
 		return handler(ctx, req)
