@@ -62,6 +62,9 @@ jobs:
       - name: Check out backend
         uses: actions/checkout@v4
 
+      - name: Install system libraries for cgo (go-webp, libheif)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -89,6 +92,9 @@ jobs:
     steps:
       - name: Check out backend
         uses: actions/checkout@v4
+
+      - name: Install system libraries for cgo (go-webp, libheif)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev
 
       - name: Set up Go
         uses: actions/setup-go@v5
