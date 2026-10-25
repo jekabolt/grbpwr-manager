@@ -206,6 +206,28 @@ validate_baseline() {
   fi
 }
 
+# print_failure_output <go-test-json> <names>: the test output of each named failure
+print_failure_output() {
+  python3 - "$1" "$2" <<'PY2'
+import json
+import sys
+
+module = "github.com/jekabolt/grbpwr-manager/"
+names = {line.strip() for line in open(sys.argv[2], encoding="utf-8") if line.strip()}
+with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict) or event.get("Action") != "output" or not event.get("Test"):
+            continue
+        package = (event.get("Package") or "").removeprefix(module)
+        if event["Test"] in names or f"{package} {event['Test']}" in names:
+            sys.stdout.write(f"  | {package} {event['Test']}: {event.get('Output', '')}")
+PY2
+}
+
 # compare_failures <label> <failed-names> <baseline-file>
 # New red outside the baseline -> exit 1 with names. Baseline may only shrink.
 compare_failures() {
@@ -233,6 +255,7 @@ compare_failures() {
     while IFS= read -r test; do
       printf 'new %s failure: %s\n' "$label" "$test" >&2
     done <"$tmp_dir/$label-new.txt"
+    print_failure_output "$tmp_dir/$label.json" "$tmp_dir/$label-new.txt" >&2
     echo "ci-test.sh: refusing to add failures to $rel" >&2
     return 1
   fi

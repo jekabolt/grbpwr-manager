@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system libraries for cgo (go-webp, libheif)
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev libheif-plugin-libde265
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system libraries for cgo (go-webp, libheif)
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev libheif-plugin-libde265
 
       - name: Set up Go
         uses: actions/setup-go@v5
