@@ -122,8 +122,8 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("seed boundary data: %w", err)
 	}
-	fmt.Fprintf(cfg.Progress, "migration replay: seeded %d boundary row(s) across %d/%d table(s); %d candidate insert(s) were rejected by the base schema\n",
-		stats.RowsInserted, stats.TablesSeeded, stats.TablesVisited, stats.CandidatesRejected)
+	fmt.Fprintf(cfg.Progress, "migration replay: covered %d/%d table(s) with %d synthetic boundary row(s); %d table(s) were already covered by migration data and %d candidate insert(s) were rejected by the base schema\n",
+		stats.TablesCovered, stats.TablesVisited, stats.RowsInserted, stats.TablesAlreadyCovered, stats.CandidatesRejected)
 	if len(stats.UnseededTables) > 0 {
 		fmt.Fprintf(cfg.Progress, "migration replay: warning: no synthetic boundary row fit %d table(s): %s\n",
 			len(stats.UnseededTables), strings.Join(stats.UnseededTables, ", "))

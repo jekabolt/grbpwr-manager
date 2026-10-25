@@ -16,12 +16,13 @@ import (
 )
 
 type SeedStats struct {
-	TablesVisited      int
-	TablesSeeded       int
-	RowsInserted       int
-	CandidatesRejected int
-	UnseededTables     []string
-	UnseededReasons    map[string]string
+	TablesVisited        int
+	TablesCovered        int
+	TablesAlreadyCovered int
+	RowsInserted         int
+	CandidatesRejected   int
+	UnseededTables       []string
+	UnseededReasons      map[string]string
 }
 
 type column struct {
@@ -40,6 +41,12 @@ type column struct {
 type uniqueIndex struct {
 	Name    string
 	Columns []string
+}
+
+type foreignKey struct {
+	Column           string
+	ReferencedTable  string
+	ReferencedColumn string
 }
 
 type boundaryValue struct {
@@ -95,6 +102,14 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 		if err != nil {
 			return stats, fmt.Errorf("checks for %s: %w", table, err)
 		}
+		foreignKeys, err := tableForeignKeys(ctx, conn, schema, table)
+		if err != nil {
+			return stats, fmt.Errorf("foreign keys for %s: %w", table, err)
+		}
+		foreignKeyValues, err := foreignKeySeedValues(ctx, conn, columns, foreignKeys)
+		if err != nil {
+			return stats, fmt.Errorf("foreign key seed values for %s: %w", table, err)
+		}
 		hints := inferCheckHints(columns, checks)
 		template, err := existingRow(ctx, conn, table, columns)
 		if err != nil {
@@ -108,7 +123,7 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 		// section, and similar columns) onto an admissible row before individual
 		// boundaries deliberately try invalid values.
 		for copyNumber := 0; copyNumber < 2; copyNumber++ {
-			values := buildRow(columns, indexes, template, hints, "", nil, sequence)
+			values := buildRow(columns, indexes, template, hints, foreignKeyValues, checks, "", nil, sequence)
 			sequence++
 			inserted, err := insertBoundaryRow(ctx, conn, table, values)
 			if err != nil {
@@ -134,7 +149,7 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 				// A duplicate pair catches a future UNIQUE over columns that are not
 				// already unique in the base schema.
 				for copyNumber := 0; copyNumber < 2; copyNumber++ {
-					values := buildRow(columns, indexes, template, hints, target.Name, boundary.Value, sequence)
+					values := buildRow(columns, indexes, template, hints, foreignKeyValues, checks, target.Name, boundary.Value, sequence)
 					sequence++
 					inserted, err := insertBoundaryRow(ctx, conn, table, values)
 					if err != nil {
@@ -154,17 +169,31 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 				}
 			}
 		}
-		if insertedForTable == 0 {
+		covered, alreadyCovered := tableSeedCoverage(insertedForTable, template)
+		if !covered {
 			stats.UnseededTables = append(stats.UnseededTables, table)
 			stats.UnseededReasons[table] = lastRejection
 		} else {
-			stats.TablesSeeded++
+			stats.TablesCovered++
+			if alreadyCovered {
+				stats.TablesAlreadyCovered++
+			}
 		}
 	}
 	if progress != nil {
 		fmt.Fprintf(progress, "migration replay: boundary generator visited %d table(s) with foreign_key_checks=0 and sql_mode=''\n", stats.TablesVisited)
 	}
 	return stats, nil
+}
+
+func tableSeedCoverage(inserted int, template map[string]any) (covered, alreadyCovered bool) {
+	if inserted > 0 {
+		return true, false
+	}
+	if template != nil {
+		return true, true
+	}
+	return false, false
 }
 
 func tableNames(ctx context.Context, conn *sql.Conn, schema string) ([]string, error) {
@@ -233,6 +262,66 @@ func tableUniqueIndexes(ctx context.Context, conn *sql.Conn, schema, table strin
 	return indexes, rows.Err()
 }
 
+func tableForeignKeys(ctx context.Context, conn *sql.Conn, schema, table string) ([]foreignKey, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+		FROM information_schema.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+		ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []foreignKey
+	for rows.Next() {
+		var key foreignKey
+		if err := rows.Scan(&key.Column, &key.ReferencedTable, &key.ReferencedColumn); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// foreignKeySeedValues prefers real parent keys. Repeated references to the same
+// parent key use successive rows, which also gives relationship tables distinct
+// endpoints. With foreign_key_checks disabled, a generated fallback is enough
+// when the parent has no row yet.
+func foreignKeySeedValues(ctx context.Context, conn *sql.Conn, columns []column, keys []foreignKey) (map[string]any, error) {
+	byName := make(map[string]column, len(columns))
+	for _, c := range columns {
+		byName[c.Name] = c
+	}
+	values := make(map[string]any, len(keys))
+	offsets := make(map[string]int)
+	for _, key := range keys {
+		c, ok := byName[key.Column]
+		if !ok || !c.insertable() {
+			continue
+		}
+		parentKey := key.ReferencedTable + "\x00" + key.ReferencedColumn
+		offset := offsets[parentKey]
+		offsets[parentKey]++
+		query := "SELECT " + quoteIdentifier(key.ReferencedColumn) +
+			" FROM " + quoteIdentifier(key.ReferencedTable) +
+			" WHERE " + quoteIdentifier(key.ReferencedColumn) + " IS NOT NULL" +
+			" ORDER BY " + quoteIdentifier(key.ReferencedColumn) + " LIMIT 1 OFFSET ?"
+		var value any
+		err := conn.QueryRowContext(ctx, query, offset).Scan(&value)
+		switch {
+		case err == nil:
+			if raw, ok := value.([]byte); ok {
+				value = append([]byte(nil), raw...)
+			}
+			values[key.Column] = value
+		case err == sql.ErrNoRows:
+			values[key.Column] = uniqueValue(c, nil, offset+1)
+		default:
+			return nil, err
+		}
+	}
+	return values, nil
+}
+
 func tableChecks(ctx context.Context, conn *sql.Conn, schema, table string) ([]string, error) {
 	rows, err := conn.QueryContext(ctx, `SELECT cc.CHECK_CLAUSE
 		FROM information_schema.TABLE_CONSTRAINTS tc
@@ -251,7 +340,8 @@ func tableChecks(ctx context.Context, conn *sql.Conn, schema, table string) ([]s
 		if err := rows.Scan(&clause); err != nil {
 			return nil, err
 		}
-		checks = append(checks, clause)
+		// information_schema stores quotes inside CHECK_CLAUSE escaped: _utf8mb4\'a\'.
+		checks = append(checks, strings.ReplaceAll(clause, `\'`, `'`))
 	}
 	return checks, rows.Err()
 }
@@ -294,7 +384,7 @@ func existingRow(ctx context.Context, conn *sql.Conn, table string, columns []co
 	return template, nil
 }
 
-func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, hints map[string][]any, target string, boundary any, sequence int) map[string]any {
+func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, hints map[string][]any, foreignKeys map[string]any, checks []string, target string, boundary any, sequence int) map[string]any {
 	byName := make(map[string]column, len(columns))
 	values := make(map[string]any)
 	for _, c := range columns {
@@ -306,16 +396,23 @@ func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, 
 			values[c.Name] = template[c.Name]
 			continue
 		}
-		if c.Nullable {
+		if value, ok := foreignKeys[c.Name]; ok && !c.Nullable {
+			// A NOT NULL FK must be explicit even when it has an expression
+			// default: task.board_id's default evaluates from another seeded
+			// column and can otherwise produce NULL.
+			values[c.Name] = value
+		} else if hint := firstHint(hints[c.Name]); hint != nil {
+			// Prefer a CHECK-derived value over a nullable/defaulted value. This
+			// makes the baseline independent of implicit defaults and gives later
+			// relationship checks a concrete admissible value to work with.
+			values[c.Name] = hint
+		} else if c.Nullable {
 			values[c.Name] = nil
 		} else if !c.Default.Valid {
-			if hint := firstHint(hints[c.Name]); hint != nil {
-				values[c.Name] = hint
-			} else {
-				values[c.Name] = safeValue(c, sequence)
-			}
+			values[c.Name] = safeValue(c, sequence)
 		}
 	}
+	applyCheckRelationships(values, byName, foreignKeys, checks)
 	if target != "" {
 		values[target] = boundary
 	}
@@ -333,7 +430,7 @@ func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, 
 		if uniqueAlready {
 			continue
 		}
-		name := uniqueColumnToVary(index.Columns, byName, hints, target)
+		name := uniqueColumnToVary(index.Columns, byName, hints, foreignKeys, target)
 		if name != "" {
 			values[name] = uniqueValue(byName[name], hints[name], sequence)
 		}
@@ -341,17 +438,21 @@ func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, 
 	return values
 }
 
-func uniqueColumnToVary(names []string, columns map[string]column, hints map[string][]any, target string) string {
+func uniqueColumnToVary(names []string, columns map[string]column, hints map[string][]any, foreignKeys map[string]any, target string) string {
 	// Prefer an unconstrained column. Varying a finite checked vocabulary (for
 	// example size.sku_system) used to turn otherwise valid templates into rows
-	// which every CHECK rejected.
+	// which every CHECK rejected. Foreign keys keep their selected parent value;
+	// when an FK is the whole unique key, one valid row is better than several
+	// orphaned rows while foreign_key_checks is disabled.
 	for _, name := range names {
-		if name != target && columns[name].insertable() && columns[name].supportsGeneratedUnique() && len(hints[name]) == 0 {
+		_, isForeignKey := foreignKeys[name]
+		if name != target && !isForeignKey && columns[name].insertable() && columns[name].supportsGeneratedUnique() && len(hints[name]) == 0 {
 			return name
 		}
 	}
 	for _, name := range names {
-		if name != target && columns[name].insertable() && columns[name].supportsGeneratedUnique() {
+		_, isForeignKey := foreignKeys[name]
+		if name != target && !isForeignKey && columns[name].insertable() && columns[name].supportsGeneratedUnique() {
 			return name
 		}
 	}
@@ -437,11 +538,15 @@ func (c column) supportsGeneratedUnique() bool {
 }
 
 var (
-	checkInValuesRe     = regexp.MustCompile(`(?is)(?:\bbinary\s+)?` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+in\s*\(([^()]*)\)`)
-	checkRegexpRe       = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+regexp\s+(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'`)
-	checkRegexpLikeRe   = regexp.MustCompile(`(?is)regexp_like\s*\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*,\s*(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'`)
-	checkEqualityRe     = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*=\s*(?:(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'|(-?[0-9]+(?:\.[0-9]+)?))`)
-	simpleRegexpValueRe = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+	checkCastIdentifierRe  = regexp.MustCompile(`(?is)cast\s*\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+as\s+(?:char(?:\s+charset\s+[a-z0-9_]+)?|binary(?:\s*\([0-9]+\))?)\s*\)`)
+	checkInValuesRe        = regexp.MustCompile(`(?is)(?:\bbinary\s+)?` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+in\s*\(([^()]*)\)`)
+	checkBetweenRe         = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+between\s+(-?[0-9]+(?:\.[0-9]+)?)\s+and\s+(-?[0-9]+(?:\.[0-9]+)?)`)
+	checkRegexpRe          = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+regexp\s+(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'`)
+	checkRegexpLikeRe      = regexp.MustCompile(`(?is)regexp_like\s*\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*,\s*(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'(?:\s*,\s*(?:_[a-z0-9]+)?'(?:''|\\.|[^'])*')?\s*\)`)
+	checkEqualityRe        = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*=\s*(?:(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'|(-?[0-9]+(?:\.[0-9]+)?))`)
+	checkNullXORRe         = regexp.MustCompile(`(?is)\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+is\s+null\s*\)\s*<>\s*\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+is\s+null\s*\)`)
+	checkColumnsNotEqualRe = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*<>\s*` + "`?" + `([a-z0-9_]+)` + "`?")
+	simpleRegexpValueRe    = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 )
 
 // inferCheckHints extracts finite, known-good values from the CHECK shapes used
@@ -465,9 +570,15 @@ func inferCheckHints(columns []column, checks []string) map[string][]any {
 			hints[name] = append(hints[name], value)
 		}
 	}
-	for _, check := range checks {
+	for _, rawCheck := range checks {
+		check := normalizeCheckClause(rawCheck)
 		for _, match := range checkInValuesRe.FindAllStringSubmatch(check, -1) {
 			add(match[1], stringsToAny(sqlQuotedValues(match[2])))
+		}
+		for _, match := range checkBetweenRe.FindAllStringSubmatch(check, -1) {
+			if value, ok := checkNumber(match[2]); ok {
+				add(match[1], []any{value})
+			}
 		}
 		for _, match := range checkRegexpRe.FindAllStringSubmatch(check, -1) {
 			add(match[1], stringsToAny(valuesFromCheckRegexp(decodeSQLStringContent(match[2]))))
@@ -488,6 +599,77 @@ func inferCheckHints(columns []column, checks []string) map[string][]any {
 		}
 	}
 	return hints
+}
+
+func normalizeCheckClause(check string) string {
+	return checkCastIdentifierRe.ReplaceAllString(check, "`$1`")
+}
+
+func checkNumber(input string) (any, bool) {
+	if integer, err := strconv.ParseInt(input, 10, 64); err == nil {
+		return integer, true
+	}
+	if _, err := strconv.ParseFloat(input, 64); err == nil {
+		return input, true
+	}
+	return nil, false
+}
+
+func applyCheckRelationships(values map[string]any, columns map[string]column, foreignKeys map[string]any, checks []string) {
+	for _, rawCheck := range checks {
+		check := normalizeCheckClause(rawCheck)
+		for _, match := range checkNullXORRe.FindAllStringSubmatch(check, -1) {
+			left, leftOK := columns[match[1]]
+			right, rightOK := columns[match[2]]
+			if !leftOK || !rightOK {
+				continue
+			}
+			leftNil := valueIsNil(values[left.Name])
+			rightNil := valueIsNil(values[right.Name])
+			if leftNil == rightNil {
+				if leftNil {
+					if value, ok := foreignKeys[left.Name]; ok {
+						values[left.Name] = value
+					} else {
+						values[left.Name] = safeValue(left, 1)
+					}
+				} else if right.Nullable {
+					values[right.Name] = nil
+				} else if left.Nullable {
+					values[left.Name] = nil
+				}
+			}
+		}
+		for _, match := range checkColumnsNotEqualRe.FindAllStringSubmatch(check, -1) {
+			left, leftOK := columns[match[1]]
+			right, rightOK := columns[match[2]]
+			if !leftOK || !rightOK || !seedValuesEqual(values[left.Name], values[right.Name]) {
+				continue
+			}
+			for sequence := 2; sequence < 10; sequence++ {
+				candidate := uniqueValue(right, nil, sequence)
+				if !seedValuesEqual(values[left.Name], candidate) {
+					values[right.Name] = candidate
+					break
+				}
+			}
+		}
+	}
+}
+
+func valueIsNil(value any) bool {
+	return value == nil
+}
+
+func seedValuesEqual(left, right any) bool {
+	return seedValueString(left) == seedValueString(right)
+}
+
+func seedValueString(value any) string {
+	if raw, ok := value.([]byte); ok {
+		return string(raw)
+	}
+	return fmt.Sprint(value)
 }
 
 func stringsToAny(values []string) []any {

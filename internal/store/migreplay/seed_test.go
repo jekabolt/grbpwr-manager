@@ -41,8 +41,8 @@ func TestBuildRowKeepsFutureDuplicateWhileVaryingExistingUnique(t *testing.T) {
 	}
 	indexes := []uniqueIndex{{Name: "PRIMARY", Columns: []string{"id"}}}
 	template := map[string]any{"id": int64(1), "legacy_code": []byte("same"), "quantity": int64(5)}
-	first := buildRow(columns, indexes, template, nil, "quantity", int64(0), 1)
-	second := buildRow(columns, indexes, template, nil, "quantity", int64(0), 2)
+	first := buildRow(columns, indexes, template, nil, nil, nil, "quantity", int64(0), 1)
+	second := buildRow(columns, indexes, template, nil, nil, nil, "quantity", int64(0), 2)
 	if first["id"] == second["id"] {
 		t.Fatal("existing unique key was not varied")
 	}
@@ -60,8 +60,8 @@ func TestBuildRowOverridesAUniqueDefault(t *testing.T) {
 		{Name: "quantity", DataType: "int", ColumnType: "int"},
 	}
 	indexes := []uniqueIndex{{Name: "uq_code", Columns: []string{"code"}}}
-	first := buildRow(columns, indexes, nil, nil, "quantity", int64(0), 1)
-	second := buildRow(columns, indexes, nil, nil, "quantity", int64(0), 2)
+	first := buildRow(columns, indexes, nil, nil, nil, nil, "quantity", int64(0), 1)
+	second := buildRow(columns, indexes, nil, nil, nil, nil, "quantity", int64(0), 2)
 	if first["code"] == nil || first["code"] == second["code"] {
 		t.Fatalf("unique default was not replaced with distinct values: %#v %#v", first, second)
 	}
@@ -86,7 +86,7 @@ func TestCheckHintsBuildValidBaselinesAndProtectFiniteUniqueColumns(t *testing.T
 	}
 
 	indexes := []uniqueIndex{{Name: "uniq_size", Columns: []string{"sku_system", "sku_ord"}}}
-	row := buildRow(columns, indexes, nil, hints, "name", "boundary", 7)
+	row := buildRow(columns, indexes, nil, hints, nil, nil, "name", "boundary", 7)
 	if row["sku_system"] != "apparel" {
 		t.Fatalf("checked vocabulary was overwritten: %#v", row)
 	}
@@ -95,6 +95,98 @@ func TestCheckHintsBuildValidBaselinesAndProtectFiniteUniqueColumns(t *testing.T
 	}
 	if row["archive_code"] != "AR1" {
 		t.Fatalf("REGEXP_LIKE hint not used: %#v", row)
+	}
+}
+
+func TestCheckHintsUseMySQLNormalizedClauses(t *testing.T) {
+	columns := []column{
+		{Name: "sku_ord", DataType: "smallint", ColumnType: "smallint unsigned"},
+		{Name: "sku_system", DataType: "varchar", ColumnType: "varchar(16)", Default: sql.NullString{String: "", Valid: true}},
+		{Name: "code", DataType: "varchar", ColumnType: "varchar(12)", Default: sql.NullString{String: "", Valid: true}},
+		{Name: "label_type", DataType: "varchar", ColumnType: "varchar(16)", Default: sql.NullString{String: "", Valid: true}},
+		{Name: "event_type", DataType: "varchar", ColumnType: "varchar(32)", Default: sql.NullString{String: "", Valid: true}},
+	}
+	checks := []string{
+		"((`sku_ord` between 1 and 99) and (`sku_system` is not null) and (cast(`sku_system` as char charset binary) in (_utf8mb4'apparel',_utf8mb4'shoe',_utf8mb4'composite_ta',_utf8mb4'composite_bo')))",
+		"regexp_like(`code`,_utf8mb4'^AR[0-9A-Z]{1,10}$',_utf8mb4'c')",
+		"regexp_like(`label_type`,_utf8mb4'^(main|size|care|origin|flag|hangtag|barcode|special)$')",
+		"(`event_type` in (_utf8mb4'order_paid',_utf8mb4'order_refund',_utf8mb4'order_shipped',_utf8mb4'order_delivered',_utf8mb4'order_dispute'))",
+	}
+	hints := inferCheckHints(columns, checks)
+	want := map[string][]any{
+		"sku_ord":    {int64(1)},
+		"sku_system": {"apparel", "shoe", "composite_ta", "composite_bo"},
+		"code":       {"AR1"},
+		"label_type": {"main", "size", "care", "origin", "flag", "hangtag", "barcode", "special"},
+		"event_type": {"order_paid", "order_refund", "order_shipped", "order_delivered", "order_dispute"},
+	}
+	if !reflect.DeepEqual(hints, want) {
+		t.Fatalf("inferCheckHints() = %#v, want %#v", hints, want)
+	}
+	row := buildRow(columns, nil, nil, hints, nil, checks, "", nil, 1)
+	for name, values := range want {
+		if row[name] != values[0] {
+			t.Errorf("baseline %s = %#v, want CHECK-derived %#v", name, row[name], values[0])
+		}
+	}
+}
+
+func TestBuildRowUsesForeignKeysAndCheckRelationships(t *testing.T) {
+	t.Run("not null foreign key overrides expression default", func(t *testing.T) {
+		columns := []column{
+			{Name: "board", DataType: "varchar", ColumnType: "varchar(16)"},
+			{Name: "board_id", DataType: "int", ColumnType: "int", Default: sql.NullString{String: "(case `board`)", Valid: true}},
+		}
+		row := buildRow(columns, nil, nil, nil, map[string]any{"board_id": int64(1)}, nil, "", nil, 1)
+		if row["board_id"] != int64(1) {
+			t.Fatalf("board_id = %#v, want existing task_board id 1", row["board_id"])
+		}
+	})
+
+	t.Run("nullable foreign key xor gets exactly one owner", func(t *testing.T) {
+		columns := []column{
+			{Name: "order_id", DataType: "int", ColumnType: "int", Nullable: true},
+			{Name: "run_id", DataType: "int", ColumnType: "int", Nullable: true},
+		}
+		checks := []string{"((`order_id` is null) <> (`run_id` is null))"}
+		row := buildRow(columns, nil, nil, nil, map[string]any{"order_id": int64(11), "run_id": int64(12)}, checks, "", nil, 1)
+		if row["order_id"] != int64(11) || row["run_id"] != nil {
+			t.Fatalf("owner xor row = %#v", row)
+		}
+	})
+
+	t.Run("relationship endpoints remain distinct", func(t *testing.T) {
+		columns := []column{
+			{Name: "from_task_id", DataType: "int", ColumnType: "int"},
+			{Name: "to_task_id", DataType: "int", ColumnType: "int"},
+			{Name: "kind", DataType: "varchar", ColumnType: "varchar(16)"},
+		}
+		checks := []string{
+			"(`kind` in (_utf8mb4'blocks',_utf8mb4'relates'))",
+			"(`from_task_id` <> `to_task_id`)",
+		}
+		hints := inferCheckHints(columns, checks)
+		row := buildRow(columns, nil, nil, hints, map[string]any{"from_task_id": int64(7), "to_task_id": int64(8)}, checks, "", nil, 1)
+		if row["kind"] != "blocks" || row["from_task_id"] != int64(7) || row["to_task_id"] != int64(8) {
+			t.Fatalf("task link row = %#v", row)
+		}
+	})
+}
+
+func TestExistingMigrationRowCountsAsCovered(t *testing.T) {
+	covered, alreadyCovered := tableSeedCoverage(0, map[string]any{"id": int64(1)})
+	if !covered || !alreadyCovered {
+		t.Fatalf("tableSeedCoverage() = %v, %v; want true, true", covered, alreadyCovered)
+	}
+	covered, alreadyCovered = tableSeedCoverage(0, nil)
+	if covered || alreadyCovered {
+		t.Fatalf("empty tableSeedCoverage() = %v, %v; want false, false", covered, alreadyCovered)
+	}
+}
+
+func TestQuoteIdentifierUsesANSICompatibleBackticks(t *testing.T) {
+	if got, want := quoteIdentifier("select`value"), "`select``value`"; got != want {
+		t.Fatalf("quoteIdentifier() = %q, want %q", got, want)
 	}
 }
 
@@ -117,7 +209,7 @@ func TestCheckHintsCoverSingletonAndBuyerFormats(t *testing.T) {
 	if !reflect.DeepEqual(hints["singleton"], []any{int64(1)}) {
 		t.Fatalf("singleton hints = %#v", hints["singleton"])
 	}
-	row := buildRow(columns, nil, nil, hints, "", nil, 42)
+	row := buildRow(columns, nil, nil, hints, nil, nil, "", nil, 42)
 	if row["email"] != "migfuzz+42@example.invalid" {
 		t.Fatalf("email seed = %#v", row["email"])
 	}

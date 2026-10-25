@@ -2,6 +2,7 @@ package migrationlint
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,6 +84,8 @@ func detectSchemaHazards(migrations []namedMigration, enforceAfter int) ([]schem
 	}
 	return hazards, nil
 }
+
+var migrationPrefixRe = regexp.MustCompile(`^(\d+)_`)
 
 func migrationNumber(name string) int {
 	match := migrationPrefixRe.FindStringSubmatch(name)
