@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jekabolt/grbpwr-manager/internal/testdbguard"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,10 @@ func TestMain(m *testing.M) {
 	testCfg, err = loadTestConfig(configPath)
 	if err != nil {
 		slog.Error("failed to load test config", "error", err)
+		os.Exit(1)
+	}
+	if err := testdbguard.CheckMySQLDSN(testCfg.DSN); err != nil {
+		fmt.Fprintf(os.Stderr, "internal/store: refusing to open MySQL: %v\n", err)
 		os.Exit(1)
 	}
 

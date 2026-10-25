@@ -7,6 +7,8 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // unauthorizedBody is a constant response body: which stage of verification
@@ -53,6 +55,14 @@ func (s *Server) WithAdminAuthz(next http.Handler) http.Handler {
 			slog.Default().WarnContext(r.Context(), "invalid admin auth token on http endpoint",
 				slog.String("path", r.URL.Path), slog.String("err", err.Error()))
 			writeAuthError(w, http.StatusUnauthorized)
+			return
+		}
+		if err := s.checkAdminAccountState(r.Context(), sub); err != nil {
+			if status.Code(err) == codes.Unavailable {
+				writeAuthError(w, http.StatusServiceUnavailable)
+			} else {
+				writeAuthError(w, http.StatusUnauthorized)
+			}
 			return
 		}
 		ctx := r.Context()

@@ -23,6 +23,8 @@ import (
 // account-management RPCs. The master-password bootstrap path is unaffected.
 const minAdminPasswordLen = 8
 
+const superAccountManageRefusal = "only a super admin may manage a super account"
+
 // GetCurrentAccount returns the calling account's effective authorization (what
 // its token grants), for the admin panel to decide which sections to render. It
 // reflects the token, not the database, so a permission change only shows up
@@ -151,6 +153,7 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 		}
 		return nil, status.Error(codes.Internal, "failed to create account")
 	}
+	s.invalidateAccountAuth(username)
 	account, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to reload created account", slog.String("err", err.Error()))
@@ -162,26 +165,28 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 // UpdateAccountPermissions replaces an account's super flag and permission set.
 //
 // is_super=true is accepted only from a full-access caller (security audit P1 #2: an accounts:write
-// holder sent it for their OWN username and came back a super after the next login). The guard is on
-// the request, not on the transition: a scoped caller may not send is_super=true even for an account
-// that is already super — for such a target that call would change nothing anyway (a super's section
-// grants are dropped), and refusing before the store read keeps the check free of lookups.
+// holder sent it for their OWN username and came back a super after the next login). The current
+// account is also loaded before any write so a scoped caller cannot edit or demote an existing super.
 // ensureNotLastSuper below is a different guard (against demoting the last super) and stays as is.
 func (s *Server) UpdateAccountPermissions(ctx context.Context, req *pb_admin.UpdateAccountPermissionsRequest) (*pb_admin.UpdateAccountPermissionsResponse, error) {
-	if az, _ := authsrv.GetAdminAuthz(ctx); req.IsSuper && !az.FullAccess() {
-		return nil, status.Error(codes.PermissionDenied, "only a super admin may grant super access")
-	}
 	username := normalizeUsername(req.Username)
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	perms, err := toEntityPermissions(req.IsSuper, req.Permissions)
-	if err != nil {
-		return nil, err
-	}
 	current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
+	}
+	az, _ := authsrv.GetAdminAuthz(ctx)
+	if current.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, superAccountManageRefusal)
+	}
+	if req.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, "only a super admin may grant super access")
+	}
+	perms, err := toEntityPermissions(req.IsSuper, req.Permissions)
+	if err != nil {
+		return nil, err
 	}
 	// Demoting the last remaining super-admin would leave nobody able to manage
 	// accounts; block it.
@@ -208,15 +213,17 @@ func (s *Server) SetAccountDisabled(ctx context.Context, req *pb_admin.SetAccoun
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
-	if req.Disabled {
-		current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
-		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "account %q not found", username)
-		}
-		if current.IsSuper {
-			if err := s.ensureNotLastSuper(ctx); err != nil {
-				return nil, err
-			}
+	current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
+	}
+	az, _ := authsrv.GetAdminAuthz(ctx)
+	if current.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, superAccountManageRefusal)
+	}
+	if req.Disabled && current.IsSuper {
+		if err := s.ensureNotLastSuper(ctx); err != nil {
+			return nil, err
 		}
 	}
 	if err := s.repo.Admin().SetAccountDisabled(ctx, username, req.Disabled); err != nil {
@@ -224,6 +231,7 @@ func (s *Server) SetAccountDisabled(ctx context.Context, req *pb_admin.SetAccoun
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to update account")
 	}
+	s.invalidateAccountAuth(username)
 	return &pb_admin.SetAccountDisabledResponse{}, nil
 }
 
@@ -236,6 +244,14 @@ func (s *Server) ResetAccountPassword(ctx context.Context, req *pb_admin.ResetAc
 	if len(req.NewPassword) < minAdminPasswordLen {
 		return nil, status.Errorf(codes.InvalidArgument, "password must be at least %d characters", minAdminPasswordLen)
 	}
+	current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
+	}
+	az, _ := authsrv.GetAdminAuthz(ctx)
+	if current.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, superAccountManageRefusal)
+	}
 	pwHash, err := s.pwhash.HashPassword(req.NewPassword)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to hash password", slog.String("err", err.Error()))
@@ -246,6 +262,7 @@ func (s *Server) ResetAccountPassword(ctx context.Context, req *pb_admin.ResetAc
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
 	}
+	s.invalidateAccountAuth(username)
 	return &pb_admin.ResetAccountPasswordResponse{}, nil
 }
 
@@ -255,14 +272,18 @@ func (s *Server) DeleteAccount(ctx context.Context, req *pb_admin.DeleteAccountR
 	if username == "" {
 		return nil, status.Error(codes.InvalidArgument, "username is required")
 	}
+	current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
+	}
+	az, _ := authsrv.GetAdminAuthz(ctx)
+	if current.IsSuper && !az.FullAccess() {
+		return nil, status.Error(codes.PermissionDenied, superAccountManageRefusal)
+	}
 	// Deleting your own account mid-session is almost always a mistake and can lock
 	// you out; require it to be done from another account.
 	if caller := authsrv.GetAdminUsername(ctx); caller != "" && caller == username {
 		return nil, status.Error(codes.FailedPrecondition, "cannot delete your own account")
-	}
-	current, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
 	}
 	if current.IsSuper {
 		if err := s.ensureNotLastSuper(ctx); err != nil {
@@ -274,6 +295,7 @@ func (s *Server) DeleteAccount(ctx context.Context, req *pb_admin.DeleteAccountR
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to delete account")
 	}
+	s.invalidateAccountAuth(username)
 	return &pb_admin.DeleteAccountResponse{}, nil
 }
 

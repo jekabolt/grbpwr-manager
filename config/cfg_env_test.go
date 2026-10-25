@@ -26,6 +26,20 @@ func TestMasterPasswordFromEnv(t *testing.T) {
 	assert.Equal(t, 100000, cfg.Auth.PasswordHasherIterations)
 }
 
+func TestBlockLocalOriginWritesDefaultsOnAndBindsEnv(t *testing.T) {
+	t.Setenv("AUTH_JWT_SECRET", "test-secret")
+	t.Setenv("HTTP_BLOCK_LOCAL_ORIGIN_WRITES", "")
+
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.True(t, cfg.HTTP.BlockLocalOriginWrites)
+
+	t.Setenv("HTTP_BLOCK_LOCAL_ORIGIN_WRITES", "false")
+	cfg, err = LoadConfig("")
+	require.NoError(t, err)
+	assert.False(t, cfg.HTTP.BlockLocalOriginWrites)
+}
+
 // TestOpenRouterAnalysisModelFromEnv proves the BINDING, not a naming coincidence.
 //
 // viper.AutomaticEnv is deliberately off in this package (see loadConfig), so a key reaches the

@@ -11,6 +11,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/testdbguard"
 )
 
 // The two frontend tier-gate tests (hero hidden-product leak, pre-checkout gate) run against a real
@@ -29,10 +30,13 @@ func tierGateBackends(t *testing.T) (*store.MYSQLStore, *sql.DB) {
 	if os.Getenv("CI") == "" || os.Getenv("MYSQL_HOST") == "" {
 		t.Skip("requires ephemeral MySQL container: set CI=1 and MYSQL_USER/PASSWORD/HOST/PORT/DATABASE")
 	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
+		os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"),
+		os.Getenv("MYSQL_HOST"), os.Getenv("MYSQL_PORT"), os.Getenv("MYSQL_DATABASE"))
+	if err := testdbguard.CheckMySQLDSN(dsn); err != nil {
+		t.Fatalf("tier gate backends refuse to open MySQL: %v", err)
+	}
 	tierBackendsOnce.Do(func() {
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
-			os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"),
-			os.Getenv("MYSQL_HOST"), os.Getenv("MYSQL_PORT"), os.Getenv("MYSQL_DATABASE"))
 		// Build the store with a non-cancelled context: MYSQLStore closes its DB when the ctx it was
 		// created with is done (store.go), and this store must live for the whole package test run.
 		// Migrations carry their own internal timeout inside NewForTest.

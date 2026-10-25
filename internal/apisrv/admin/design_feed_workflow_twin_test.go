@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -12,9 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
+	"github.com/jekabolt/grbpwr-manager/internal/testdbguard"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
@@ -32,7 +32,7 @@ import (
 //     workflow expression exactly where it is used and nowhere else; the real statements are that
 //     builder's output; PARTITION BY spells the FULL expression, never the alias.
 //  3. TestFeedWorkflowSQLLiveOnThrowawayMySQL — only with DESIGN_FEED_SQL_DSN pointing at a
-//     LOOPBACK MySQL: the expression is executed on frozen params produced by the production encoder
+//     guarded local/container *_test MySQL: the expression is executed on frozen production params
 //     (plus hand-written JSON edge cases) and compared row by row with the Go twin, then the real
 //     list and count statements run on TEMPORARY tables and are compared with a Go model of the
 //     window.
@@ -204,8 +204,8 @@ func TestFeedStampWindowAndCountAreOneExpression(t *testing.T) {
 
 // ───────────────────────── live, on a throwaway MySQL only ─────────────────────────
 
-// feedProbeDB opens DESIGN_FEED_SQL_DSN on ONE connection, refusing anything but loopback. Every
-// statement below is a SELECT over literals or over TEMPORARY tables of this session; nothing
+// feedProbeDB opens DESIGN_FEED_SQL_DSN on ONE connection after applying the shared test-DSN guard.
+// Every statement below is a SELECT over literals or over TEMPORARY tables of this session; nothing
 // permanent is created or dropped.
 func feedProbeDB(t *testing.T) *sql.Conn {
 	t.Helper()
@@ -213,12 +213,8 @@ func feedProbeDB(t *testing.T) *sql.Conn {
 	if dsn == "" {
 		t.Skip("DESIGN_FEED_SQL_DSN not set (e.g. docker run -p 127.0.0.1:3399:3306 mysql:8.0)")
 	}
-	cfg, err := mysql.ParseDSN(dsn)
-	require.NoError(t, err)
-	host, _, err := net.SplitHostPort(cfg.Addr)
-	require.NoError(t, err)
-	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		t.Fatalf("DESIGN_FEED_SQL_DSN must point at a loopback MySQL, got %q", cfg.Addr)
+	if err := testdbguard.CheckMySQLDSN(dsn); err != nil {
+		t.Fatalf("design feed SQL probe refuses to open MySQL: %v", err)
 	}
 	db, err := sql.Open("mysql", dsn)
 	require.NoError(t, err)

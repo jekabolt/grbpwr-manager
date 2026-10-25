@@ -45,15 +45,29 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 
 	order := &entity.Order{}
 	sendEmail := false
+	var voucherChanges voucherCacheChanges
 
 	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		txDB := rep.DB()
 		txStore := &Store{Base: storeutil.Base{DB: txDB, Now: s.Now}, txFunc: s.txFunc, repFunc: func() dependency.Repository { return rep }}
+		voucherChanges = voucherCacheChanges{}
 
 		orderNew.Items = mergeOrderItems(orderNew.Items)
 
 		promo, ok := cache.GetPromoByCode(orderNew.PromoCode)
-		if !ok || !promo.IsAllowed() {
+		if ok && promo.Voucher {
+			if !voucherWithinWindow(promo) {
+				return promoNotAllowedError()
+			}
+			code, err := claimVoucherInTx(ctx, txDB, promo)
+			if err != nil {
+				return err
+			}
+			voucherChanges.disableCode = code
+			// The DB claim is now authoritative for this transaction. Keep the
+			// shared cache untouched until commit, but let pricing use the voucher.
+			promo.Allowed = true
+		} else if !ok || !promo.IsAllowed() {
 			promo = entity.PromoCode{}
 		}
 		prId := sql.NullInt32{
@@ -120,6 +134,9 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 
 		return nil
 	})
+	if err == nil {
+		voucherChanges.apply()
+	}
 
 	return order, sendEmail, err
 }

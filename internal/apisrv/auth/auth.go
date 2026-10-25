@@ -72,6 +72,16 @@ type Server struct {
 	adminIDFlight singleflight.Group
 	adminIDTTL    time.Duration
 	now           func() time.Time
+
+	// adminStates is the short-lived account existence/disabled cache used by both admin
+	// authentication paths. adminStateGeneration prevents a lookup that raced an explicit
+	// invalidation from putting the old state back into the cache.
+	adminStateMu         sync.Mutex
+	adminStates          map[string]adminAccountStateEntry
+	adminStateGeneration map[string]uint64
+	adminStateFlight     singleflight.Group
+	adminStateTTL        time.Duration
+	adminStateStaleTTL   time.Duration
 }
 
 // adminIDCacheTTL is how long one username → admin id answer — or one failed lookup — is reused.
@@ -84,9 +94,29 @@ const adminIDCacheTTL = 5 * time.Minute
 // this much before the call goes on with the username alone.
 const adminIDLookupTimeout = 2 * time.Second
 
+const (
+	// A disabled or deleted account is rejected no later than this window when another
+	// process made the change. Mutations in this process invalidate the cache immediately.
+	adminAccountStateTTL = 15 * time.Second
+	// A recently verified state may be reused briefly when MySQL is unavailable. This avoids
+	// logging every signed-in admin out on a transient blip without turning the cache into an
+	// unbounded fail-open path.
+	adminAccountStateStaleTTL = 2 * time.Minute
+	// After one failed refresh, avoid hammering an unhealthy database on every request.
+	adminAccountStateRetryTTL = 5 * time.Second
+	adminAccountLookupTimeout = 2 * time.Second
+)
+
 type adminIDEntry struct {
 	id      *int // nil = unknown (no such admin, or the lookup failed)
 	expires time.Time
+}
+
+type adminAccountStateEntry struct {
+	exists     bool
+	disabled   bool
+	expires    time.Time
+	staleUntil time.Time
 }
 
 // authRateLimiter throttles brute-force attempts against the admin auth RPCs.
@@ -187,16 +217,20 @@ func New(c *Config, ar dependency.Admin) (*Server, error) {
 		jwtExp = &jwt.Expectations{Issuer: c.JWTIssuer, Audience: c.JWTAudience}
 	}
 	s := &Server{
-		adminRepository: ar,
-		pwhash:          ph,
-		JwtAuth:         jwtauth.New("HS256", []byte(c.JWTSecret), nil),
-		jwtTTL:          ttl,
-		jwtExpectations: jwtExp,
-		c:               c,
-		masterHash:      hash,
-		rateLimiter:     newAuthRateLimiter(),
-		adminIDTTL:      adminIDCacheTTL,
-		now:             time.Now,
+		adminRepository:      ar,
+		pwhash:               ph,
+		JwtAuth:              jwtauth.New("HS256", []byte(c.JWTSecret), nil),
+		jwtTTL:               ttl,
+		jwtExpectations:      jwtExp,
+		c:                    c,
+		masterHash:           hash,
+		rateLimiter:          newAuthRateLimiter(),
+		adminIDTTL:           adminIDCacheTTL,
+		now:                  time.Now,
+		adminStates:          make(map[string]adminAccountStateEntry),
+		adminStateGeneration: make(map[string]uint64),
+		adminStateTTL:        adminAccountStateTTL,
+		adminStateStaleTTL:   adminAccountStateStaleTTL,
 	}
 
 	return s, nil
@@ -261,14 +295,11 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 	}
 
 	// A disabled account keeps a valid password but may not obtain new tokens.
-	// Enforcement is stateless (permissions ride in the JWT), so this is the point
-	// where a revoked account is actually shut out; any still-valid token it holds
-	// lives until it expires.
 	if account.Disabled {
 		slog.Default().WarnContext(ctx, "login attempt for disabled account",
 			slog.String("username", username),
 		)
-		return nil, status.Errorf(codes.PermissionDenied, "account is disabled")
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
 	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username,
@@ -345,6 +376,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
+	s.InvalidateAdminAccount(username)
 	return &auth.CreateResponse{
 		AuthToken: token,
 	}, nil
@@ -379,6 +411,7 @@ func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.Del
 		)
 		return nil, status.Errorf(codes.Internal, "failed to delete admin")
 	}
+	s.InvalidateAdminAccount(username)
 	return &auth.DeleteResponse{}, nil
 }
 
@@ -401,6 +434,12 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to get account by username",
 			slog.String("err", err.Error()),
+		)
+		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	if account.Disabled {
+		slog.Default().WarnContext(ctx, "change password attempt for disabled account",
+			slog.String("username", username),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
@@ -442,6 +481,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
+	s.InvalidateAdminAccount(username)
 	return &auth.ChangePasswordResponse{
 		AuthToken: token,
 	}, nil
@@ -457,17 +497,24 @@ type errorMessage struct {
 func (s *Server) WithAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
-		_, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
+		sub, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
+		if err == nil {
+			err = s.checkAdminAccountState(r.Context(), sub)
+		}
 		if err != nil {
 			// Return a constant message to the (anonymous) caller; the raw jwx error
 			// distinguishes expired vs bad-signature vs audience-mismatch and is an
 			// oracle for probers. Keep the detail server-side.
-			slog.Default().WarnContext(r.Context(), "auth token verification failed", slog.String("err", err.Error()))
+			slog.Default().WarnContext(r.Context(), "auth request rejected", slog.String("err", err.Error()))
 			errMsg := errorMessage{Error: "unauthorized"}
 
 			// Set content type to JSON
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
+			if status.Code(err) == codes.Unavailable {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				w.WriteHeader(http.StatusUnauthorized)
+			}
 
 			// Write the JSON error message
 			if err := json.NewEncoder(w).Encode(errMsg); err != nil {
@@ -548,13 +595,164 @@ func PutAdminAuthz(ctx context.Context, a AdminAuthz) context.Context {
 
 const adminServicePrefix = rbac.MethodPrefix
 
+// InvalidateAdminAccount evicts one account from the authentication caches. Admin account
+// mutations call this after the database write succeeds, so the next request must read the new
+// existence/disabled state instead of waiting for the normal cache window.
+func (s *Server) InvalidateAdminAccount(username string) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		return
+	}
+	s.adminStateMu.Lock()
+	if s.adminStates == nil {
+		s.adminStates = make(map[string]adminAccountStateEntry)
+	}
+	if s.adminStateGeneration == nil {
+		s.adminStateGeneration = make(map[string]uint64)
+	}
+	delete(s.adminStates, username)
+	s.adminStateGeneration[username]++
+	// Forget while the state mutex is held: a request arriving after invalidation cannot join
+	// an older flight and receive the state that flight read before the mutation.
+	s.adminStateFlight.Forget(username)
+	s.adminStateMu.Unlock()
+	s.adminIDs.Delete(username)
+}
+
+// checkAdminAccountState verifies that a token subject still names an enabled account. Tokens
+// without a subject predate account-backed admin auth (master/legacy) and remain valid.
+func (s *Server) checkAdminAccountState(ctx context.Context, username string) error {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if username == "" {
+		return nil
+	}
+	if state, ok := s.cachedAdminAccountState(username); ok {
+		return adminAccountStateError(state)
+	}
+
+	v, err, _ := s.adminStateFlight.Do(username, func() (any, error) {
+		if state, ok := s.cachedAdminAccountState(username); ok {
+			return state, nil
+		}
+		return s.lookupAdminAccountState(ctx, username)
+	})
+	if err != nil {
+		return err
+	}
+	return adminAccountStateError(v.(adminAccountStateEntry))
+}
+
+func (s *Server) cachedAdminAccountState(username string) (adminAccountStateEntry, bool) {
+	now := s.clockNow()
+	s.adminStateMu.Lock()
+	defer s.adminStateMu.Unlock()
+	state, ok := s.adminStates[username]
+	return state, ok && now.Before(state.expires)
+}
+
+func (s *Server) adminAccountStateSnapshot(username string) (adminAccountStateEntry, bool, uint64) {
+	s.adminStateMu.Lock()
+	defer s.adminStateMu.Unlock()
+	state, ok := s.adminStates[username]
+	return state, ok, s.adminStateGeneration[username]
+}
+
+func (s *Server) storeAdminAccountState(username string, generation uint64, state adminAccountStateEntry) bool {
+	s.adminStateMu.Lock()
+	defer s.adminStateMu.Unlock()
+	if s.adminStateGeneration[username] != generation {
+		return false
+	}
+	if s.adminStates == nil {
+		s.adminStates = make(map[string]adminAccountStateEntry)
+	}
+	s.adminStates[username] = state
+	return true
+}
+
+func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (adminAccountStateEntry, error) {
+	previous, hadPrevious, generation := s.adminAccountStateSnapshot(username)
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminAccountLookupTimeout)
+	defer cancel()
+
+	account, err := s.adminRepository.GetAdminByUsername(lookupCtx, username)
+	now := s.clockNow()
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if hadPrevious && now.Before(previous.staleUntil) {
+			previous.expires = now.Add(adminAccountStateRetryTTL)
+			if previous.expires.After(previous.staleUntil) {
+				previous.expires = previous.staleUntil
+			}
+			s.storeAdminAccountState(username, generation, previous)
+			if previous.exists && !previous.disabled {
+				slog.Default().WarnContext(ctx, "admin account state lookup failed; using recently verified state",
+					slog.String("username", username),
+					slog.String("err", err.Error()),
+				)
+			} else {
+				slog.Default().WarnContext(ctx, "admin account state lookup failed; retaining recently verified denial",
+					slog.String("username", username),
+					slog.String("err", err.Error()),
+				)
+			}
+			return previous, nil
+		}
+		slog.Default().ErrorContext(ctx, "admin account state lookup failed",
+			slog.String("username", username),
+			slog.String("err", err.Error()),
+		)
+		return adminAccountStateEntry{}, status.Error(codes.Unavailable, "authentication temporarily unavailable")
+	}
+
+	state := adminAccountStateEntry{
+		exists:     err == nil && account != nil,
+		disabled:   err == nil && account != nil && account.Disabled,
+		expires:    now.Add(s.adminAccountStateTTL()),
+		staleUntil: now.Add(s.adminAccountStateStaleWindow()),
+	}
+	stored := s.storeAdminAccountState(username, generation, state)
+	if state.exists && stored {
+		id := account.Id
+		s.adminIDs.Store(username, adminIDEntry{id: &id, expires: now.Add(s.adminIDTTL)})
+	}
+	if !state.exists {
+		slog.Default().WarnContext(ctx, "admin token subject no longer exists",
+			slog.String("username", username),
+		)
+	} else if state.disabled {
+		slog.Default().WarnContext(ctx, "admin token belongs to disabled account",
+			slog.String("username", username),
+		)
+	}
+	return state, nil
+}
+
+func (s *Server) adminAccountStateTTL() time.Duration {
+	if s.adminStateTTL > 0 {
+		return s.adminStateTTL
+	}
+	return adminAccountStateTTL
+}
+
+func (s *Server) adminAccountStateStaleWindow() time.Duration {
+	if s.adminStateStaleTTL > 0 {
+		return s.adminStateStaleTTL
+	}
+	return adminAccountStateStaleTTL
+}
+
+func adminAccountStateError(state adminAccountStateEntry) error {
+	if !state.exists || state.disabled {
+		return status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	return nil
+}
+
 // UnaryAdminAuthInterceptor returns an interceptor that authenticates every admin
-// RPC via its JWT and authorizes it against the account's embedded permissions.
-// Authorization is stateless — it reads only the token's claims (super + perms)
-// via rbac.Authorize, which fails closed on any method not explicitly mapped or
-// allowlisted. Tokens minted before RBAC carry no permission claims and are
-// treated as full access (legacy) so already-issued sessions keep working until
-// they expire. The resolved subject and authorization are placed in context.
+// RPC via its JWT, verifies that its subject still names an enabled account, and
+// authorizes it against the token's embedded permissions. Tokens minted before
+// RBAC carry no permission claims and are treated as full access (legacy). The
+// resolved subject and authorization are placed in context.
 func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !strings.HasPrefix(info.FullMethod, adminServicePrefix) {
@@ -570,6 +768,9 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 			// jwx failure stage is not disclosed to the caller.
 			slog.Default().WarnContext(ctx, "invalid admin auth token", slog.String("err", err.Error()))
 			return nil, status.Error(codes.Unauthenticated, "unauthorized")
+		}
+		if err := s.checkAdminAccountState(ctx, sub); err != nil {
+			return nil, err
 		}
 		perms := rbac.ParsePermissions(permStrs)
 		if !rbac.Authorize(info.FullMethod, legacy, super, perms) {

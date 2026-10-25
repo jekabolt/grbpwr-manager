@@ -68,7 +68,7 @@ func (s *Store) SetAccountPermissions(ctx context.Context, username string, isSu
 	})
 }
 
-// SetAccountDisabled toggles whether an account may obtain new tokens at login.
+// SetAccountDisabled toggles whether an account may authenticate or use existing tokens.
 func (s *Store) SetAccountDisabled(ctx context.Context, username string, disabled bool) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		res, err := rep.DB().ExecContext(ctx,

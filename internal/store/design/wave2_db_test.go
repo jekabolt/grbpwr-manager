@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/store/design"
+	"github.com/jekabolt/grbpwr-manager/internal/testdbguard"
 	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
@@ -32,16 +33,16 @@ import (
 // ⚠ КАК ОНИ ОТКАЗЫВАЮТСЯ ТРОГАТЬ ПРОД. Пакет internal/store вне CI читает config/config.toml, где
 // лежит ПРОДОВЫЙ DSN, и на очистке ДРОПАЕТ ТАБЛИЦЫ. В этом файле такого пути нет вовсе: DSN
 // собирается ИСКЛЮЧИТЕЛЬНО из переменных CI, без CI=1 каждая проба пропускается ДО открытия
-// соединения, а имя базы, не похожее на пробное, отвергается отдельно. Это свойство кода, а не
-// привычка запускающего.
+// соединения; общий DSN-гейт допускает только локальный/container host и имя базы с суффиксом
+// _test. Это свойство кода, а не привычка запускающего.
 //
 // Запуск (одноразовый контейнер, база пересоздаётся между прогонами — очистка TestMain пакета
 // store обрывается на внешних ключах):
 //
 //	docker run -d --name grbpwr-design-b3 -e MYSQL_ROOT_PASSWORD=probe \
-//	  -e MYSQL_DATABASE=grbpwr_probe -p 33107:3306 mysql:8.0
+//	  -e MYSQL_DATABASE=grbpwr_test -p 33107:3306 mysql:8.0
 //	CI=1 MYSQL_HOST=127.0.0.1 MYSQL_PORT=33107 MYSQL_USER=root MYSQL_PASSWORD=probe \
-//	  MYSQL_DATABASE=grbpwr_probe go test -count=1 -run TestDesignDB ./internal/store/design/
+//	  MYSQL_DATABASE=grbpwr_test go test -count=1 -run TestDesignDB ./internal/store/design/
 //
 // ВНЕШНИЙ ТЕСТОВЫЙ ПАКЕТ (design_test), потому что репозиторий строит internal/store, который
 // импортирует этот пакет. Собирать здесь второй, самодельный репозиторий значило бы проверять не
@@ -64,13 +65,11 @@ func probeRepository(t *testing.T) (dependency.Repository, *sql.DB) {
 	if host == "" || port == "" || user == "" || name == "" {
 		t.Skip("MYSQL_* of the disposable container are not set")
 	}
-	// ПОСЛЕДНИЙ ГЕЙТ ПО ИМЕНИ. Даже под CI=1 база, чьё имя не говорит, что она пробная,
-	// отвергается: цена ошибки здесь — продовая схема.
-	if name == "grbpwr" || name == "grbpwr_beta" {
-		t.Fatalf("refusing to run destructive probes against %q", name)
-	}
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
 		user, pass, host, port, name)
+	if err := testdbguard.CheckMySQLDSN(dsn); err != nil {
+		t.Fatalf("design DB probes refuse to open MySQL: %v", err)
+	}
 	probeOnce.Do(func() {
 		ctx := context.Background()
 		probeRaw, probeErr = sql.Open("mysql", dsn)
