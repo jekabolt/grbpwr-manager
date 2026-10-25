@@ -325,6 +325,9 @@ func fixture() (*fakeRuns, *fakeCards) {
 			}},
 		{Id: 2, Name: "Синий", ProductId: ni32(66), Usages: []entity.TechCardColorwayUsage{
 			{BomItemIndex: ni32(0), Consumption: nd("2"), PieceId: ni64(900), PieceLineKey: livePieceKey},
+			// Keep the second colourway covered for the trim slot. Its explicit article pin leaves
+			// the black colourway's unpinned trim as the fixture's one intentional no_article blocker.
+			{BomItemIndex: ni32(1), MaterialId: ni64(101), Quantity: nd("3")},
 		}},
 	}
 	card.LinkedMaterials = map[int]entity.MaterialWithPrice{

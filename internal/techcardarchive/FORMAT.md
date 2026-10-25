@@ -242,7 +242,7 @@ Four verdicts, and they are not synonyms:
 | 3, 4 | `created_at`, `updated_at` | travel. The source's clock; the target stamps its own on insert. |
 | 5 | *reserved* | was `resolved_media`, split into 7/8/28. Never re-used (§3). |
 | 6 | `lock_version` | travels. The source's optimistic-lock token — §2's rule about `source.*` applies to it verbatim. |
-| 7, 8, 28 | `resolved_moodboard_media`, `resolved_technical_media`, `resolved_operation_media` | travel with **every URL blanked** (§4). Width, height and the blurhash stay: they describe the picture, not where this instance keeps it. The `media_id` inside them is the SOURCE's and is **not** remapped — these are display projections of the slots on the writable half, and it is those slots the import remaps and writes. |
+| 7, 8, 28, 30 | `resolved_moodboard_media`, `resolved_technical_media`, `resolved_operation_media`, `resolved_label_media` | travel with **every URL blanked** (§4). Width, height and the blurhash stay: they describe the picture, not where this instance keeps it. The `media_id` inside them is the SOURCE's and is **not** remapped — these are display projections of the slots on the writable half, and it is those slots the import remaps and writes. |
 | 9 | `colorways` | **cleared.** A colourway is a product and does not travel as one; what a receiving instance can use of them rides in `colorways.json` (§5.3). |
 | 10, 11 | `created_by`, `updated_by` | travel as text — names that resolve nothing (unlike `role_assignments`). **Not written:** the imported card is stamped with the operator who ran the import. |
 | 12 | `role_assignments` | **cleared** (§4). |
@@ -258,7 +258,9 @@ Four verdicts, and they are not synonyms:
 | 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
 | 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** and the scope's `stale` verdict **cleared** — see «measured piece areas» below. |
 | 29 | `age_group` | travels and is **written** — see «style facts» below. `AGE_GROUP_ENUM_UNKNOWN` (every archive older than the field, and every source style nobody classified) is «not stated»: the imported card lands unset (NULL), never with a guessed group. |
+| 31 | `guided` | travels as source workflow provenance and is **ignored**. It is OUTPUT-ONLY and the import cannot put the receiving card into the source card's guided session. |
 | 32 | `seams` | **cleared.** The technologist's seam decisions (`tech_card_seam`) are a review of the assembly engine over THIS instance's DXF files, and their `stale` verdict speaks about the source's sheets. Not carried in v1 (carrying them is the owner's P2 call): an imported card starts with no decisions and the receiving engine proposes again. |
+| 33 | `removed_pattern_history` | travels as source history and is **ignored**. Its source row and snapshot ids are never resolved or written; the receiving card starts its own pattern history. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
