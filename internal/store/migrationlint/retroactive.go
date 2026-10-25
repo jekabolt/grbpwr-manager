@@ -192,7 +192,11 @@ func isDashCommentStart(sql string, i int) bool {
 	return i+2 == len(sql) || sql[i+2] <= ' '
 }
 
+// '-- data-checked: <how>' is the waiver of the earlier migrationcheck tool (fda508e), kept as an alias.
 func retroactiveAllowance(content string) (bool, error) {
+	if ok, err := structuredAllowance(content, "data-checked:"); ok || err != nil {
+		return ok, err
+	}
 	return structuredAllowance(content, "migrationlint:allow-retroactive")
 }
 
