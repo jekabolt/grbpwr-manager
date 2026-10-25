@@ -25,7 +25,6 @@ const migrationsDir = "../sql"
 const grandfatheredMigrationMax = 92
 
 var (
-	migrationPrefixRe = regexp.MustCompile(`^(\d+)_`)
 	// createTableRe matches a CREATE TABLE, capturing the optional IF NOT EXISTS.
 	createTableRe = regexp.MustCompile(`(?i)\bcreate\s+table\s+(if\s+not\s+exists\s+)?`)
 	// autoCheckDropRe matches a DROP CHECK that names a MySQL auto-generated

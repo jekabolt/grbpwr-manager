@@ -5,108 +5,155 @@ on:
     paths:
       - "internal/store/sql/**"
       - "internal/store/migrationlint/**"
-      - "cmd/migrationcheck/**"
+      - "internal/store/migreplay/**"
+      - "internal/testdbguard/**"
+      - "cmd/migreplay/**"
+      - "scripts/check-migration-immutability.sh"
       - ".github/workflows/migrations.yml"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
   push:
     branches:
-      - master
       - beta
-    paths:
-      - "internal/store/sql/**"
-      - "internal/store/migrationlint/**"
-      - "cmd/migrationcheck/**"
-      - ".github/workflows/migrations.yml"
+      - master
 
 permissions:
   contents: read
 
+env:
+  # Mirrors DO managed MySQL (beta and prod, read 2026-10-25): SELECT VERSION(), @@GLOBAL.sql_mode.
+  # The app sets no sql_mode, so migrations run under the server's ANSI mode.
+  MYSQL_IMAGE: mysql:8.0.45
+  MYSQL_SQL_MODE: REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+
 jobs:
-  migrations:
+  immutability:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: migration-ci
-          MYSQL_ROOT_HOST: "%"
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping --host=127.0.0.1 --password=migration-ci"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=12
+    timeout-minutes: 5
+    outputs:
+      base_ref: ${{ steps.base.outputs.ref }}
 
     steps:
-      - name: Check out PR or push base
+      - name: Check out backend with migration history
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
-          path: base
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Check out head
+      - name: Resolve migration base
+        id: base
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git fetch --no-tags origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+            echo "ref=origin/$GITHUB_BASE_REF" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
+            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject edits to migration history
+        run: scripts/check-migration-immutability.sh "${{ steps.base.outputs.ref }}"
+
+  replay:
+    needs: immutability
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out backend with migration history
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          path: head
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Start prod-like MySQL
+        shell: bash
+        run: |
+          docker run --detach --name migration-mysql \
+            --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=replay \
+            --env MYSQL_DATABASE=migration_replay_test \
+            "$MYSQL_IMAGE" \
+            --character-set-server=utf8mb4 \
+            --collation-server=utf8mb4_0900_ai_ci \
+            --sql-mode="$MYSQL_SQL_MODE"
+          for attempt in {1..60}; do
+            if docker exec migration-mysql mysqladmin ping --host=127.0.0.1 --user=root --password=replay --silent; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs migration-mysql
+          exit 1
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: head/go.mod
-          cache-dependency-path: head/go.sum
+          go-version-file: go.mod
+          cache: true
 
-      - name: Build isolated migration checker
-        working-directory: head
-        run: go build -o "$RUNNER_TEMP/migrationcheck" ./cmd/migrationcheck
+      - name: Install Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.28.0
 
-      - name: Unit-test migration safety lint
-        working-directory: head
-        run: go test ./internal/store/migrationlint/safety ./cmd/migrationcheck
+      - name: Generate protobuf Go packages
+        run: make proto
 
-      # These flags mirror config/cfg.go's managed-MySQL DSN except for TLS,
-      # which is intentionally absent for the local service. Explicit false is
-      # the driver's production default and catches statements that only work
-      # when multiStatements=true. CREATE DATABASE uses MySQL 8.0 defaults; do
-      # not force utf8mb4_unicode_ci here.
-      - name: Apply base migration chain
-        working-directory: head
+      - name: Run database-free migration lint
+        run: go test ./internal/store/migrationlint/
+
+      - name: Replay new migrations over boundary data
         env:
-          MYSQL_DSN: root:migration-ci@tcp(127.0.0.1:3306)/migration_base?charset=utf8&parseTime=true&multiStatements=false&timeout=10s&readTimeout=30s&writeTimeout=30s
-        run: >-
-          "$RUNNER_TEMP/migrationcheck" migrate
-          --create-database
-          --dsn "$MYSQL_DSN"
-          --dir ../base/internal/store/sql
+          MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_replay_test?parseTime=true&charset=utf8
+          MIGREPLAY_BASE_REF: ${{ needs.immutability.outputs.base_ref }}
+        run: make migration-replay
 
-      - name: Apply full head migration chain on a fresh database
-        working-directory: head
+  full-chain:
+    needs: immutability
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql:
+          - charset: utf8mb3
+            collation: utf8mb3_general_ci
+          - charset: utf8mb4
+            collation: utf8mb4_0900_ai_ci
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start ${{ matrix.mysql.charset }} MySQL
+        shell: bash
+        run: |
+          docker run --detach --name migration-mysql \
+            --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=replay \
+            --env MYSQL_DATABASE=migration_full_chain_test \
+            "$MYSQL_IMAGE" \
+            --character-set-server=${{ matrix.mysql.charset }} \
+            --collation-server=${{ matrix.mysql.collation }} \
+            --sql-mode="$MYSQL_SQL_MODE"
+          for attempt in {1..60}; do
+            if docker exec migration-mysql mysqladmin ping --host=127.0.0.1 --user=root --password=replay --silent; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs migration-mysql
+          exit 1
+
+      - name: Apply full chain with multiStatements=false
         env:
-          MYSQL_DSN: root:migration-ci@tcp(127.0.0.1:3306)/migration_head?charset=utf8&parseTime=true&multiStatements=false&timeout=10s&readTimeout=30s&writeTimeout=30s
-        run: >-
-          "$RUNNER_TEMP/migrationcheck" migrate
-          --create-database
-          --dsn "$MYSQL_DSN"
-          --dir internal/store/sql
-
-      - name: Lint new migrations against the base
-        working-directory: head
-        run: >-
-          "$RUNNER_TEMP/migrationcheck" lint
-          --base-dir ../base/internal/store/sql
-          --head-dir internal/store/sql
-
-      # Prod applies only the new migrations on top of the existing schema;
-      # replay that path on the base database too.
-      - name: Apply head migrations incrementally on the base database
-        working-directory: head
-        env:
-          MYSQL_DSN: root:migration-ci@tcp(127.0.0.1:3306)/migration_base?charset=utf8&parseTime=true&multiStatements=false&timeout=10s&readTimeout=30s&writeTimeout=30s
-        run: >-
-          "$RUNNER_TEMP/migrationcheck" migrate
-          --dsn "$MYSQL_DSN"
-          --dir internal/store/sql
+          MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_full_chain_test?parseTime=true&charset=${{ matrix.mysql.charset }}
+        run: go run ./cmd/migreplay --full-chain --dsn "$MIGREPLAY_DSN"

@@ -4,7 +4,7 @@ VERSION := $(shell git describe --tags --always --long |sed -e "s/^v//")
 COMMIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_LINT_VERSION := v1.53.3
 
-.PHONY: generate internal/statics proto check-proto-contracts
+.PHONY: generate internal/statics proto check-proto-contracts migration-replay
 
 init: clean install proto generate
 	
@@ -32,6 +32,12 @@ PROTO_MIRROR_DIR ?= ../grbpwr-proto
 
 check-proto-contracts:
 	PROTO_MIRROR_DIR="$(PROTO_MIRROR_DIR)" ./scripts/check-proto-contracts.sh
+
+MIGREPLAY_BASE_REF ?= origin/beta
+
+migration-replay:
+	@test -n "$(MIGREPLAY_DSN)" || (echo "MIGREPLAY_DSN is required (local *_test database only)" >&2; exit 2)
+	@MIGREPLAY_DSN="$(MIGREPLAY_DSN)" go run ./cmd/migreplay --base-ref "$(MIGREPLAY_BASE_REF)"
 
 build: format-proto proto generate internal/statics build-only
 
