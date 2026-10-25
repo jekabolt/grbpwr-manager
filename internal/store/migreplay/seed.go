@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type SeedStats struct {
 	RowsInserted       int
 	CandidatesRejected int
 	UnseededTables     []string
+	UnseededReasons    map[string]string
 }
 
 type column struct {
@@ -46,6 +48,7 @@ type boundaryValue struct {
 }
 
 func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress io.Writer) (stats SeedStats, retErr error) {
+	stats.UnseededReasons = make(map[string]string)
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return stats, err
@@ -88,6 +91,11 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 		if err != nil {
 			return stats, fmt.Errorf("unique indexes for %s: %w", table, err)
 		}
+		checks, err := tableChecks(ctx, conn, schema, table)
+		if err != nil {
+			return stats, fmt.Errorf("checks for %s: %w", table, err)
+		}
+		hints := inferCheckHints(columns, checks)
 		template, err := existingRow(ctx, conn, table, columns)
 		if err != nil {
 			return stats, fmt.Errorf("read seed template from %s: %w", table, err)
@@ -95,6 +103,29 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 
 		insertedForTable := 0
 		sequence := 1
+		lastRejection := "no insertable boundary columns"
+		// A check-aware baseline gets constrained dictionaries (status, kind,
+		// section, and similar columns) onto an admissible row before individual
+		// boundaries deliberately try invalid values.
+		for copyNumber := 0; copyNumber < 2; copyNumber++ {
+			values := buildRow(columns, indexes, template, hints, "", nil, sequence)
+			sequence++
+			inserted, err := insertBoundaryRow(ctx, conn, table, values)
+			if err != nil {
+				if !isBoundaryRejection(err) {
+					return stats, fmt.Errorf("insert check-aware baseline into %s: %w", table, err)
+				}
+				lastRejection = boundaryRejectionSummary(err)
+				stats.CandidatesRejected++
+				continue
+			}
+			if !inserted {
+				stats.CandidatesRejected++
+				continue
+			}
+			insertedForTable++
+			stats.RowsInserted++
+		}
 		for _, target := range columns {
 			if !target.insertable() {
 				continue
@@ -103,13 +134,14 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 				// A duplicate pair catches a future UNIQUE over columns that are not
 				// already unique in the base schema.
 				for copyNumber := 0; copyNumber < 2; copyNumber++ {
-					values := buildRow(columns, indexes, template, target.Name, boundary.Value, sequence)
+					values := buildRow(columns, indexes, template, hints, target.Name, boundary.Value, sequence)
 					sequence++
 					inserted, err := insertBoundaryRow(ctx, conn, table, values)
 					if err != nil {
 						if !isBoundaryRejection(err) {
 							return stats, fmt.Errorf("insert %s boundary into %s: %w", boundary.Label, table, err)
 						}
+						lastRejection = boundaryRejectionSummary(err)
 						stats.CandidatesRejected++
 						continue
 					}
@@ -124,6 +156,7 @@ func SeedBoundaryData(ctx context.Context, db *sql.DB, schema string, progress i
 		}
 		if insertedForTable == 0 {
 			stats.UnseededTables = append(stats.UnseededTables, table)
+			stats.UnseededReasons[table] = lastRejection
 		} else {
 			stats.TablesSeeded++
 		}
@@ -200,6 +233,29 @@ func tableUniqueIndexes(ctx context.Context, conn *sql.Conn, schema, table strin
 	return indexes, rows.Err()
 }
 
+func tableChecks(ctx context.Context, conn *sql.Conn, schema, table string) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT cc.CHECK_CLAUSE
+		FROM information_schema.TABLE_CONSTRAINTS tc
+		JOIN information_schema.CHECK_CONSTRAINTS cc
+		  ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+		 AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+		WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ? AND tc.CONSTRAINT_TYPE = 'CHECK'
+		ORDER BY tc.CONSTRAINT_NAME`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checks []string
+	for rows.Next() {
+		var clause string
+		if err := rows.Scan(&clause); err != nil {
+			return nil, err
+		}
+		checks = append(checks, clause)
+	}
+	return checks, rows.Err()
+}
+
 func existingRow(ctx context.Context, conn *sql.Conn, table string, columns []column) (map[string]any, error) {
 	var names []string
 	for _, c := range columns {
@@ -238,7 +294,7 @@ func existingRow(ctx context.Context, conn *sql.Conn, table string, columns []co
 	return template, nil
 }
 
-func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, target string, boundary any, sequence int) map[string]any {
+func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, hints map[string][]any, target string, boundary any, sequence int) map[string]any {
 	byName := make(map[string]column, len(columns))
 	values := make(map[string]any)
 	for _, c := range columns {
@@ -253,10 +309,16 @@ func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, 
 		if c.Nullable {
 			values[c.Name] = nil
 		} else if !c.Default.Valid {
-			values[c.Name] = safeValue(c, sequence)
+			if hint := firstHint(hints[c.Name]); hint != nil {
+				values[c.Name] = hint
+			} else {
+				values[c.Name] = safeValue(c, sequence)
+			}
 		}
 	}
-	values[target] = boundary
+	if target != "" {
+		values[target] = boundary
+	}
 
 	for _, index := range indexes {
 		uniqueAlready := false
@@ -271,15 +333,23 @@ func buildRow(columns []column, indexes []uniqueIndex, template map[string]any, 
 		if uniqueAlready {
 			continue
 		}
-		name := uniqueColumnToVary(index.Columns, byName, target)
+		name := uniqueColumnToVary(index.Columns, byName, hints, target)
 		if name != "" {
-			values[name] = uniqueValue(byName[name], sequence)
+			values[name] = uniqueValue(byName[name], hints[name], sequence)
 		}
 	}
 	return values
 }
 
-func uniqueColumnToVary(names []string, columns map[string]column, target string) string {
+func uniqueColumnToVary(names []string, columns map[string]column, hints map[string][]any, target string) string {
+	// Prefer an unconstrained column. Varying a finite checked vocabulary (for
+	// example size.sku_system) used to turn otherwise valid templates into rows
+	// which every CHECK rejected.
+	for _, name := range names {
+		if name != target && columns[name].insertable() && columns[name].supportsGeneratedUnique() && len(hints[name]) == 0 {
+			return name
+		}
+	}
 	for _, name := range names {
 		if name != target && columns[name].insertable() && columns[name].supportsGeneratedUnique() {
 			return name
@@ -292,7 +362,12 @@ func uniqueColumnToVary(names []string, columns map[string]column, target string
 
 func insertBoundaryRow(ctx context.Context, conn *sql.Conn, table string, values map[string]any) (bool, error) {
 	if len(values) == 0 {
-		return false, nil
+		result, err := conn.ExecContext(ctx, "INSERT INTO "+quoteIdentifier(table)+" () VALUES ()")
+		if err != nil {
+			return false, err
+		}
+		affected, err := result.RowsAffected()
+		return affected > 0, err
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
@@ -314,6 +389,14 @@ func insertBoundaryRow(ctx context.Context, conn *sql.Conn, table string, values
 	}
 	affected, err := result.RowsAffected()
 	return affected > 0, err
+}
+
+func boundaryRejectionSummary(err error) string {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return fmt.Sprintf("MySQL %d: %s", mysqlErr.Number, mysqlErr.Message)
+	}
+	return err.Error()
 }
 
 func isBoundaryRejection(err error) bool {
@@ -351,6 +434,137 @@ func (c column) supportsGeneratedUnique() bool {
 	default:
 		return false
 	}
+}
+
+var (
+	checkInValuesRe     = regexp.MustCompile(`(?is)(?:\bbinary\s+)?` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+in\s*\(([^()]*)\)`)
+	checkRegexpRe       = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s+regexp\s+(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'`)
+	checkRegexpLikeRe   = regexp.MustCompile(`(?is)regexp_like\s*\(\s*` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*,\s*(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'`)
+	checkEqualityRe     = regexp.MustCompile(`(?is)` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*=\s*(?:(?:_[a-z0-9]+)?'((?:''|\\.|[^'])*)'|(-?[0-9]+(?:\.[0-9]+)?))`)
+	simpleRegexpValueRe = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+)
+
+// inferCheckHints extracts finite, known-good values from the CHECK shapes used
+// throughout the schema. The hints are only for filling the other columns of a
+// boundary row; the target column still receives the hostile boundary value.
+func inferCheckHints(columns []column, checks []string) map[string][]any {
+	actualNames := make(map[string]string, len(columns))
+	for _, c := range columns {
+		actualNames[strings.ToLower(c.Name)] = c.Name
+	}
+	hints := make(map[string][]any)
+	add := func(rawName string, values []any) {
+		name, ok := actualNames[strings.ToLower(rawName)]
+		if !ok {
+			return
+		}
+		for _, value := range values {
+			if value == "" || containsAny(hints[name], value) {
+				continue
+			}
+			hints[name] = append(hints[name], value)
+		}
+	}
+	for _, check := range checks {
+		for _, match := range checkInValuesRe.FindAllStringSubmatch(check, -1) {
+			add(match[1], stringsToAny(sqlQuotedValues(match[2])))
+		}
+		for _, match := range checkRegexpRe.FindAllStringSubmatch(check, -1) {
+			add(match[1], stringsToAny(valuesFromCheckRegexp(decodeSQLStringContent(match[2]))))
+		}
+		for _, match := range checkRegexpLikeRe.FindAllStringSubmatch(check, -1) {
+			add(match[1], stringsToAny(valuesFromCheckRegexp(decodeSQLStringContent(match[2]))))
+		}
+		for _, match := range checkEqualityRe.FindAllStringSubmatch(check, -1) {
+			if match[2] != "" {
+				add(match[1], []any{decodeSQLStringContent(match[2])})
+				continue
+			}
+			if integer, err := strconv.ParseInt(match[3], 10, 64); err == nil {
+				add(match[1], []any{integer})
+			} else {
+				add(match[1], []any{match[3]})
+			}
+		}
+	}
+	return hints
+}
+
+func stringsToAny(values []string) []any {
+	result := make([]any, len(values))
+	for i := range values {
+		result[i] = values[i]
+	}
+	return result
+}
+
+func sqlQuotedValues(input string) []string {
+	var values []string
+	for i := 0; i < len(input); i++ {
+		if input[i] != '\'' {
+			continue
+		}
+		i++
+		var value strings.Builder
+		for i < len(input) {
+			switch {
+			case input[i] == '\\' && i+1 < len(input):
+				i++
+				value.WriteByte(input[i])
+			case input[i] == '\'' && i+1 < len(input) && input[i+1] == '\'':
+				value.WriteByte('\'')
+				i++
+			case input[i] == '\'':
+				values = append(values, value.String())
+				goto next
+			default:
+				value.WriteByte(input[i])
+			}
+			i++
+		}
+	next:
+	}
+	return values
+}
+
+func decodeSQLStringContent(input string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(input, "''", "'"), `\\`, `\`)
+}
+
+func valuesFromCheckRegexp(pattern string) []string {
+	if pattern == `^AR[0-9A-Z]{1,10}$` {
+		return []string{"AR1"}
+	}
+	if !strings.HasPrefix(pattern, "^(") {
+		return nil
+	}
+	end := strings.LastIndex(pattern, ")$")
+	if end < 2 {
+		return nil
+	}
+	var values []string
+	for _, candidate := range strings.Split(pattern[2:end], "|") {
+		if simpleRegexpValueRe.MatchString(candidate) {
+			values = append(values, candidate)
+		}
+	}
+	return values
+}
+
+func containsAny(values []any, want any) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func firstHint(values []any) any {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 func boundaries(c column) []boundaryValue {
@@ -441,11 +655,21 @@ func safeValue(c column, sequence int) any {
 	case "binary", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
 		return []byte{1}
 	default:
+		name := strings.ToLower(c.Name)
+		if strings.Contains(name, "email") {
+			return sizedString(c, fmt.Sprintf("migfuzz+%d@example.invalid", sequence))
+		}
+		if strings.Contains(name, "phone") {
+			return sizedString(c, fmt.Sprintf("100%07d", sequence%10000000))
+		}
 		return sizedString(c, "migfuzz_"+strconv.Itoa(sequence))
 	}
 }
 
-func uniqueValue(c column, sequence int) any {
+func uniqueValue(c column, hints []any, sequence int) any {
+	if len(hints) > 0 {
+		return hints[sequence%len(hints)]
+	}
 	unsigned := strings.Contains(strings.ToLower(c.ColumnType), "unsigned")
 	switch c.DataType {
 	case "tinyint":

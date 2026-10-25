@@ -24,10 +24,11 @@ import (
 const migrationsPath = "internal/store/sql"
 
 type Config struct {
-	DSN      string
-	BaseRef  string
-	RepoDir  string
-	Progress io.Writer
+	DSN       string
+	BaseRef   string
+	RepoDir   string
+	Progress  io.Writer
+	FullChain bool
 }
 
 func Run(ctx context.Context, cfg Config) error {
@@ -53,6 +54,9 @@ func Run(ctx context.Context, cfg Config) error {
 	// sql-migrate scans applied_at into time.Time. This is also present in the
 	// application's deployed DSN and is required by the library's MySQL dialect.
 	dsnConfig.ParseTime = true
+	if cfg.FullChain {
+		return runFullChain(ctx, cfg, dsnConfig)
+	}
 
 	repoRoot, err := gitOutput(ctx, cfg.RepoDir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -73,21 +77,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("read working-tree migrations: %w", err)
 	}
-	currentFiles := make(map[string]bool, len(currentMigrations))
+	currentFiles := make(map[string][]byte, len(currentMigrations))
 	for _, migration := range currentMigrations {
-		currentFiles[migration.Id] = true
-	}
-	for name, baseBody := range baseFiles {
-		if !currentFiles[name] {
-			return fmt.Errorf("base migration %s is missing from the working tree; applied migrations may not be removed or renamed", name)
-		}
-		currentBody, err := os.ReadFile(filepath.Join(repoRoot, migrationsPath, name))
+		body, err := os.ReadFile(filepath.Join(repoRoot, migrationsPath, migration.Id))
 		if err != nil {
-			return fmt.Errorf("read working-tree migration %s: %w", name, err)
+			return fmt.Errorf("read working-tree migration %s: %w", migration.Id, err)
 		}
-		if !bytes.Equal(baseBody, currentBody) {
-			return fmt.Errorf("base migration %s was modified; add a new migration instead of changing an applied file", name)
-		}
+		currentFiles[migration.Id] = body
+	}
+	if err := checkBaseMigrationImmutability(baseFiles, currentFiles); err != nil {
+		return err
 	}
 
 	newFiles := make(map[string]bool)
@@ -128,6 +127,9 @@ func Run(ctx context.Context, cfg Config) error {
 	if len(stats.UnseededTables) > 0 {
 		fmt.Fprintf(cfg.Progress, "migration replay: warning: no synthetic boundary row fit %d table(s): %s\n",
 			len(stats.UnseededTables), strings.Join(stats.UnseededTables, ", "))
+		for _, table := range stats.UnseededTables {
+			fmt.Fprintf(cfg.Progress, "migration replay: unseeded %s: %s\n", table, stats.UnseededReasons[table])
+		}
 	}
 
 	appliedNew := 0
@@ -153,6 +155,65 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("applied %d new migrations, expected %d", appliedNew, len(newFiles))
 	}
 	fmt.Fprintf(cfg.Progress, "migration replay: PASS (%d new migration(s) applied)\n", appliedNew)
+	return nil
+}
+
+func runFullChain(ctx context.Context, cfg Config, dsnConfig *mysql.Config) error {
+	repoRoot, err := gitOutput(ctx, cfg.RepoDir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	source := &migrate.FileMigrationSource{Dir: filepath.Join(repoRoot, migrationsPath)}
+	migrations, err := source.FindMigrations()
+	if err != nil {
+		return fmt.Errorf("read working-tree migrations: %w", err)
+	}
+
+	db, err := sql.Open("mysql", dsnConfig.FormatDSN())
+	if err != nil {
+		return fmt.Errorf("open full-chain database: %w", err)
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping full-chain database: %w", err)
+	}
+	if err := requireEmptyDatabase(ctx, db, dsnConfig.DBName); err != nil {
+		return err
+	}
+
+	var serverCharset, sqlMode string
+	if err := db.QueryRowContext(ctx, "SELECT @@character_set_server, @@SESSION.sql_mode").Scan(&serverCharset, &sqlMode); err != nil {
+		return fmt.Errorf("read full-chain MySQL settings: %w", err)
+	}
+	fmt.Fprintf(cfg.Progress, "migration full-chain: applying %d migration(s) with server charset=%s, sql_mode=%q, and multiStatements=false\n",
+		len(migrations), serverCharset, sqlMode)
+	applied, err := migrate.Exec(db, "mysql", source, migrate.Up)
+	if err != nil {
+		return formatMigrationError("full-chain migration", err)
+	}
+	if applied != len(migrations) {
+		return fmt.Errorf("full-chain applied %d migrations, expected %d", applied, len(migrations))
+	}
+	fmt.Fprintf(cfg.Progress, "migration full-chain: PASS (%d migration(s) applied)\n", applied)
+	return nil
+}
+
+func checkBaseMigrationImmutability(baseFiles, currentFiles map[string][]byte) error {
+	names := make([]string, 0, len(baseFiles))
+	for name := range baseFiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		baseBody := baseFiles[name]
+		currentBody, ok := currentFiles[name]
+		if !ok {
+			return fmt.Errorf("base migration %s is missing from the working tree; applied migrations may not be removed or renamed", name)
+		}
+		if !bytes.Equal(baseBody, currentBody) {
+			return fmt.Errorf("base migration %s was modified; add a new migration instead of changing an applied file", name)
+		}
+	}
 	return nil
 }
 

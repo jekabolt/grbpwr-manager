@@ -41,8 +41,8 @@ func TestBuildRowKeepsFutureDuplicateWhileVaryingExistingUnique(t *testing.T) {
 	}
 	indexes := []uniqueIndex{{Name: "PRIMARY", Columns: []string{"id"}}}
 	template := map[string]any{"id": int64(1), "legacy_code": []byte("same"), "quantity": int64(5)}
-	first := buildRow(columns, indexes, template, "quantity", int64(0), 1)
-	second := buildRow(columns, indexes, template, "quantity", int64(0), 2)
+	first := buildRow(columns, indexes, template, nil, "quantity", int64(0), 1)
+	second := buildRow(columns, indexes, template, nil, "quantity", int64(0), 2)
 	if first["id"] == second["id"] {
 		t.Fatal("existing unique key was not varied")
 	}
@@ -60,10 +60,69 @@ func TestBuildRowOverridesAUniqueDefault(t *testing.T) {
 		{Name: "quantity", DataType: "int", ColumnType: "int"},
 	}
 	indexes := []uniqueIndex{{Name: "uq_code", Columns: []string{"code"}}}
-	first := buildRow(columns, indexes, nil, "quantity", int64(0), 1)
-	second := buildRow(columns, indexes, nil, "quantity", int64(0), 2)
+	first := buildRow(columns, indexes, nil, nil, "quantity", int64(0), 1)
+	second := buildRow(columns, indexes, nil, nil, "quantity", int64(0), 2)
 	if first["code"] == nil || first["code"] == second["code"] {
 		t.Fatalf("unique default was not replaced with distinct values: %#v %#v", first, second)
+	}
+}
+
+func TestCheckHintsBuildValidBaselinesAndProtectFiniteUniqueColumns(t *testing.T) {
+	columns := []column{
+		{Name: "name", DataType: "varchar", ColumnType: "varchar(20)", CharMax: nullInt64(20)},
+		{Name: "sku_system", DataType: "varchar", ColumnType: "varchar(16)", CharMax: nullInt64(16)},
+		{Name: "sku_ord", DataType: "smallint", ColumnType: "smallint unsigned"},
+		{Name: "archive_code", DataType: "varchar", ColumnType: "varchar(12)", CharMax: nullInt64(12)},
+	}
+	hints := inferCheckHints(columns, []string{
+		"(binary `sku_system` in (_utf8mb4'apparel',_utf8mb4'shoe'))",
+		"regexp_like(`archive_code`,_utf8mb4'^AR[0-9A-Z]{1,10}$','c')",
+	})
+	if !reflect.DeepEqual(hints["sku_system"], []any{"apparel", "shoe"}) {
+		t.Fatalf("sku_system hints = %#v", hints["sku_system"])
+	}
+	if !reflect.DeepEqual(hints["archive_code"], []any{"AR1"}) {
+		t.Fatalf("archive_code hints = %#v", hints["archive_code"])
+	}
+
+	indexes := []uniqueIndex{{Name: "uniq_size", Columns: []string{"sku_system", "sku_ord"}}}
+	row := buildRow(columns, indexes, nil, hints, "name", "boundary", 7)
+	if row["sku_system"] != "apparel" {
+		t.Fatalf("checked vocabulary was overwritten: %#v", row)
+	}
+	if row["sku_ord"] == 1 {
+		t.Fatalf("unconstrained composite-key member was not varied: %#v", row)
+	}
+	if row["archive_code"] != "AR1" {
+		t.Fatalf("REGEXP_LIKE hint not used: %#v", row)
+	}
+}
+
+func TestRegexpCheckHintsCoverRequiredCatalogColumns(t *testing.T) {
+	columns := []column{{Name: "movement_type", DataType: "varchar", ColumnType: "varchar(24)"}}
+	hints := inferCheckHints(columns, []string{"(`movement_type` regexp _utf8mb4'^(receipt|issue_sample|writeoff)$')"})
+	want := []any{"receipt", "issue_sample", "writeoff"}
+	if !reflect.DeepEqual(hints["movement_type"], want) {
+		t.Fatalf("movement_type hints = %#v, want %#v", hints["movement_type"], want)
+	}
+}
+
+func TestCheckHintsCoverSingletonAndBuyerFormats(t *testing.T) {
+	columns := []column{
+		{Name: "singleton", DataType: "tinyint", ColumnType: "tinyint"},
+		{Name: "email", DataType: "varchar", ColumnType: "varchar(100)", CharMax: nullInt64(100)},
+		{Name: "phone", DataType: "varchar", ColumnType: "varchar(20)", CharMax: nullInt64(20)},
+	}
+	hints := inferCheckHints(columns, []string{"(`singleton` = 1)"})
+	if !reflect.DeepEqual(hints["singleton"], []any{int64(1)}) {
+		t.Fatalf("singleton hints = %#v", hints["singleton"])
+	}
+	row := buildRow(columns, nil, nil, hints, "", nil, 42)
+	if row["email"] != "migfuzz+42@example.invalid" {
+		t.Fatalf("email seed = %#v", row["email"])
+	}
+	if row["phone"] != "1000000042" {
+		t.Fatalf("phone seed = %#v", row["phone"])
 	}
 }
 

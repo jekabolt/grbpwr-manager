@@ -8,6 +8,7 @@ on:
       - "internal/store/migreplay/**"
       - "internal/testdbguard/**"
       - "cmd/migreplay/**"
+      - "scripts/check-migration-immutability.sh"
       - ".github/workflows/migrations.yml"
       - "Makefile"
       - "go.mod"
@@ -20,29 +21,71 @@ on:
 permissions:
   contents: read
 
+env:
+  # Mirrors DO managed MySQL (beta and prod, read 2026-10-25): SELECT VERSION(), @@GLOBAL.sql_mode.
+  # The app sets no sql_mode, so migrations run under the server's ANSI mode.
+  MYSQL_IMAGE: mysql:8.0.45
+  MYSQL_SQL_MODE: REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+
 jobs:
-  replay:
+  immutability:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: replay
-          MYSQL_DATABASE: migration_replay_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=replay"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=20
+    timeout-minutes: 5
+    outputs:
+      base_ref: ${{ steps.base.outputs.ref }}
 
     steps:
       - name: Check out backend with migration history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve migration base
+        id: base
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git fetch --no-tags origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+            echo "ref=origin/$GITHUB_BASE_REF" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
+            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject edits to migration history
+        run: scripts/check-migration-immutability.sh "${{ steps.base.outputs.ref }}"
+
+  replay:
+    needs: immutability
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out backend with migration history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Start prod-like MySQL
+        shell: bash
+        run: |
+          docker run --detach --name migration-mysql \
+            --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=replay \
+            --env MYSQL_DATABASE=migration_replay_test \
+            "$MYSQL_IMAGE" \
+            --character-set-server=utf8mb4 \
+            --collation-server=utf8mb4_0900_ai_ci \
+            --sql-mode="$MYSQL_SQL_MODE"
+          for attempt in {1..60}; do
+            if docker exec migration-mysql mysqladmin ping --host=127.0.0.1 --user=root --password=replay --silent; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs migration-mysql
+          exit 1
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -61,21 +104,56 @@ jobs:
       - name: Run database-free migration lint
         run: go test ./internal/store/migrationlint/
 
-      - name: Resolve replay base
-        id: base
-        shell: bash
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            git fetch --no-tags origin "$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
-            echo "ref=origin/$GITHUB_BASE_REF" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
-            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Replay new migrations over boundary data
         env:
           MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_replay_test?parseTime=true&charset=utf8mb4
-          MIGREPLAY_BASE_REF: ${{ steps.base.outputs.ref }}
+          MIGREPLAY_BASE_REF: ${{ needs.immutability.outputs.base_ref }}
         run: make migration-replay
+
+  full-chain:
+    needs: immutability
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql:
+          - charset: utf8mb3
+            collation: utf8mb3_general_ci
+          - charset: utf8mb4
+            collation: utf8mb4_0900_ai_ci
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start ${{ matrix.mysql.charset }} MySQL
+        shell: bash
+        run: |
+          docker run --detach --name migration-mysql \
+            --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=replay \
+            --env MYSQL_DATABASE=migration_full_chain_test \
+            "$MYSQL_IMAGE" \
+            --character-set-server=${{ matrix.mysql.charset }} \
+            --collation-server=${{ matrix.mysql.collation }} \
+            --sql-mode="$MYSQL_SQL_MODE"
+          for attempt in {1..60}; do
+            if docker exec migration-mysql mysqladmin ping --host=127.0.0.1 --user=root --password=replay --silent; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs migration-mysql
+          exit 1
+
+      - name: Apply full chain with multiStatements=false
+        env:
+          MIGREPLAY_DSN: root:replay@tcp(127.0.0.1:3306)/migration_full_chain_test?parseTime=true&charset=${{ matrix.mysql.charset }}
+        run: go run ./cmd/migreplay --full-chain --dsn "$MIGREPLAY_DSN"

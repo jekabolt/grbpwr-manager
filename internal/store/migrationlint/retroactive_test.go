@@ -87,9 +87,17 @@ ALTER TABLE product ADD CONSTRAINT product_price_positive CHECK (price > 0);`),
 		{
 			name: "comments strings and nullable widening ignored",
 			sql: migrationSQL(`-- ALTER TABLE product ADD CHECK (price > 0);
-SET @ddl = 'ALTER TABLE product MODIFY price INT NOT NULL';
+SELECT 'ALTER TABLE product MODIFY price INT NOT NULL';
 /* ALTER TABLE product ADD UNIQUE (sku); */
 ALTER TABLE product MODIFY description VARCHAR(500) NULL;`),
+		},
+		{
+			name: "dynamic ddl assigned for prepare is checked",
+			sql: migrationSQL(`SET @ddl = IF(@needed,
+  'ALTER TABLE product MODIFY price INT NOT NULL',
+  'SELECT 1');
+PREPARE stmt FROM @ddl;`),
+			want: []string{"NOT NULL"},
 		},
 		{
 			name: "comma within check stays in one clause",

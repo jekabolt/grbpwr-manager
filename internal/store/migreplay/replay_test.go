@@ -53,3 +53,43 @@ func TestFormatMigrationErrorNamesFileAndMySQLCode(t *testing.T) {
 		}
 	}
 }
+
+func TestBaseMigrationImmutabilityRejectsEditedAppliedMigration(t *testing.T) {
+	base := map[string][]byte{
+		"0001_initial.sql": []byte("-- +migrate Up\nCREATE TABLE t (id INT);\n"),
+	}
+	tests := []struct {
+		name    string
+		current map[string][]byte
+		want    string
+	}{
+		{
+			name: "edited",
+			current: map[string][]byte{
+				"0001_initial.sql": []byte("-- +migrate Up\nCREATE TABLE t (id BIGINT);\n"),
+			},
+			want: "was modified",
+		},
+		{
+			name:    "removed or renamed",
+			current: map[string][]byte{"0001_renamed.sql": base["0001_initial.sql"]},
+			want:    "is missing",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkBaseMigrationImmutability(base, tt.current)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want text %q", err, tt.want)
+			}
+		})
+	}
+
+	unchangedPlusAddition := map[string][]byte{
+		"0001_initial.sql": base["0001_initial.sql"],
+		"0002_added.sql":   []byte("-- +migrate Up\nALTER TABLE t ADD COLUMN note TEXT;\n"),
+	}
+	if err := checkBaseMigrationImmutability(base, unchangedPlusAddition); err != nil {
+		t.Fatalf("append-only migration set rejected: %v", err)
+	}
+}

@@ -35,10 +35,21 @@ func detectRetroactiveHazards(content string) ([]retroactiveHazard, error) {
 	createdHere := make(map[string]bool)
 	cleaned := make([]string, 0, len(parsed.UpStatements))
 	for _, statement := range parsed.UpStatements {
-		statement = maskSQLCommentsAndStrings(statement)
-		cleaned = append(cleaned, statement)
-		if match := createTableStatement.FindStringSubmatch(statement); match != nil {
+		masked := maskSQLCommentsAndStrings(statement)
+		cleaned = append(cleaned, masked)
+		if match := createTableStatement.FindStringSubmatch(masked); match != nil {
 			createdHere[normalizeTableName(match[1])] = true
+		}
+		dynamic, err := dynamicDDLStrings(statement)
+		if err != nil {
+			return nil, fmt.Errorf("scan dynamic DDL: %w", err)
+		}
+		for _, ddl := range dynamic {
+			maskedDDL := maskSQLCommentsAndStrings(ddl)
+			cleaned = append(cleaned, maskedDDL)
+			if match := createTableStatement.FindStringSubmatch(maskedDDL); match != nil {
+				createdHere[normalizeTableName(match[1])] = true
+			}
 		}
 	}
 
@@ -182,22 +193,7 @@ func isDashCommentStart(sql string, i int) bool {
 }
 
 func retroactiveAllowance(content string) (bool, error) {
-	const marker = "migrationlint:allow-retroactive"
-	for _, comment := range sqlLineComments(content) {
-		comment = strings.TrimSpace(comment)
-		if !strings.HasPrefix(comment, marker) {
-			continue
-		}
-		if len(comment) > len(marker) && comment[len(marker)] > ' ' {
-			continue
-		}
-		reason := strings.TrimSpace(strings.TrimPrefix(comment, marker))
-		if reason == "" {
-			return false, fmt.Errorf("%s requires a non-empty reason", marker)
-		}
-		return true, nil
-	}
-	return false, nil
+	return structuredAllowance(content, "migrationlint:allow-retroactive")
 }
 
 func sqlLineComments(sql string) []string {

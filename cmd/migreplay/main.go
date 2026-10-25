@@ -14,10 +14,11 @@ import (
 
 func main() {
 	var (
-		dsn     = flag.String("dsn", os.Getenv("MIGREPLAY_DSN"), "throwaway local MySQL *_test DSN (or MIGREPLAY_DSN)")
-		baseRef = flag.String("base-ref", "origin/beta", "Git ref whose merge-base with HEAD defines the migration baseline")
-		repoDir = flag.String("repo", ".", "path inside the repository")
-		timeout = flag.Duration("timeout", 20*time.Minute, "overall replay timeout")
+		dsn       = flag.String("dsn", os.Getenv("MIGREPLAY_DSN"), "throwaway local MySQL *_test DSN (or MIGREPLAY_DSN)")
+		baseRef   = flag.String("base-ref", "origin/beta", "Git ref whose merge-base with HEAD defines the migration baseline")
+		repoDir   = flag.String("repo", ".", "path inside the repository")
+		timeout   = flag.Duration("timeout", 20*time.Minute, "overall replay timeout")
+		fullChain = flag.Bool("full-chain", false, "apply every working-tree migration to an empty database without boundary seeding")
 	)
 	flag.Parse()
 	if *dsn == "" {
@@ -30,10 +31,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(signalCtx, *timeout)
 	defer cancel()
 	if err := migreplay.Run(ctx, migreplay.Config{
-		DSN:      *dsn,
-		BaseRef:  *baseRef,
-		RepoDir:  *repoDir,
-		Progress: os.Stdout,
+		DSN:       *dsn,
+		BaseRef:   *baseRef,
+		RepoDir:   *repoDir,
+		Progress:  os.Stdout,
+		FullChain: *fullChain,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "migreplay: FAIL: %v\n", err)
 		os.Exit(1)
