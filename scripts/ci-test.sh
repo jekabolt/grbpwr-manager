@@ -177,7 +177,7 @@ run_store_tests() {
       return 2
     fi
     log "no MYSQL_* test environment detected; using $test_db_script"
-    "$test_db_script" -C "$repo_dir" -- -json ./internal/store/... -count=1 \
+    "$test_db_script" -C "$repo_dir" -- -json -p 1 ./internal/store/... -count=1 \
       >"$tmp_dir/store.json" 2>&1
     store_status=$?
   elif (( present != ${#mysql_variables[@]} )); then
@@ -188,7 +188,7 @@ run_store_tests() {
     log "using MYSQL_* test environment for ${MYSQL_DATABASE} at ${MYSQL_HOST}:${MYSQL_PORT}"
     (
       cd -- "$repo_dir"
-      CI=1 go test -json ./internal/store/... -count=1
+      CI=1 go test -json -p 1 ./internal/store/... -count=1
     ) >"$tmp_dir/store.json" 2>&1
     store_status=$?
   fi
