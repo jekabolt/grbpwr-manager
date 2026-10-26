@@ -2,7 +2,9 @@ package dto
 
 import (
 	"testing"
+	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardanalysis"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +26,13 @@ func tcaFullFinding() techcardanalysis.Finding {
 		Suggestion:  "Add a lockstitch step joining SL_L to the shell.",
 		Confidence:  techcardanalysis.ConfidenceHeuristic,
 		Clause:      "no side seam",
+		Code:        "missing_side_seam",
+		Subject:     "left",
+		Key:         "missing_side_seam@card,op:120,piece:SL_L#left",
+		Fingerprint: "0123456789abcdef",
+		Seen:        true,
+		SeenBy:      "anna",
+		SeenAt:      time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -47,6 +56,12 @@ func TestTechCardAnalysisFindingToPbCarriesEveryField(t *testing.T) {
 	require.Equal(t, f.InsertAfter, pb.GetInsertAfter())
 	require.Equal(t, f.Suggestion, pb.GetSuggestion())
 	require.Equal(t, f.Confidence, pb.GetConfidence())
+	require.Equal(t, f.Code, pb.GetCode())
+	require.Equal(t, f.Key, pb.GetKey())
+	require.Equal(t, f.Fingerprint, pb.GetFingerprint())
+	require.Equal(t, f.Seen, pb.GetSeen())
+	require.Equal(t, f.SeenBy, pb.GetSeenBy())
+	require.True(t, f.SeenAt.Equal(pb.GetSeenAt().AsTime()))
 
 	// Slices must be copies, not aliases of the analyzer's backing arrays.
 	f.Refs[0] = "op:999"
@@ -93,4 +108,26 @@ func TestTechCardAnalysisFindingToPbDoesNotInvent(t *testing.T) {
 	require.Empty(t, pb.GetSeverity())
 	require.Nil(t, pb.GetRefs())
 	require.Nil(t, pb.GetEvidence())
+	require.Nil(t, pb.GetSeenAt(), "an unseen finding carries no seen_at, not the zero time")
+}
+
+func TestTechCardFindingSeenMarksToPb(t *testing.T) {
+	at := time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	got := TechCardFindingSeenMarksToPb([]entity.TechCardFindingSeen{
+		{TechCardId: 7, FindingKey: "pdf_sa_missing@seam:hem", Fingerprint: "fedcba9876543210", SeenBy: "boris", SeenAt: at},
+		{TechCardId: 7, FindingKey: "pdf_x@card", Fingerprint: "0123456789abcdef"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].GetKey() != "pdf_sa_missing@seam:hem" || got[0].GetFingerprint() != "fedcba9876543210" ||
+		got[0].GetSeenBy() != "boris" || !got[0].GetSeenAt().AsTime().Equal(at) {
+		t.Errorf("mark = %+v", got[0])
+	}
+	if got[1].GetSeenAt() != nil {
+		t.Errorf("a zero time must stay absent, got %v", got[1].GetSeenAt())
+	}
+	if empty := TechCardFindingSeenMarksToPb(nil); empty == nil || len(empty) != 0 {
+		t.Errorf("no marks: %#v", empty)
+	}
 }

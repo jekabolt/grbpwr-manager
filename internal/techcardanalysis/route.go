@@ -126,6 +126,7 @@ func checkA1UnitKeyCaseCollision(v *cardView) []Finding {
 		}
 
 		out = append(out, Finding{
+			Code:     CodeUnitKeyCaseCollision,
 			Category: CategoryNaming,
 			Severity: SeverityWarning,
 			Title:    aiBoundedText("Unit keys differ only in case: "+strings.Join(quoted, " and "), 90),
@@ -173,6 +174,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodeButtonholeUnspecified,
 					Category: CategoryParameter,
 					Severity: SeverityWarning,
 					Title:    "Buttonhole unspecified: no style, no cut length",
@@ -186,6 +188,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 		}
 		out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 			return Finding{
+				Code:     CodeButtonholeUnspecified,
 				Category: CategoryParameter,
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("Buttonhole style and cut length missing on %d of %d buttonhole operations",
@@ -213,6 +216,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodePlacementCountMissing,
 					Category: CategoryParameter,
 					Severity: SeverityWarning,
 					// Заголовок обязан быть ВЕРЕН для своего шага: на петельной операции «this is a
@@ -230,6 +234,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 		}
 		out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 			return Finding{
+				Code:     CodePlacementCountMissing,
 				Category: CategoryParameter,
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("No placement count on %d of %d buttonhole/button steps",
@@ -243,7 +248,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 	}
 
 	// 3. Подрезка без действия. REQUIRED у новых записей — живая поверхность только легаси-строки.
-	out = append(out, discriminatorCoverage(v, entity.OpTypeTrim, "trim_action",
+	out = append(out, discriminatorCoverage(v, CodeTrimActionMissing, entity.OpTypeTrim, "trim_action",
 		func(op *entity.TechCardOperation) bool { return !nsEmpty(op.TrimAction) },
 		"Trim step does not say what is trimmed",
 		"trim_action is empty: the card says something is cut back, but not whether it is an "+
@@ -251,7 +256,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 		"Pick the trim action on the step.")...)
 
 	// 4. Фурнитура без способа крепления.
-	out = append(out, discriminatorCoverage(v, entity.OpTypeHardwareSet, "attach_method",
+	out = append(out, discriminatorCoverage(v, CodeAttachMethodMissing, entity.OpTypeHardwareSet, "attach_method",
 		func(op *entity.TechCardOperation) bool { return !nsEmpty(op.AttachMethod) },
 		"Hardware step does not say how the part is attached",
 		"attach_method is empty: sewn, prong-clinched, press-set, crimped and threaded are five "+
@@ -263,7 +268,7 @@ func checkA2KindDiscriminators(v *cardView) []Finding {
 
 // discriminatorCoverage is the shared shape of «this verb owns a discriminator column and the
 // column is empty»: one applicable set (the steps of that verb), one miss per empty column.
-func discriminatorCoverage(v *cardView, verb entity.TechCardOperationType, column string,
+func discriminatorCoverage(v *cardView, code string, verb entity.TechCardOperationType, column string,
 	filled func(*entity.TechCardOperation) bool, title, detail, suggestion string,
 ) []Finding {
 	applicable, missing := 0, []CoverageMiss(nil)
@@ -278,6 +283,7 @@ func discriminatorCoverage(v *cardView, verb entity.TechCardOperationType, colum
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:       code,
 				Category:   CategoryParameter,
 				Severity:   SeverityWarning,
 				Title:      title,
@@ -289,6 +295,7 @@ func discriminatorCoverage(v *cardView, verb entity.TechCardOperationType, colum
 	}
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     code,
 			Category: CategoryParameter,
 			Severity: SeverityWarning,
 			Title: aiBoundedText(fmt.Sprintf("%s is empty on %d of %d %s operations",
@@ -334,7 +341,7 @@ func checkA3PressParameters(v *cardView) []Finding {
 	}
 	hasProfileFor := func(verb entity.TechCardOperationType) bool { return profilesFor(verb) > 0 }
 
-	group := func(verbs []entity.TechCardOperationType, severity, noun string) []Finding {
+	group := func(code string, verbs []entity.TechCardOperationType, severity, noun string) []Finding {
 		applicable, missing := 0, []CoverageMiss(nil)
 		for _, op := range v.ops {
 			if !hasVerb(op, verbs) {
@@ -347,6 +354,7 @@ func checkA3PressParameters(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     code,
 					Category: CategoryParameter,
 					Severity: severity,
 					Title:    aiBoundedText(capitalise(noun)+" parameters are not specified", 90),
@@ -360,6 +368,7 @@ func checkA3PressParameters(v *cardView) []Finding {
 		}
 		return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 			return Finding{
+				Code:     code,
 				Category: CategoryParameter,
 				Severity: severity,
 				Title: aiBoundedText(fmt.Sprintf("%s parameters missing on %d of %d %s operations",
@@ -377,8 +386,8 @@ func checkA3PressParameters(v *cardView) []Finding {
 	var out []Finding
 	// Клеевая идёт первой: её находка — error, и порядок регистрации внутри проверки хотя бы не
 	// спорит с порядком чтения.
-	out = append(out, group([]entity.TechCardOperationType{entity.OpTypeFusing}, SeverityError, "fusing")...)
-	out = append(out, group([]entity.TechCardOperationType{entity.OpTypePress, entity.OpTypePressOpen},
+	out = append(out, group(CodeFusingParamsMissing, []entity.TechCardOperationType{entity.OpTypeFusing}, SeverityError, "fusing")...)
+	out = append(out, group(CodePressParamsMissing, []entity.TechCardOperationType{entity.OpTypePress, entity.OpTypePressOpen},
 		SeverityWarning, "pressing")...)
 	return out
 }
@@ -432,6 +441,7 @@ func checkA4SeamClassAgainstMachine(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeSeamClassMachineMismatch,
 				Category: CategoryParameter,
 				Severity: SeverityError,
 				Title:    aiBoundedText(fmt.Sprintf("Seam class %s is not producible on %s", class, machine), 90),
@@ -446,6 +456,7 @@ func checkA4SeamClassAgainstMachine(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeSeamClassMachineMismatch,
 			Category: CategoryParameter,
 			Severity: SeverityError,
 			Title: fmt.Sprintf("Effective seam class is not producible on the named machine on %d of %d steps",
@@ -497,6 +508,8 @@ func checkA5NoteCarriers(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodeNoteOnlyInstruction,
+					Subject:  rule.field,
 					Category: CategoryParameter,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText("Instruction lives only in a note: "+rule.field, 90),
@@ -513,6 +526,7 @@ func checkA5NoteCarriers(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeNoteOnlyInstruction,
 			Category: CategoryParameter,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Notes name an empty field on %d of %d annotated steps",
@@ -597,7 +611,7 @@ func checkA6FinishingOrder(v *cardView) []Finding {
 	packLabel := opLabel(v.ops[firstPack])
 
 	after := v.ops[firstPack+1:]
-	group := func(verbs []entity.TechCardOperationType, severity, what string) []Finding {
+	group := func(code string, verbs []entity.TechCardOperationType, severity, what string) []Finding {
 		applicable, missing := len(after), []CoverageMiss(nil)
 		for _, op := range after {
 			if !hasVerb(op, verbs) {
@@ -606,6 +620,7 @@ func checkA6FinishingOrder(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     code,
 					Category: CategorySequence,
 					Severity: severity,
 					Title:    aiBoundedText(capitalise(what)+" after packing", 90),
@@ -619,6 +634,7 @@ func checkA6FinishingOrder(v *cardView) []Finding {
 		}
 		return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 			return Finding{
+				Code:     code,
 				Category: CategorySequence,
 				Severity: severity,
 				Title: aiBoundedText(fmt.Sprintf("%s after packing on %d of %d steps that follow the pack",
@@ -631,11 +647,11 @@ func checkA6FinishingOrder(v *cardView) []Finding {
 	}
 
 	var out []Finding
-	out = append(out, group([]entity.TechCardOperationType{
+	out = append(out, group(CodeWorkAfterPack, []entity.TechCardOperationType{
 		entity.OpTypeMachine, entity.OpTypeHandwork, entity.OpTypeFusing,
 		entity.OpTypeHardwareSet, entity.OpTypePrint, entity.OpTypeWetProcess,
 	}, SeverityError, "assembly or wet work")...)
-	out = append(out, group([]entity.TechCardOperationType{entity.OpTypeFold}, SeverityWarning, "folding")...)
+	out = append(out, group(CodeFoldAfterPack, []entity.TechCardOperationType{entity.OpTypeFold}, SeverityWarning, "folding")...)
 	return out
 }
 
@@ -669,6 +685,7 @@ func checkA7FusingOnAssembledUnits(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeFusingOnAssembledUnit,
 				Category: CategorySequence,
 				Severity: SeverityError,
 				Title:    "Fusing applied to an assembled unit",
@@ -683,6 +700,7 @@ func checkA7FusingOnAssembledUnits(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeFusingOnAssembledUnit,
 			Category: CategorySequence,
 			Severity: SeverityError,
 			Title: fmt.Sprintf("Fusing applied to assembled units on %d of %d fusing operations",
@@ -748,6 +766,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodeWorkVerbMismatch,
 					Category: CategoryIntegrity,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText(fmt.Sprintf("Work %q does not belong to a %s step", token, string(op.OperationType)), 90),
@@ -764,6 +783,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodeWorkMachineMismatch,
 					Category: CategoryIntegrity,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText(fmt.Sprintf("Work %q does not run on a %s", token, machine), 90),
@@ -783,6 +803,7 @@ func checkA8WorkMachineLegality(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeWorkCatalogMismatch,
 			Category: CategoryIntegrity,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Work and machine disagree with the catalog on %d of %d steps that name a work",
@@ -846,6 +867,7 @@ func checkA9LegacyPieceLinkDrift(v *cardView) []Finding {
 	}
 
 	return []Finding{{
+		Code:     CodeLegacyPieceLinkDrift,
 		Category: CategoryIntegrity,
 		Severity: SeverityWarning,
 		Title:    "Legacy piece links diverge from assembly inputs",
@@ -936,6 +958,7 @@ func checkA10SensitiveBeforeWetProcess(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeSensitiveBeforeWet,
 				Category: CategorySequence,
 				Severity: SeverityWarning,
 				Title:    "Sensitive component set before wet processing",
@@ -950,6 +973,7 @@ func checkA10SensitiveBeforeWetProcess(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeSensitiveBeforeWet,
 			Category: CategorySequence,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Sensitive components set before wet processing on %d of %d steps",

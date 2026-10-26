@@ -69,8 +69,9 @@ func checkC1Floor(v *cardView) []Finding {
 	}
 
 	var out []Finding
-	add := func(title, detail, suggestion, clause string) {
+	add := func(code, title, detail, suggestion, clause string) {
 		out = append(out, Finding{
+			Code:       code,
 			Category:   CategoryReadiness,
 			Severity:   SeverityError,
 			Title:      title,
@@ -82,19 +83,19 @@ func checkC1Floor(v *cardView) []Finding {
 	}
 
 	if facts.Operations == 0 {
-		add("The card has no operations",
+		add(CodeNoOperations, "The card has no operations",
 			"tech_card_operation is empty: the card describes no route at all, so nothing about "+
 				"assembly, machines, time or labour cost can be said about it — by this analysis or by anyone.",
 			"Enter the route, step by step.", "no operations")
 	}
 	if facts.Pieces == 0 {
-		add("The card has no cut pieces",
+		add(CodeNoCutPieces, "The card has no cut pieces",
 			"tech_card_piece is empty: nothing is cut, so no step has anything to sew, no marker has "+
 				"anything to lay and no norm has anything to measure.",
 			"Load the pattern pieces (DXF) so the card knows what is cut.", "no cut pieces")
 	}
 	if facts.Sizes == 0 {
-		add("The card declares no size range",
+		add(CodeNoSizeRange, "The card declares no size range",
 			"tech_card_size is empty: the style is not made in any size, so grading, the size-averaged "+
 				"cost basis and every per-size norm have no set to work over.",
 			"Declare the size range of the style.", "no size range")
@@ -153,6 +154,7 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 	}
 
 	return []Finding{{
+		Code:     CodePrintPacketGaps,
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("The print packet would go out with %d empty sections", len(gaps)),
@@ -222,6 +224,8 @@ func checkC3LabelBridge(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: []string{RefCard},
 				Finding: Finding{
+					Code:     CodeLabelNotInBom,
+					Subject:  s.Key,
 					Category: CategoryReadiness,
 					Severity: SeverityWarning,
 					Title:    aiBoundedText(fmt.Sprintf("The %s label is not linked to a BOM line", name), 90),
@@ -237,6 +241,7 @@ func checkC3LabelBridge(v *cardView) []Finding {
 		}
 		out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 			return Finding{
+				Code:     CodeLabelNotInBom,
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("%d of %d garment labels are not linked to a BOM line",
@@ -268,6 +273,7 @@ func checkC3LabelBridge(v *cardView) []Finding {
 		}
 		if len(names) >= 2 {
 			out = append(out, Finding{
+				Code:     CodeLabelLinesUndescribed,
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
 				Title: fmt.Sprintf("%d label BOM lines are linked to no garment label",
@@ -322,6 +328,7 @@ func checkC3bMockups(v *cardView) []Finding {
 			clause = fmt.Sprintf("%d labels without mockup", len(labels))
 		}
 		out = append(out, Finding{
+			Code:     CodeLabelMockupMissing,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title:    aiBoundedText(title, 90),
@@ -348,6 +355,7 @@ func checkC3bMockups(v *cardView) []Finding {
 			clause = fmt.Sprintf("%d packaging items without mockup", len(items))
 		}
 		out = append(out, Finding{
+			Code:     CodePackagingMockupMissing,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title:    aiBoundedText(title, 90),
@@ -391,6 +399,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 	if len(eq.Machines) == 0 && len(eq.Presses) == 0 && len(machineTypes) > 0 {
 		types := sortedTokenSet(machineTypes)
 		out = append(out, Finding{
+			Code:     CodeEquipmentProfilesMissing,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title:    fmt.Sprintf("No equipment profiles on a card that names %d machine types", len(types)),
@@ -439,6 +448,8 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: opRefs(op),
 				Finding: Finding{
+					Code:     CodeEquipmentProfileRefBroken,
+					Subject:  ref.column,
 					Category: CategoryIntegrity,
 					Severity: SeverityError,
 					Title:    aiBoundedText(fmt.Sprintf("%s points at a %s profile the card does not have", ref.column, ref.kind), 90),
@@ -454,6 +465,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeEquipmentProfileRefBroken,
 			Category: CategoryIntegrity,
 			Severity: SeverityError,
 			Title: fmt.Sprintf("%d of %d equipment profile references point at nothing",
@@ -484,6 +496,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 		ambMissing = append(ambMissing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeEquipmentProfileAmbiguous,
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(fmt.Sprintf("%s could inherit any of %d %s profiles", opLabel(op), candidates, kind), 90),
@@ -499,6 +512,7 @@ func checkC4EquipmentPark(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(ambApplicable, ambMissing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeEquipmentProfileAmbiguous,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("%d of %d steps could inherit from more than one equipment profile",
@@ -567,6 +581,7 @@ func checkC5TechnicalSketch(v *cardView) []Finding {
 		}
 	}
 	return []Finding{{
+		Code:     CodeTechnicalSketchMissing,
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    "The card carries no technical sketch",
@@ -624,6 +639,7 @@ func checkC6ReleaseRuleFour(v *cardView) []Finding {
 				"exactly one terminal — release will refuse this card."
 		}
 		out = append(out, Finding{
+			Code:       CodeAssemblyNotConverging,
 			Category:   CategoryAssembly,
 			Severity:   SeverityWarning,
 			Title:      fmt.Sprintf("Assembly does not converge into one garment (%d terminals)", n),
@@ -639,6 +655,7 @@ func checkC6ReleaseRuleFour(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: []string{RefPiece(name)},
 			Finding: Finding{
+				Code:     CodePieceNeverSewn,
 				Category: CategoryAssembly,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(fmt.Sprintf("Cut piece %q is never sewn into anything", name), 90),
@@ -652,6 +669,7 @@ func checkC6ReleaseRuleFour(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodePieceNeverSewn,
 			Category: CategoryAssembly,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("%d of %d cut pieces are never sewn into anything",
@@ -710,6 +728,7 @@ func checkC7SmvCoverage(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeSmvMissing,
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(opLabel(op)+" has no SMV", 90),
@@ -723,6 +742,7 @@ func checkC7SmvCoverage(v *cardView) []Finding {
 	}
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeSmvMissing,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("No standard time on %d of %d operations",
@@ -765,6 +785,7 @@ func checkC8WorkCoverage(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: opRefs(op),
 			Finding: Finding{
+				Code:     CodeWorkMissing,
 				Category: CategoryReadiness,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(opLabel(op)+" names no work", 90),
@@ -778,6 +799,7 @@ func checkC8WorkCoverage(v *cardView) []Finding {
 	}
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeWorkMissing,
 			Category: CategoryReadiness,
 			Severity: SeverityWarning,
 			Title:    fmt.Sprintf("No work assigned on %d of %d operations", missing, applicable),
@@ -826,6 +848,7 @@ func checkC9FinishingBlock(v *cardView) []Finding {
 		names = append(names, string(verb))
 	}
 	return []Finding{{
+		Code:     CodeFinishingBlockMissing,
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    "The route ends with the last seam and has no finishing block",
