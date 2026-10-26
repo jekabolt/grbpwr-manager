@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestTechCardFindingSeenMarks pins the store side of the T9 «seen» marks (migration 0433):
+// TestTechCardFindingSeenMarks pins the store side of the T9 «seen» marks (migration 0435):
 // mark → list, an idempotent re-mark that keeps the first who/when, a new fingerprint that
 // overwrites them, byte-exact keys, idempotent unmark, the FK on an unknown card and the cascade
 // when the card is deleted.
