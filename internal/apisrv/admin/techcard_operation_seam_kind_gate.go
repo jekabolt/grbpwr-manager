@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Иконные поля шага (0435): TechCardOperation.seam_kind (72), TechCardOperation.work_variant (73) и
+// Иконные поля шага (0436): TechCardOperation.seam_kind (72), TechCardOperation.work_variant (73) и
 // TechCardOperationFastening.button_holes (7). Operations are full-replaced and have no stable row
 // key, so a payload from a bundle that has never heard of these fields cannot be told apart from
 // «no step states them», and its save would silently erase every value. Refuse such a write instead

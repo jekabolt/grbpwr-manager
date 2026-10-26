@@ -2213,7 +2213,7 @@ enum TechCardButtonholeOrientation {
   TECH_CARD_BUTTONHOLE_ORIENTATION_ANGLED = 3; // под углом; сам угол — выноской DIM на медиа шага
 }
 
-// Рисунок пришивания пуговицы. Число отверстий живёт на самом шаге (fastening.button_holes, 0435),
+// Рисунок пришивания пуговицы. Число отверстий живёт на самом шаге (fastening.button_holes, 0436),
 // и противоречие ВНУТРИ шага — жёсткий отказ: 2 отверстия при CROSS_X / SQUARE / U_SHAPE отвергаются
 // на `operations[N].fastening.attach_pattern` с кодом needs_four_holes (с двумя отверстиями пришивают
 // только одной перемычкой = PARALLEL, или OTHER + note). Расхождение шага с артикулом строки BOM
@@ -2918,7 +2918,7 @@ message TechCardOperation {
   // themselves are outside every digest and outside lock_version.
   repeated string seam_keys = 71;
 
-  // КОНСТРУКЦИЯ ШВА (0435) — какой именно шов в пределах класса seam_class: закрытый список
+  // КОНСТРУКЦИЯ ШВА (0436) — какой именно шов в пределах класса seam_class: закрытый список
   // entity.SeamKindTokens (сейчас 38 токенов, например bound_open, lapped_closed_a, moscow_hem).
   // Строка, а не enum: устаревший бандл protojson молча выронил бы незнакомый член enum'а.
   // Пусто = не указано = NULL; сервер НИКОГДА не выводит и не дописывает вид (по seam_class он не
@@ -2933,7 +2933,7 @@ message TechCardOperation {
   // (только токен).
   string seam_kind = 72;
 
-  // ВАРИАНТ РАБОТЫ (0435) — исполнение внутри одной работы `work` (66), закрытая карта
+  // ВАРИАНТ РАБОТЫ (0436) — исполнение внутри одной работы `work` (66), закрытая карта
   // entity.WorkVariants[work] (например set_zip → open_end | two_way | magnetic | faced). Вариант
   // НИКОГДА не меняет глагол: другое действие оператора — это другая работа. Пусто = не указано.
   // Вариант без работы — отказ; вариант, которого у этой работы нет, — отказ
@@ -3879,7 +3879,7 @@ message TechCardInsert {
   bool operation_seams_aware = 128;
 
   // Declares support for TechCardOperation.seam_kind (72), TechCardOperation.work_variant (73) and
-  // TechCardOperationFastening.button_holes (7) on full-replace writes — the 0435 icon fields.
+  // TechCardOperationFastening.button_holes (7) on full-replace writes — the 0436 icon fields.
   // Same semantics as operation_work_aware (116): without it a write that carries any of them, or
   // that would replace a card whose steps carry any of them, is refused (FailedPrecondition,
   // «update the admin») instead of silently erasing them. Server paths set it explicitly. The flag

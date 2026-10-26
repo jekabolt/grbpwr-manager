@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestTechCardOperationIconFieldsRoundTrip проводит иконные поля 0435 через стор: seam_kind,
+// TestTechCardOperationIconFieldsRoundTrip проводит иконные поля 0436 через стор: seam_kind,
 // work_variant, button_holes шага и button_holes пуговицы-артикула. Записал -> прочитал -> совпало;
 // шаг без значений читается NULL, а не нулём и не пустой строкой. Ловит разъезд пяти списков
 // (entity, ALTER, INSERT-map, SELECT, дайджест), который компилятору не виден.
@@ -116,12 +116,12 @@ func TestTechCardOperationIconFieldsRoundTrip(t *testing.T) {
 	require.NotNil(t, m.HardwareAttr)
 	require.False(t, m.HardwareAttr.ButtonHoles.Valid, "an unset hole count must read NULL")
 
-	// Повтор 0435 поверх применённой схемы (падение посреди файла → следующий старт с верха):
+	// Повтор 0436 поверх применённой схемы (падение посреди файла → следующий старт с верха):
 	// каждый гейт обязан пропустить свою колонку, и уже записанные значения не трогаются.
 	for i := range 2 {
-		_, err := testDB.ExecContext(ctx, `DELETE FROM gorp_migrations WHERE id = '0435_operation_icon_fields.sql'`)
+		_, err := testDB.ExecContext(ctx, `DELETE FROM gorp_migrations WHERE id = '0436_operation_icon_fields.sql'`)
 		require.NoError(t, err)
-		require.NoError(t, Migrate(testDB), "re-applying 0435 over an applied schema (pass %d)", i+1)
+		require.NoError(t, Migrate(testDB), "re-applying 0436 over an applied schema (pass %d)", i+1)
 	}
 	again, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)

@@ -10,7 +10,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
-// ИКОННЫЕ ПОЛЯ ШАГА (0435, SPEC-B1): seam_kind и work_variant. Третье поле волны —
+// ИКОННЫЕ ПОЛЯ ШАГА (0436, SPEC-B1): seam_kind и work_variant. Третье поле волны —
 // fastening.button_holes — живёт в блоке FA (techcard_operation_kinds.go), рядом с attach_pattern,
 // с которым у него общее правило.
 //

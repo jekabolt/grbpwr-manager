@@ -505,7 +505,7 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationSeamsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
-	// Иконные поля шага (0435) — щит 129, копия 116: полная замена операций стёрла бы вид шва,
+	// Иконные поля шага (0436) — щит 129, копия 116: полная замена операций стёрла бы вид шва,
 	// вариант работы и отверстия пуговицы молча.
 	if err := operationSeamKindStoredGate(in, stored); err != nil {
 		return nil, err

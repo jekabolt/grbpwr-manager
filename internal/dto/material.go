@@ -382,7 +382,7 @@ func pbHardwareAttrs(a *pb_common.MaterialHardwareAttrs) (*entity.MaterialHardwa
 	if err != nil {
 		return nil, fmt.Errorf("hardware_attrs.weight_g: %w", err)
 	}
-	// Отверстия пуговицы-артикула (0435): 0 = не указано = NULL, иначе 2 или 4 — те же значения,
+	// Отверстия пуговицы-артикула (0436): 0 = не указано = NULL, иначе 2 или 4 — те же значения,
 	// что у шага пришивания, который копирует их отсюда, пока его собственное поле 0.
 	var holes sql.NullInt32
 	if h := a.GetButtonHoles(); h != 0 {

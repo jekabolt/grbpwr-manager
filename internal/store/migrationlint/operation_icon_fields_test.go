@@ -10,7 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
-// ГАРДЫ НАД МИГРАЦИЕЙ 0435 — ИКОННЫЕ ПОЛЯ ШАГА (seam_kind, work_variant, button_holes) И ОТВЕРСТИЯ
+// ГАРДЫ НАД МИГРАЦИЕЙ 0436 — ИКОННЫЕ ПОЛЯ ШАГА (seam_kind, work_variant, button_holes) И ОТВЕРСТИЯ
 // ПУГОВИЦЫ-АРТИКУЛА. Несущие свойства файла, которые контейнерный прогон не ловит:
 //
 //  1. Ровно четыре колонки, каждая NULL, без DEFAULT: «не указано» — законное состояние каждой
@@ -21,7 +21,7 @@ import (
 //     пятиминутным потолком миграций остановила бы старт прода.
 //  4. Каждый ALTER под своим гейтом information_schema, один оператор на строку, Down симметричен.
 
-const operationIconFieldsMigration = "0435_operation_icon_fields.sql"
+const operationIconFieldsMigration = "0436_operation_icon_fields.sql"
 
 type iconColumn struct {
 	table, column, typ string
@@ -226,7 +226,7 @@ func TestOperationIconFieldsGuardsAreNotFalseGreen(t *testing.T) {
 // бы мёртвым. Гард сверяет ключи с работами, которые сеют миграции (Up-секции, все вставки в
 // operation_work, любой порядок колонок).
 //
-// СЕМЬ НОВЫХ РАБОТ СЕЕТ 0436 (другая полоса волны). Пока ни одна из них не посеяна, они терпимы;
+// СЕМЬ НОВЫХ РАБОТ СЕЕТ 0437 (другая полоса волны). Пока ни одна из них не посеяна, они терпимы;
 // как только в дереве появляется хоть одна — проверка становится строгой для ВСЕХ ключей, и
 // забытая работа краснеет здесь.
 var workVariantKeysAwaitingSeed = map[string]bool{
@@ -357,7 +357,7 @@ func TestWorkVariantKeysAreSeededWorks(t *testing.T) {
 			pending++
 		}
 	}
-	t.Logf("работ с вариантами, ждущих сида 0436: %d из %d", pending, len(workVariantKeysAwaitingSeed))
+	t.Logf("работ с вариантами, ждущих сида 0437: %d из %d", pending, len(workVariantKeysAwaitingSeed))
 }
 
 func TestWorkVariantCatalogGuardIsNotFalseGreen(t *testing.T) {
@@ -374,7 +374,7 @@ func TestWorkVariantCatalogGuardIsNotFalseGreen(t *testing.T) {
 	if v := workVariantCatalogViolations(drop(seeded, "set_zip")); len(v) != 1 || v[0] != "set_zip" {
 		t.Errorf("пропавшая работа из 0329 не видна гарду: %v", v)
 	}
-	// Один посеянный токен 0436 включает строгий режим: остальные шесть обязаны покраснеть.
+	// Один посеянный токен 0437 включает строгий режим: остальные шесть обязаны покраснеть.
 	partial := drop(seeded, "")
 	partial["pleat"] = true
 	for w := range workVariantKeysAwaitingSeed {
@@ -383,7 +383,7 @@ func TestWorkVariantCatalogGuardIsNotFalseGreen(t *testing.T) {
 		}
 	}
 	if v := workVariantCatalogViolations(partial); len(v) != len(workVariantKeysAwaitingSeed)-1 {
-		t.Errorf("частичный сид 0436 не включил строгий режим: %v", v)
+		t.Errorf("частичный сид 0437 не включил строгий режим: %v", v)
 	}
 	tuples := sqlTuples("\n  ('a', 'b, (c)', 'it''s', NULL, 1),\n  ('d', 'e', '', NULL, 2)\n")
 	if len(tuples) != 2 || len(tuples[0]) != 5 || tuples[0][1] != "'b, (c)'" || tuples[0][2] != "'it''s'" {

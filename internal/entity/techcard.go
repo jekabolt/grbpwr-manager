@@ -3468,8 +3468,8 @@ type TechCardOperation struct {
 	// orphan stays distinct. NULL with AutoFusingLineKey set is a grouped legacy step. Not on wire.
 	AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 
-	// --- ИКОННЫЕ ПОЛЯ (0435, SPEC-B1) — канон продолжается ДОПИСЫВАНИЕМ в пяти списках: здесь, в
-	// ALTER'е 0435, в ключах INSERT'а и в SELECT'е store/techcard/production.go и в хвостах
+	// --- ИКОННЫЕ ПОЛЯ (0436, SPEC-B1) — канон продолжается ДОПИСЫВАНИЕМ в пяти списках: здесь, в
+	// ALTER'е 0436, в ключах INSERT'а и в SELECT'е store/techcard/production.go и в хвостах
 	// дайджеста. Все три рождаются NULL и пишутся как NULL; сервер их не выводит. Щит —
 	// operation_seam_kind_aware (129).
 	//

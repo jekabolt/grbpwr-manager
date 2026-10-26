@@ -72,7 +72,7 @@ type MaterialHardwareAttr struct {
 	Finish       sql.NullString      `db:"finish"`
 	BaseMaterial sql.NullString      `db:"base_material"`
 	WeightG      decimal.NullDecimal `db:"weight_g"`
-	// ButtonHoles — число отверстий пуговицы-артикула (0435): 2 | 4; NULL = не указано.
+	// ButtonHoles — число отверстий пуговицы-артикула (0436): 2 | 4; NULL = не указано.
 	ButtonHoles sql.NullInt32 `db:"button_holes"`
 }
 

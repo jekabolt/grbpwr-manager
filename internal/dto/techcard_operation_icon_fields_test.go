@@ -8,7 +8,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
-// ИКОННЫЕ ПОЛЯ ШАГА (0435): seam_kind, work_variant, fastening.button_holes — правила записи,
+// ИКОННЫЕ ПОЛЯ ШАГА (0436): seam_kind, work_variant, fastening.button_holes — правила записи,
 // транспорт, пять списков и замороженный отпечаток.
 
 // opIconStep — минимальный машинный шаг, который проходит все соседние правила.
@@ -404,7 +404,7 @@ func TestOperationIconFieldsBornNullMoveNoTail(t *testing.T) {
 	}
 }
 
-// TestMaterialHardwareButtonHoles — отверстия пуговицы-артикула (0435): 0 = NULL, 2 | 4 проходят и
+// TestMaterialHardwareButtonHoles — отверстия пуговицы-артикула (0436): 0 = NULL, 2 | 4 проходят и
 // возвращаются на провод, всё прочее — отказ с именем поля.
 func TestMaterialHardwareButtonHoles(t *testing.T) {
 	for _, c := range []struct {

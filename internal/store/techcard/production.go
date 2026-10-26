@@ -314,7 +314,7 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"auto_fusing_line_key":  o.AutoFusingLineKey,
 			"auto_fusing_piece_key": o.AutoFusingPieceKey,
 
-			// Иконные поля (0435) — канон продолжается ДОПИСЫВАНИЕМ, порядком ALTER'а. NULL пишется
+			// Иконные поля (0436) — канон продолжается ДОПИСЫВАНИЕМ, порядком ALTER'а. NULL пишется
 			// как NULL: «не указано» не сворачивается ни в какой токен и не в ноль отверстий.
 			"seam_kind":    o.SeamKind,
 			"work_variant": o.WorkVariant,

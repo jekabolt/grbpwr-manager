@@ -210,7 +210,7 @@ type operationKindFields struct {
 	pressAction sql.NullString
 	pressToward sql.NullString
 
-	// Отверстия пуговицы (0435): 2 | 4, NULL = не указано.
+	// Отверстия пуговицы (0436): 2 | 4, NULL = не указано.
 	buttonHoles sql.NullInt32
 }
 
@@ -814,7 +814,7 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		if f.attachPattern.Valid && !machineIsOneOf(machineType, machineButtonAttach) {
 			return f, machineNotApplicable(step, "attach_pattern", machineType, []string{machineButtonAttach})
 		}
-		// Отверстия пуговицы (0435). 0 = не указано = NULL; иначе 2 или 4, и только на пришивании
+		// Отверстия пуговицы (0436). 0 = не указано = NULL; иначе 2 или 4, и только на пришивании
 		// пуговиц — той же проверкой, что и рисунок. Противоречие ВНУТРИ шага теперь жёсткий отказ:
 		// с двумя отверстиями нельзя пришить крестом, квадратом или П-образно. Расхождение с
 		// артикулом BOM-строки остаётся мягким предупреждением формы — артикул может прийти позже.
