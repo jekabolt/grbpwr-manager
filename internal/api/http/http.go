@@ -691,7 +691,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // разбирают именно эту форму. Меняется РОВНО ОДИН бит — DiscardUnknown; остальные опции
 // воспроизводят дефолт v2.21.0 дословно.
 //
-// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь переснят 2026-09-08). Бандл admin-клиента СТАРШЕ последнего
+// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь переснят 2026-10-26). Бандл admin-клиента СТАРШЕ последнего
 // снятия члена enum / поля теперь получает 400 вместо тихой порчи — это принятое поведение, а не
 // регрессия. Инвентарь по proto/admin/admin/admin.proto + proto/common/common/*.proto: 15
 // зарезервированных ИМЁН членов enum (TECH_CARD_PRESS_ACTION_OPEN, TECH_CARD_TOPSTITCH_MODE_WIDTH,
@@ -700,7 +700,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // TECH_CARD_THREAD_TENSION_OTHER, TECH_CARD_PRESS_TOWARD_SIDE, TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE,
 // TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT, TECH_CARD_CLEANING_KIND_CHALK_REMOVAL,
 // TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL, TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF,
-// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 116 пар (сообщение, зарезервированное ИМЯ поля).
+// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 117 пар (сообщение, зарезервированное ИМЯ поля).
 //
 // ЧЕТЫРЕ ПАРЫ ИЗ 116 ДОБАВИЛА ВОЛНА ЛЕНТЫ ДИЗАЙНА (уже в master): GetDesignBandResponse —
 // version_numbers, latest_version, journal (минты и версии листа сняты подсистемой целиком,
@@ -714,6 +714,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // admin.grbpwr.com /assets/index-BgsnzCbh.js (1 461 395 Б, sha256 06faf4c5…) содержит 0 ключей и
 // 0 строк-литералов на все четыре имени в обоих написаниях. Поимённая раскладка этой пересъёмки —
 // у retiredFieldNamePairs в marshaler_test.go.
+//
+// ПЯТАЯ НОВАЯ ПАРА — SuggestAssemblySkeletonRequest.media_ids (811b791). Это вход и старый клиент
+// с ним получает 400 намеренно: глобальный media id позволял передать внешней модели картинку другой
+// карточки, поэтому дверь стала text-only и не должна молча принимать снятое поле.
 //
 // Клиент ветки feat/operation-kinds-ui не эмитит НИ ОДНОГО из ОСТАЛЬНЫХ: сгенерированные типы
 // src/api/proto-http/{admin,common}/index.ts не содержат ни одного зарезервированного ключа в
