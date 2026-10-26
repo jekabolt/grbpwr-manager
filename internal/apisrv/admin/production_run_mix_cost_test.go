@@ -45,6 +45,17 @@ func runMixSnapshotCard() *entity.TechCard {
 	return card
 }
 
+// devAmortisationCard keeps the amortisation tests about their denominator. Its flat 2 m norm has
+// a complete style cost of 27 EUR at every size; runMixSnapshotCard deliberately leaves size 5
+// ungraded and is therefore not a costable style under the current full-range costing contract.
+func devAmortisationCard() *entity.TechCard {
+	card := runMixSnapshotCard()
+	usage := &card.Colorways[0].Usages[0]
+	usage.Consumption = decimal.NullDecimal{Decimal: decimal.RequireFromString("2"), Valid: true}
+	usage.SizeConsumptions = nil
+	return card
+}
+
 // planRunOnLiveCard drives CreateProductionRun down the LIVE-CARD snapshot path (no release id) and
 // hands back what the service actually froze on the run.
 func planRunOnLiveCard(t *testing.T, lines []*pb_common.ProductionRunLine) *entity.ProductionRunInsert {
@@ -90,7 +101,7 @@ func planRunOnLiveCard(t *testing.T, lines []*pb_common.ProductionRunLine) *enti
 
 // TestCreateProductionRunSnapshotsPlanFromItsOwnSizeMix is the service-level proof of the run-mix
 // phase: the frozen plan is the batch's own price, and the three edges reach the stored row as
-// documented — a value, the style figure, or NULL, never a plausible-looking average.
+// documented — a value or NULL, never a plausible-looking average.
 func TestCreateProductionRunSnapshotsPlanFromItsOwnSizeMix(t *testing.T) {
 	// A batch of nothing but size 6 → 3×10×1.1 + 5 = 38, NOT the style's 27 on the base size.
 	run := planRunOnLiveCard(t, []*pb_common.ProductionRunLine{{SizeId: 6, PlannedQty: 40}})
@@ -105,11 +116,11 @@ func TestCreateProductionRunSnapshotsPlanFromItsOwnSizeMix(t *testing.T) {
 	})
 	require.Equal(t, "29.75", run.PlannedUnitCost.Decimal.String())
 
-	// A header planned before the grid exists falls back to the style figure on the base size.
+	// A header planned before the grid exists has no size basis. This card's norm is graded, so the
+	// honest plan is NULL rather than the style's range average (which would invent a batch mix).
 	run = planRunOnLiveCard(t, nil)
-	require.True(t, run.PlannedUnitCost.Valid)
-	require.Equal(t, "27", run.PlannedUnitCost.Decimal.String(),
-		"no lines → the style's standard cost, the conscious default")
+	require.False(t, run.PlannedUnitCost.Valid)
+	require.False(t, run.PlannedCurrency.Valid)
 
 	// A size with no norm leaves the WHOLE run unpriced: the run saves, and it reports no variance
 	// rather than a variance measured against the sizes that happened to be graded (which would have
@@ -138,7 +149,7 @@ func TestListTechCardDevExpensesAmortisesOverRuns(t *testing.T) {
 		tc.EXPECT().ListTechCardDevExpenses(mock.Anything, 7).Return([]entity.TechCardDevExpense{
 			{Kind: "sample", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("270"), Valid: true}},
 		}, nil)
-		tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(runMixSnapshotCard(), nil)
+		tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(devAmortisationCard(), nil)
 		tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)
 		fit.EXPECT().ListFittings(mock.Anything, devExpenseFittingScan, 0, entity.Descending, 0, 0, 7).Return(nil, 0, nil)
 		pr.EXPECT().ListProductionRuns(mock.Anything, productionRunPageSize, 0,

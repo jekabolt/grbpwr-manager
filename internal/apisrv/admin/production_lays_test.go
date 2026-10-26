@@ -369,7 +369,8 @@ func TestSaveProductionRunLayRefusesAForeignMarker(t *testing.T) {
 		},
 	})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, status.Convert(err).Message(), "колорвею")
+	require.Contains(t, status.Convert(err).Message(), "colourway #999")
+	require.Contains(t, status.Convert(err).Message(), "colourway #100")
 }
 
 // TestSaveTechCardMarkerRunOwnershipNeedsProductionWrite NAILS DOWN THE INVISIBLE HALF OF THE RULE

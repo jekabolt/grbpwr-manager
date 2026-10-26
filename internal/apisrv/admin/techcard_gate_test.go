@@ -85,6 +85,9 @@ func gateUpdate(t *testing.T, stored *entity.TechCard, tc *pb_common.TechCardIns
 		techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(stored, nil)
 	}
 	if stage == gateReachesStore {
+		// A successful preparation freezes the costing context for the lazy pre-update snapshot.
+		// Stages that stop earlier intentionally register no expectation, preserving their no-read proof.
+		techCards.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil).Once()
 		techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 			mock.AnythingOfType("*entity.TechCardInsert"), 3).Return(nil, entity.ErrTechCardConflict)
 	}

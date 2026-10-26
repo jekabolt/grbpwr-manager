@@ -528,6 +528,9 @@ func TestUpdateTechCardCostReadCanApproveHydratedCosting(t *testing.T) {
 	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(&entity.TechCard{
 		TechCardInsert: entity.TechCardInsert{Costing: storedCosting},
 	}, nil)
+	techCards.EXPECT().GetTechCardDerivedCostInputsDigest(mock.Anything, 7).
+		Return("derived-cost-inputs", nil)
+	techCards.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	var written *entity.TechCardInsert
 	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 		mock.AnythingOfType("*entity.TechCardInsert"), 2).
