@@ -867,6 +867,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		mediaCapabilityWireGate,
 		assemblyCapabilityWireGate,
 		operationBlockMembershipWireGate,
+		operationSeamsWireGate,
 		operationKindsWireGate,
 		operationWorkWireGate,
 		operationDraftWireGate,
@@ -881,6 +882,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		mediaCapabilityStoredGate,
 		assemblyCapabilityStoredGate,
 		operationBlockMembershipStoredGate,
+		operationSeamsStoredGate,
 		operationWorkRetiredGate,
 	} {
 		if err := gate(in, nil); err != nil {

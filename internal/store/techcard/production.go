@@ -1032,6 +1032,19 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		op.PieceLineKeys = append(op.PieceLineKeys, l.PieceKey)
 	}
 
+	// The seams each step sews (0434), keyed by operation id like the inputs above.
+	seamKeysByOp, err := loadOperationSeamKeys(ctx, s.DB, ids)
+	if err != nil {
+		return err
+	}
+	for opID, keys := range seamKeysByOp {
+		pos, ok := posByOpID[opID]
+		if !ok {
+			continue
+		}
+		opsByCard[pos.cardID][pos.index].SeamKeys = keys
+	}
+
 	// Operation -> BOM-line links (0200), same keying as the piece links above.
 	bomLinkRows, err := storeutil.QueryListNamed[struct {
 		OpID      int    `db:"op_id"`

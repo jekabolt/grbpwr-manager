@@ -3515,6 +3515,11 @@ type TechCardOperation struct {
 	// Media — фотографии ЭТОГО шага с выносками поверх них (0308). Не персистится в строке
 	// операции: живёт в child-таблице и едет в той же транзакции, что и прочие связи шага.
 	Media []TechCardOperationMedia `db:"-"`
+
+	// SeamKeys — the seams this step sews (tech_card_seam.seam_key, normalised), in sewing order
+	// (0434). Child table tech_card_operation_seam, written in the same transaction as the inputs.
+	// Every key must name a seam stored on the card; outside every section digest.
+	SeamKeys []string `db:"-"`
 }
 
 // ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────

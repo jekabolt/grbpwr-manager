@@ -1684,6 +1684,12 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
 		return err
 	}
+	// The seams each step sews (0434). After the operations (ids re-read by display_order), checked
+	// against the card's seam table — or, on a snapshot restore, against the seam list the restore
+	// brings back later in this same transaction.
+	if err := insertTechCardOperationSeams(ctx, db, id, tc.Operations, tc.RestoreSeams); err != nil {
+		return err
+	}
 	// tc.Labels (legacy tech_card_label) is NOT written any more — read-only until the drop (0386, I-19).
 	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
 		return err

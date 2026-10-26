@@ -168,6 +168,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationDraftAware = true
 	probe.OperationReviewAware = true
 	probe.OperationBlockMembershipAware = true
+	probe.OperationSeamsAware = true
 	probe.BomQtyAware = true
 
 	if _, err := dto.ConvertPbTechCardInsertToEntity(probe); err != nil {
@@ -287,6 +288,8 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// so the file never ships them — the receiving side's engine proposes again and its
 	// technologist decides.
 	pb.Seams = nil
+	// …and the steps' references to them (0434) go with them.
+	stripOperationSeamKeys(pb.TechCard)
 
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.

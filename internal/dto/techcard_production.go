@@ -437,6 +437,14 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		outputUnitKey := strings.TrimSpace(o.OutputUnitKey)
 		outputUnitName := strings.TrimSpace(o.OutputUnitName)
 
+		// Швы шага (0434). Parsed always, like the inputs: the aware flag declares a capability, it
+		// does not switch the parsing off. Shape only here (ULID, no repeats, bound); whether each
+		// key names a seam of THIS card is the store's check, inside the save transaction.
+		seamKeys, err := operationSeamKeysFromPb(i, o.SeamKeys)
+		if err != nil {
+			return nil, err
+		}
+
 		// Фотографии шага с выносками (0308). Разбираются здесь же, чтобы отказ назвал конкретную
 		// выноску конкретной картинки конкретного шага: путь собирается от `step`, который уже
 		// посчитан выше для отказов по типу и зоне.
@@ -499,6 +507,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			OutputUnitName:        nullStringFromPb(outputUnitName),
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			Media:                 media,
+			SeamKeys:              seamKeys,
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
@@ -904,6 +913,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OutputUnitKey:         pbStringFromNull(o.OutputUnitKey),
 			OutputUnitName:        pbStringFromNull(o.OutputUnitName),
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
+			SeamKeys:              o.SeamKeys,
 
 			// Виды операций (0324). Два дискриминатора — полями шага, восемь семейств — блоками, и
 			// блок эмитится только когда в нём есть заполненный факт: пустая обёртка читалась бы

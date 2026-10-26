@@ -352,6 +352,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// DXF-review так же собран самим сервером и должен доехать до клона.
 	pbInsert.OperationReviewAware = true
 	pbInsert.OperationBlockMembershipAware = true
+	pbInsert.OperationSeamsAware = true
+	// The clone starts with no seam decisions (they are not copied), so the steps cannot name any.
+	stripOperationSeamKeys(pbInsert)
 	pbInsert.LabelsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

@@ -133,6 +133,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationBlockMembershipWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationSeamsWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Щит видов операций (0324), тот же довод и тот же момент. Стор-гейта на создании у него нет:
 	// парного `*_cleared` он не несёт, а сказать про несуществующую карточку ему больше нечего.
 	if err := operationKindsWireGate(req.TechCard); err != nil {
@@ -417,6 +420,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationBlockMembershipWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationSeamsWireGate(in); err != nil {
+		return nil, err
+	}
 	// Тот же довод, тот же момент — щит видов операций (0324).
 	if err := operationKindsWireGate(in); err != nil {
 		return nil, err
@@ -488,6 +494,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		return nil, err
 	}
 	if err := operationBlockMembershipStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	if err := operationSeamsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит видов операций (0324) — правило 2, то самое, что срабатывает на практике: payload

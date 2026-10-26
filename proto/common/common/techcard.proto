@@ -2897,6 +2897,14 @@ message TechCardOperation {
   // Keeps a piece-processing step between assembly blocks without making it part of either block.
   bool assembly_block_detached = 70;
 
+  // The seams this step sews, as TechCardSeam.seam_key, in the order the step sews them (the seam
+  // numbers 1, 2, … on the step picture). Empty = not marked: the client falls back to guessing.
+  // Every key must name a seam stored on THIS card (UpsertTechCardSeams first), else the save is
+  // refused with InvalidArgument; deleting a seam drops its key from every step in the same
+  // transaction. Written only with operation_seams_aware (128). Enters no section digest: the seams
+  // themselves are outside every digest and outside lock_version.
+  repeated string seam_keys = 71;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3829,6 +3837,11 @@ message TechCardInsert {
   // Declares support for TechCardOperation.assembly_block_detached on full-replace writes.
   bool operation_block_membership_aware = 127;
 
+  // Declares support for TechCardOperation.seam_keys on full-replace writes. Without it a write that
+  // carries seam_keys, or that would replace a card whose steps carry them, is refused
+  // (FailedPrecondition) instead of silently unmarking the steps. Transport, not content.
+  bool operation_seams_aware = 128;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -4045,6 +4058,20 @@ message TechCardSeamAnchor {
   // 'BP#3+4') and the piece contour's signature then.
   string edge_hint = 9;
   string contour_sig = 10;
+  // Hand placement of THIS anchor's piece on the host piece («Place by hand») when the target is an
+  // inner line or a free spot rather than an edge (edge_hint "i<k>" names inner line k). Absent =
+  // the client places the piece geometrically.
+  TechCardSeamPlacement placement = 11;
+}
+
+// TechCardSeamPlacement is where a part piece sits on its host piece: millimetres in the host
+// piece's frame with the origin at the host bbox's min corner, then a rotation and a mirror of the
+// part piece.
+message TechCardSeamPlacement {
+  double x_mm = 1;
+  double y_mm = 2;
+  double rot_deg = 3; // counter-clockwise, degrees
+  bool flip = 4; // the part piece is mirrored (face down)
 }
 
 // TechCardSeamSide is one side of a seam: its anchors in walk order (1..8).

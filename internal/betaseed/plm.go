@@ -208,6 +208,7 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	// карточки, которую сидер сам же и разметил.
 	tc.AssemblyAware = true
 	tc.OperationBlockMembershipAware = true
+	tc.OperationSeamsAware = true
 	// Осведомлённость о 32 колонках волны видов операций (0324): та же природа read-modify-write —
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
 	// «старый бандл собирается стереть то, что написал новый».
@@ -872,6 +873,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.MachineFieldsAware = true
 	neg.AssemblyAware = true
 	neg.OperationBlockMembershipAware = true
+	neg.OperationSeamsAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
 	neg.BomQtyAware = true
@@ -1525,6 +1527,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.MachineFieldsAware = true
 	tc2.AssemblyAware = true
 	tc2.OperationBlockMembershipAware = true
+	tc2.OperationSeamsAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
 	tc2.BomQtyAware = true
@@ -2267,6 +2270,7 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.MachineFieldsAware = true
 			body.AssemblyAware = true
 			body.OperationBlockMembershipAware = true
+			body.OperationSeamsAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true
 			body.BomQtyAware = true

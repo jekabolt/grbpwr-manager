@@ -367,6 +367,10 @@ func deleteTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int
 		if err != nil {
 			return 0, fmt.Errorf("delete seam %s of tech card %d: %w", k, techCardID, err)
 		}
+		// A step must not keep naming a seam that is gone (0434): same transaction, same lock.
+		if err := unlinkSeamFromOperationsTx(ctx, db, techCardID, k); err != nil {
+			return 0, err
+		}
 		n += int(affected)
 	}
 	return n, nil
