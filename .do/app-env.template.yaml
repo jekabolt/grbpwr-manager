@@ -46,9 +46,9 @@ envs:
 - key: MYSQL_AUTOMIGRATE
   scope: RUN_TIME
   value: "true"
-- key: MYSQL_TLS_CA_PATH
+- key: MYSQL_TLS_CA_CERT
   scope: RUN_TIME
-  value: /etc/grbpwr-products-manager/certs/ca-certificate.crt
+  value: ${env-db.CA_CERT}
 - key: MYSQL_MAX_OPEN_CONNECTIONS
   scope: RUN_TIME
   value: "5"
