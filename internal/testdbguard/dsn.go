@@ -6,6 +6,7 @@ package testdbguard
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/go-sql-driver/mysql"
@@ -16,6 +17,8 @@ var dockerHosts = map[string]bool{
 	"mysql": true,
 }
 
+var protectedGRBPWRDatabaseName = regexp.MustCompile(`(?i)^grbpwr(_beta(_[0-9]{2})?)?$`)
+
 // CheckMySQLDSN permits only a local/container TCP host and a database whose
 // name ends in _test.
 func CheckMySQLDSN(dsn string) error {
@@ -25,8 +28,7 @@ func CheckMySQLDSN(dsn string) error {
 	}
 
 	database := cfg.DBName
-	databaseLower := strings.ToLower(database)
-	if databaseLower == "grbpwr" || databaseLower == "grbpwr_beta" {
+	if protectedGRBPWRDatabaseName.MatchString(database) {
 		return fmt.Errorf("database %q is a protected grbpwr database", database)
 	}
 	if !strings.HasSuffix(database, "_test") {

@@ -23,6 +23,8 @@ func TestCheckMySQLDSN(t *testing.T) {
 		{name: "unknown service", dsn: "user:pass@tcp(database:3306)/orders_test", wantErr: "not allowed"},
 		{name: "production database", dsn: "user:pass@tcp(localhost:3306)/grbpwr", wantErr: "protected"},
 		{name: "beta database", dsn: "user:pass@tcp(localhost:3306)/grbpwr_beta", wantErr: "protected"},
+		{name: "numbered beta database", dsn: "user:pass@tcp(localhost:3306)/grbpwr_beta_02", wantErr: "protected"},
+		{name: "numbered beta database uppercase", dsn: "user:pass@tcp(localhost:3306)/GRBPWR_BETA_99", wantErr: "protected"},
 		{name: "missing test suffix", dsn: "user:pass@tcp(localhost:3306)/orders", wantErr: "must end with _test"},
 		{name: "similar suffix", dsn: "user:pass@tcp(localhost:3306)/orders_testing", wantErr: "must end with _test"},
 		{name: "empty database", dsn: "user:pass@tcp(localhost:3306)/", wantErr: "must end with _test"},

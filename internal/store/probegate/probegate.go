@@ -36,10 +36,12 @@ const EnvDisposableDB = "GRBPWR_DISPOSABLE_DB"
 // productionNames are database names a real base of this project goes by (or a server's own
 // schemas). Refused whatever else the environment says.
 var productionNames = map[string]bool{
-	"grbpwr": true, "grbpwr_beta": true, "grbpwr_prod": true, "grbpwr_production": true,
+	"grbpwr_prod": true, "grbpwr_production": true,
 	"grbpwr_manager": true, "defaultdb": true,
 	"mysql": true, "sys": true, "information_schema": true, "performance_schema": true,
 }
+
+var protectedGRBPWRDatabaseName = regexp.MustCompile(`^grbpwr(_beta(_[0-9]{2})?)?$`)
 
 // productionWords refuse a name that merely CONTAINS them («grbpwr_prod_copy» is not disposable
 // because somebody called it a copy).
@@ -71,6 +73,9 @@ func Check(getenv func(string) string) error {
 			"name the same database", EnvDisposableDB, declared, target)
 	}
 	name := strings.ToLower(target)
+	if protectedGRBPWRDatabaseName.MatchString(name) {
+		return fmt.Errorf("database %q is the name of a real base, never a disposable one", target)
+	}
 	if productionNames[name] {
 		return fmt.Errorf("database %q is the name of a real base, never a disposable one", target)
 	}

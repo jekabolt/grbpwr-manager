@@ -13,11 +13,12 @@ import (
 
 // seed populates the BETA environment end-to-end (catalog, PLM, empty admin
 // sections, analytics + order volume) so every admin screen has representative
-// data to look at. It talks ONLY to backend-beta.grbpwr.com (the betaseed client
-// refuses any other host) — it can never touch prod.
+// data to look at. It talks only to the base or numbered beta backend hosts (the
+// betaseed client refuses every other host) — it can never touch prod.
 const (
 	defaultSeedUser   = "beta-seed-bot"
 	defaultMasterYAML = ".do/app-beta.yaml"
+	seedTargetHostEnv = "BETA_SEED_TARGET_HOST"
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	seedUser       string
 	seedPassword   string
 	seedMasterYAML string
+	seedTargetHost string
 	seedVerbose    bool
 
 	seedCmd = &cobra.Command{
@@ -44,6 +46,7 @@ func init() {
 	seedCmd.Flags().StringVar(&seedUser, "user", defaultSeedUser, "admin username to log in / bootstrap")
 	seedCmd.Flags().StringVar(&seedPassword, "password", "", "admin password (required; or $BETA_SEED_PASSWORD)")
 	seedCmd.Flags().StringVar(&seedMasterYAML, "master-yaml", defaultMasterYAML, "DO app spec YAML to read AUTH_MASTER_PASSWORD from (for first-run bootstrap)")
+	seedCmd.Flags().StringVar(&seedTargetHost, "target-host", "", "beta backend host (or $"+seedTargetHostEnv+"; default backend-beta.grbpwr.com)")
 	seedCmd.Flags().BoolVar(&seedVerbose, "verbose", false, "log every RPC (method, path, HTTP code)")
 	rootCmd.AddCommand(seedCmd)
 }
@@ -105,7 +108,14 @@ func runSeed(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
-	c, err := betaseed.NewClient(betaseed.BetaBackend)
+	target := strings.TrimSpace(seedTargetHost)
+	if target == "" {
+		target = strings.TrimSpace(os.Getenv(seedTargetHostEnv))
+	}
+	if target == "" {
+		target = betaseed.BetaBackend
+	}
+	c, err := betaseed.NewClient(target)
 	if err != nil {
 		return err
 	}
@@ -120,7 +130,7 @@ func runSeed(cmd *cobra.Command, args []string) error {
 	if err := c.Authenticate(ctx, seedUser, pw, masterPw); err != nil {
 		return fmt.Errorf("authenticate: %w", err)
 	}
-	fmt.Printf("== seed: authenticated as %s against %s (volume=%s) ==\n", seedUser, betaseed.BetaBackend, seedVolume)
+	fmt.Printf("== seed: authenticated as %s against %s (volume=%s) ==\n", seedUser, c.BaseURL(), seedVolume)
 
 	s, err := betaseed.NewSeeder(ctx, c, vol)
 	if err != nil {

@@ -16,6 +16,9 @@ type PreOrderPICleaner interface {
 
 // Config holds configuration for the Stripe pre-order PI reconciliation worker.
 type Config struct {
+	// Enabled gates construction of the worker. It defaults on in the application
+	// config so existing environments retain their orphan cleanup behavior.
+	Enabled           bool          `mapstructure:"enabled"`
 	WorkerInterval    time.Duration `mapstructure:"worker_interval"`
 	PreOrderThreshold time.Duration `mapstructure:"pre_order_threshold"` // e.g. 24h - cancel pre_order PIs older than this
 }
@@ -23,6 +26,7 @@ type Config struct {
 // DefaultConfig returns default configuration values.
 func DefaultConfig() Config {
 	return Config{
+		Enabled:           true,
 		WorkerInterval:    15 * time.Minute,
 		PreOrderThreshold: 24 * time.Hour,
 	}

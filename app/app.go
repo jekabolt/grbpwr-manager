@@ -420,7 +420,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.authS = authS
 
-	stripeMain, err := stripe.New(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
+	stripeMain, err := newStripeProcessor(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
 			slog.String("err", err.Error()),
@@ -428,7 +428,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	stripeTest, err := stripe.New(ctx, &a.c.StripePaymentTest, a.db, a.ma, entity.CARD_TEST)
+	stripeTest, err := newStripeProcessor(ctx, &a.c.StripePaymentTest, a.db, a.ma, entity.CARD_TEST)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
 			slog.String("err", err.Error()),
@@ -453,7 +453,7 @@ func (a *App) Start(ctx context.Context) error {
 	if p, ok := stripeTest.(*stripe.Processor); ok {
 		stripeCleaners = append(stripeCleaners, p)
 	}
-	if len(stripeCleaners) > 0 {
+	if a.c.StripeReconcile.Enabled && len(stripeCleaners) > 0 {
 		a.sr = stripereconcile.New(&a.c.StripeReconcile, stripeCleaners...)
 		if err = a.sr.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start stripe reconcile worker",
@@ -481,22 +481,23 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
-	// AfterShip tracker for the real delivery signal; a disabled no-op when no API key is
-	// configured (delivery then falls back entirely to the per-carrier timer safety net). The
-	// same tracker instance is shared with the webhook handler below.
-	tracker := aftership.New(&a.c.AfterShip)
-	a.dsw = deliverysync.New(&a.c.DeliverySync, a.db, tracker, a.ma)
 	// Sendcloud label provider (carrier tracking-number + label generation); a disabled no-op when
 	// no API keys are configured, so GenerateShippingLabel reports labels-not-configured and
 	// operators keep entering tracking numbers manually. The ship-from (warehouse) origin is
 	// stamped on every generated label.
 	labelProvider := shippinglabel.New(&a.c.ShippingLabel)
 	shipFrom := a.c.ShippingLabel.ShipFromAddress()
-	if err = a.dsw.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start delivery sync worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.c.DeliverySync.Enabled {
+		// AfterShip tracker for the real delivery signal; a disabled no-op when no API key is
+		// configured (delivery then falls back entirely to the per-carrier timer safety net).
+		tracker := aftership.New(&a.c.AfterShip)
+		a.dsw = deliverysync.New(&a.c.DeliverySync, a.db, tracker, a.ma)
+		if err = a.dsw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start delivery sync worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// Revalidation (Vercel ISR) is a non-critical, best-effort cache-freshness
@@ -1279,6 +1280,25 @@ func (a *App) Stop(ctx context.Context) {
 // Done returns a channel that is closed after the application has exited
 func (a *App) Done() chan struct{} {
 	return a.done
+}
+
+// newStripeProcessor keeps Stripe's strict constructor as the default while
+// allowing an explicitly disabled processor in isolated non-production
+// environments. A disabled processor is represented by nil; API handler lookup
+// checks that state and returns payment-unavailable instead of dereferencing it.
+func newStripeProcessor(
+	ctx context.Context,
+	c *stripe.Config,
+	rep dependency.Repository,
+	mailer dependency.Mailer,
+	method entity.PaymentMethodName,
+) (dependency.Invoicer, error) {
+	if c != nil && !c.Enabled {
+		slog.Default().InfoContext(ctx, "stripe processor disabled",
+			slog.String("payment_method", string(method)))
+		return nil, nil
+	}
+	return stripe.New(ctx, c, rep, mailer, method)
 }
 
 // buildHealthRegistry collects the constructed workers (those that implement

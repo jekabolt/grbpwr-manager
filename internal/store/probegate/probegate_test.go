@@ -51,6 +51,8 @@ func TestCheckRefusesAnythingElse(t *testing.T) {
 		{"declaration and target disagree", map[string]string{EnvDisposableDB: "grbpwr_test", "MYSQL_DATABASE": "grbpwr_test2"}, "must name the same database"},
 		{"the production name", map[string]string{EnvDisposableDB: "grbpwr", "MYSQL_DATABASE": "grbpwr"}, "real base"},
 		{"the beta name", map[string]string{EnvDisposableDB: "grbpwr_beta", "MYSQL_DATABASE": "grbpwr_beta"}, "real base"},
+		{"a numbered beta name", map[string]string{EnvDisposableDB: "grbpwr_beta_02", "MYSQL_DATABASE": "grbpwr_beta_02"}, "real base"},
+		{"another numbered beta name", map[string]string{EnvDisposableDB: "GRBPWR_BETA_99", "MYSQL_DATABASE": "GRBPWR_BETA_99"}, "real base"},
 		{"the managed default", map[string]string{EnvDisposableDB: "defaultdb", "MYSQL_DATABASE": "defaultdb"}, "real base"},
 		{"a production word inside", map[string]string{EnvDisposableDB: "grbpwr_prod_test", "MYSQL_DATABASE": "grbpwr_prod_test"}, `contains "prod"`},
 		{"a beta word inside", map[string]string{EnvDisposableDB: "test_beta", "MYSQL_DATABASE": "test_beta"}, `contains "beta"`},

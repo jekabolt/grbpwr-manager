@@ -28,6 +28,11 @@ import (
 )
 
 type Config struct {
+	// Enabled gates construction of this Stripe processor. It defaults on in the
+	// application config so existing environments keep failing closed when their
+	// key is missing; isolated non-production environments may explicitly turn
+	// off the live processor while keeping the test processor enabled.
+	Enabled           bool          `mapstructure:"enabled"`
 	SecretKey         string        `mapstructure:"secret_key"`
 	PubKey            string        `mapstructure:"pub_key"`
 	InvoiceExpiration time.Duration `mapstructure:"invoice_expiration"`

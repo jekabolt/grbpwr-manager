@@ -27,14 +27,19 @@ func (s *Server) getOrderExpirationDuration(handler dependency.Invoicer) time.Du
 }
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
+	var handler dependency.Invoicer
 	switch pm {
 	case entity.CARD:
-		return s.stripePayment, nil
+		handler = s.stripePayment
 	case entity.CARD_TEST:
-		return s.stripePaymentTest, nil
+		handler = s.stripePaymentTest
 	default:
 		return nil, status.Errorf(codes.Unimplemented, "payment method unimplemented")
 	}
+	if handler == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "payment method unavailable")
+	}
+	return handler, nil
 }
 
 // retryInsertFiatInvoiceAfterItemsUpdated is called when InsertFiatInvoice returns ErrOrderItemsUpdated.
