@@ -945,6 +945,9 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 			opKindDec("fullness_ratio", o.FullnessRatio),
 			opKindStr("binding_style", o.BindingStyle),
 			opKindStr("label_attach_stitch", o.LabelAttachStitch),
+			// Конструкция шва (0435). Пара условная: колонка рождается NULL на каждой строке, и
+			// байты существующего шага не двигаются — это держат замороженные golden-хексы.
+			opKindStr("seam_kind", o.SeamKind),
 		),
 		// Ключ — placement_count, а не count: имя колонки БД. См. довод у заголовка блока.
 		operationKindTail("placement",
@@ -995,6 +998,8 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 			opKindDec("bartack_length_mm", o.BartackLengthMm),
 			opKindStr("attach_pattern", o.AttachPattern),
 			opKindStr("zipper_application", o.ZipperApplication),
+			// Отверстия пуговицы шага (0435) — условная пара, как и всё семейство.
+			opKindInt("button_holes", o.ButtonHoles),
 		),
 		// ДВЕНАДЦАТЫЙ — ОСЬ «РАБОТА» (0330), сразу после "fastening", и место это ЗАМОРОЖЕНО.
 		//
@@ -1012,6 +1017,10 @@ func operationKindTails(o *entity.TechCardOperation) []any {
 		// Занять место между ними будет уже нельзя: позиция хвоста в списке значима.
 		operationKindTail("work",
 			opKindStr("work", o.Work),
+			// Вариант работы (0435). Без работы его не бывает (правило dto), поэтому он живёт в её
+			// хвосте, а не своим: хвост "work" уже рождён, когда вариант есть. Пара условная —
+			// существующий шаг с работой без варианта хешируется байт-в-байт как раньше.
+			opKindStr("work_variant", o.WorkVariant),
 		),
 	}
 	out := make([]any, 0, len(tails))

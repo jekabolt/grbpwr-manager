@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -381,9 +382,19 @@ func pbHardwareAttrs(a *pb_common.MaterialHardwareAttrs) (*entity.MaterialHardwa
 	if err != nil {
 		return nil, fmt.Errorf("hardware_attrs.weight_g: %w", err)
 	}
+	// Отверстия пуговицы-артикула (0435): 0 = не указано = NULL, иначе 2 или 4 — те же значения,
+	// что у шага пришивания, который копирует их отсюда, пока его собственное поле 0.
+	var holes sql.NullInt32
+	if h := a.GetButtonHoles(); h != 0 {
+		if !entity.ButtonHoleCounts[h] {
+			return nil, entity.NewFieldViolation("hardware_attrs.button_holes", "unknown_value", fmt.Sprint(h),
+				"a button has 2 or 4 holes here — pick one, or clear the field")
+		}
+		holes = sql.NullInt32{Int32: h, Valid: true}
+	}
 	return &entity.MaterialHardwareAttr{
 		DiameterMm: dia, Dimensions: nullStringFromPb(a.Dimensions), Finish: nullStringFromPb(a.Finish),
-		BaseMaterial: nullStringFromPb(a.BaseMaterial), WeightG: wg,
+		BaseMaterial: nullStringFromPb(a.BaseMaterial), WeightG: wg, ButtonHoles: holes,
 	}, nil
 }
 
@@ -464,7 +475,7 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 			out.Attributes = &pb_common.Material_HardwareAttrs{HardwareAttrs: &pb_common.MaterialHardwareAttrs{
 				DiameterMm: pbDecimalFromNull(a.DiameterMm), Dimensions: pbStringFromNull(a.Dimensions),
 				Finish: pbStringFromNull(a.Finish), BaseMaterial: pbStringFromNull(a.BaseMaterial),
-				WeightG: pbDecimalFromNull(a.WeightG),
+				WeightG: pbDecimalFromNull(a.WeightG), ButtonHoles: pbInt32FromNull(a.ButtonHoles),
 			}}
 		}
 	case entity.MaterialClassThread:

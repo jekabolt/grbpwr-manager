@@ -136,6 +136,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationSeamsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationSeamKindWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	// Щит видов операций (0324), тот же довод и тот же момент. Стор-гейта на создании у него нет:
 	// парного `*_cleared` он не несёт, а сказать про несуществующую карточку ему больше нечего.
 	if err := operationKindsWireGate(req.TechCard); err != nil {
@@ -423,6 +426,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationSeamsWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationSeamKindWireGate(in); err != nil {
+		return nil, err
+	}
 	// Тот же довод, тот же момент — щит видов операций (0324).
 	if err := operationKindsWireGate(in); err != nil {
 		return nil, err
@@ -497,6 +503,11 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		return nil, err
 	}
 	if err := operationSeamsStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	// Иконные поля шага (0435) — щит 129, копия 116: полная замена операций стёрла бы вид шва,
+	// вариант работы и отверстия пуговицы молча.
+	if err := operationSeamKindStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Щит видов операций (0324) — правило 2, то самое, что срабатывает на практике: payload

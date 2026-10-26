@@ -169,6 +169,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationReviewAware = true
 	probe.OperationBlockMembershipAware = true
 	probe.OperationSeamsAware = true
+	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
 
 	if _, err := dto.ConvertPbTechCardInsertToEntity(probe); err != nil {

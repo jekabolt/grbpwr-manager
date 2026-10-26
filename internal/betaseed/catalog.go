@@ -131,11 +131,12 @@ func (s *Seeder) seedOneStyle(ctx context.Context, idx int, p styleParams) (Cata
 			SkuSeason:    &common.SkuSeason{Code: common.SeasonEnum_SEASON_ENUM_SS, Year: 2026},
 			SizeIds:      []int32{p.mID, p.lID},
 			// The seeder is a new-generation client on every card it touches, catalogue ones included.
-			MachineFieldsAware:  true,
-			AssemblyAware:       true,
-			OperationKindsAware: true,
-			BomQtyAware:         true,
-			OperationWorkAware:  true,
+			MachineFieldsAware:     true,
+			AssemblyAware:          true,
+			OperationKindsAware:    true,
+			BomQtyAware:            true,
+			OperationWorkAware:     true,
+			OperationSeamKindAware: true,
 		},
 	})
 	if err != nil {

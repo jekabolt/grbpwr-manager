@@ -1092,6 +1092,10 @@ message MaterialHardwareAttrs {
   string finish = 3;
   string base_material = 4;
   google.type.Decimal weight_g = 5;
+  // Число отверстий пуговицы-артикула: 2 | 4, 0 = не указано (хранится NULL). Это свойство
+  // артикула; шаг пришивания несёт СВОЙ fastening.button_holes, который клиент копирует отсюда
+  // только пока он 0 — сервер ничего не выводит и не пересчитывает.
+  int32 button_holes = 6;
 }
 
 // MaterialThreadAttrs are the typed attributes of a thread-class material (material_thread_attr).
@@ -2209,8 +2213,11 @@ enum TechCardButtonholeOrientation {
   TECH_CARD_BUTTONHOLE_ORIENTATION_ANGLED = 3; // под углом; сам угол — выноской DIM на медиа шага
 }
 
-// Рисунок пришивания пуговицы. Согласованность с числом отверстий — мягкое предупреждение формы,
-// а не отказ сохранения: число отверстий это свойство артикула из строки BOM, и оно может прийти
+// Рисунок пришивания пуговицы. Число отверстий живёт на самом шаге (fastening.button_holes, 0435),
+// и противоречие ВНУТРИ шага — жёсткий отказ: 2 отверстия при CROSS_X / SQUARE / U_SHAPE отвергаются
+// на `operations[N].fastening.attach_pattern` с кодом needs_four_holes (с двумя отверстиями пришивают
+// только одной перемычкой = PARALLEL, или OTHER + note). Расхождение шага с артикулом строки BOM
+// (MaterialHardwareAttrs.button_holes) остаётся мягким предупреждением формы: артикул может прийти
 // позже самого шага.
 enum TechCardButtonAttachPattern {
   TECH_CARD_BUTTON_ATTACH_PATTERN_UNKNOWN = 0; // не указано
@@ -2465,6 +2472,12 @@ message TechCardOperationFastening {
   google.type.Decimal bartack_length_mm = 4;
   TechCardButtonAttachPattern attach_pattern = 5; // machine_type = button_attach
   TechCardZipperApplication zipper_application = 6; // machine_type = zipper_setting
+  // Число отверстий пуговицы на шаге: 2 | 4; 0 = не указано (хранится NULL). Только при ЯВНОМ
+  // machine_type = button_attach. 2 при attach_pattern CROSS_X / SQUARE / U_SHAPE — отказ
+  // needs_four_holes. Клиент копирует значение из артикула BOM-строки (MaterialHardwareAttrs.
+  // button_holes) только пока здесь 0; сервер не выводит и не пересчитывает. Пишется только с
+  // operation_seam_kind_aware (129). В дайджест — парой "button_holes" хвоста "fastening".
+  int32 button_holes = 7;
 }
 
 // TechCardOperation is one sewing step of the assembly order (Sheet «Обработка»).
@@ -2904,6 +2917,29 @@ message TechCardOperation {
   // transaction. Written only with operation_seams_aware (128). Enters no section digest: the seams
   // themselves are outside every digest and outside lock_version.
   repeated string seam_keys = 71;
+
+  // КОНСТРУКЦИЯ ШВА (0435) — какой именно шов в пределах класса seam_class: закрытый список
+  // entity.SeamKindTokens (сейчас 38 токенов, например bound_open, lapped_closed_a, moscow_hem).
+  // Строка, а не enum: устаревший бандл protojson молча выронил бы незнакомый член enum'а.
+  // Пусто = не указано = NULL; сервер НИКОГДА не выводит и не дописывает вид (по seam_class он не
+  // однозначен), иконку без вида клиент выводит при чтении сам.
+  //
+  // ПРАВИЛА ЗАПИСИ (именованные FieldViolation): незнакомый токен — отказ на
+  // `operations[N].seam_kind`; при заданном виде seam_class обязан быть ЯВНЫМ и равным классу вида
+  // (`operations[N].seam_class`, needs_seam_class); bound_tape / bound_open / bound_closed требуют
+  // binding_style raw / single_fold / double_fold, bound_frame — binding_style пустой
+  // (`operations[N].binding_style`, contradicts_seam_kind). Пишется только с
+  // operation_seam_kind_aware (129). В дайджест — условной парой "seam_kind" хвоста "stitching"
+  // (только токен).
+  string seam_kind = 72;
+
+  // ВАРИАНТ РАБОТЫ (0435) — исполнение внутри одной работы `work` (66), закрытая карта
+  // entity.WorkVariants[work] (например set_zip → open_end | two_way | magnetic | faced). Вариант
+  // НИКОГДА не меняет глагол: другое действие оператора — это другая работа. Пусто = не указано.
+  // Вариант без работы — отказ; вариант, которого у этой работы нет, — отказ
+  // `operations[N].work_variant` с кодом not_for_work. Пишется только с operation_seam_kind_aware
+  // (129). В дайджест — условной парой "work_variant" хвоста "work".
+  string work_variant = 73;
 
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
@@ -3841,6 +3877,14 @@ message TechCardInsert {
   // carries seam_keys, or that would replace a card whose steps carry them, is refused
   // (FailedPrecondition) instead of silently unmarking the steps. Transport, not content.
   bool operation_seams_aware = 128;
+
+  // Declares support for TechCardOperation.seam_kind (72), TechCardOperation.work_variant (73) and
+  // TechCardOperationFastening.button_holes (7) on full-replace writes — the 0435 icon fields.
+  // Same semantics as operation_work_aware (116): without it a write that carries any of them, or
+  // that would replace a card whose steps carry any of them, is refused (FailedPrecondition,
+  // «update the admin») instead of silently erasing them. Server paths set it explicitly. The flag
+  // does not filter parsing. Transport, not content: enters no section digest.
+  bool operation_seam_kind_aware = 129;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

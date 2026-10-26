@@ -583,10 +583,11 @@ func upsertMaterialAttrs(ctx context.Context, db dependency.DB, id int, m *entit
 		}
 		a := m.HardwareAttr
 		return storeutil.ExecNamed(ctx, db, `
-			INSERT INTO material_hardware_attr (material_id, diameter_mm, dimensions, finish, base_material, weight_g)
-			VALUES (:id, :diameter_mm, :dimensions, :finish, :base_material, :weight_g)`,
+			INSERT INTO material_hardware_attr (material_id, diameter_mm, dimensions, finish, base_material, weight_g, button_holes)
+			VALUES (:id, :diameter_mm, :dimensions, :finish, :base_material, :weight_g, :button_holes)`,
 			map[string]any{"id": id, "diameter_mm": nullDecimalParam(a.DiameterMm), "dimensions": a.Dimensions,
-				"finish": a.Finish, "base_material": a.BaseMaterial, "weight_g": nullDecimalParam(a.WeightG)})
+				"finish": a.Finish, "base_material": a.BaseMaterial, "weight_g": nullDecimalParam(a.WeightG),
+				"button_holes": a.ButtonHoles})
 	case string(entity.MaterialClassThread):
 		if m.ThreadAttr == nil {
 			return nil
@@ -651,7 +652,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 		}
 	}
 	hRows, err := storeutil.QueryListNamed[materialHardwareAttrRow](ctx, s.DB,
-		`SELECT material_id, diameter_mm, dimensions, finish, base_material, weight_g
+		`SELECT material_id, diameter_mm, dimensions, finish, base_material, weight_g, button_holes
 		 FROM material_hardware_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("load hardware attrs: %w", err)

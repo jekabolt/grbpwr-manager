@@ -391,6 +391,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationReviewAware = true
 	insert.OperationBlockMembershipAware = true
 	insert.OperationSeamsAware = true
+	insert.OperationSeamKindAware = true
 	// Seam decisions do not travel (see stripArchive…: pb.Seams = nil), so neither do the steps'
 	// references to them — a file from an older exporter may still carry them.
 	stripOperationSeamKeys(insert)

@@ -392,6 +392,17 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		if err != nil {
 			return nil, err
 		}
+		// Иконные поля (0435): вариант работы — сразу за работой (он видит уже проверенный токен),
+		// конструкция шва — до полей видов (правила 1–2; правило 3 ниже, когда разобран
+		// binding_style). Разбор ВСЕГДА, без флага 129 — довод в techcard_operation_icon_fields.go.
+		workVariant, err := parseOperationWorkVariant(o, work, step)
+		if err != nil {
+			return nil, err
+		}
+		seamKind, err := parseOperationSeamKind(o, seamClass, step)
+		if err != nil {
+			return nil, err
+		}
 		// --- «виды операций» (0324): десять блоков семейств и вся их валидация ---------------------
 		//
 		// Разбирается ВСЕГДА, без флага осведомлённости: обязательность объявляет сам глагол, а
@@ -400,6 +411,9 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 		// круг существующих строк байт-в-байт.
 		kinds, err := parseOperationKindFields(o, opType, machineType, seamClass, work.String, step)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkSeamKindBinding(seamKind, kinds.bindingStyle, step); err != nil {
 			return nil, err
 		}
 		// piece_line_keys (WS4): the cut-pieces this operation works on. Repeated because an
@@ -580,6 +594,11 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			// его сохранение снимает метки — это законно, метка подсказка команде, а не инструкция.
 			Draft:  o.GetDraft(),
 			Review: sql.NullString{String: review, Valid: review != ""},
+
+			// Иконные поля (0435) — канон продолжается дописыванием, последними.
+			SeamKind:    seamKind,
+			WorkVariant: workVariant,
+			ButtonHoles: kinds.buttonHoles,
 		})
 	}
 	return out, nil
@@ -945,6 +964,10 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			// Черновик каркаса сборки (0410). Эмитится всегда: клон сезона строит payload здесь.
 			Draft:  o.Draft,
 			Review: pbStringFromNull(o.Review),
+			// Иконные поля (0435). Эмитятся ВСЕГДА, по тому же доводу, что и work: клон сезона строит
+			// payload здесь, и пропуск молча стёр бы значения. button_holes — в блоке fastening.
+			SeamKind:    pbStringFromNull(o.SeamKind),
+			WorkVariant: pbStringFromNull(o.WorkVariant),
 		})
 	}
 	return out

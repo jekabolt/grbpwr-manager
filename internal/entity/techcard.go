@@ -3468,6 +3468,19 @@ type TechCardOperation struct {
 	// orphan stays distinct. NULL with AutoFusingLineKey set is a grouped legacy step. Not on wire.
 	AutoFusingPieceKey sql.NullString `db:"auto_fusing_piece_key"`
 
+	// --- ИКОННЫЕ ПОЛЯ (0435, SPEC-B1) — канон продолжается ДОПИСЫВАНИЕМ в пяти списках: здесь, в
+	// ALTER'е 0435, в ключах INSERT'а и в SELECT'е store/techcard/production.go и в хвостах
+	// дайджеста. Все три рождаются NULL и пишутся как NULL; сервер их не выводит. Щит —
+	// operation_seam_kind_aware (129).
+	//
+	// SeamKind — конструкция шва внутри seam_class, токен entity.SeamKindTokens; хвост "stitching".
+	SeamKind sql.NullString `db:"seam_kind"`
+	// WorkVariant — исполнение внутри Work, токен entity.WorkVariants[Work]; хвост "work".
+	WorkVariant sql.NullString `db:"work_variant"`
+	// ButtonHoles — 2 | 4 отверстия пуговицы шага; только при machine_type = button_attach; хвост
+	// "fastening".
+	ButtonHoles sql.NullInt32 `db:"button_holes"`
+
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
 	PieceLineKeys []string `db:"-"`

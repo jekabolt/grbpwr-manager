@@ -72,6 +72,8 @@ type MaterialHardwareAttr struct {
 	Finish       sql.NullString      `db:"finish"`
 	BaseMaterial sql.NullString      `db:"base_material"`
 	WeightG      decimal.NullDecimal `db:"weight_g"`
+	// ButtonHoles — число отверстий пуговицы-артикула (0435): 2 | 4; NULL = не указано.
+	ButtonHoles sql.NullInt32 `db:"button_holes"`
 }
 
 // MaterialThreadAttr are the typed attributes of a thread-class material (material_thread_attr).
