@@ -72,6 +72,57 @@ func TestConstructionAuditCarriesKeysAndAppliesSeenMarks(t *testing.T) {
 	require.EqualValues(t, len(resp.GetFindings())-1, resp.GetUnseenCount())
 }
 
+// A CLIENT finding (computed in the browser, never by the audit) is marked through the same call:
+// the server takes its key on shape alone.
+func TestSetTechCardFindingSeenTakesAClientFindingKey(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	tc := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(tc)
+	tc.EXPECT().MarkTechCardFindingSeen(mock.Anything, 7, "pdf_sa_missing@seam:hem", "fedcba9876543210", "anna").Return(nil).Once()
+
+	_, err := (&Server{repo: repo}).SetTechCardFindingSeen(seenWriterCtx(), &pb_admin.SetTechCardFindingSeenRequest{
+		TechCardId: 7, Key: "pdf_sa_missing@seam:hem", Fingerprint: "fedcba9876543210", Seen: true,
+	})
+	require.NoError(t, err)
+}
+
+// seen_marks hands back the marks of client findings — and only those: a server-code mark rides on
+// its finding, or (stale, or a withheld money finding) is not handed out at all.
+func TestConstructionAuditReturnsClientSeenMarks(t *testing.T) {
+	plain := seenAudit(t, tcaCostingCtx(), nil, nil)
+	require.NotNil(t, plain.GetSeenMarks())
+	require.Empty(t, plain.GetSeenMarks())
+
+	first := plain.GetFindings()[0]
+	at := time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	marks := []entity.TechCardFindingSeen{
+		{TechCardId: 7, FindingKey: first.GetKey(), Fingerprint: first.GetFingerprint(), SeenBy: "anna", SeenAt: at},
+		{TechCardId: 7, FindingKey: "placeholder_price@bom:Gone", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+		{TechCardId: 7, FindingKey: "pdf_sa_missing@seam:hem", Fingerprint: "fedcba9876543210", SeenBy: "boris", SeenAt: at},
+	}
+	for _, ctx := range []context.Context{tcaCostingCtx(), tcaNoCostingCtx()} {
+		resp := seenAudit(t, ctx, marks, nil)
+		require.Len(t, resp.GetSeenMarks(), 1)
+		m := resp.GetSeenMarks()[0]
+		require.Equal(t, "pdf_sa_missing@seam:hem", m.GetKey())
+		require.Equal(t, "fedcba9876543210", m.GetFingerprint())
+		require.Equal(t, "boris", m.GetSeenBy())
+		require.True(t, at.Equal(m.GetSeenAt().AsTime()))
+		// A client mark is not a server finding: the server's unseen count does not move.
+		require.EqualValues(t, countUnseen(resp.GetFindings()), resp.GetUnseenCount())
+	}
+}
+
+func countUnseen(fs []*pb_admin.TechCardAnalysisFinding) int {
+	n := 0
+	for _, f := range fs {
+		if !f.GetSeen() {
+			n++
+		}
+	}
+	return n
+}
+
 // A failed read of the marks must not cost the reader the audit: everything reads unseen.
 func TestConstructionAuditSurvivesASeenLoadFailure(t *testing.T) {
 	resp := seenAudit(t, tcaCostingCtx(), nil, errors.New("db down"))
@@ -131,6 +182,9 @@ func TestSetTechCardFindingSeenRefusesBadInput(t *testing.T) {
 		"upper hex":      {TechCardId: 7, Key: "k@card", Fingerprint: "0123456789ABCDEF", Seen: true},
 		"short hex":      {TechCardId: 7, Key: "k@card", Fingerprint: "0123", Seen: true},
 		"not hex at all": {TechCardId: 7, Key: "k@card", Fingerprint: "zzzzzzzzzzzzzzzz", Seen: true},
+		"no code head":   {TechCardId: 7, Key: "card", Fingerprint: "0123456789abcdef", Seen: true},
+		"upper code":     {TechCardId: 7, Key: "Pdf_x@card", Fingerprint: "0123456789abcdef", Seen: true},
+		"unmark no head": {TechCardId: 7, Key: "card", Seen: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &Server{repo: mocks.NewMockRepository(t)}

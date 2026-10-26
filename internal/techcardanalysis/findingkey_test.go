@@ -310,3 +310,93 @@ func TestCodesAreSnakeCaseUniqueAndUnreserved(t *testing.T) {
 		t.Fatalf("parsed only %d codes — the table moved?", len(values))
 	}
 }
+
+// TestServerCodesListEveryCode keeps serverCodes equal to the Code* const table: a code missing
+// from the set would have its marks handed out bare (ClientSeenMarks), one in the set but not in
+// the table would swallow a client finding's marks.
+func TestServerCodesListEveryCode(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "findingkey.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := map[string]bool{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, s := range gd.Specs {
+			vs := s.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				if !strings.HasPrefix(name.Name, "Code") || i >= len(vs.Values) {
+					continue
+				}
+				if bl, ok := vs.Values[i].(*ast.BasicLit); ok {
+					v, _ := strconv.Unquote(bl.Value)
+					table[v] = true
+				}
+			}
+		}
+	}
+	for v := range table {
+		if !IsServerCode(v) {
+			t.Errorf("code %q is in the const table but not in serverCodes", v)
+		}
+	}
+	for v := range serverCodes {
+		if !table[v] {
+			t.Errorf("serverCodes holds %q, which is not a Code* const", v)
+		}
+	}
+	for _, client := range []string{"pdf_sa_missing", "edge_missing", "partner_missing"} {
+		if IsServerCode(client) {
+			t.Errorf("client code %q is taken by the server", client)
+		}
+	}
+}
+
+func TestValidFindingKeyChecksOnlyTheShape(t *testing.T) {
+	for _, ok := range []string{
+		"smv_missing@opfp:aaaaaaaa",
+		"pdf_sa_missing@seam:side-seam", // a client code the server never computes
+		"edge_missing@op:10,seam:hem#left",
+		"x@",
+		"unit_key_case_collision@sha256:0123",
+	} {
+		if !ValidFindingKey(ok) {
+			t.Errorf("ValidFindingKey(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{
+		"", "   ", "card", "@card", "Smv@card", "9x@card", "smv-missing@card", " smv@card",
+		"k@\xff", "k@" + strings.Repeat("a", MaxFindingKeyBytes),
+	} {
+		if ValidFindingKey(bad) {
+			t.Errorf("ValidFindingKey(%q) = true", bad)
+		}
+	}
+	if got := KeyCode("pdf_sa_missing@seam:hem"); got != "pdf_sa_missing" {
+		t.Errorf("KeyCode = %q", got)
+	}
+}
+
+func TestClientSeenMarksKeepsOnlyCodesTheServerDoesNotCompute(t *testing.T) {
+	at := time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	marks := []entity.TechCardFindingSeen{
+		{FindingKey: "smv_missing@opfp:aaaaaaaa", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+		{FindingKey: "placeholder_price@bom:Shell", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+		{FindingKey: "pdf_sa_missing@seam:hem", Fingerprint: "fedcba9876543210", SeenBy: "boris", SeenAt: at},
+		{FindingKey: "edge_missing@op:10,seam:hem", Fingerprint: "00000000000000ff", SeenBy: "boris", SeenAt: at},
+		{FindingKey: "no-code-head", Fingerprint: "00000000000000ff", SeenBy: "boris", SeenAt: at},
+	}
+	got := ClientSeenMarks(marks)
+	if len(got) != 2 || got[0].FindingKey != "pdf_sa_missing@seam:hem" || got[1].FindingKey != "edge_missing@op:10,seam:hem" {
+		t.Fatalf("client marks = %+v", got)
+	}
+	if got[0].Fingerprint != "fedcba9876543210" || got[0].SeenBy != "boris" || !got[0].SeenAt.Equal(at) {
+		t.Fatalf("client mark lost its fields: %+v", got[0])
+	}
+	if out := ClientSeenMarks(nil); out == nil || len(out) != 0 {
+		t.Fatalf("no marks: %#v", out)
+	}
+}

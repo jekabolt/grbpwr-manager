@@ -2189,11 +2189,12 @@ service AdminService {
     };
   }
 
-  // SetTechCardFindingSeen marks (seen=true) or unmarks (seen=false) ONE machine finding of the
+  // SetTechCardFindingSeen marks (seen=true) or unmarks (seen=false) ONE finding of the
   // construction audit as seen — not every finding has to be fixed. The mark is stored under the
-  // finding's key with the fingerprint the client saw; the audit reports it as seen only while the
-  // fingerprint still matches. Idempotent both ways; works on a released card (a mark is not card
-  // content). Classified wr(tech_cards).
+  // finding's key with the fingerprint the client saw; it counts only while the fingerprint still
+  // matches. Any well-formed key is accepted, including a CLIENT finding the server never computes
+  // (its mark comes back in GetTechCardConstructionAuditResponse.seen_marks). Idempotent both ways;
+  // works on a released card (a mark is not card content). Classified wr(tech_cards).
   rpc SetTechCardFindingSeen(SetTechCardFindingSeenRequest) returns (SetTechCardFindingSeenResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/construction/finding-seen"
@@ -10017,8 +10018,21 @@ message GetTechCardConstructionAuditResponse {
   // refused. False = show the Analyze button disabled with a quiet reason, do not call it.
   bool ai_enabled = 4;
   // unseen_count — findings of this response that are not seen (seen == false). The number the
-  // header and the badges show.
+  // header and the badges show, before the client adds its own unseen client findings.
   int32 unseen_count = 5;
+  // seen_marks — the stored marks of CLIENT findings: every mark whose key code is not one the
+  // server computes (pdf_*, the assembly-schema checks). The server cannot recompute those, so it
+  // hands the marks back as they are; the client counts its finding as seen when the key AND the
+  // fingerprint match. Marks of server codes never appear here — they ride on their finding.
+  repeated TechCardFindingSeenMark seen_marks = 6;
+}
+
+// TechCardFindingSeenMark — one stored «seen» mark, as SetTechCardFindingSeen wrote it.
+message TechCardFindingSeenMark {
+  string key = 1;
+  string fingerprint = 2;
+  string seen_by = 3;
+  google.protobuf.Timestamp seen_at = 4;
 }
 
 // AnalyzeTechCardConstructionRequest — which saved card to run the model over. As with the audit,
@@ -10093,7 +10107,8 @@ message AddTechCardIssueResponse {
 // SetTechCardFindingSeenRequest — key and fingerprint exactly as the audit sent them.
 message SetTechCardFindingSeenRequest {
   int32 tech_card_id = 1;
-  // key — TechCardAnalysisFinding.key, <= 512 bytes. Required.
+  // key — TechCardAnalysisFinding.key, or a client finding's key built the same way:
+  // "<snake_case code>@…", valid UTF-8, <= 512 bytes. Required. Only the shape is checked.
   string key = 2;
   // fingerprint — TechCardAnalysisFinding.fingerprint (16 hex). Required when seen=true.
   string fingerprint = 3;

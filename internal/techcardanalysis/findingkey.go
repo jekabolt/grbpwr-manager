@@ -3,10 +3,12 @@ package techcardanalysis
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
@@ -93,6 +95,65 @@ const (
 	// moves with its list of clauses, which is intended.
 	CodeNotReleaseReady = "not_release_ready"
 )
+
+// serverCodes is every Code* above — the kinds the SERVER computes. A mark whose key carries one of
+// them travels inline on its finding (seen / seen_by / seen_at). Any other code is a CLIENT finding:
+// computed in the browser (the PDF gaps, pdf_*; the assembly-schema checks), which the server cannot
+// recompute, so its mark is handed back bare (ClientSeenMarks) and matched by the client.
+// TestServerCodesListEveryCode keeps this set equal to the const table.
+var serverCodes = map[string]bool{
+	CodeUnitKeyCaseCollision:          true,
+	CodeButtonholeUnspecified:         true,
+	CodePlacementCountMissing:         true,
+	CodeTrimActionMissing:             true,
+	CodeAttachMethodMissing:           true,
+	CodeFusingParamsMissing:           true,
+	CodePressParamsMissing:            true,
+	CodeSeamClassMachineMismatch:      true,
+	CodeNoteOnlyInstruction:           true,
+	CodeWorkAfterPack:                 true,
+	CodeFoldAfterPack:                 true,
+	CodeFusingOnAssembledUnit:         true,
+	CodeWorkVerbMismatch:              true,
+	CodeWorkMachineMismatch:           true,
+	CodeWorkCatalogMismatch:           true,
+	CodeLegacyPieceLinkDrift:          true,
+	CodeSensitiveBeforeWet:            true,
+	CodeHardwareNotInBom:              true,
+	CodeHardwareNotSet:                true,
+	CodeThreadLinesMissing:            true,
+	CodeFusingTriangleMismatch:        true,
+	CodeButtonholeButtonCountMismatch: true,
+	CodeHardwareSetExceedsBom:         true,
+	CodePlaceholderPrice:              true,
+	CodePurposePriceInversion:         true,
+	CodeCurrencyWithoutRate:           true,
+	CodeCmtNotSet:                     true,
+	CodeCmtWithoutSmv:                 true,
+	CodeWastageNotStated:              true,
+	CodeWastageHigh:                   true,
+	CodeNoOperations:                  true,
+	CodeNoCutPieces:                   true,
+	CodeNoSizeRange:                   true,
+	CodePrintPacketGaps:               true,
+	CodeLabelNotInBom:                 true,
+	CodeLabelLinesUndescribed:         true,
+	CodeLabelMockupMissing:            true,
+	CodePackagingMockupMissing:        true,
+	CodeEquipmentProfilesMissing:      true,
+	CodeEquipmentProfileRefBroken:     true,
+	CodeEquipmentProfileAmbiguous:     true,
+	CodeTechnicalSketchMissing:        true,
+	CodeAssemblyNotConverging:         true,
+	CodePieceNeverSewn:                true,
+	CodeSmvMissing:                    true,
+	CodeWorkMissing:                   true,
+	CodeFinishingBlockMissing:         true,
+	CodeNotReleaseReady:               true,
+}
+
+// IsServerCode reports whether code is a kind the server audit computes.
+func IsServerCode(code string) bool { return serverCodes[code] }
 
 const (
 	// refOpFpPrefix stands for a step INSIDE a finding key only — never in Refs, never on screen.
@@ -228,6 +289,39 @@ func disambiguateKeys(findings []Finding) {
 			findings[i].Key = k
 		}
 	}
+}
+
+// findingKeyCodeRe is the head every finding key starts with: a snake_case code and "@".
+var findingKeyCodeRe = regexp.MustCompile(`^([a-z][a-z0-9_]*)@`)
+
+// KeyCode returns the code a finding key starts with, "" when the key has no code@ head.
+func KeyCode(key string) string {
+	if m := findingKeyCodeRe.FindStringSubmatch(key); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// ValidFindingKey is the whole check SetTechCardFindingSeen makes on a key: a code@ head, valid
+// UTF-8, at most MaxFindingKeyBytes. It does NOT ask whether the server can produce that finding — a
+// client finding (pdf_*, assembly-schema) is marked through the same call, and the match against
+// the current text is the client's, by key + fingerprint.
+func ValidFindingKey(key string) bool {
+	return len(key) <= MaxFindingKeyBytes && utf8.ValidString(key) && KeyCode(key) != ""
+}
+
+// ClientSeenMarks keeps the marks the server does not resolve itself: those whose code is not a
+// server code. A server-code mark either rides on its finding already or names a finding this run
+// no longer produces — and for a reader without costing access it may name a withheld money
+// finding, so it is never handed out bare.
+func ClientSeenMarks(marks []entity.TechCardFindingSeen) []entity.TechCardFindingSeen {
+	out := make([]entity.TechCardFindingSeen, 0, len(marks))
+	for _, m := range marks {
+		if code := KeyCode(m.FindingKey); code != "" && !IsServerCode(code) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // parseOpRef reads the number out of an "op:<n>" sigil.

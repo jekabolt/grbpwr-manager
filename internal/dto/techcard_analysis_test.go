@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardanalysis"
 	"github.com/stretchr/testify/require"
 )
@@ -108,4 +109,25 @@ func TestTechCardAnalysisFindingToPbDoesNotInvent(t *testing.T) {
 	require.Nil(t, pb.GetRefs())
 	require.Nil(t, pb.GetEvidence())
 	require.Nil(t, pb.GetSeenAt(), "an unseen finding carries no seen_at, not the zero time")
+}
+
+func TestTechCardFindingSeenMarksToPb(t *testing.T) {
+	at := time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	got := TechCardFindingSeenMarksToPb([]entity.TechCardFindingSeen{
+		{TechCardId: 7, FindingKey: "pdf_sa_missing@seam:hem", Fingerprint: "fedcba9876543210", SeenBy: "boris", SeenAt: at},
+		{TechCardId: 7, FindingKey: "pdf_x@card", Fingerprint: "0123456789abcdef"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].GetKey() != "pdf_sa_missing@seam:hem" || got[0].GetFingerprint() != "fedcba9876543210" ||
+		got[0].GetSeenBy() != "boris" || !got[0].GetSeenAt().AsTime().Equal(at) {
+		t.Errorf("mark = %+v", got[0])
+	}
+	if got[1].GetSeenAt() != nil {
+		t.Errorf("a zero time must stay absent, got %v", got[1].GetSeenAt())
+	}
+	if empty := TechCardFindingSeenMarksToPb(nil); empty == nil || len(empty) != 0 {
+		t.Errorf("no marks: %#v", empty)
+	}
 }

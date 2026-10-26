@@ -4,6 +4,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardanalysis"
 )
 
@@ -51,6 +52,24 @@ func TechCardAnalysisFindingsToPb(findings []techcardanalysis.Finding) []*pb_adm
 	out := make([]*pb_admin.TechCardAnalysisFinding, 0, len(findings))
 	for _, f := range findings {
 		out = append(out, TechCardAnalysisFindingToPb(f))
+	}
+	return out
+}
+
+// TechCardFindingSeenMarksToPb carries the bare «seen» marks of client findings
+// (techcardanalysis.ClientSeenMarks). Empty, never nil, like the findings: `seen_marks: []`.
+func TechCardFindingSeenMarksToPb(marks []entity.TechCardFindingSeen) []*pb_admin.TechCardFindingSeenMark {
+	out := make([]*pb_admin.TechCardFindingSeenMark, 0, len(marks))
+	for _, m := range marks {
+		pb := &pb_admin.TechCardFindingSeenMark{
+			Key:         m.FindingKey,
+			Fingerprint: m.Fingerprint,
+			SeenBy:      m.SeenBy,
+		}
+		if !m.SeenAt.IsZero() {
+			pb.SeenAt = timestamppb.New(m.SeenAt)
+		}
+		out = append(out, pb)
 	}
 	return out
 }

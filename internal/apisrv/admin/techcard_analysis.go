@@ -93,6 +93,9 @@ func (s *Server) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin
 		OperationFingerprints: result.Fingerprints,
 		NotChecked:            notChecked,
 		UnseenCount:           int32(unseen),
+		// Marks of findings the BROWSER computes (pdf_*, assembly-schema): the server cannot
+		// recompute them, so it hands them back and the client matches key + fingerprint.
+		SeenMarks: dto.TechCardFindingSeenMarksToPb(techcardanalysis.ClientSeenMarks(marks)),
 		// Enabled() is nil-safe, so an unconfigured deployment answers false rather than panicking.
 		// NEITHER THIS NOR THE FINGERPRINTS ARE REDACTED: a fingerprint is a hash of an assembly
 		// shape and this is a deployment fact. Neither is money.
