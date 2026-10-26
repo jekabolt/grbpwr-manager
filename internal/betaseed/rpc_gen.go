@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (435 rpc) ----
+// ---- admin (436 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -2880,6 +2880,14 @@ func (c *Client) SetTaskChecklistItemDone(ctx context.Context, in *admin.SetTask
 func (c *Client) SetTaskParent(ctx context.Context, in *admin.SetTaskParentRequest) (*admin.SetTaskParentResponse, error) {
 	out := new(admin.SetTaskParentResponse)
 	if err := c.call(ctx, "POST", "/api/admin/task/parent", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetTechCardFindingSeen(ctx context.Context, in *admin.SetTechCardFindingSeenRequest) (*admin.SetTechCardFindingSeenResponse, error) {
+	out := new(admin.SetTechCardFindingSeenResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/construction/finding-seen", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -2,6 +2,7 @@ package dto
 
 import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/jekabolt/grbpwr-manager/internal/techcardanalysis"
 )
@@ -16,9 +17,11 @@ import (
 //
 // techcardanalysis.Finding.Clause has NO wire counterpart and that is on purpose: it is the short
 // phrase the draft collapse builds its enumeration from, it is consumed inside the analyzer, and it
-// carries nothing the client could do anything with.
+// carries nothing the client could do anything with. Finding.Subject is the same kind of field: it
+// is already folded into Key and is not sent on its own. seen_at stays absent unless the finding is
+// seen (a zero time is not a moment anybody saw it).
 func TechCardAnalysisFindingToPb(f techcardanalysis.Finding) *pb_admin.TechCardAnalysisFinding {
-	return &pb_admin.TechCardAnalysisFinding{
+	pb := &pb_admin.TechCardAnalysisFinding{
 		Source:      f.Source,
 		Category:    f.Category,
 		Severity:    f.Severity,
@@ -29,7 +32,16 @@ func TechCardAnalysisFindingToPb(f techcardanalysis.Finding) *pb_admin.TechCardA
 		InsertAfter: f.InsertAfter,
 		Suggestion:  f.Suggestion,
 		Confidence:  f.Confidence,
+		Code:        f.Code,
+		Key:         f.Key,
+		Fingerprint: f.Fingerprint,
+		Seen:        f.Seen,
+		SeenBy:      f.SeenBy,
 	}
+	if !f.SeenAt.IsZero() {
+		pb.SeenAt = timestamppb.New(f.SeenAt)
+	}
+	return pb
 }
 
 // TechCardAnalysisFindingsToPb converts a run's findings, preserving order. An empty run returns an

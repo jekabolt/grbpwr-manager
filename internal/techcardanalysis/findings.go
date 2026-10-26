@@ -17,6 +17,7 @@ package techcardanalysis
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MaxAnalysisOperations gates the INPUT of the analysis RPCs (design §4): a card with more
@@ -116,6 +117,7 @@ const (
 	refUnitPrefix  = "unit:"
 	refPiecePrefix = "piece:"
 	refBomPrefix   = "bom:"
+	refSeamPrefix  = "seam:"
 )
 
 // RefOp builds the "op:<number>" sigil.
@@ -131,6 +133,10 @@ func RefPiece(pieceName string) string { return refPiecePrefix + pieceName }
 
 // RefBom builds the "bom:<name>" sigil.
 func RefBom(lineName string) string { return refBomPrefix + lineName }
+
+// RefSeam builds the "seam:<seam_key>" sigil (T9 contract, used by the assembly-schema findings).
+// seam_key is a stored key, never a position, so it is safe inside a finding key.
+func RefSeam(seamKey string) string { return refSeamPrefix + seamKey }
 
 // Finding is one machine or model finding — the Go mirror of proto TechCardAnalysisFinding (§4).
 //
@@ -185,6 +191,22 @@ type Finding struct {
 	// схлопнутая находка читалась перечислением, а не склейкой шести заголовков-предложений.
 	// Заполняется ТОЛЬКО находками класса CategoryReadiness; у остальных пуста и не читается.
 	Clause string
+
+	// Code — стабильный snake_case вид находки (T9): ОДИН на правило, а не на категорию; пер-шаговая
+	// и агрегированная находки одного правила делят код. Список — findingkey.go. У модельных пусто.
+	Code string
+	// Subject — НЕ ЕДЕТ НА ПРОВОД. Различитель ключа для правил, которые на ОДНИХ И ТЕХ ЖЕ якорях дают
+	// несколько находок (лейбл, колонка, поле ноты): без него две находки делили бы одну отметку seen.
+	Subject string
+	// Key / Fingerprint — идентичность находки и отпечаток её текста для отметки «seen» (T9).
+	// Заполняет RunAudit (AssignKeys) у каждой находки с Code; модельные остаются пустыми.
+	Key         string
+	Fingerprint string
+	// Seen / SeenBy / SeenAt — отметка «просмотрено», чей отпечаток СОВПАЛ с текущим (ApplySeen).
+	// Ставит обработчик: пакет в БД не ходит.
+	Seen   bool
+	SeenBy string
+	SeenAt time.Time
 }
 
 // CoverageMiss is one gap of a coverage check: its anchors and the per-operation finding that
@@ -292,6 +314,7 @@ func CollapseReadiness(findings []Finding, draft bool) []Finding {
 		detail += ": " + strings.Join(clauses, " · ")
 	}
 	collapsed := Finding{
+		Code:     CodeNotReleaseReady,
 		Source:   SourceMachine,
 		Category: CategoryReadiness,
 		Severity: worst,

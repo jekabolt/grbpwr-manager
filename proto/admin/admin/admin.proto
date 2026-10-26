@@ -2189,6 +2189,18 @@ service AdminService {
     };
   }
 
+  // SetTechCardFindingSeen marks (seen=true) or unmarks (seen=false) ONE machine finding of the
+  // construction audit as seen — not every finding has to be fixed. The mark is stored under the
+  // finding's key with the fingerprint the client saw; the audit reports it as seen only while the
+  // fingerprint still matches. Idempotent both ways; works on a released card (a mark is not card
+  // content). Classified wr(tech_cards).
+  rpc SetTechCardFindingSeen(SetTechCardFindingSeenRequest) returns (SetTechCardFindingSeenResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/construction/finding-seen"
+      body: "*"
+    };
+  }
+
   // КАТАЛОГ РАБОТ (видов операций) — СЕРВЕРНЫЕ ДАННЫЕ, ОТДАВАЕМЫЕ ОДНИМ ЗАПРОСОМ.
   //
   // Пункты, их синонимы поиска (RU/EN), допустимые машинки, глобальные дефолты свойств и подсказки
@@ -9965,11 +9977,27 @@ message TechCardAnalysisFinding {
   // confidence — model: "certain" | "likely" | "needs_owner". Machine: "" for a deterministic fact,
   // "heuristic" for a guess that is allowed to be wrong and carries a badge saying so.
   string confidence = 10;
+  // code — the stable snake_case kind of a MACHINE finding, one per rule (A1..C9). "" on model
+  // findings. A client must treat an unknown code as text.
+  string code = 11;
+  // key — the finding's identity across audit runs: code "@" sorted(refs) ["#" subject], with a
+  // step anchored by its shape ("opfp:<fp8>") where that shape is unique on the card. Opaque to the
+  // client: echo it to SetTechCardFindingSeen. "" on model findings (they cannot be marked).
+  string key = 12;
+  // fingerprint — 16 hex chars of the text the reader sees (title, detail, shapes of the named
+  // steps). Echoed to SetTechCardFindingSeen; a mark counts only while it still matches.
+  string fingerprint = 13;
+  // seen — a seen mark exists AND its fingerprint matches this finding. A mark made on older text
+  // does not count: the finding is unseen again.
+  bool seen = 14;
+  // seen_by / seen_at — who marked it and when; set only when seen.
+  string seen_by = 15;
+  google.protobuf.Timestamp seen_at = 16;
 }
 
 // GetTechCardConstructionAuditResponse is one machine-layer run. Everything in it is recomputed
-// from the stored card; nothing is remembered between runs, which is why there are no dismissals
-// here — a machine finding disappears when its cause disappears.
+// from the stored card; the only thing remembered between runs is a «seen» mark per finding key
+// (SetTechCardFindingSeen) — a finding still disappears only when its cause disappears.
 message GetTechCardConstructionAuditResponse {
   // findings — machine findings only (source="machine"). On a card in `draft` the whole readiness
   // class arrives ALREADY COLLAPSED into a single "Not yet ready for release: …" finding: on a
@@ -9988,6 +10016,9 @@ message GetTechCardConstructionAuditResponse {
   // without it the client could only learn that AI is unavailable by pressing Analyze and being
   // refused. False = show the Analyze button disabled with a quiet reason, do not call it.
   bool ai_enabled = 4;
+  // unseen_count — findings of this response that are not seen (seen == false). The number the
+  // header and the badges show.
+  int32 unseen_count = 5;
 }
 
 // AnalyzeTechCardConstructionRequest — which saved card to run the model over. As with the audit,
@@ -10058,6 +10089,19 @@ message AddTechCardIssueRequest {
 message AddTechCardIssueResponse {
   int32 issue_id = 1;
 }
+
+// SetTechCardFindingSeenRequest — key and fingerprint exactly as the audit sent them.
+message SetTechCardFindingSeenRequest {
+  int32 tech_card_id = 1;
+  // key — TechCardAnalysisFinding.key, <= 512 bytes. Required.
+  string key = 2;
+  // fingerprint — TechCardAnalysisFinding.fingerprint (16 hex). Required when seen=true.
+  string fingerprint = 3;
+  // seen — true marks, false removes the mark.
+  bool seen = 4;
+}
+
+message SetTechCardFindingSeenResponse {}
 
 // OperationWorkCatalogItem — одна работа каталога.
 //

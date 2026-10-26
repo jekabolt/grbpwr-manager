@@ -1223,6 +1223,12 @@ type (
 		// (the store cannot know who is asking), and display_order is max+1 within the card, so a
 		// newly filed issue lands at the end of the list rather than tied at position zero.
 		AddTechCardIssue(ctx context.Context, techCardID int, issue entity.TechCardIssue) (int, error)
+		// «Seen» marks on construction-audit findings (T9): outside UpdateTechCard, survive every
+		// save and work on a released card. Mark upserts (same fingerprint keeps the first
+		// who/when), unmark deletes; both idempotent. Matching to findings happens on read.
+		ListTechCardFindingSeen(ctx context.Context, techCardID int) ([]entity.TechCardFindingSeen, error)
+		MarkTechCardFindingSeen(ctx context.Context, techCardID int, findingKey, fingerprint, seenBy string) error
+		UnmarkTechCardFindingSeen(ctx context.Context, techCardID int, findingKey string) error
 		// Development (R&D) cost journal (task 14): append + delete + list rows at the tech-card
 		// level (NOT full-replace); a period cost, never seeded into product.cost_price.
 		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)

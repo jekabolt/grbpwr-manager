@@ -76,10 +76,23 @@ func (s *Server) GetTechCardConstructionAudit(ctx context.Context, req *pb_admin
 		findings, notChecked = redactMoneyFindings(findings, notChecked)
 	}
 
+	// SEEN MARKS (T9) — applied AFTER the redaction, so unseen_count never counts a money finding
+	// this account cannot see (its absence must stay indistinguishable from «none on this card»).
+	// A load failure degrades to «nothing seen» instead of failing the audit: marks are a
+	// convenience over the findings, and losing the findings over them would invert that.
+	marks, err := s.repo.TechCards().ListTechCardFindingSeen(ctx, int(req.GetTechCardId()))
+	if err != nil {
+		slog.Default().WarnContext(ctx, "construction audit: can't load finding seen marks",
+			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))
+		marks = nil
+	}
+	unseen := techcardanalysis.ApplySeen(findings, marks)
+
 	return &pb_admin.GetTechCardConstructionAuditResponse{
 		Findings:              dto.TechCardAnalysisFindingsToPb(findings),
 		OperationFingerprints: result.Fingerprints,
 		NotChecked:            notChecked,
+		UnseenCount:           int32(unseen),
 		// Enabled() is nil-safe, so an unconfigured deployment answers false rather than panicking.
 		// NEITHER THIS NOR THE FINGERPRINTS ARE REDACTED: a fingerprint is a hash of an assembly
 		// shape and this is a deployment fact. Neither is money.
