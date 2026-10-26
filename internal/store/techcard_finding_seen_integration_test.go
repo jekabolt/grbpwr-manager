@@ -2,9 +2,15 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,12 +85,12 @@ func TestTechCardFindingSeenMarks(t *testing.T) {
 		require.NotEqual(t, "piece_never_sewn@unit:Base", m.FindingKey)
 	}
 
-	// --- an unknown card fails on the FK, which the handler maps to NotFound ---
+	// --- an unknown card fails the card-row lock, which the handler maps to NotFound ---
 	var maxID int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM tech_card").Scan(&maxID))
 	err = tc.MarkTechCardFindingSeen(ctx, maxID+1_000_000, key, fpOld, "anna")
 	require.Error(t, err)
-	require.True(t, s.IsErrForeignKeyViolation(err), "%v", err)
+	require.True(t, errors.Is(err, sql.ErrNoRows), "%v", err)
 
 	// --- marks die with their card ---
 	other := seedSpineStyle(ctx, t, "T9-SEEN-CASCADE")
@@ -100,4 +106,94 @@ func TestTechCardFindingSeenMarks(t *testing.T) {
 	marks, err = tc.ListTechCardFindingSeen(ctx, cardID)
 	require.NoError(t, err)
 	require.Len(t, marks, 2)
+}
+
+// TestTechCardFindingSeenCap pins the per-card ceiling (entity.TechCardFindingSeenMaxPerCard): the
+// last free slot is taken, a NEW key past it is refused with ErrTechCardFindingSeenLimit, a key the
+// card already keeps is re-marked at the ceiling, an unmark frees a slot — and two concurrent new
+// marks racing for the last slot get exactly one row.
+func TestTechCardFindingSeenCap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	s, err := NewForTest(ctx, *testCfg)
+	require.NoError(t, err)
+	defer s.Close()
+	tc := s.TechCards()
+	const fp = "0123456789abcdef"
+	const limit = entity.TechCardFindingSeenMaxPerCard
+
+	// fill seeds n marks pdf_fill@card#0…n-1 in one statement.
+	fill := func(cardID, n int) {
+		t.Helper()
+		values := make([]string, 0, n)
+		args := make([]any, 0, n*2)
+		for i := 0; i < n; i++ {
+			values = append(values, "(?, ?, '"+fp+"', 'seed', CURRENT_TIMESTAMP(6))")
+			args = append(args, cardID, fmt.Sprintf("pdf_fill@card#%d", i))
+		}
+		_, err := testDB.ExecContext(ctx, "INSERT INTO tech_card_finding_seen "+
+			"(tech_card_id, finding_key, fingerprint, seen_by, seen_at) VALUES "+strings.Join(values, ", "), args...)
+		require.NoError(t, err)
+	}
+	count := func(cardID int) int {
+		t.Helper()
+		var n int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM tech_card_finding_seen WHERE tech_card_id = ?", cardID).Scan(&n))
+		return n
+	}
+
+	cardID := seedSpineStyle(ctx, t, "T9-SEEN-CAP")
+	fill(cardID, limit-1)
+
+	// The last free slot is taken.
+	require.NoError(t, tc.MarkTechCardFindingSeen(ctx, cardID, "pdf_last@card", fp, "anna"))
+	require.Equal(t, limit, count(cardID))
+
+	// A new key past the ceiling is refused, and nothing is written.
+	err = tc.MarkTechCardFindingSeen(ctx, cardID, "pdf_over@card", fp, "anna")
+	require.True(t, errors.Is(err, entity.ErrTechCardFindingSeenLimit), "%v", err)
+	require.Equal(t, limit, count(cardID))
+
+	// A key the card keeps is re-marked at the ceiling — same fingerprint and a new one.
+	require.NoError(t, tc.MarkTechCardFindingSeen(ctx, cardID, "pdf_last@card", fp, "boris"))
+	require.NoError(t, tc.MarkTechCardFindingSeen(ctx, cardID, "pdf_fill@card#7", "fedcba9876543210", "boris"))
+	require.Equal(t, limit, count(cardID))
+
+	// An unmark frees a slot for a new key.
+	require.NoError(t, tc.UnmarkTechCardFindingSeen(ctx, cardID, "pdf_fill@card#0"))
+	require.NoError(t, tc.MarkTechCardFindingSeen(ctx, cardID, "pdf_over@card", fp, "anna"))
+	require.Equal(t, limit, count(cardID))
+
+	// The ceiling is per card: another card is not affected.
+	other := seedSpineStyle(ctx, t, "T9-SEEN-CAP-2")
+	require.NoError(t, tc.MarkTechCardFindingSeen(ctx, other, "pdf_over@card", fp, "anna"))
+
+	// Two new keys race for the last slot: the card-row lock lets exactly one in.
+	race := seedSpineStyle(ctx, t, "T9-SEEN-CAP-RACE")
+	fill(race, limit-1)
+	errs := make([]error, 8)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = tc.MarkTechCardFindingSeen(ctx, race, fmt.Sprintf("asm_race@card#%d", i), fp, "anna")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	won := 0
+	for _, err := range errs {
+		if err == nil {
+			won++
+			continue
+		}
+		require.True(t, errors.Is(err, entity.ErrTechCardFindingSeenLimit), "%v", err)
+	}
+	require.Equal(t, 1, won)
+	require.Equal(t, limit, count(race))
 }

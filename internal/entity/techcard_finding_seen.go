@@ -1,6 +1,18 @@
 package entity
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// TechCardFindingSeenMaxPerCard caps the «seen» marks one card keeps (and the client marks one audit
+// response hands back). A real card carries a few dozen findings; the cap exists so that a writer
+// minting endless distinct keys cannot grow the table, and every later audit read, without bound.
+const TechCardFindingSeenMaxPerCard = 500
+
+// ErrTechCardFindingSeenLimit: a NEW mark would take the card past TechCardFindingSeenMaxPerCard.
+// Re-marking a key the card already has, and unmarking, are never refused.
+var ErrTechCardFindingSeenLimit = errors.New("tech card keeps too many seen marks")
 
 // TechCardFindingSeen is one «seen» mark on a construction-audit finding (T9, table
 // tech_card_finding_seen).

@@ -20,16 +20,25 @@ import (
 // переживает пересчёт, и ОТПЕЧАТОК текста, который он видел:
 //
 //	key         = code "@" join(",", sort(dedupe(normalize(refs)))) ["#" subject]
-//	fingerprint = hex(sha256(title 0x00 detail 0x00 fp8_1 fp8_2 …))[:16]   (fp8 — отпечатки шагов из refs, отсортированы)
+//	fingerprint = hex(sha256(mask(title) 0x00 mask(detail) 0x00 fp8_1 fp8_2 …))[:16]   (fp8 — отпечатки шагов из refs, отсортированы)
 //
 // Отметка совпадает, пока совпадает отпечаток. Поменялся текст или форма шага — находка снова
 // «не просмотрена», строка отметки остаётся и перезапишется следующей отметкой.
 //
 // ЯКОРЬ ШАГА В КЛЮЧЕ. "op:<n>" — номер позиционный, сервер пере-штампует его на каждом сохранении,
 // а стабильного id у шага нет (tech_card_operation переписывается целиком, DELETE + INSERT). Поэтому
-// ВНУТРИ КЛЮЧА "op:<n>" заменяется на "opfp:<fp8>" — отпечаток формы шага (fingerprint.go), если на
-// карточке он у этого шага единственный; иначе остаётся "op:<n>" (две одинаковые формы различимы
-// только номером). Производители находок по-прежнему пишут RefOp: нормализация живёт здесь.
+// ВНУТРИ КЛЮЧА "op:<n>" ВСЕГДА заменяется на "opfp:<fp8>.<k>" — отпечаток формы шага (fingerprint.go)
+// и порядковый номер шага среди шагов карточки с той же формой (1, 2, … по номеру операции). Вид
+// токена не зависит от ДРУГИХ шагов: дописать в конец шаг той же формы не трогает ключи прежних.
+// Производители находок по-прежнему пишут RefOp: нормализация живёт здесь.
+//
+// НОМЕР ШАГА В ТЕКСТЕ НЕ ВХОДИТ В ОТПЕЧАТОК. Текст говорит «Operation 210»; перенумерация — не
+// изменение находки. mask() заменяет на "#" каждое целое слово-число, равное номеру шага из refs
+// находки (MaskOpNumbers, общий с клиентом контракт), а сервер вдобавок — номера в собственной прозе
+// «Operation N» / «ops N, M» (maskOpProse: шаги, названные в тексте, но не в refs).
+//
+// Ключ, Отпечаток, маску и сетку коллизий клиент повторяет байт в байт
+// (admin: tech-card/components/finding-key.ts); TestFindingKeyGoldenVectors — общие векторы.
 
 // Codes — стабильный вид находки, ОДИН на правило. Пер-шаговая и агрегированная находка одного
 // правила делят код. Значения — часть ключа отметки «seen» в БД: переименование кода молча
@@ -155,6 +164,28 @@ var serverCodes = map[string]bool{
 // IsServerCode reports whether code is a kind the server audit computes.
 func IsServerCode(code string) bool { return serverCodes[code] }
 
+// ClientCodePrefixes are the namespaces of CLIENT findings: pdf_* (the PDF gaps), asm_* (the
+// assembly-schema checks). A mark on any other non-server code is refused — a bounded namespace is
+// what keeps an arbitrary writer from filling the table with kinds nobody reads.
+var ClientCodePrefixes = []string{"pdf_", "asm_"}
+
+// findingCodeRe is the shape of every finding code: snake_case.
+var findingCodeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// IsClientCode reports whether code may name a client finding: snake_case, in a client namespace,
+// and never a server code.
+func IsClientCode(code string) bool {
+	if !findingCodeRe.MatchString(code) || IsServerCode(code) {
+		return false
+	}
+	for _, p := range ClientCodePrefixes {
+		if strings.HasPrefix(code, p) {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	// refOpFpPrefix stands for a step INSIDE a finding key only — never in Refs, never on screen.
 	refOpFpPrefix = "opfp:"
@@ -172,38 +203,51 @@ const (
 // left without a key: they cannot be marked seen on the server.
 func AssignKeys(findings []Finding, opFingerprints map[int32]string) {
 	tokens := OpKeyTokens(opFingerprints)
+	keys := make([]string, len(findings))
+	idents := make([]string, len(findings))
 	for i := range findings {
 		f := &findings[i]
 		if f.Code == "" {
 			f.Key, f.Fingerprint = "", ""
 			continue
 		}
-		f.Key = FindingKey(f.Code, f.Refs, f.Subject, tokens)
-		f.Fingerprint = FindingFingerprint(f.Title, f.Detail, f.Refs, opFingerprints)
+		// The server's own prose names steps the refs may not (the pack step, a capped list): those
+		// numbers leave the text before anything is hashed, like the refs' own.
+		title, detail := maskOpProse(f.Title, opFingerprints), maskOpProse(f.Detail, opFingerprints)
+		keys[i] = FindingKey(f.Code, f.Refs, f.Subject, tokens)
+		f.Fingerprint = FindingFingerprint(title, detail, f.Refs, opFingerprints)
+		idents[i] = findingIdentity(f.Code, f.Subject, title, f.Refs, tokens)
 	}
-	disambiguateKeys(findings)
+	for i, k := range disambiguateKeys(keys, idents) {
+		findings[i].Key = k
+	}
 }
 
 // OpKeyTokens maps operation_number → the token that stands for that step inside a finding key:
-// "opfp:<fp8>" when no other step of the card has the same fp8. A step missing from the map keeps
-// its "op:<n>".
+// ALWAYS "opfp:<fp8>.<k>", k the 1-based ordinal of the step among the card's steps with the same
+// fp8, in operation-number order. A unique shape is ".1" from the start, so adding a later step of
+// the same shape never moves an earlier step's key. A step missing from the map keeps its "op:<n>".
 func OpKeyTokens(opFingerprints map[int32]string) map[int32]string {
-	count := make(map[string]int, len(opFingerprints))
-	for _, fp := range opFingerprints {
-		count[fp]++
-	}
-	out := make(map[int32]string, len(opFingerprints))
+	nums := make([]int32, 0, len(opFingerprints))
 	for n, fp := range opFingerprints {
-		if fp != "" && count[fp] == 1 {
-			out[n] = refOpFpPrefix + fp
+		if fp != "" {
+			nums = append(nums, n)
 		}
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	ordinal := make(map[string]int, len(nums))
+	out := make(map[int32]string, len(nums))
+	for _, n := range nums {
+		fp := opFingerprints[n]
+		ordinal[fp]++
+		out[n] = refOpFpPrefix + fp + "." + strconv.Itoa(ordinal[fp])
 	}
 	return out
 }
 
-// FindingKey builds code "@" sorted(normalized refs) ["#" subject]. Refs are deduplicated: a
-// finding that names a step twice is still one finding about that step.
-func FindingKey(code string, refs []string, subject string, opTokens map[int32]string) string {
+// normalizeRefs is the ref list a key is built from: steps replaced by their token, deduplicated
+// (a finding that names a step twice is still one finding about that step), sorted by bytes.
+func normalizeRefs(refs []string, opTokens map[int32]string) []string {
 	norm := make([]string, 0, len(refs))
 	seen := make(map[string]bool, len(refs))
 	for _, r := range refs {
@@ -219,7 +263,12 @@ func FindingKey(code string, refs []string, subject string, opTokens map[int32]s
 		norm = append(norm, r)
 	}
 	sort.Strings(norm)
-	key := code + "@" + strings.Join(norm, ",")
+	return norm
+}
+
+// FindingKey builds code "@" sorted(normalized refs) ["#" subject].
+func FindingKey(code string, refs []string, subject string, opTokens map[int32]string) string {
+	key := code + "@" + strings.Join(normalizeRefs(refs, opTokens), ",")
 	if subject != "" {
 		key += "#" + subject
 	}
@@ -236,10 +285,11 @@ func findingKeyBody(code, key string) string {
 	return code + "@sha256:" + hex.EncodeToString(sum[:])[:32]
 }
 
-// FindingFingerprint is hex(sha256(title 0x00 detail 0x00 fp8…))[:16], fp8 of every step the refs
-// name that the card still has, sorted. fp8 is fixed-width hex, so the concatenation is
-// unambiguous without a separator.
+// FindingFingerprint is hex(sha256(mask(title) 0x00 mask(detail) 0x00 fp8…))[:16], fp8 of every step
+// the refs name that the card still has, sorted; mask = MaskOpNumbers with the same refs. fp8 is
+// fixed-width hex, so the concatenation is unambiguous without a separator.
 func FindingFingerprint(title, detail string, refs []string, opFingerprints map[int32]string) string {
+	title, detail = MaskOpNumbers(title, refs), MaskOpNumbers(detail, refs)
 	fps := make([]string, 0, len(refs))
 	seen := make(map[int32]bool, len(refs))
 	for _, r := range refs {
@@ -264,31 +314,146 @@ func FindingFingerprint(title, detail string, refs []string, opFingerprints map[
 	return hex.EncodeToString(h.Sum(nil))[:FindingFingerprintLen]
 }
 
-// disambiguateKeys is the safety net under Subject: two findings that still share a key get
-// "~<hash8(title)>", and if even the titles agree, a running "~<hash8>.<n>" in list order. A check
-// that hits this routinely should set Subject instead — TestFindingKeysAreUniqueOnGoldenCard pins it.
-func disambiguateKeys(findings []Finding) {
-	groups := map[string][]int{}
-	for i := range findings {
-		if findings[i].Key != "" {
-			groups[findings[i].Key] = append(groups[findings[i].Key], i)
+// opNumberMask is what a step number reads as in the fingerprinted text.
+const opNumberMask = "#"
+
+// MaskOpNumbers replaces with "#" every whole-word number of text that equals the number of a step
+// the refs name ("op:<n>", written canonically: "op:010" names 10). A number is a maximal run of
+// ASCII digits, with "." or "," joining further digit runs — "12.5" and "1,200" are one number and
+// never match a step; whole-word means no ASCII letter, digit or "_" right before or after it.
+// "Operation 210 runs…" with refs [op:210] → "Operation # runs…": renumbering is not a change.
+func MaskOpNumbers(text string, refs []string) string {
+	nums := map[string]bool{}
+	for _, r := range refs {
+		if n, ok := parseOpRef(r); ok {
+			nums[strconv.Itoa(int(n))] = true
 		}
 	}
-	for _, idx := range groups {
-		if len(idx) < 2 {
+	if len(nums) == 0 {
+		return text
+	}
+	return maskNumbers(text, func(num string) bool { return nums[num] })
+}
+
+// opProseRe is how the server's own prose names steps: opLabel «Operation N», opList «op N» /
+// «ops N, M», in any case.
+var opProseRe = regexp.MustCompile(`(?i)\b(?:operations?|ops?) \d+(?:, \d+)*`)
+
+// maskOpProse masks the step numbers the server's prose renders even when the refs do not name the
+// step (the pack step of work_after_pack, a list capped to three refs). SERVER ONLY: the client
+// never recomputes a server finding, and its own findings name their steps in refs.
+func maskOpProse(text string, cardOps map[int32]string) string {
+	if len(cardOps) == 0 {
+		return text
+	}
+	return opProseRe.ReplaceAllStringFunc(text, func(m string) string {
+		return maskNumbers(m, func(num string) bool {
+			n, err := strconv.ParseInt(num, 10, 32)
+			if err != nil || strconv.Itoa(int(n)) != num {
+				return false
+			}
+			_, ok := cardOps[int32(n)]
+			return ok
+		})
+	})
+}
+
+// maskNumbers replaces each whole-word number of text (see MaskOpNumbers) for which hit is true.
+// Byte-wise: only ASCII is ever a digit or a word byte, so a UTF-8 letter is a boundary, as it is
+// for the client's UTF-16 scan.
+func maskNumbers(text string, hit func(string) bool) string {
+	var b strings.Builder
+	last, i := 0, 0
+	for i < len(text) {
+		if !isASCIIDigit(text[i]) {
+			i++
 			continue
 		}
-		used := map[string]int{}
-		for _, i := range idx {
-			sum := sha256.Sum256([]byte(findings[i].Title))
-			k := findings[i].Key + "~" + hex.EncodeToString(sum[:])[:8]
-			used[k]++
-			if n := used[k]; n > 1 {
-				k += "." + strconv.Itoa(n)
+		start := i
+		for i < len(text) && isASCIIDigit(text[i]) {
+			i++
+		}
+		for i+1 < len(text) && (text[i] == '.' || text[i] == ',') && isASCIIDigit(text[i+1]) {
+			i++
+			for i < len(text) && isASCIIDigit(text[i]) {
+				i++
 			}
-			findings[i].Key = k
+		}
+		if start > 0 && isASCIIWord(text[start-1]) || i < len(text) && isASCIIWord(text[i]) {
+			continue
+		}
+		if hit(text[start:i]) {
+			b.WriteString(text[last:start])
+			b.WriteString(opNumberMask)
+			last = i
 		}
 	}
+	if last == 0 {
+		return text
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func isASCIIWord(c byte) bool {
+	return isASCIIDigit(c) || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_'
+}
+
+// findingIdentity is what the collision net hashes: hex(sha256("fk1" 0x00 ‖ code ‖ subject ‖
+// masked title ‖ each normalized ref))[:16], every field written as <byte length>":"<bytes>. The
+// length prefixes make it injective — two different tuples never share a payload, whatever bytes a
+// ref carries — and the masked title keeps it still under renumbering.
+func findingIdentity(code, subject, title string, refs []string, opTokens map[int32]string) string {
+	h := sha256.New()
+	h.Write([]byte("fk1\x00"))
+	field := func(s string) {
+		h.Write([]byte(strconv.Itoa(len(s)) + ":"))
+		h.Write([]byte(s))
+	}
+	field(code)
+	field(subject)
+	field(MaskOpNumbers(title, refs))
+	for _, r := range normalizeRefs(refs, opTokens) {
+		field(r)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:FindingFingerprintLen]
+}
+
+// disambiguateKeys is the safety net under Subject. Keys held by one finding stay as they are and
+// are reserved first; each finding of a shared key gets "~<identity16>", and if that is taken — two
+// findings identical in everything, or a ref that happens to spell an earlier key's suffix — a
+// running ".<n>" from 2, in list order, until it is free. The result is unique over the whole
+// list. A check that hits this routinely should set Subject — TestFindingKeysAreUniqueOnGoldenCard.
+func disambiguateKeys(keys, idents []string) []string {
+	count := make(map[string]int, len(keys))
+	for _, k := range keys {
+		if k != "" {
+			count[k]++
+		}
+	}
+	taken := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		if count[k] == 1 {
+			taken[k] = true
+		}
+	}
+	out := make([]string, len(keys))
+	copy(out, keys)
+	for i, k := range keys {
+		if k == "" || count[k] == 1 {
+			continue
+		}
+		base := k + "~" + idents[i]
+		final := base
+		for n := 2; taken[final]; n++ {
+			final = base + "." + strconv.Itoa(n)
+		}
+		taken[final] = true
+		out[i] = final
+	}
+	return out
 }
 
 // findingKeyCodeRe is the head every finding key starts with: a snake_case code and "@".
@@ -302,22 +467,30 @@ func KeyCode(key string) string {
 	return ""
 }
 
-// ValidFindingKey is the whole check SetTechCardFindingSeen makes on a key: a code@ head, valid
+// ValidFindingKey is the SHAPE check SetTechCardFindingSeen makes on a key: a code@ head, valid
 // UTF-8, at most MaxFindingKeyBytes. It does NOT ask whether the server can produce that finding — a
-// client finding (pdf_*, assembly-schema) is marked through the same call, and the match against
-// the current text is the client's, by key + fingerprint.
+// client finding (pdf_*, asm_*) is marked through the same call, and the match against the current
+// text is the client's, by key + fingerprint. KnownFindingCode is the namespace half.
 func ValidFindingKey(key string) bool {
 	return len(key) <= MaxFindingKeyBytes && utf8.ValidString(key) && KeyCode(key) != ""
 }
 
-// ClientSeenMarks keeps the marks the server does not resolve itself: those whose code is not a
-// server code. A server-code mark either rides on its finding already or names a finding this run
-// no longer produces — and for a reader without costing access it may name a withheld money
-// finding, so it is never handed out bare.
+// KnownFindingCode reports whether a key's code may carry a mark: a server code, or a client one
+// (IsClientCode). A server-code key the server would never produce is accepted and harmless: it
+// matches no finding (ApplySeen) and is never handed back (ClientSeenMarks).
+func KnownFindingCode(code string) bool { return IsServerCode(code) || IsClientCode(code) }
+
+// ClientSeenMarks keeps the marks the server does not resolve itself: those of a client code, at
+// most entity.TechCardFindingSeenMaxPerCard, in the store's (key) order. A server-code mark either
+// rides on its finding already or names a finding this run no longer produces — and for a reader
+// without costing access it may name a withheld money finding, so it is never handed out bare.
 func ClientSeenMarks(marks []entity.TechCardFindingSeen) []entity.TechCardFindingSeen {
-	out := make([]entity.TechCardFindingSeen, 0, len(marks))
+	out := make([]entity.TechCardFindingSeen, 0, min(len(marks), entity.TechCardFindingSeenMaxPerCard))
 	for _, m := range marks {
-		if code := KeyCode(m.FindingKey); code != "" && !IsServerCode(code) {
+		if len(out) == entity.TechCardFindingSeenMaxPerCard {
+			break
+		}
+		if IsClientCode(KeyCode(m.FindingKey)) {
 			out = append(out, m)
 		}
 	}

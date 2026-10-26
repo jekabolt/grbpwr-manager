@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -173,18 +175,23 @@ func TestSetTechCardFindingSeenUnmarksWithoutAFingerprint(t *testing.T) {
 // would fail the test by name.
 func TestSetTechCardFindingSeenRefusesBadInput(t *testing.T) {
 	for name, req := range map[string]*pb_admin.SetTechCardFindingSeenRequest{
-		"no card":        {Key: "k@card", Fingerprint: "0123456789abcdef", Seen: true},
+		"no card":        {Key: "pdf_x@card", Fingerprint: "0123456789abcdef", Seen: true},
 		"no key":         {TechCardId: 7, Fingerprint: "0123456789abcdef", Seen: true},
 		"blank key":      {TechCardId: 7, Key: "   ", Seen: false},
 		"key too long":   {TechCardId: 7, Key: strings.Repeat("k", 513), Fingerprint: "0123456789abcdef", Seen: true},
 		"key not utf8":   {TechCardId: 7, Key: "k@\xff", Fingerprint: "0123456789abcdef", Seen: true},
-		"no fingerprint": {TechCardId: 7, Key: "k@card", Seen: true},
-		"upper hex":      {TechCardId: 7, Key: "k@card", Fingerprint: "0123456789ABCDEF", Seen: true},
-		"short hex":      {TechCardId: 7, Key: "k@card", Fingerprint: "0123", Seen: true},
-		"not hex at all": {TechCardId: 7, Key: "k@card", Fingerprint: "zzzzzzzzzzzzzzzz", Seen: true},
+		"no fingerprint": {TechCardId: 7, Key: "pdf_x@card", Seen: true},
+		"upper hex":      {TechCardId: 7, Key: "pdf_x@card", Fingerprint: "0123456789ABCDEF", Seen: true},
+		"short hex":      {TechCardId: 7, Key: "pdf_x@card", Fingerprint: "0123", Seen: true},
+		"not hex at all": {TechCardId: 7, Key: "pdf_x@card", Fingerprint: "zzzzzzzzzzzzzzzz", Seen: true},
 		"no code head":   {TechCardId: 7, Key: "card", Fingerprint: "0123456789abcdef", Seen: true},
 		"upper code":     {TechCardId: 7, Key: "Pdf_x@card", Fingerprint: "0123456789abcdef", Seen: true},
 		"unmark no head": {TechCardId: 7, Key: "card", Seen: false},
+		// Well-formed, but in nobody's namespace: not an audit code and not pdf_*/asm_*.
+		"bare code":        {TechCardId: 7, Key: "k@card", Fingerprint: "0123456789abcdef", Seen: true},
+		"reserved code":    {TechCardId: 7, Key: "edge_missing@op:10", Fingerprint: "0123456789abcdef", Seen: true},
+		"look-alike":       {TechCardId: 7, Key: "pdfx_gap@card", Fingerprint: "0123456789abcdef", Seen: true},
+		"unmark bare code": {TechCardId: 7, Key: "x1@card", Seen: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := &Server{repo: mocks.NewMockRepository(t)}
@@ -196,24 +203,47 @@ func TestSetTechCardFindingSeenRefusesBadInput(t *testing.T) {
 
 func TestSetTechCardFindingSeenMapsStoreErrors(t *testing.T) {
 	for name, tc := range map[string]struct {
+		err  error
 		fk   bool
 		want codes.Code
 	}{
-		"card gone":   {fk: true, want: codes.NotFound},
-		"other error": {fk: false, want: codes.Internal},
+		"card row gone": {err: fmt.Errorf("lock: %w", sql.ErrNoRows), want: codes.NotFound},
+		"fk race":       {err: errors.New("store"), fk: true, want: codes.NotFound},
+		"card full":     {err: fmt.Errorf("mark: %w", entity.ErrTechCardFindingSeenLimit), want: codes.FailedPrecondition},
+		"other error":   {err: errors.New("store"), want: codes.Internal},
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := mocks.NewMockRepository(t)
 			techCards := mocks.NewMockTechCards(t)
 			repo.EXPECT().TechCards().Return(techCards)
-			storeErr := errors.New("store")
-			techCards.EXPECT().MarkTechCardFindingSeen(mock.Anything, 7, "k@card", "0123456789abcdef", "anna").Return(storeErr)
-			repo.EXPECT().IsErrForeignKeyViolation(storeErr).Return(tc.fk)
+			techCards.EXPECT().MarkTechCardFindingSeen(mock.Anything, 7, "pdf_x@card", "0123456789abcdef", "anna").Return(tc.err)
+			repo.EXPECT().IsErrForeignKeyViolation(tc.err).Return(tc.fk).Maybe()
 
 			_, err := (&Server{repo: repo}).SetTechCardFindingSeen(seenWriterCtx(), &pb_admin.SetTechCardFindingSeenRequest{
-				TechCardId: 7, Key: "k@card", Fingerprint: "0123456789abcdef", Seen: true,
+				TechCardId: 7, Key: "pdf_x@card", Fingerprint: "0123456789abcdef", Seen: true,
 			})
-			require.Equal(t, tc.want, status.Code(err))
+			require.Equal(t, tc.want, status.Code(err), "%v", err)
 		})
+	}
+}
+
+// A mark no finding can use — a server code under a key the server never produces, or a code
+// outside every namespace that predates the check — is inert: it is not handed back in seen_marks
+// and moves no count.
+func TestConstructionAuditIgnoresMarksNoFindingCanUse(t *testing.T) {
+	at := time.Date(2026, 10, 26, 9, 30, 0, 0, time.UTC)
+	marks := []entity.TechCardFindingSeen{
+		{TechCardId: 7, FindingKey: "smv_missing@client-ref", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+		{TechCardId: 7, FindingKey: "edge_missing@op:10", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+		{TechCardId: 7, FindingKey: "k@card", Fingerprint: "0123456789abcdef", SeenBy: "anna", SeenAt: at},
+	}
+	for _, ctx := range []context.Context{tcaCostingCtx(), tcaNoCostingCtx()} {
+		resp := seenAudit(t, ctx, marks, nil)
+		require.NotNil(t, resp.GetSeenMarks())
+		require.Empty(t, resp.GetSeenMarks())
+		require.EqualValues(t, len(resp.GetFindings()), resp.GetUnseenCount())
+		for _, f := range resp.GetFindings() {
+			require.False(t, f.GetSeen(), f.GetKey())
+		}
 	}
 }
