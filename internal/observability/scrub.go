@@ -14,9 +14,16 @@ var (
 	urlTailRe = regexp.MustCompile(`(https?://[^\s?#"'<>]+)[?#][^\s"'<>]*`)
 )
 
+// identityKeys are log attribute names that name a person (the codebase logs "username" and
+// "email" on many paths); the admin is identified by admins.id only.
+var identityKeys = map[string]bool{"username": true, "user_name": true, "email": true, "actor": true, "login": true, "sub": true}
+
 // sensitiveKey matches attribute names whose values must never leave the process.
 func sensitiveKey(k string) bool {
 	k = strings.ToLower(k)
+	if identityKeys[k] {
+		return true
+	}
 	for _, s := range []string{"password", "passwd", "secret", "token", "authorization", "cookie", "api_key", "apikey", "dsn", "pepper"} {
 		if strings.Contains(k, s) {
 			return true

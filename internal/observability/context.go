@@ -57,22 +57,20 @@ func hubFrom(ctx context.Context) *sentry.Hub {
 	return sentry.CurrentHub()
 }
 
-// SetAdmin records the authenticated admin on the current request's hub. id is admins.id when it
-// is known (nil otherwise). A no-op when disabled or outside a request hub.
-func SetAdmin(ctx context.Context, username string, id *int) {
-	if !Enabled() || ctx == nil {
+// SetAdmin records the authenticated admin on the current request's hub as admins.id alone: no
+// username, no email. Without a known id (nil) nothing is recorded. A no-op when disabled or
+// outside a request hub.
+func SetAdmin(ctx context.Context, id *int) {
+	if !Enabled() || ctx == nil || id == nil {
 		return
 	}
 	hub := sentry.GetHubFromContext(ctx)
 	if hub == nil {
 		return
 	}
-	user := sentry.User{Username: username}
-	if id != nil {
-		user.ID = strconv.Itoa(*id)
-		hub.Scope().SetTag("admin_id", user.ID)
-	}
-	hub.Scope().SetUser(user)
+	adminID := strconv.Itoa(*id)
+	hub.Scope().SetTag("admin_id", adminID)
+	hub.Scope().SetUser(sentry.User{ID: adminID})
 }
 
 // requestIDFromMetadata reads the id the gateway forwarded from the HTTP request.

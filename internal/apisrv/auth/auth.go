@@ -788,8 +788,8 @@ func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
 			// fails the RPC: the actor then carries the username alone.
 			adminID := s.adminIDFor(ctx, sub)
 			ctx = aiprov.WithActor(ctx, aiprov.Actor{Username: sub, AdminID: adminID})
-			// The same admin on the call's Sentry hub (a no-op without SENTRY_DSN).
-			observability.SetAdmin(ctx, sub, adminID)
+			// The same admin on the call's Sentry hub, by admins.id only (a no-op without SENTRY_DSN).
+			observability.SetAdmin(ctx, adminID)
 		}
 		ctx = putAdminAuthz(ctx, AdminAuthz{Legacy: legacy, Super: super, Perms: perms})
 		return handler(ctx, req)

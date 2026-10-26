@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/stretchr/testify/require"
 )
@@ -84,7 +85,7 @@ func TestDisabledIsInert(t *testing.T) {
 	ctx := context.Background()
 	require.Equal(t, ctx, observability.MarkReported(ctx))
 	observability.CapturePanic(ctx, "boom", "route") // must not panic or send
-	observability.SetAdmin(ctx, "admin", nil)
+	observability.SetAdmin(ctx, nil)
 	require.True(t, observability.Flush(time.Millisecond))
 }
 
@@ -100,7 +101,8 @@ func TestSlogErrorReachesSentryOnce(t *testing.T) {
 	log := slog.New(observability.NewSlogHandler(slog.NewJSONHandler(&out, nil))).With("worker", "fx")
 	log.Info("not an error")
 	log.Error("sync failed", slog.Any("err", errors.New(`upstream 502 for ops@example.com: Get "https://maps.example.com/geo?key=k3y#f": EOF`)),
-		slog.String("api_token", "s3cr3t"), slog.String("callback", "https://hooks.example.com/cb?token=t0k"))
+		slog.String("api_token", "s3cr3t"), slog.String("callback", "https://hooks.example.com/cb?token=t0k"),
+		slog.String("username", "alice"), slog.String("email", "alice@example.com"))
 	log.Error("sync failed", slog.String("err", "again")) // same line within the window: held back
 	log.ErrorContext(observability.MarkReported(context.Background()), "already reported")
 	require.True(t, observability.Flush(5*time.Second))
@@ -121,6 +123,41 @@ func TestSlogErrorReachesSentryOnce(t *testing.T) {
 	require.Equal(t, "https://hooks.example.com/cb", attrs["callback"])
 	require.Equal(t, "fx", attrs["worker"])
 	require.Equal(t, "[Filtered]", attrs["api_token"])
+	require.Equal(t, "[Filtered]", attrs["username"])
+	require.Equal(t, "[Filtered]", attrs["email"])
+	require.Empty(t, ev["user"])
+}
+
+func TestSetAdminRecordsTheIDOnly(t *testing.T) {
+	rc := newReceiver(t)
+	observability.Disable()
+	t.Cleanup(observability.Disable)
+	_, err := observability.Init(observability.Config{DSN: rc.dsn()}, "abc123")
+	require.NoError(t, err)
+
+	request := func() context.Context {
+		return sentry.SetHubOnContext(context.Background(), sentry.CurrentHub().Clone())
+	}
+	id := 5
+	withID, withoutID := request(), request()
+	observability.SetAdmin(withID, &id)
+	observability.SetAdmin(withoutID, nil)
+	observability.CapturePanic(withID, "boom", "route-with-id")
+	observability.CapturePanic(withoutID, "boom", "route-without-id")
+	require.True(t, observability.Flush(5*time.Second))
+
+	_, events := rc.snapshot()
+	require.Len(t, events, 2)
+	byRoute := map[string]map[string]any{}
+	for _, ev := range events {
+		byRoute[ev["tags"].(map[string]any)["route"].(string)] = ev
+	}
+	ev := byRoute["route-with-id"]
+	require.Equal(t, map[string]any{"id": "5"}, ev["user"], "admins.id only: no username, no email")
+	require.Equal(t, "5", ev["tags"].(map[string]any)["admin_id"])
+	ev = byRoute["route-without-id"]
+	require.Empty(t, ev["user"])
+	require.NotContains(t, ev["tags"], "admin_id")
 }
 
 func TestGRPCFinishedCallsGroupByMethodAndCode(t *testing.T) {

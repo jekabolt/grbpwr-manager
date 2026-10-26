@@ -112,7 +112,7 @@ func grpcClient(t *testing.T) healthpb.HealthClient {
 	t.Helper()
 	adminID := 7
 	fakeAuth := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
-		observability.SetAdmin(ctx, "alice", &adminID)
+		observability.SetAdmin(ctx, &adminID)
 		return h(ctx, req)
 	}
 	lis := bufconn.Listen(1 << 20)
@@ -189,13 +189,14 @@ func TestRecoverReportsToSentry(t *testing.T) {
 	require.Equal(t, "deadbeef", httpEv["release"])
 	require.Equal(t, "beta", httpEv["environment"])
 	require.Equal(t, "fatal", httpEv["level"])
+	require.Empty(t, httpEv["user"], "no admin on an HTTP-only route")
 
 	grpcEv := byRoute["/grpc.health.v1.Health/Check"]
 	require.NotNil(t, grpcEv, "routes: %v", byRoute)
 	gt := grpcEv["tags"].(map[string]any)
 	require.Equal(t, "req-grpc-1", gt["request_id"])
 	require.Equal(t, "7", gt["admin_id"])
-	require.Equal(t, "alice", grpcEv["user"].(map[string]any)["username"])
+	require.Equal(t, map[string]any{"id": "7"}, grpcEv["user"], "admins.id only")
 	exc := grpcEv["exception"].([]any)[0].(map[string]any)
 	require.Contains(t, exc["value"], "nil map")
 }
