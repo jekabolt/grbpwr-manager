@@ -400,3 +400,37 @@ func TestClientSeenMarksKeepsOnlyCodesTheServerDoesNotCompute(t *testing.T) {
 		t.Fatalf("no marks: %#v", out)
 	}
 }
+
+// TestFindingKeyGoldenVectors pins exact outputs that the admin client asserts too
+// (src/components/managers/tech-card/components/finding-key.ts, scripts/finding-seen-check.ts): the
+// browser builds the keys of its own findings (pdf_*, assembly-schema) and must agree with this
+// file byte for byte. Change a vector here only together with the client.
+func TestFindingKeyGoldenVectors(t *testing.T) {
+	tok := OpKeyTokens(map[int32]string{10: "aaaaaaaa", 20: "bbbbbbbb", 30: "bbbbbbbb"})
+	two := []Finding{
+		{Code: "c", Title: "A", Refs: []string{RefCard}},
+		{Code: "c", Title: "B", Refs: []string{RefCard}},
+		{Code: "c", Title: "B", Refs: []string{RefCard}},
+	}
+	AssignKeys(two, nil)
+	for i, c := range []struct{ got, want string }{
+		{FindingKey("pdf_sa_missing", []string{"seam:side", "op:10", "seam:hem", "op:10"}, "", tok), "pdf_sa_missing@opfp:aaaaaaaa,seam:hem,seam:side"},
+		{FindingKey("pdf_sa_missing", []string{"op:20"}, "", tok), "pdf_sa_missing@op:20"},
+		{FindingKey("pdf_sa_missing", []string{"op:010", "op:+10"}, "", tok), "pdf_sa_missing@opfp:aaaaaaaa"},
+		{FindingKey("pdf_sa_missing", []string{"op:x", "op:99999999999"}, "", tok), "pdf_sa_missing@op:99999999999,op:x"},
+		{FindingKey("pdf_x", []string{"card"}, "front", tok), "pdf_x@card#front"},
+		{FindingKey("pdf_x", nil, "", tok), "pdf_x@"},
+		// Byte order, not UTF-16 order: U+E000 sorts before an astral character.
+		{FindingKey("pdf_x", []string{"unit:😀", "unit:\uE000", "unit:é", "unit:z"}, "", tok), "pdf_x@unit:z,unit:é,unit:\uE000,unit:😀"},
+		{FindingKey("unit_key_case_collision", []string{RefUnit(strings.Repeat("ю", 400))}, "", nil), "unit_key_case_collision@sha256:e6a9631642ae8f89e851d719927f7f76"},
+		{FindingFingerprint("Seam allowance missing", "Side seam has no SA", []string{"op:20", "op:10", "seam:hem"}, map[int32]string{10: "bbbbbbbb", 20: "aaaaaaaa"}), "c13246480eda69ca"},
+		{FindingFingerprint("Нет припуска", "", nil, nil), "c3de5ec904f08a99"},
+		{two[0].Key, "c@card~559aead0"},
+		{two[1].Key, "c@card~df7e70e5"},
+		{two[2].Key, "c@card~df7e70e5.2"},
+	} {
+		if c.got != c.want {
+			t.Errorf("vector %d: got %q, want %q", i, c.got, c.want)
+		}
+	}
+}
