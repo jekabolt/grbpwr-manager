@@ -5,21 +5,21 @@ import (
 	"testing"
 )
 
-// СТРАЖ МИГРАЦИИ 0436 — РАБОТЫ ЛИСТА ПИКТОГРАММ.
+// СТРАЖ МИГРАЦИИ 0437 — РАБОТЫ ЛИСТА ПИКТОГРАММ.
 //
 // У миграции два рубежа. Общий union в operation_work_catalog_test.go прогоняет новые строки
 // вместе с 0329/0331/0332 через закрытые словари, уникальность token/sort, арифметику machine_mode
 // и обязательные RU/EN-синонимы. Этот файл морозит РОВНО новые пары token→verb: правка старого
-// файла не может спрятаться за общим числом, а правка 0436 не может выдать себя за ярлык.
-const operationWorkIconCatalogMigration = "0436_operation_work_icon_catalog.sql"
+// файла не может спрятаться за общим числом, а правка 0437 не может выдать себя за ярлык.
+const operationWorkIconCatalogMigration = "0437_operation_work_icon_catalog.sql"
 
-// iconCatalogWorkCount — сколько работ минтит ИМЕННО 0436. Постоянно навсегда: финальный список
+// iconCatalogWorkCount — сколько работ минтит ИМЕННО 0437. Постоянно навсегда: финальный список
 // SPEC-B1 §6 нельзя пополнять вариантами и нельзя сокращать переименованием.
 const iconCatalogWorkCount = 54
 
 const catalogWorkCountAfterIconCatalog = catalogWorkCountAfterHemTurned + iconCatalogWorkCount
 
-// frozenIconCatalogTokenVerbDigest — sha256 по отсортированным парам «токен=глагол» 0436.
+// frozenIconCatalogTokenVerbDigest — sha256 по отсортированным парам «токен=глагол» 0437.
 //
 // ⚠️ МЕНЯТЬ ТОЛЬКО ВМЕСТЕ С ПИСЬМЕННЫМ ОБОСНОВАНИЕМ ЗДЕСЬ ЖЕ. Токен уезжает в проекцию
 // отпечатка строки шага, глагол входит в правило когерентности 0330. Законный повод ровно один —
@@ -41,7 +41,7 @@ func TestOperationWorkIconCatalogPairsAreFrozen(t *testing.T) {
 			len(mine.Works), iconCatalogWorkCount)
 	}
 	if got := tokenVerbDigest(mine); got != frozenIconCatalogTokenVerbDigest {
-		t.Errorf("пары токен→глагол 0436 изменились:\n  было %s\n  стало %s\nТокен уезжает в "+
+		t.Errorf("пары токен→глагол 0437 изменились:\n  было %s\n  стало %s\nТокен уезжает в "+
 			"отпечаток строки шага, глагол — в правило когерентности: правка задним числом "+
 			"раздваивает подпись. Если правка осознанна — поменяйте константу и напишите, ПОЧЕМУ.",
 			frozenIconCatalogTokenVerbDigest, got)
@@ -50,7 +50,7 @@ func TestOperationWorkIconCatalogPairsAreFrozen(t *testing.T) {
 	for _, w := range mine.Works {
 		names = append(names, w.Token+"="+w.Verb)
 	}
-	t.Logf("0436 минтит %d замороженных пар:\n  %s", len(names), strings.Join(names, "\n  "))
+	t.Logf("0437 минтит %d замороженных пар:\n  %s", len(names), strings.Join(names, "\n  "))
 }
 
 // TestOperationWorkIconCatalogFreezeIsNotFalseGreen — мутация одной пары обязана сдвинуть хеш.

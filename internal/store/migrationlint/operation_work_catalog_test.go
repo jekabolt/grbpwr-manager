@@ -455,7 +455,7 @@ func TestOperationWorkCatalogSeed(t *testing.T) {
 	t.Logf("(е) sha256(token=verb) = %s", tokenVerbDigest(cat))
 }
 
-// TestOperationWorkCatalogSeedUnion прогоняет восемь правил по 0329 + 0331 + 0332 + 0436.
+// TestOperationWorkCatalogSeedUnion прогоняет восемь правил по 0329 + 0331 + 0332 + 0437.
 // Именно объединённый срез ловит token/sort, занятый в другом файле; остальные правила заодно
 // не дают новой миграции миновать закрытые словари, арифметику machine_mode и RU/EN-поиск.
 func TestOperationWorkCatalogSeedUnion(t *testing.T) {
@@ -463,7 +463,7 @@ func TestOperationWorkCatalogSeedUnion(t *testing.T) {
 	for _, p := range checkSeedCatalog(cat, catalogWorkCountAfterIconCatalog) {
 		t.Error(p)
 	}
-	t.Logf("объединённый каталог после 0436: работ %d, машинок %d, синонимов %d",
+	t.Logf("объединённый каталог после 0437: работ %d, машинок %d, синонимов %d",
 		len(cat.Works), len(cat.Machines), len(cat.Syns))
 }
 
