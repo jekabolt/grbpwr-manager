@@ -158,6 +158,10 @@ const (
 	// orphan seam the screen offers to remove), meaningless here. The seam and the steps' links to
 	// it are dropped; every other seam imports.
 	ReasonSeamPieceMissing Reason = "seam_piece_missing"
+	// ReasonSeamStepMissing — a step that sewed a seam did not survive the import: the FUSING
+	// reconciliation rebuilds automatic fusing steps from the pieces and may drop the archive's own.
+	// The seam imported; only that step's link to it was dropped — never moved to another step.
+	ReasonSeamStepMissing Reason = "seam_step_missing"
 
 	// ReasonStyleNumberTaken — the style number already exists in the target base.
 	ReasonStyleNumberTaken Reason = "style_number_taken"

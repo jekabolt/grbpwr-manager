@@ -37,34 +37,7 @@ func TestTechCardArchiveCarriesSeams(t *testing.T) {
 	fx := rtBuildMaximalCard(t, rig)
 	T := rig.store.TechCards()
 
-	const keyShoulder = "01SEAMARCH0000000000000001"
-	const keyCuff = "01SEAMARCH0000000000000002"
-	anchor := func(piece, hint string, share float64) entity.TechCardSeamAnchor {
-		return entity.TechCardSeamAnchor{
-			PieceLineKey: piece,
-			Samples:      []entity.TechCardSeamSample{{U: 0, V: 0}, {U: 0.25, V: 0.1}, {U: 0.5, V: 0.2}, {U: 0.75, V: 0.3}, {U: 1, V: 0.4}},
-			PerimShare:   share, LenMm: 142.5, Notches: 2, TurnDeg: -3.5,
-			EdgeHint: hint, ContourSig: "abcdef0123456789",
-		}
-	}
-	cuffSide := anchor(rtPieceCuff, "CUFF#1", 0.5)
-	cuffSide.Placement = &entity.TechCardSeamPlacement{XMm: 12.5, YMm: -40, RotDeg: 90, Flip: true}
-	seams := []entity.TechCardSeamInput{
-		{
-			SeamKey: keyShoulder, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
-			Direction: entity.TechCardSeamReversed, Source: entity.TechCardSeamSourceGraph,
-			SideA:        []entity.TechCardSeamAnchor{anchor(rtPieceFront, "FRONT#2", 0.125)},
-			SideB:        []entity.TechCardSeamAnchor{anchor(rtPieceBack, "BACK#8", 0.125)},
-			AnchoredSize: "M", Note: "shoulder",
-		},
-		{
-			SeamKey: keyCuff, Status: entity.TechCardSeamRejected, Kind: entity.TechCardSeamKindEdge,
-			Direction: entity.TechCardSeamSame, Source: entity.TechCardSeamSourceManual,
-			SideA: []entity.TechCardSeamAnchor{anchor(rtPieceBack, "BACK#3", 0.25)},
-			SideB: []entity.TechCardSeamAnchor{cuffSide},
-			Note:  "not a seam",
-		},
-	}
+	seams := seamArchSeams()
 	_, written, err := T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
 		TechCardId: fx.cardID, By: rtActor, Seams: seams,
 	})
@@ -273,4 +246,135 @@ func seamArchRewrite(t *testing.T, archive []byte, edit func(name string, raw []
 	}
 	require.NoError(t, zw.Close())
 	return out.Bytes()
+}
+
+const (
+	keyShoulder = "01SEAMARCH0000000000000001"
+	keyCuff     = "01SEAMARCH0000000000000002"
+)
+
+// seamArchSeams is the two seams both archive tests write: a confirmed shoulder FRONT↔BACK and a
+// rejected BACK↔CUFF whose cuff side carries a hand placement.
+func seamArchSeams() []entity.TechCardSeamInput {
+	anchor := func(piece, hint string, share float64) entity.TechCardSeamAnchor {
+		return entity.TechCardSeamAnchor{
+			PieceLineKey: piece,
+			Samples:      []entity.TechCardSeamSample{{U: 0, V: 0}, {U: 0.25, V: 0.1}, {U: 0.5, V: 0.2}, {U: 0.75, V: 0.3}, {U: 1, V: 0.4}},
+			PerimShare:   share, LenMm: 142.5, Notches: 2, TurnDeg: -3.5,
+			EdgeHint: hint, ContourSig: "abcdef0123456789",
+		}
+	}
+	cuffSide := anchor(rtPieceCuff, "CUFF#1", 0.5)
+	cuffSide.Placement = &entity.TechCardSeamPlacement{XMm: 12.5, YMm: -40, RotDeg: 90, Flip: true}
+	return []entity.TechCardSeamInput{
+		{
+			SeamKey: keyShoulder, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
+			Direction: entity.TechCardSeamReversed, Source: entity.TechCardSeamSourceGraph,
+			SideA:        []entity.TechCardSeamAnchor{anchor(rtPieceFront, "FRONT#2", 0.125)},
+			SideB:        []entity.TechCardSeamAnchor{anchor(rtPieceBack, "BACK#8", 0.125)},
+			AnchoredSize: "M", Note: "shoulder",
+		},
+		{
+			SeamKey: keyCuff, Status: entity.TechCardSeamRejected, Kind: entity.TechCardSeamKindEdge,
+			Direction: entity.TechCardSeamSame, Source: entity.TechCardSeamSourceManual,
+			SideA: []entity.TechCardSeamAnchor{anchor(rtPieceBack, "BACK#3", 0.25)},
+			SideB: []entity.TechCardSeamAnchor{cuffSide},
+			Note:  "not a seam",
+		},
+	}
+}
+
+// TestTechCardArchiveSeamLinksFollowTheirStep proves a step↔seam link follows its OWN step through
+// the FUSING reconciliation the import runs after the steps land — never the step that now sits
+// at its old position.
+//
+// The source is shaped the way the reconciliation reshapes an archive:
+//   - the FRONT automatic fusing step is gone (a raw delete, so the source keeps no step for a fused
+//     piece): the import inserts a fresh automatic step FIRST and every archive step shifts by one;
+//   - the BACK automatic step is linked to the shell BOM line, so in the archive (where the private
+//     auto identity does not travel) it is a manual fusing step the reconciliation drops and
+//     replaces with a fresh automatic one.
+//
+// Links: BACK fusing → cuff; machine → cuff, shoulder; press → shoulder. Expected on the import:
+// machine and press keep theirs on their own rows, the BACK link is dropped with a
+// seam_step_missing line, the fresh automatic steps carry nothing.
+//
+// SAFE ONLY against a local container DSN or CI — see mysql_test.go.
+func TestTechCardArchiveSeamLinksFollowTheirStep(t *testing.T) {
+	if os.Getenv("CI") == "" &&
+		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
+		!strings.Contains(testCfg.DSN, "localhost") {
+		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	rig := newRTRig(t, ctx)
+	fx := rtBuildMaximalCard(t, rig)
+	T := rig.store.TechCards()
+
+	_, _, err := T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+		TechCardId: fx.cardID, By: rtActor, Seams: seamArchSeams(),
+	})
+	require.NoError(t, err)
+
+	opID := func(where string, args ...any) int {
+		var id int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT id FROM tech_card_operation WHERE tech_card_id = ? AND "+where,
+			append([]any{fx.cardID}, args...)...).Scan(&id), where)
+		return id
+	}
+	frontFusing := opID("auto_fusing_piece_key = ?", rtPieceFront)
+	backFusing := opID("auto_fusing_piece_key = ?", rtPieceBack)
+	machine := opID("note = ?", "стачать боковые")
+	press := opID("note = ?", "разутюжить шов")
+
+	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card_operation WHERE id = ?", frontFusing)
+	require.NoError(t, err)
+	_, err = testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_operation_bom (operation_id, bom_item_id, display_order)
+		SELECT ?, b.id, 9 FROM tech_card_bom_item b WHERE b.tech_card_id = ? AND b.line_key = ?`,
+		backFusing, fx.cardID, rtLineShell)
+	require.NoError(t, err)
+	for _, l := range []struct {
+		op    int
+		key   string
+		order int
+	}{{backFusing, keyCuff, 0}, {machine, keyCuff, 0}, {machine, keyShoulder, 1}, {press, keyShoulder, 0}} {
+		_, err := testDB.ExecContext(ctx,
+			"INSERT INTO tech_card_operation_seam (operation_id, seam_key, display_order) VALUES (?, ?, ?)",
+			l.op, l.key, l.order)
+		require.NoError(t, err)
+	}
+
+	zip, _ := rig.export(t, fx.cardID)
+	newID, rep := rig.importArchive(t, zip)
+
+	got, err := T.GetTechCardById(ctx, newID)
+	require.NoError(t, err)
+	require.Len(t, got.Seams, 2, "both seams import; only a link is lost")
+	byNote := map[string][]string{}
+	var fusing [][]string
+	for _, op := range got.Operations {
+		if op.OperationType == entity.OpTypeFusing {
+			fusing = append(fusing, op.SeamKeys)
+			continue
+		}
+		byNote[op.Note.String] = op.SeamKeys
+	}
+	require.Len(t, fusing, 2, "one automatic fusing step per fused piece after the reconciliation")
+	require.Equal(t, entity.OpTypeFusing, got.Operations[0].OperationType,
+		"the reconciliation put a fresh fusing step first — the archive's steps shifted")
+	for i, keys := range fusing {
+		require.Empty(t, keys, "fusing step %d is the reconciliation's own; no archive link may land on it", i)
+	}
+	require.Equal(t, []string{keyCuff, keyShoulder}, byNote["стачать боковые"], "machine keeps its links")
+	require.Equal(t, []string{keyShoulder}, byNote["разутюжить шов"], "press keeps its link")
+	for note, keys := range byNote {
+		if note != "стачать боковые" && note != "разутюжить шов" {
+			require.Empty(t, keys, "step %q sewed nothing on the source", note)
+		}
+	}
+	rtRequireReportReason(t, rep, techcardarchive.EntitySeam, "seam_key="+keyCuff+" step=1",
+		string(techcardarchive.ReasonSeamStepMissing))
 }

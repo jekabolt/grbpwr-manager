@@ -149,6 +149,10 @@ const (
 	// style_number is read for the REPORT, not for the write: a dropped assembly line has to name
 	// its component the way the resolver's own lines do — by number, which is what is printed on the
 	// card — rather than by an id that means nothing outside this database.
+	// Every step of the card being imported, with its position: read once right after the insert
+	// (display_order = payload index) and once after the FUSING reconciliation (which rows survived).
+	archiveImportOperationRowsQuery = `SELECT id, display_order FROM tech_card_operation WHERE tech_card_id = :card`
+
 	archiveImportComponentFactsQuery = `SELECT id, purpose, style_number FROM tech_card WHERE id IN (:ids)`
 
 	archiveImportAssemblyInsertQuery = `
@@ -196,7 +200,12 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	if err := s.EnsureDictionaryFresh(ctx, "archive import"); err != nil {
 		return 0, err
 	}
-	card.ReconcileFusing = true
+	// The FUSING reconciliation runs below, by this function, and NOT inside insertTechCardChildren:
+	// it may insert automatic steps, drop the archive's own and renumber every step, and the steps'
+	// seam links (insertImportedSeams) must follow each step's ROW, which is only knowable between
+	// the insert and the reconciliation. Constant on every call, so the handler's retry with the
+	// same payload sees the same thing.
+	card.ReconcileFusing = false
 	// Sheets and DXF aliases arrive with the exported card's bindings unchanged: a grandfathered
 	// unresolved one is carried, not a reason to abort the import.
 	card.FabricBindingsCopied = true
@@ -245,6 +254,20 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err := insertTechCardChildren(ctx, db, newID, card, nil); err != nil {
 			return err
 		}
+		// Each archive step's row, by its position in the payload (insertTechCardOperations writes
+		// display_order = index), taken BEFORE the reconciliation moves anything.
+		opRows, err := storeutil.QueryListNamed[importedOperationRow](ctx, db, archiveImportOperationRowsQuery,
+			map[string]any{"card": newID})
+		if err != nil {
+			return fmt.Errorf("load imported operations of tech card %d: %w", newID, err)
+		}
+		opIDs, err := importedOperationIDsByIndex(opRows, len(card.Operations))
+		if err != nil {
+			return err
+		}
+		if err := ReconcileFusingOps(ctx, db, newID); err != nil {
+			return err
+		}
 
 		// The imported card's OWN size range, read back after the children landed. It is the one
 		// authority every size below is held against: the resolver mapped names to this base's
@@ -289,7 +312,7 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		}
 		// The seams AFTER the pieces, sheets and DXF links (the fingerprint is taken from them), and
 		// the steps' links to them after the seams.
-		if err := insertImportedSeams(ctx, db, newID, in.Seams, in.SeamsStale, opSeamKeys, in.Actor, losses); err != nil {
+		if err := insertImportedSeams(ctx, db, newID, in.Seams, in.SeamsStale, opSeamKeys, opIDs, in.Actor, losses); err != nil {
 			return err
 		}
 		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
@@ -1518,7 +1541,7 @@ func takeImportedOperationSeamKeys(card *entity.TechCardInsert) [][]string {
 // refusal of the whole import — 0411 keeps no FK to the piece, so an orphan seam is legal on the
 // source. A step's key for a dropped seam goes with it.
 func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, seams []entity.TechCardSeamInput,
-	stale map[string]bool, opSeamKeys [][]string, actor string, losses *importLosses,
+	stale map[string]bool, opSeamKeys [][]string, opIDs []int, actor string, losses *importLosses,
 ) error {
 	kept := map[string]bool{}
 	if len(seams) > 0 {
@@ -1563,15 +1586,67 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 	if len(opSeamKeys) == 0 {
 		return nil
 	}
-	ops := make([]entity.TechCardOperation, len(opSeamKeys))
+	// The steps that exist NOW, after the reconciliation. A link goes to the row its own step was
+	// inserted as; a step the reconciliation dropped takes its links with it, reported — a link is
+	// never attached to whichever step now sits at its old position.
+	now, err := storeutil.QueryListNamed[importedOperationRow](ctx, db, archiveImportOperationRowsQuery,
+		map[string]any{"card": techCardID})
+	if err != nil {
+		return fmt.Errorf("load reconciled operations of tech card %d: %w", techCardID, err)
+	}
+	alive := make(map[int]bool, len(now))
+	for _, r := range now {
+		alive[r.Id] = true
+	}
+	rows := make([]map[string]any, 0)
 	for i, keys := range opSeamKeys {
+		pos := 0
 		for _, k := range keys {
-			if k = entity.NormalizeTechCardSeamKey(k); kept[k] {
-				ops[i].SeamKeys = append(ops[i].SeamKeys, k)
+			k = entity.NormalizeTechCardSeamKey(k)
+			if !kept[k] {
+				continue
 			}
+			if i >= len(opIDs) || !alive[opIDs[i]] {
+				losses.drop(techcardarchive.EntitySeam, fmt.Sprintf("seam_key=%s step=%d", k, i+1),
+					techcardarchive.StatusDegraded, techcardarchive.ReasonSeamStepMissing,
+					fmt.Sprintf("step %d of the archive, which sewed this seam, did not survive the fusing reconciliation", i+1))
+				continue
+			}
+			rows = append(rows, map[string]any{"operation_id": opIDs[i], "seam_key": k, "display_order": pos})
+			pos++
 		}
 	}
-	return insertTechCardOperationSeams(ctx, db, techCardID, ops, nil)
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_seam", rows); err != nil {
+		return fmt.Errorf("insert imported operation seam links: %w", err)
+	}
+	return nil
+}
+
+// importedOperationRow is one tech_card_operation row of the card being imported.
+type importedOperationRow struct {
+	Id           int `db:"id"`
+	DisplayOrder int `db:"display_order"`
+}
+
+// importedOperationIDsByIndex maps each payload step (by index) to the row it was inserted as.
+func importedOperationIDsByIndex(rows []importedOperationRow, n int) ([]int, error) {
+	ids := make([]int, n)
+	seen := make([]bool, n)
+	for _, r := range rows {
+		if r.DisplayOrder >= 0 && r.DisplayOrder < n && !seen[r.DisplayOrder] {
+			ids[r.DisplayOrder] = r.Id
+			seen[r.DisplayOrder] = true
+		}
+	}
+	for i := range seen {
+		if !seen[i] {
+			return nil, fmt.Errorf("imported operation %d missing after insert", i)
+		}
+	}
+	return ids, nil
 }
 
 // restoreImportedOperationSeamKeys puts back what takeImportedOperationSeamKeys took off.

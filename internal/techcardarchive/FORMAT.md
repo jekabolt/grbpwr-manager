@@ -533,6 +533,11 @@ validate is dropped (`archive_row_invalid` on `seam`), a seam naming a piece the
 is dropped (`seam_piece_missing`), and in both cases the steps' keys for it go too. The import never
 fails for a seam.
 
+A link follows its OWN step, identified by the row the import inserted for it, not by position: the
+FUSING reconciliation that runs after the steps land may insert automatic fusing steps, drop the
+archive's own and renumber everything. A link whose step did not survive is dropped with
+`seam_step_missing` (the seam itself imports) and is never attached to another step.
+
 ### 5.4 `materials/index.json`
 
 Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
@@ -752,6 +757,7 @@ explanation and the report action text.
 | `norm_marker_lost` | the norm's marker stamp could not be re-sewn — the norm stands, the stamp does not |
 | `language_unknown` | a colourway name's translation is keyed by a language this base does not have — that translation is dropped (EXPORT side: a translation whose language the dictionary could not name) |
 | `seam_piece_missing` | a seam decision (`seams.json`, 1.3) names a cut piece the imported card does not have — the seam and the steps' links to it are dropped, every other seam imports |
+| `seam_step_missing` | a step that sewed a seam did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the seam imports |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |

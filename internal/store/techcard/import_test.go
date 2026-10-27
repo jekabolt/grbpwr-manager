@@ -68,6 +68,7 @@ func TestArchiveImportQueriesBind(t *testing.T) {
 			"seam": decimal.Zero, "hulled": false, "ambiguous": false,
 			"fingerprint": strings.Repeat("a", 64), "parsed_by": "im", "parsed_at": time.Now(),
 		}, 13},
+		{"operation rows", archiveImportOperationRowsQuery, map[string]any{"card": 7}, 1},
 		{"component facts", archiveImportComponentFactsQuery, map[string]any{"ids": []int{7, 9}}, 2},
 		{"assembly insert", archiveImportAssemblyInsertQuery, map[string]any{
 			"style_id": 7, "component_tech_card_id": 9, "size_id": sql.NullInt32{},

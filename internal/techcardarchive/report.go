@@ -511,6 +511,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 		"This seam joins a piece the card does not have — on the source card it was already an orphan " +
 			"(its piece had been removed), so it was dropped together with the steps' links to it. The " +
 			"other seams imported. Connect the edges again on the pieces map if the seam is still wanted."},
+	ReasonSeamStepMissing: {StatusDegraded,
+		"A step that sewed this seam did not survive the import — automatic fusing steps are rebuilt " +
+			"from the pieces on arrival — so that step's link to the seam was dropped. The seam itself " +
+			"imported. Pick the seam on the right step again if it is still wanted."},
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +
 			"different one. Rename the card if that is not what you want."},
