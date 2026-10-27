@@ -15,7 +15,7 @@ import (
 // from sliding in quietly.
 const (
 	FormatName            = "grbpwr-techcard-archive"
-	FormatVersion         = "1.2" // MAJOR.MINOR, see FormatMajor / FormatMinor
+	FormatVersion         = "1.3" // MAJOR.MINOR, see FormatMajor / FormatMinor
 	MoneyPolicyStrippedV1 = "stripped-v1"
 
 	// FormatMajor breaks parsing: an archive of another MAJOR is refused whole. FormatMinor is
@@ -29,8 +29,15 @@ const (
 	//
 	// 1.2 (62-DEEP-FIXES D2, 05.10) adds design_quiz.json — the moodboard quiz answers (§5.3a). An
 	// older server lists it as unknown_entry and imports the card without them.
+	//
+	// 1.3 (ARCHIVE-SEAMS, 27.10) adds seams.json — the technologist's seam decisions (§5.3b) — and
+	// stops cutting TechCardOperation.seam_keys out of card.json: the steps' links to those seams
+	// travel by seam_key, which is the card's own stable identity of a seam. contents.seams is the
+	// positive control. A 1.2 archive has neither and imports with no seams, as before. An older
+	// server reading a 1.3 archive lists seams.json as unknown_entry, strips the steps' seam_keys
+	// itself and imports the card without seams — the card lands, the seams do not.
 	FormatMajor = 1
-	FormatMinor = 2
+	FormatMinor = 3
 
 	// ArchiveNameTimeLayout formats the timestamp in the archive's own file name,
 	// techcard-<style_number>-<yyyymmdd-hhmm>.zip.
@@ -47,6 +54,7 @@ const (
 	FileAssembly   = "assembly.json"
 	FileColorways  = "colorways.json"
 	FileDesignQuiz = "design_quiz.json"
+	FileSeams      = "seams.json"
 
 	DirMaterials = "materials/"
 	DirMedia     = "media/"
@@ -160,6 +168,8 @@ type Contents struct {
 	Patterns  int `json:"patterns"`
 	Markers   int `json:"markers"`
 	Materials int `json:"materials"`
+	// Seams is the number of rows in seams.json (1.3). Absent (0) in older archives.
+	Seams int `json:"seams,omitempty"`
 }
 
 // ExportHole is one thing the export could not carry. It is not an error: the export completes and
@@ -375,6 +385,57 @@ type DesignQuizAnswer struct {
 	Skipped         bool     `json:"skipped,omitempty"`
 	// AnsweredAt is RFC 3339 UTC; "" when unknown.
 	AnsweredAt string `json:"answered_at,omitempty"`
+}
+
+// SeamPayload is one element of seams.json (1.3, FORMAT.md §5.3b): one technologist's decision on a
+// seam of the card (tech_card_seam), as stored. Everything in it is the card's OWN identity —
+// seam_key is the ULID the card minted, every anchor names a piece by its stable line_key (which
+// travels verbatim in card.json) — so nothing here needs a remap. What does NOT travel: the source
+// fingerprint (it hashes the source's sheet URLs; the importing side stamps its own) and the
+// created/updated stamps (the source's people). Stale says the source read the seam as stale; the
+// import keeps it stale rather than re-stamping «decided on these patterns».
+//
+// The anchor keys are tech_card_seam.side_a / side_b's own JSON format (entity.TechCardSeamAnchor).
+type SeamPayload struct {
+	SeamKey      string       `json:"seam_key"`
+	Status       string       `json:"status"`    // confirmed | rejected
+	Kind         string       `json:"kind"`      // edge | partial | composite | surface | closure
+	Direction    string       `json:"direction"` // reversed | same | unknown
+	Source       string       `json:"source"`    // graph | doll | order | manual | ai
+	SideA        []SeamAnchor `json:"side_a"`
+	SideB        []SeamAnchor `json:"side_b"`
+	AnchoredSize string       `json:"anchored_size,omitempty"`
+	Note         string       `json:"note,omitempty"`
+	Stale        bool         `json:"stale,omitempty"`
+}
+
+// SeamAnchor is one run of one piece on one side of a seam.
+type SeamAnchor struct {
+	PieceLineKey string         `json:"piece_line_key"`
+	Samples      []SeamSample   `json:"samples"`
+	PerimShare   float64        `json:"perim_share"`
+	LenMm        float64        `json:"len_mm"`
+	Notches      int32          `json:"notches"`
+	TurnDeg      float64        `json:"turn_deg"`
+	RangeFrom    float64        `json:"range_from"`
+	RangeTo      float64        `json:"range_to"`
+	EdgeHint     string         `json:"edge_hint"`
+	ContourSig   string         `json:"contour_sig"`
+	Placement    *SeamPlacement `json:"placement,omitempty"`
+}
+
+// SeamSample is one point of an edge's shape in the piece's bbox-normalised frame.
+type SeamSample struct {
+	U float64 `json:"u"`
+	V float64 `json:"v"`
+}
+
+// SeamPlacement is a part piece's hand placement on its host piece (mm, degrees, mirror).
+type SeamPlacement struct {
+	XMm    float64 `json:"x_mm"`
+	YMm    float64 `json:"y_mm"`
+	RotDeg float64 `json:"rot_deg"`
+	Flip   bool    `json:"flip"`
 }
 
 // ColorwayPayload is one element of colorways.json. Colourways are PRODUCTS and an import does not

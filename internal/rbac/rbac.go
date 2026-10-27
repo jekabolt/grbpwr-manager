@@ -402,7 +402,8 @@ var methodRequirements = map[string]Requirement{
 	// AddTechCardIssue пишет строку — тут спорить не о чем. Он работает и на ЗАМОРОЖЕННОЙ карточке
 	// (issues вне CONSTRUCTION-дайджеста), но замороженность карточки — не права: право одно и то
 	// же на всех состояниях, иначе роль зависела бы от стадии.
-	"AddTechCardIssue": wr(SectionTechCards),
+	"AddTechCardIssue":       wr(SectionTechCards),
+	"SetTechCardFindingSeen": wr(SectionTechCards),
 	// Каталог работ (виды операций, 0329/0330). Чтение — обычное чтение тех-карт: каталог не несёт
 	// ни денег, ни персональных данных, а без него пикер работ пуст. Запись дефолта — ГЛОБАЛЬНАЯ
 	// (пара «работа + поле» на все карточки), поэтому tech-card write, а не read: жест меняет то,

@@ -57,7 +57,7 @@ func TestStyleEconomicsAmortisesOverEveryRunNotJustTheFirstPage(t *testing.T) {
 	repo.EXPECT().Fittings().Return(fit)
 	repo.EXPECT().ProductionRuns().Return(pr)
 
-	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(runMixSnapshotCard(), nil)
+	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(devAmortisationCard(), nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)
 	tc.EXPECT().ListTechCardDevExpenses(mock.Anything, 7).Return([]entity.TechCardDevExpense{
 		{Kind: "sample", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("1010"), Valid: true}},
@@ -104,7 +104,7 @@ func TestListTechCardDevExpensesAmortisesOverEveryRun(t *testing.T) {
 	tc.EXPECT().ListTechCardDevExpenses(mock.Anything, 7).Return([]entity.TechCardDevExpense{
 		{Kind: "sample", AmountBase: decimal.NullDecimal{Decimal: decimal.RequireFromString("1010"), Valid: true}},
 	}, nil)
-	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(runMixSnapshotCard(), nil)
+	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(devAmortisationCard(), nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(map[string]decimal.Decimal{}, nil)
 	fit.EXPECT().ListFittings(mock.Anything, devExpenseFittingScan, 0, entity.Descending, 0, 0, 7).Return(nil, 0, nil)
 	expectPagedRuns(pr, 7, scanRuns(101))

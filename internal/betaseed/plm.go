@@ -208,6 +208,8 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	// карточки, которую сидер сам же и разметил.
 	tc.AssemblyAware = true
 	tc.OperationBlockMembershipAware = true
+	tc.OperationSeamsAware = true
+	tc.OperationSeamKindAware = true
 	// Осведомлённость о 32 колонках волны видов операций (0324): та же природа read-modify-write —
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
 	// «старый бандл собирается стереть то, что написал новый».
@@ -400,12 +402,13 @@ func (s *Seeder) plmDraft(ctx context.Context, st *plmState) error {
 			RequiredSeamAllowanceMm: decv("1"),
 			// The card is created by a client that knows about machines and ВТО profiles — every
 			// later save of it (via tcSave) says the same, and B.7 fills its equipment park.
-			MachineFieldsAware:  true,
-			AssemblyAware:       true,
-			MediaAware:          true,
-			OperationKindsAware: true,
-			BomQtyAware:         true,
-			OperationWorkAware:  true,
+			MachineFieldsAware:     true,
+			AssemblyAware:          true,
+			MediaAware:             true,
+			OperationKindsAware:    true,
+			BomQtyAware:            true,
+			OperationWorkAware:     true,
+			OperationSeamKindAware: true,
 		},
 	})
 	if err != nil {
@@ -872,6 +875,8 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.MachineFieldsAware = true
 	neg.AssemblyAware = true
 	neg.OperationBlockMembershipAware = true
+	neg.OperationSeamsAware = true
+	neg.OperationSeamKindAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
 	neg.BomQtyAware = true
@@ -1525,6 +1530,8 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.MachineFieldsAware = true
 	tc2.AssemblyAware = true
 	tc2.OperationBlockMembershipAware = true
+	tc2.OperationSeamsAware = true
+	tc2.OperationSeamKindAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
 	tc2.BomQtyAware = true
@@ -1599,12 +1606,13 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 			Name: names[i] + " (PLM seed)", Purpose: common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY,
 			AuxSubtype: sub, OutputMaterialId: int32(matID),
 			Stage: common.TechCardStage_TECH_CARD_STAGE_PROD, ApprovalState: common.TechCardApprovalState_TECH_CARD_APPROVAL_STATE_DRAFT,
-			MachineFieldsAware:  true,
-			AssemblyAware:       true,
-			MediaAware:          true,
-			OperationKindsAware: true,
-			BomQtyAware:         true,
-			OperationWorkAware:  true,
+			MachineFieldsAware:     true,
+			AssemblyAware:          true,
+			MediaAware:             true,
+			OperationKindsAware:    true,
+			BomQtyAware:            true,
+			OperationWorkAware:     true,
+			OperationSeamKindAware: true,
 		}})
 		if err != nil {
 			return fmt.Errorf("CreateTechCard(aux %s): %w", names[i], err)
@@ -2267,6 +2275,8 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.MachineFieldsAware = true
 			body.AssemblyAware = true
 			body.OperationBlockMembershipAware = true
+			body.OperationSeamsAware = true
+			body.OperationSeamKindAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true
 			body.BomQtyAware = true

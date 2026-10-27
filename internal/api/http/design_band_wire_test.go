@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -38,7 +40,13 @@ func TestDesignBandFreeformPresetsRideTheWireAsAPresentEmptyList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ответ полосы не сериализовался: %v", err)
 		}
-		return string(raw)
+		// protojson randomly adds spaces (keyed on the binary's hash, so any change elsewhere in the
+		// package can flip it); compact before matching so the probe tests keys, not whitespace.
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			t.Fatalf("ответ полосы не JSON: %v", err)
+		}
+		return compact.String()
 	}
 
 	t.Run("пустой список приезжает ключом с пустым массивом", func(t *testing.T) {

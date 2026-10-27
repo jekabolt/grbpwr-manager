@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 	"github.com/jekabolt/grbpwr-manager/internal/marketingaggregate"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/opexmaterialize"
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
@@ -132,6 +133,9 @@ type Config struct {
 	// AI is the provider-neutral AI layer (internal/aiprov): today only the master key that seals
 	// provider keys stored in the database. See AIConfig.
 	AI AIConfig `mapstructure:"ai"`
+	// Sentry is error reporting (internal/observability): SENTRY_DSN unset = off, nothing is sent.
+	// SENTRY_ENVIRONMENT defaults to "beta" in code; the prod app sets it to "prod".
+	Sentry observability.Config `mapstructure:"sentry"`
 }
 
 // AIConfig configures internal/aiprov.
@@ -196,6 +200,12 @@ func LoadConfigForReadOnlyTooling(cfgFile string) (*Config, error) {
 func loadConfig(cfgFile string, validate func(*Config) error) (*Config, error) {
 	viper.SetConfigType("toml")
 	viper.SetDefault("http.block_local_origin_writes", true)
+	// These integrations predate explicit kill switches and therefore default on.
+	// Environment templates can disable them without changing existing/prod behavior.
+	viper.SetDefault("delivery_sync.enabled", true)
+	viper.SetDefault("stripe_reconcile.enabled", true)
+	viper.SetDefault("stripe_payment.enabled", true)
+	viper.SetDefault("stripe_payment_test.enabled", true)
 	reconcileDefaults := reconcile.DefaultConfig()
 	viper.SetDefault("ai_reconcile.enabled", reconcileDefaults.Enabled)
 	viper.SetDefault("ai_reconcile.interval", reconcileDefaults.Interval)
@@ -405,6 +415,10 @@ func bindEnvVars() {
 	viper.BindEnv("logger.level", "LOGGER_LEVEL")
 	viper.BindEnv("logger.add_source", "LOGGER_ADD_SOURCE")
 
+	// Sentry (internal/observability). Set in the DO dashboard as SECRET, never in .do/app.yaml.
+	viper.BindEnv("sentry.dsn", "SENTRY_DSN")
+	viper.BindEnv("sentry.environment", "SENTRY_ENVIRONMENT")
+
 	// HTTP
 	viper.BindEnv("http.port", "HTTP_PORT")
 	viper.BindEnv("http.address", "HTTP_ADDRESS")
@@ -480,6 +494,7 @@ func bindEnvVars() {
 	viper.BindEnv("order_cleanup.placed_threshold", "ORDER_CLEANUP_PLACED_THRESHOLD")
 
 	// Delivery sync (shipped -> delivered via AfterShip poll + per-carrier timer safety net)
+	viper.BindEnv("delivery_sync.enabled", "DELIVERY_SYNC_ENABLED")
 	viper.BindEnv("delivery_sync.worker_interval", "DELIVERY_SYNC_WORKER_INTERVAL")
 	viper.BindEnv("delivery_sync.fallback_default", "DELIVERY_SYNC_FALLBACK_DEFAULT")
 
@@ -533,6 +548,7 @@ func bindEnvVars() {
 	viper.BindEnv("accounting.defect_normal_loss_rate", "ACCOUNTING_DEFECT_NORMAL_LOSS_RATE")
 
 	// Stripe reconcile (orphaned pre-order PaymentIntents)
+	viper.BindEnv("stripe_reconcile.enabled", "STRIPE_RECONCILE_ENABLED")
 	viper.BindEnv("stripe_reconcile.worker_interval", "STRIPE_RECONCILE_WORKER_INTERVAL")
 	viper.BindEnv("stripe_reconcile.pre_order_threshold", "STRIPE_RECONCILE_PRE_ORDER_THRESHOLD")
 
@@ -546,12 +562,14 @@ func bindEnvVars() {
 	viper.BindEnv("rates.base_currency", "RATES_BASE_CURRENCY")
 
 	// Stripe Payment
+	viper.BindEnv("stripe_payment.enabled", "STRIPE_PAYMENT_ENABLED")
 	viper.BindEnv("stripe_payment.secret_key", "STRIPE_PAYMENT_SECRET_KEY")
 	viper.BindEnv("stripe_payment.pub_key", "STRIPE_PAYMENT_PUB_KEY")
 	viper.BindEnv("stripe_payment.invoice_expiration", "STRIPE_PAYMENT_INVOICE_EXPIRATION")
 	viper.BindEnv("stripe_payment.webhook_secret", "STRIPE_PAYMENT_WEBHOOK_SECRET")
 
 	// Stripe Payment Test
+	viper.BindEnv("stripe_payment_test.enabled", "STRIPE_PAYMENT_TEST_ENABLED")
 	viper.BindEnv("stripe_payment_test.secret_key", "STRIPE_PAYMENT_TEST_SECRET_KEY")
 	viper.BindEnv("stripe_payment_test.pub_key", "STRIPE_PAYMENT_TEST_PUB_KEY")
 	viper.BindEnv("stripe_payment_test.invoice_expiration", "STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION")

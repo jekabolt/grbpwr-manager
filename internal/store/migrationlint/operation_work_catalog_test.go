@@ -84,6 +84,17 @@ const seededWorkCount = 53
 // первого применения файла.
 const frozenTokenVerbDigest = "a60e30bfd0b4602f2d57c528397e2bab58cb9d0f7cc650749db3267f47289709"
 
+// operationWorkSeedMigrations — ВСЕ файлы, которые минтят работы каталога. Общий union нужен
+// затем, что локальный тест нового файла не видит столкновения token/sort со старым, а правила
+// machine_mode и синонимов должны выполняться для каждой работы независимо от номера миграции.
+// Порядок здесь — порядок применения миграций; сами Works перед проверкой сортируются по sort.
+var operationWorkSeedMigrations = []string{
+	operationWorkMigration,
+	operationWorkBackfillMigration,
+	operationWorkHemTurnedMigration,
+	operationWorkIconCatalogMigration,
+}
+
 type seedWork struct {
 	Token          string
 	Verb           string
@@ -226,6 +237,19 @@ func parseSeedCatalog(t *testing.T, file, content string) seedCatalog {
 		cat.Syns = append(cat.Syns, [2]string{m[1], m[2]})
 	}
 	return cat
+}
+
+func operationWorkSeedUnion(t *testing.T) seedCatalog {
+	t.Helper()
+	var union seedCatalog
+	for _, file := range operationWorkSeedMigrations {
+		part := parseSeedCatalog(t, file, readMigrationFile(t, file))
+		union.Works = append(union.Works, part.Works...)
+		union.Machines = append(union.Machines, part.Machines...)
+		union.Syns = append(union.Syns, part.Syns...)
+	}
+	sort.SliceStable(union.Works, func(i, j int) bool { return union.Works[i].Sort < union.Works[j].Sort })
+	return union
 }
 
 func hasCyrillic(s string) bool {
@@ -429,6 +453,18 @@ func TestOperationWorkCatalogSeed(t *testing.T) {
 		modes[entity.OperationWorkMachineModeAsk],
 		modes[entity.OperationWorkMachineModeNone])
 	t.Logf("(е) sha256(token=verb) = %s", tokenVerbDigest(cat))
+}
+
+// TestOperationWorkCatalogSeedUnion прогоняет восемь правил по 0329 + 0331 + 0332 + 0437.
+// Именно объединённый срез ловит token/sort, занятый в другом файле; остальные правила заодно
+// не дают новой миграции миновать закрытые словари, арифметику machine_mode и RU/EN-поиск.
+func TestOperationWorkCatalogSeedUnion(t *testing.T) {
+	cat := operationWorkSeedUnion(t)
+	for _, p := range checkSeedCatalog(cat, catalogWorkCountAfterIconCatalog) {
+		t.Error(p)
+	}
+	t.Logf("объединённый каталог после 0437: работ %d, машинок %d, синонимов %d",
+		len(cat.Works), len(cat.Machines), len(cat.Syns))
 }
 
 // TestOperationWorkTokenVerbPairsAreFrozen — (е) неизменяемость связки токен↔глагол.

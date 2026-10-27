@@ -1,8 +1,8 @@
 // Package betaseed is a typed, re-runnable seeder for the grbpwr BETA
 // environment. It builds requests from the generated proto messages and sends
 // them as protojson over the public grpc-gateway (native gRPC is not reachable
-// through DigitalOcean's HTTP ingress). The ONLY backend host it will talk to is
-// backend-beta.grbpwr.com — a hard safety rail, never prod.
+// through DigitalOcean's HTTP ingress). It talks only to the base beta host or a
+// numbered beta host — a hard safety rail, never prod.
 package betaseed
 
 import (
@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -22,8 +23,11 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// BetaBackend is the only backend host the seeder is permitted to contact.
+// BetaBackend is the default backend for the seeder. NewClient also permits
+// numbered beta hosts such as backend-beta-02.grbpwr.com.
 const BetaBackend = "https://backend-beta.grbpwr.com"
+
+var betaBackendHostRe = regexp.MustCompile(`^backend-beta(-[0-9]{2})?\.grbpwr\.com$`)
 
 // authHeader is the gateway header the admin auth interceptor forwards as
 // metadata (internal/apisrv/auth.AuthMetadataKey). Plain "Authorization" is NOT
@@ -39,16 +43,31 @@ type Client struct {
 	LogRPC func(verb, path string, code int)
 }
 
-// NewClient returns a beta-guarded client. base must be BetaBackend.
-func NewClient(base string) (*Client, error) {
-	if base != BetaBackend {
-		return nil, fmt.Errorf("refusing non-beta backend host %q (only %s allowed)", base, BetaBackend)
+// NewClient returns a beta-guarded client. target may be an allowed hostname or
+// its https URL; paths, credentials, query strings, fragments and ports are
+// refused so the safety decision is made on one exact host.
+func NewClient(target string) (*Client, error) {
+	target = strings.TrimSpace(target)
+	if !strings.Contains(target, "://") {
+		target = "https://" + target
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("refusing invalid beta backend target %q", target)
+	}
+	host := strings.ToLower(u.Hostname())
+	if !betaBackendHostRe.MatchString(host) {
+		return nil, fmt.Errorf("refusing non-beta backend host %q", host)
 	}
 	return &Client{
-		base: base,
+		base: "https://" + host,
 		hc:   &http.Client{Timeout: 120 * time.Second},
 	}, nil
 }
+
+// BaseURL returns the normalized guarded target used for RPCs.
+func (c *Client) BaseURL() string { return c.base }
 
 // Token returns the current bearer (empty until Authenticate).
 func (c *Client) Token() string { return c.token }

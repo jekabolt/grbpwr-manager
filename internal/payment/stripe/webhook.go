@@ -142,6 +142,21 @@ func (p *Processor) confirmPaymentFromWebhook(ctx context.Context, pi *stripe.Pa
 
 	payment, err := p.rep.Order().GetPaymentByOrderUUID(ctx, orderUUID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Shared Stripe test accounts deliver every event to every configured
+			// endpoint. An order owned by another environment is not an error and
+			// must be acknowledged without a retry or local state change.
+			// The live account is not shared, so a miss there is an anomaly worth seeing.
+			level := slog.LevelDebug
+			if p.pm.Name == entity.CARD {
+				level = slog.LevelWarn
+			}
+			slog.Default().Log(ctx, level, "stripe webhook: order not found locally, ignoring",
+				slog.String("order_uuid", orderUUID),
+				slog.String("payment_intent_id", pi.ID),
+			)
+			return nil
+		}
 		return fmt.Errorf("can't get payment for order %s: %w", orderUUID, err)
 	}
 

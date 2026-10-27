@@ -241,6 +241,8 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.OperationDraftAware = true
 	in.OperationReviewAware = true
 	in.OperationBlockMembershipAware = true
+	in.OperationSeamsAware = true
+	in.OperationSeamKindAware = true
 	in.BomQtyAware = true
 	in.LabelsAware = true
 	// The backstops refuse an aware payload that would erase stored facts without saying so. Here the
@@ -331,6 +333,19 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 		}
 		if p.FusingMode == nil {
 			p.FusingMode = pb_common.TechCardPieceFusingMode_TECH_CARD_PIECE_FUSING_MODE_UNKNOWN.Enum()
+		}
+		// These three fields use message presence independently of fusing_mode: nil means "keep the
+		// stored value", while a present empty message means "clear it". A snapshot read emits nil for
+		// NULL, so echoing it verbatim would preserve today's edge selection, zone or inset instead of
+		// restoring the snapshot's empty value.
+		if p.FusingEdges == nil {
+			p.FusingEdges = &pb_common.TechCardPieceFusingEdges{}
+		}
+		if p.FusingZone == nil {
+			p.FusingZone = &pb_common.TechCardPieceFusingZone{}
+		}
+		if p.FusingInsetMm == nil {
+			p.FusingInsetMm = &pb_decimal.Decimal{}
 		}
 	}
 	for _, p := range in.GetPatterns() {

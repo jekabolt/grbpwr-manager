@@ -60,11 +60,13 @@ func TestSaveTechCardMarkerAcceptsSchema3AndCarriesTheFacts(t *testing.T) {
 		Run(func(_ context.Context, _, _ int, ins entity.TechCardMarkerInsert, _ string) { got = ins }).
 		Return(42, nil)
 
-	resp, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(), markerRequest(
-		markerLayout(3,
-			&pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 90},
-			&pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 0, Flipped: true},
-		)))
+	req := markerRequest(markerLayout(3,
+		&pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 90},
+		&pb_common.TechCardMarkerPlacement{PieceId: 1, RotDeg: 0, Flipped: true},
+	))
+	// placed_count is a server-checked claim about the blob, not independent fixture decoration.
+	req.Marker.PlacedCount, req.Marker.TotalCount = 2, 2
+	resp, err := (&Server{repo: repo}).SaveTechCardMarker(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, int32(42), resp.GetId())
 	require.Equal(t, entity.MarkerLayoutFacts{SchemaVersion: 3, FlipCount: 1}, got.LayoutFacts)
@@ -152,7 +154,7 @@ func TestSaveTechCardMarkerRefusesACompositionUnderALegacySchema(t *testing.T) {
 		req.Marker.Layout.Composition = []*pb_common.TechCardMarkerCompositionEntry{{SizeId: 3, Quantity: 1}}
 		_, err := (&Server{repo: mocks.NewMockRepository(t)}).SaveTechCardMarker(context.Background(), req)
 		require.Equal(t, codes.InvalidArgument, status.Code(err), "schema_version %d", v)
-		require.ErrorContains(t, err, "состав")
+		require.ErrorContains(t, err, entity.ReasonCompositionPredatesSchema)
 	}
 }
 

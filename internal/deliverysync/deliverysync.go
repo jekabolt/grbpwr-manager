@@ -16,6 +16,10 @@ import (
 
 // Config holds configuration for the delivery-sync worker.
 type Config struct {
+	// Enabled gates construction of the worker. It defaults on in the application
+	// config to preserve existing behavior; extra non-production environments can
+	// disable both AfterShip polling and the timer-based delivery fallback.
+	Enabled        bool          `mapstructure:"enabled"`
 	WorkerInterval time.Duration `mapstructure:"worker_interval"`
 	// FallbackDefault is the timer safety-net window used when a carrier has no explicit
 	// auto_deliver_after_hours override: how long after shipment to silently mark an order
@@ -26,6 +30,7 @@ type Config struct {
 // DefaultConfig returns default configuration values.
 func DefaultConfig() Config {
 	return Config{
+		Enabled:         true,
 		WorkerInterval:  15 * time.Minute,
 		FallbackDefault: 14 * 24 * time.Hour, // 336h
 	}

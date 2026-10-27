@@ -108,6 +108,7 @@ func checkB1HardwareChain(v *cardView) []Finding {
 	switch {
 	case len(setters) > 0 && len(lines) == 0:
 		return []Finding{{
+			Code:     CodeHardwareNotInBom,
 			Category: CategoryBomMismatch,
 			Severity: SeverityError,
 			Title:    "The route sets hardware; the BOM has none",
@@ -121,6 +122,7 @@ func checkB1HardwareChain(v *cardView) []Finding {
 		}}
 	case len(setters) == 0 && len(lines) > 0:
 		return []Finding{{
+			Code:     CodeHardwareNotSet,
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
 			Title:    "The BOM buys hardware; no step sets it",
@@ -200,6 +202,7 @@ func checkB2ThreadLines(v *cardView) []Finding {
 	}
 
 	return []Finding{{
+		Code:     CodeThreadLinesMissing,
 		Category: CategoryBomMismatch,
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("%d sewing operations, zero thread lines", sewing),
@@ -275,6 +278,7 @@ func checkB3FusingTriangle(v *cardView) []Finding {
 	}
 
 	return []Finding{{
+		Code:     CodeFusingTriangleMismatch,
 		Category: CategoryBomMismatch,
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("Fusing is stated in %d of the 3 places that describe it", nonZeroOf(nl, nf, no)),
@@ -345,6 +349,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 	if len(holesOps) > 0 && len(buttonsOps) > 0 && holesAllSet && buttonsAllSet && holes != buttons {
 		refs := refsCapped(append(opRefsOf(holesOps), opRefsOf(buttonsOps)...), 3)
 		out = append(out, Finding{
+			Code:     CodeButtonholeButtonCountMismatch,
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
 			Title:    fmt.Sprintf("%d buttonholes against %d buttons", holes, buttons),
@@ -380,6 +385,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 			missing = append(missing, CoverageMiss{
 				Refs: refs,
 				Finding: Finding{
+					Code:     CodeHardwareSetExceedsBom,
 					Category: CategoryBomMismatch,
 					Severity: SeverityError,
 					Title:    aiBoundedText(fmt.Sprintf("More %s set than bought: %s against %s", line.Name, count.String(), qty.String()), 90),
@@ -395,6 +401,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeHardwareSetExceedsBom,
 			Category: CategoryBomMismatch,
 			Severity: SeverityError,
 			Title: fmt.Sprintf("More hardware is set than bought on %d of %d step-to-line links",
@@ -403,7 +410,7 @@ func checkB4FastenerCounts(v *cardView) []Finding {
 				"placement_count otherwise) exceeds the countable norm the card sews per garment " +
 				"(tech_card_bom_item.qty_per_garment, or tech_card_colorway_usage.quantity where the " +
 				"recipe overrides it) on these links — the lines run short on every garment.",
-			Refs:       sample,
+			Refs: sample,
 			Suggestion: "Raise the quantities on the colourway recipe, or lower what the steps spend — " +
 				"the quantity on the step's link to the line where it is stated, the placement count otherwise.",
 		}
@@ -485,6 +492,7 @@ func checkB5aPlaceholderPrice(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: []string{RefBom(b.Name)},
 			Finding: Finding{
+				Code:     CodePlaceholderPrice,
 				Category: CategoryQuestion,
 				Severity: SeverityWarning,
 				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -500,6 +508,7 @@ func checkB5aPlaceholderPrice(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodePlaceholderPrice,
 			Category: CategoryQuestion,
 			Severity: SeverityWarning,
 			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -579,6 +588,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: refs,
 			Finding: Finding{
+				Code:     CodePurposePriceInversion,
 				Category: CategoryQuestion,
 				Severity: SeverityWarning,
 				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -596,6 +606,7 @@ func checkB5bPurposeInversion(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodePurposePriceInversion,
 			Category: CategoryQuestion,
 			Severity: SeverityWarning,
 			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -661,6 +672,7 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: refs,
 			Finding: Finding{
+				Code:     CodeCurrencyWithoutRate,
 				Category: CategoryBomMismatch,
 				Severity: SeverityWarning,
 				Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -681,6 +693,7 @@ func checkB5cCurrencyWithoutRate(v *cardView) []Finding {
 
 	return Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeCurrencyWithoutRate,
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
 			Money:    true, // цитирует закупочную цену / валюту линии — см. Finding.Money
@@ -716,6 +729,7 @@ func checkB6LabourNotSet(v *cardView) []Finding {
 		return nil
 	}
 	return []Finding{{
+		Code:     CodeCmtNotSet,
 		Category: CategoryReadiness,
 		Severity: SeverityWarning,
 		Title:    "Cost estimate is materials-only: CMT is not set",
@@ -759,6 +773,7 @@ func checkB7CmtWithoutBacking(v *cardView) []Finding {
 	}
 
 	return []Finding{{
+		Code:     CodeCmtWithoutSmv,
 		Category: CategoryQuestion,
 		Severity: SeverityWarning,
 		Title:    fmt.Sprintf("CMT is quoted with SMV on %d of %d steps", withSMV, len(v.ops)),
@@ -806,6 +821,7 @@ func checkB8Wastage(v *cardView) []Finding {
 		missing = append(missing, CoverageMiss{
 			Refs: []string{RefBom(b.Name)},
 			Finding: Finding{
+				Code:     CodeWastageNotStated,
 				Category: CategoryBomMismatch,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(fmt.Sprintf("%q states no cutting wastage", b.Name), 90),
@@ -820,6 +836,7 @@ func checkB8Wastage(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(applicable, missing, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeWastageNotStated,
 			Category: CategoryBomMismatch,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Cutting wastage is not stated on %d of %d roll-goods lines",
@@ -848,6 +865,7 @@ func checkB8Wastage(v *cardView) []Finding {
 		missingHi = append(missingHi, CoverageMiss{
 			Refs: []string{RefBom(b.Name)},
 			Finding: Finding{
+				Code:     CodeWastageHigh,
 				Category: CategoryQuestion,
 				Severity: SeverityWarning,
 				Title:    aiBoundedText(fmt.Sprintf("%q wastes %s%% in the cut — is that right?", b.Name, b.WastagePercent.Decimal.String()), 90),
@@ -861,6 +879,7 @@ func checkB8Wastage(v *cardView) []Finding {
 	}
 	out = append(out, Aggregate(applicableHi, missingHi, func(missing, applicable int, sample []string) Finding {
 		return Finding{
+			Code:     CodeWastageHigh,
 			Category: CategoryQuestion,
 			Severity: SeverityWarning,
 			Title: fmt.Sprintf("Cutting wastage is above 30%% on %d of %d roll-goods lines",

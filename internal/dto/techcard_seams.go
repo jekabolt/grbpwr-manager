@@ -146,6 +146,7 @@ func seamSideFromPb(side *pb_common.TechCardSeamSide) []entity.TechCardSeamAncho
 			RangeTo:      p.GetRangeTo(),
 			EdgeHint:     p.GetEdgeHint(),
 			ContourSig:   p.GetContourSig(),
+			Placement:    seamPlacementFromPb(p.GetPlacement()),
 		})
 	}
 	return out
@@ -169,9 +170,24 @@ func seamSideToPb(side []entity.TechCardSeamAnchor) *pb_common.TechCardSeamSide 
 			RangeTo:      a.RangeTo,
 			EdgeHint:     a.EdgeHint,
 			ContourSig:   a.ContourSig,
+			Placement:    seamPlacementToPb(a.Placement),
 		})
 	}
 	return &pb_common.TechCardSeamSide{Parts: parts}
+}
+
+func seamPlacementFromPb(p *pb_common.TechCardSeamPlacement) *entity.TechCardSeamPlacement {
+	if p == nil {
+		return nil
+	}
+	return &entity.TechCardSeamPlacement{XMm: p.GetXMm(), YMm: p.GetYMm(), RotDeg: p.GetRotDeg(), Flip: p.GetFlip()}
+}
+
+func seamPlacementToPb(p *entity.TechCardSeamPlacement) *pb_common.TechCardSeamPlacement {
+	if p == nil {
+		return nil
+	}
+	return &pb_common.TechCardSeamPlacement{XMm: p.XMm, YMm: p.YMm, RotDeg: p.RotDeg, Flip: p.Flip}
 }
 
 // TechCardSeamsToPb emits stored seams in store order (insertion), with the server's stale verdict.

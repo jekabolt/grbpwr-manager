@@ -183,13 +183,17 @@ func RunAudit(card *entity.TechCard, fx Fx) AuditResult {
 	sortFindings(findings)
 	findings = CollapseReadiness(findings, v.draft)
 
+	// Ключи «seen» (T9) — ПОСЛЕ схлопывания: схлопнутая находка черновика — одна отметка.
+	fps := Fingerprints(card)
+	AssignKeys(findings, fps)
+
 	notChecked := make([]string, 0, len(staticNotChecked)+len(v.notChecked))
 	notChecked = append(notChecked, staticNotChecked...)
 	notChecked = append(notChecked, v.notChecked...)
 
 	return AuditResult{
 		Findings:     findings,
-		Fingerprints: Fingerprints(card),
+		Fingerprints: fps,
 		NotChecked:   notChecked,
 		Observations: v.observations,
 	}

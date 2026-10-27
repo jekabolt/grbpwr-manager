@@ -73,6 +73,16 @@ type TechCardArchiveImport struct {
 	// by the same rules SaveDesignQuizAnswers applies, Fingerprint "" (fresh), in display order.
 	DesignQuizAnswers []TechCardQuizAnswer
 
+	// Seams are the seam decisions (seams.json, format 1.3), validated by the resolver with
+	// ValidateTechCardSeamsWrite's rules, keys normalised, every anchor on a piece of Card. Written
+	// after the card's pieces, sheets and DXF links (the fingerprint is taken from them); the steps'
+	// Card.Operations[i].SeamKeys name only these keys and are linked after the seams exist. A seam
+	// whose piece did not land is dropped with a report line, never failing the import.
+	Seams []TechCardSeamInput
+	// SeamsStale names the seam keys the source read as stale: they land stale (a fingerprint that
+	// matches no source), so the import never re-stamps «decided on these patterns».
+	SeamsStale map[string]bool
+
 	// Markers are the card's раскладки. Each carries its own BomLineKey — the cloth it was
 	// measured on, re-sewn to the imported BOM inside the transaction — and a Composition whose
 	// sizes are already local. ProductionRunId is not a member of an import: only card markers

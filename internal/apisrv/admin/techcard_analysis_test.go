@@ -101,6 +101,8 @@ func tcaStand(t *testing.T, card *entity.TechCard, cardErr error, rates map[stri
 	// claim that the gate refuses before touching the rate table is made by tcaStandThatForbidsFx
 	// below, which registers no expectation at all.
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(rates, nil).Maybe()
+	// Seen marks (T9): none on this stand. The seen-specific tests build their own stand.
+	tc.EXPECT().ListTechCardFindingSeen(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	return &Server{repo: repo}
 }
 
@@ -272,6 +274,7 @@ func TestGetTechCardConstructionAuditSurvivesARateLoadFailure(t *testing.T) {
 	repo.EXPECT().TechCards().Return(tc)
 	tc.EXPECT().GetTechCardById(mock.Anything, 7).Return(tcaCard(), nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, errors.New("fx table is on fire"))
+	tc.EXPECT().ListTechCardFindingSeen(mock.Anything, 7).Return(nil, nil).Maybe()
 	s := &Server{repo: repo}
 
 	resp, err := s.GetTechCardConstructionAudit(tcaCostingCtx(),

@@ -175,13 +175,15 @@ func registerTLSConfig(cfg Config) error {
 	// unregistered and crash the driver with "unknown config name: custom" on boot —
 	// and since prod auto-migrates on deploy, that is a hard crash-loop. Beta sets
 	// MYSQL_TLS_CA_PATH explicitly; this makes prod safe even when that env is unset.
-	if cfg.TLSCAPath == "" && os.Getenv("db.CA_CERT") == "" && strings.Contains(cfg.DSN, "tls=custom") {
+	// MYSQL_TLS_CA_CERT carries the PEM itself; App Platform env keys cannot contain the dot of
+	// db.CA_CERT, so a numbered beta binds its own cluster's CA (${env-db.CA_CERT}) through it.
+	if cfg.TLSCAPath == "" && dbCACertPEM() == "" && strings.Contains(cfg.DSN, "tls=custom") {
 		cfg.TLSCAPath = bakedCACertPath
 	}
 
-	if dbCACert := os.Getenv("db.CA_CERT"); dbCACert != "" {
+	if dbCACert := dbCACertPEM(); dbCACert != "" {
 		caCert = []byte(dbCACert)
-		slog.Default().Info("using CA certificate from db.CA_CERT environment variable")
+		slog.Default().Info("using CA certificate from environment variable")
 	} else if cfg.TLSCAPath != "" {
 		certPath := resolveCertPath(cfg.TLSCAPath)
 		caCert, err = os.ReadFile(certPath)
@@ -519,6 +521,10 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 }
 
 func (ms *MYSQLStore) Close() {
+	// Nil-safe: a failed store.New hands back a typed nil that App.Stop still closes.
+	if ms == nil || ms.close == nil {
+		return
+	}
 	ms.close()
 }
 
@@ -612,3 +618,11 @@ var ValidStatusTransitions = order.ValidStatusTransitions
 
 // ErrProductInOrders is re-exported from the product sub-package for backward compatibility.
 var ErrProductInOrders = product.ErrProductInOrders
+
+// dbCACertPEM returns the CA certificate PEM given through the environment, if any.
+func dbCACertPEM() string {
+	if pem := os.Getenv("MYSQL_TLS_CA_CERT"); pem != "" {
+		return pem
+	}
+	return os.Getenv("db.CA_CERT")
+}

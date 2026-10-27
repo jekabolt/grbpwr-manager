@@ -56,6 +56,7 @@ func TestSaveNumbersTheSketchCalloutButNotTheMoodboardNote(t *testing.T) {
 	cards := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(cards).Maybe()
 	cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, calloutNumCardID).Return(calloutNumStoredCard(), nil)
+	cards.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	var written *entity.TechCardInsert
 	cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, calloutNumCardID,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).

@@ -209,6 +209,9 @@ type operationKindFields struct {
 	// ВТО (0325) — продолжение канона дописыванием, последними.
 	pressAction sql.NullString
 	pressToward sql.NullString
+
+	// Отверстия пуговицы (0436): 2 | 4, NULL = не указано.
+	buttonHoles sql.NullInt32
 }
 
 // verbNotApplicable — отказ «это семейство не про этот глагол». Значение нарушения — САМ ГЛАГОЛ:
@@ -746,6 +749,7 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 			{"bartack_length_mm", decimalSent(fa.GetBartackLengthMm())},
 			{"attach_pattern", fa.GetAttachPattern() != pb_common.TechCardButtonAttachPattern_TECH_CARD_BUTTON_ATTACH_PATTERN_UNKNOWN},
 			{"zipper_application", fa.GetZipperApplication() != pb_common.TechCardZipperApplication_TECH_CARD_ZIPPER_APPLICATION_UNKNOWN},
+			{"button_holes", fa.GetButtonHoles() != 0},
 		}); fld != "" {
 			return f, verbNotApplicable(step, fld, opType, "the fastening settings belong to a machine step")
 		}
@@ -809,6 +813,24 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		}
 		if f.attachPattern.Valid && !machineIsOneOf(machineType, machineButtonAttach) {
 			return f, machineNotApplicable(step, "attach_pattern", machineType, []string{machineButtonAttach})
+		}
+		// Отверстия пуговицы (0436). 0 = не указано = NULL; иначе 2 или 4, и только на пришивании
+		// пуговиц — той же проверкой, что и рисунок. Противоречие ВНУТРИ шага теперь жёсткий отказ:
+		// с двумя отверстиями нельзя пришить крестом, квадратом или П-образно. Расхождение с
+		// артикулом BOM-строки остаётся мягким предупреждением формы — артикул может прийти позже.
+		if h := fa.GetButtonHoles(); h != 0 {
+			if !entity.ButtonHoleCounts[h] {
+				return f, entity.NewFieldViolation(step+".button_holes", "unknown_value", fmt.Sprint(h),
+					"a button has 2 or 4 holes here — pick one, or clear the field")
+			}
+			if !machineIsOneOf(machineType, machineButtonAttach) {
+				return f, machineNotApplicable(step, "button_holes", machineType, []string{machineButtonAttach})
+			}
+			f.buttonHoles = sql.NullInt32{Int32: h, Valid: true}
+			if h == 2 && f.attachPattern.Valid && entity.ButtonAttachPatternsNeedFourHoles[entity.TechCardButtonAttachPattern(f.attachPattern.String)] {
+				return f, entity.NewFieldViolation(step+".attach_pattern", "needs_four_holes", f.attachPattern.String,
+					fmt.Sprintf("the pattern %q needs four holes, and this button has two — sew it with one bar (parallel), or set four holes", f.attachPattern.String))
+			}
 		}
 		f.zipperApplication, err = parseEquipmentEnum(fa.GetZipperApplication(), zipperApplicationPbToToken,
 			step+".zipper_application", "pick how the zip is set")
@@ -1004,7 +1026,7 @@ func operationPressToPb(o entity.TechCardOperation) *pb_common.TechCardOperation
 
 func operationFasteningToPb(o entity.TechCardOperation) *pb_common.TechCardOperationFastening {
 	if !(o.ButtonholeStyle.Valid || o.CutLengthMm.Valid || o.ButtonholeOrientation.Valid ||
-		o.BartackLengthMm.Valid || o.AttachPattern.Valid || o.ZipperApplication.Valid) {
+		o.BartackLengthMm.Valid || o.AttachPattern.Valid || o.ZipperApplication.Valid || o.ButtonHoles.Valid) {
 		return nil
 	}
 	return &pb_common.TechCardOperationFastening{
@@ -1014,5 +1036,6 @@ func operationFasteningToPb(o entity.TechCardOperation) *pb_common.TechCardOpera
 		BartackLengthMm:       pbDecimalFromNull(o.BartackLengthMm),
 		AttachPattern:         buttonAttachPatternTokenToPb[o.AttachPattern.String],
 		ZipperApplication:     zipperApplicationTokenToPb[o.ZipperApplication.String],
+		ButtonHoles:           pbInt32FromNull(o.ButtonHoles),
 	}
 }

@@ -56,6 +56,7 @@ func TestUpdateTechCardCarriedApprovalUsesStoredAuditFields(t *testing.T) {
 			SignedDigest: sql.NullString{String: "stored-digest", Valid: true},
 		}}},
 	}, nil)
+	techCards.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	var written *entity.TechCardInsert
 	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).
@@ -250,6 +251,7 @@ func TestUpdateTechCardApprovesConstructionThatDeliberatelyEmptiesThePark(t *tes
 	techCards := mocks.NewMockTechCards(t)
 	repo.EXPECT().TechCards().Return(techCards)
 	techCards.EXPECT().GetTechCardByIdConsistent(mock.Anything, 7).Return(storedCardWithEquipmentPark(), nil)
+	techCards.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
 	techCards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, 7,
 		mock.AnythingOfType("*entity.TechCardInsert"), 3).Return(nil, entity.ErrTechCardConflict)
 

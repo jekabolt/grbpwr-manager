@@ -1047,7 +1047,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 			LineKey: rtSheetUni, SizeId: 0, URL: rig.objs.url(keyUni),
 			Filename: ns("rt-uni.dxf"), Name: ns("основная, без размера"),
 			SizeBytes: sql.NullInt64{Int64: int64(len(dxfUni)), Valid: true}, Version: 1,
-			FabricPurpose: ns(string(entity.BomPurposeMain)),
+			FabricPurpose: ns(string(entity.BomPurposeLining)),
 		},
 	}
 
@@ -1309,7 +1309,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	_, err = T.SaveTechCardPieceAreas(ctx, entity.PieceAreaWrite{
 		TechCardId:    fx.cardID,
 		ScopeKey:      string(entity.BomPurposeMain),
-		SheetLineKeys: []string{rtSheetGraded, rtSheetUni},
+		SheetLineKeys: []string{rtSheetGraded},
 		ParsedBy:      rtActor,
 		Rows: []entity.PieceAreaInput{
 			{PieceLineKey: rtPieceFront, SizeId: sql.NullInt64{Int64: int64(fx.sizeA), Valid: true},

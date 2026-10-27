@@ -6,11 +6,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/app"
 	"github.com/jekabolt/grbpwr-manager/config"
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/spf13/cobra"
 )
 
@@ -22,11 +24,22 @@ func run(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// Sentry first, so the logger below can forward Error records. SENTRY_DSN unset: Init is a
+	// no-op and the logger is the plain JSON handler, exactly as before.
+	sentryOn, sentryErr := observability.Init(cfg.Sentry, commitHash)
+	defer observability.Flush(2 * time.Second)
+
+	logger := slog.New(observability.NewSlogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level:     slog.Level(cfg.Logger.Level),
 		AddSource: cfg.Logger.AddSource,
-	}))
+	})))
 	slog.SetDefault(logger)
+	if sentryErr != nil {
+		// A bad DSN must not keep the service down; it only means no error reporting.
+		logger.Warn("sentry disabled: cannot init", slog.String("err", sentryErr.Error()))
+	} else if sentryOn {
+		logger.Info("sentry enabled", slog.String("environment", observability.EnvironmentOf(cfg.Sentry)))
+	}
 
 	app.SetCommitHash(commitHash)
 	a := app.New(cfg)

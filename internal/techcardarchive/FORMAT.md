@@ -1,4 +1,4 @@
-# GRBPWR tech-card archive — format v1.2
+# GRBPWR tech-card archive — format v1.3
 
 The single source of truth for the tech-card ZIP: what an export writes and what an import is
 allowed to assume. Both sides read THIS file; `format.go` is its Go transcription and
@@ -25,6 +25,7 @@ techcard-<style_number>-<yyyymmdd-hhmm>.zip
 ├── assembly.json      # [{component_style_number, size_name?, qty, print_note, position_note, active}]
 ├── colorways.json     # [{color_code, base_sku, recipe[], piece_materials[]}] — без денег
 ├── design_quiz.json   # [{id, category, part, view, kind, question, options, selected, …}] (1.2, §5.3a)
+├── seams.json         # [{seam_key, status, kind, direction, source, side_a[], side_b[], …}] (1.3, §5.3b)
 ├── materials/index.json  # паспорта материалов (code, name, supplier, supplier_ref, composition,
 │                         #   spec, unit, class, CTI-атрибуты, cutting_coefficient) — БЕЗ цен
 ├── media/index.json      # [{ref: media_id из card.json, file, sha256, kind, caption, w, h}]
@@ -158,13 +159,14 @@ top-level JSON files.
 
 ## 3. Version and compatibility
 
-`format_version` is `"MAJOR.MINOR"`; the current one is `"1.2"`.
+`format_version` is `"MAJOR.MINOR"`; the current one is `"1.3"`.
 
 | version | what it added |
 | --- | --- |
 | `1.0` | the format |
 | `1.1` | T45 (27.09): a colourway's own identity in `colorways.json` — `sku_color_token`, `name`, `name_i18n`, `colours` (§5.3) |
 | `1.2` | 05.10: `design_quiz.json` — the moodboard quiz answers (§5.3a) |
+| `1.3` | 27.10: `seams.json` — the seam decisions (§5.3b), `contents.seams`, and the steps' `seam_keys` stay in `card.json`. An older server lists `seams.json` as `unknown_entry`, strips the steps' keys and imports the card without seams |
 
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
@@ -242,7 +244,7 @@ Four verdicts, and they are not synonyms:
 | 3, 4 | `created_at`, `updated_at` | travel. The source's clock; the target stamps its own on insert. |
 | 5 | *reserved* | was `resolved_media`, split into 7/8/28. Never re-used (§3). |
 | 6 | `lock_version` | travels. The source's optimistic-lock token — §2's rule about `source.*` applies to it verbatim. |
-| 7, 8, 28 | `resolved_moodboard_media`, `resolved_technical_media`, `resolved_operation_media` | travel with **every URL blanked** (§4). Width, height and the blurhash stay: they describe the picture, not where this instance keeps it. The `media_id` inside them is the SOURCE's and is **not** remapped — these are display projections of the slots on the writable half, and it is those slots the import remaps and writes. |
+| 7, 8, 28, 30 | `resolved_moodboard_media`, `resolved_technical_media`, `resolved_operation_media`, `resolved_label_media` | travel with **every URL blanked** (§4). Width, height and the blurhash stay: they describe the picture, not where this instance keeps it. The `media_id` inside them is the SOURCE's and is **not** remapped — these are display projections of the slots on the writable half, and it is those slots the import remaps and writes. |
 | 9 | `colorways` | **cleared.** A colourway is a product and does not travel as one; what a receiving instance can use of them rides in `colorways.json` (§5.3). |
 | 10, 11 | `created_by`, `updated_by` | travel as text — names that resolve nothing (unlike `role_assignments`). **Not written:** the imported card is stamped with the operator who ran the import. |
 | 12 | `role_assignments` | **cleared** (§4). |
@@ -258,7 +260,9 @@ Four verdicts, and they are not synonyms:
 | 26 | `markers` | travel as **summaries** and are **ignored**. The authority is `markers/index.json` plus the blobs (§5.7); a summary here carries the source's `id`, `tech_card_id`, `colorway_id` and `size_id`, and nothing remaps them because nothing reads them. |
 | 27 | `piece_area_scopes` | travel and are **written**, with `size_id` **remapped** and the scope's `stale` verdict **cleared** — see «measured piece areas» below. |
 | 29 | `age_group` | travels and is **written** — see «style facts» below. `AGE_GROUP_ENUM_UNKNOWN` (every archive older than the field, and every source style nobody classified) is «not stated»: the imported card lands unset (NULL), never with a guessed group. |
-| 32 | `seams` | **cleared.** The technologist's seam decisions (`tech_card_seam`) are a review of the assembly engine over THIS instance's DXF files, and their `stale` verdict speaks about the source's sheets. Not carried in v1 (carrying them is the owner's P2 call): an imported card starts with no decisions and the receiving engine proposes again. |
+| 31 | `guided` | travels as source workflow provenance and is **ignored**. It is OUTPUT-ONLY and the import cannot put the receiving card into the source card's guided session. |
+| 32 | `seams` | **cleared in card.json — the seams travel in `seams.json` (1.3, §5.3b).** The read-model list carries the source's people and its `stale` verdict next to output-only stamps; the sidecar carries exactly what a seam decision is, and the steps' `seam_keys` (inside `operations`) point at it by `seam_key`. Before 1.3 seams did not travel at all and the steps' keys were cut. |
+| 33 | `removed_pattern_history` | travels as source history and is **ignored**. Its source row and snapshot ids are never resolved or written; the receiving card starts its own pattern history. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
@@ -510,6 +514,30 @@ does not validate is dropped whole (`archive_row_invalid` on `card`) and the car
 it. Imported answers count as fresh (no staleness fingerprint travels: the source's category ids are
 not the target's).
 
+### 5.3b `seams.json` (1.3)
+
+The technologist's seam decisions (`tech_card_seam`), in store order: `{seam_key, status, kind,
+direction, source, side_a: [anchor], side_b: [anchor], anchored_size?, note?, stale?}`, an anchor
+being `{piece_line_key, samples: [{u, v}] ×5, perim_share, len_mm, notches, turn_deg, range_from,
+range_to, edge_hint, contour_sig, placement?: {x_mm, y_mm, rot_deg, flip}}` — the column's own JSON
+format. Written only when the card has seams; `contents.seams` counts the rows.
+
+Nothing here is a foreign id: `seam_key` is the card's own ULID and `piece_line_key` is the piece's
+stable key, which travels verbatim in `card.json`. The steps' links to the seams are
+`TechCardOperation.seam_keys` inside `card.json`, by the same `seam_key`. Not carried: the source
+fingerprint (it hashes the source's sheet URLs — the import stamps its own from the imported
+sheets) and the created/updated stamps. A seam the source read as `stale` lands stale.
+
+On import every seam is validated by the rules of a live `UpsertTechCardSeams`; a seam that does not
+validate is dropped (`archive_row_invalid` on `seam`), a seam naming a piece the card does not have
+is dropped (`seam_piece_missing`), and in both cases the steps' keys for it go too. The import never
+fails for a seam.
+
+A link follows its OWN step, identified by the row the import inserted for it, not by position: the
+FUSING reconciliation that runs after the steps land may insert automatic fusing steps, drop the
+archive's own and renumber everything. A link whose step did not survive is dropped with
+`seam_step_missing` (the seam itself imports) and is never attached to another step.
+
 ### 5.4 `materials/index.json`
 
 Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
@@ -728,6 +756,8 @@ explanation and the report action text.
 | `wastage_claim_degraded` | a wastage/consumption claim lost its provenance and reads as manual |
 | `norm_marker_lost` | the norm's marker stamp could not be re-sewn — the norm stands, the stamp does not |
 | `language_unknown` | a colourway name's translation is keyed by a language this base does not have — that translation is dropped (EXPORT side: a translation whose language the dictionary could not name) |
+| `seam_piece_missing` | a seam decision (`seams.json`, 1.3) names a cut piece the imported card does not have — the seam and the steps' links to it are dropped, every other seam imports |
+| `seam_step_missing` | a step that sewed a seam did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the seam imports |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
@@ -781,7 +811,7 @@ which is the only question a reason code exists to answer:
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
 `pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,
-`card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
+`seam`, `card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
 `media_id=…`, `size_name=…`). `measurement` is the size chart's SECOND named axis and is
 deliberately not `size`: a measurement problem reported as a size problem sends the operator to the
 wrong dictionary. `piece_area` is the measured contour of one cut piece and is deliberately not

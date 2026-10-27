@@ -52,6 +52,12 @@ func (s *routeStubServer) GetTechCardConstructionAudit(ctx context.Context, req 
 	return &pb_admin.GetTechCardConstructionAuditResponse{}, nil
 }
 
+func (s *routeStubServer) SetTechCardFindingSeen(ctx context.Context, req *pb_admin.SetTechCardFindingSeenRequest) (*pb_admin.SetTechCardFindingSeenResponse, error) {
+	s.lastCall = "FindingSeen"
+	s.lastID = req.TechCardId
+	return &pb_admin.SetTechCardFindingSeenResponse{}, nil
+}
+
 // TestTechCardListRouteNotShadowed pins the grpc-gateway route-ordering invariant
 // documented on the proto: GET /tech-card/list must reach ListTechCards, not
 // GetTechCard with id="list". The mux prepends handlers and first-match wins, so
@@ -130,6 +136,19 @@ func TestTechCardListRouteNotShadowed(t *testing.T) {
 	_ = respA.Body.Close()
 	if stub.lastCall != "ConstructionAudit" || stub.lastID != 8 {
 		t.Fatalf("POST /tech-card/construction/audit dispatched to %q (id=%d), want GetTechCardConstructionAudit id=8",
+			stub.lastCall, stub.lastID)
+	}
+
+	// T9: the seen mark sits next to the audit, two literal segments, same ordering rule.
+	stub.lastCall, stub.lastID = "", 0
+	respS, err := http.Post(ts.URL+"/api/admin/tech-card/construction/finding-seen", "application/json",
+		strings.NewReader(`{"tech_card_id":8,"key":"k@card","seen":false}`))
+	if err != nil {
+		t.Fatalf("POST /tech-card/construction/finding-seen: %v", err)
+	}
+	_ = respS.Body.Close()
+	if stub.lastCall != "FindingSeen" || stub.lastID != 8 {
+		t.Fatalf("POST /tech-card/construction/finding-seen dispatched to %q (id=%d), want SetTechCardFindingSeen id=8",
 			stub.lastCall, stub.lastID)
 	}
 

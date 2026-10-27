@@ -96,6 +96,15 @@ func TestValidateTechCardSeamsWriteRefusals(t *testing.T) {
 		}, "seams[0].side_a.parts[0].range_from"},
 		{"range from only", func(w *TechCardSeamsWrite) { w.Seams[0].SideA[0].RangeFrom = 0.3 }, "seams[0].side_a.parts[0].range_from"},
 		{"hint too long", func(w *TechCardSeamsWrite) { w.Seams[0].SideA[0].EdgeHint = strings.Repeat("h", 65) }, "seams[0].side_a.parts[0].edge_hint"},
+		{"placement x out of range", func(w *TechCardSeamsWrite) {
+			w.Seams[0].SideA[0].Placement = &TechCardSeamPlacement{XMm: TechCardSeamPlacementMaxMm + 1}
+		}, "seams[0].side_a.parts[0].placement"},
+		{"placement y NaN", func(w *TechCardSeamsWrite) {
+			w.Seams[0].SideA[0].Placement = &TechCardSeamPlacement{YMm: math.NaN()}
+		}, "seams[0].side_a.parts[0].placement"},
+		{"placement rot Inf", func(w *TechCardSeamsWrite) {
+			w.Seams[0].SideA[0].Placement = &TechCardSeamPlacement{RotDeg: math.Inf(-1)}
+		}, "seams[0].side_a.parts[0].placement.rot_deg"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -187,4 +196,14 @@ func TestTechCardSeamSourceFingerprintDedupesCompatibilityBuckets(t *testing.T) 
 		map[string][]PatternSheetRef{"main": {sheet}, "FABRIC-LINE": {sheet}},
 		map[string][]PieceAreaBlockRef{"main": {block}, "FABRIC-LINE": {block}})
 	require.Equal(t, want, got)
+}
+
+// A part piece's hand placement and an inner-line edge hint ("i<k>") pass validation untouched.
+func TestValidateTechCardSeamsWriteKeepsPlacementAndInnerLineHint(t *testing.T) {
+	in := seamTestWrite()
+	in.Seams[0].SideB[0].EdgeHint = "i3"
+	in.Seams[0].SideB[0].Placement = &TechCardSeamPlacement{XMm: -12.5, YMm: 40, RotDeg: 270, Flip: true}
+	require.NoError(t, ValidateTechCardSeamsWrite(&in))
+	require.Equal(t, "i3", in.Seams[0].SideB[0].EdgeHint)
+	require.Equal(t, &TechCardSeamPlacement{XMm: -12.5, YMm: 40, RotDeg: 270, Flip: true}, in.Seams[0].SideB[0].Placement)
 }

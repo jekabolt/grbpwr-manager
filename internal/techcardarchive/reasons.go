@@ -153,6 +153,16 @@ const (
 	// pressing the button again does not revisit a colourway it already created.
 	ReasonLanguageUnknown Reason = "language_unknown"
 
+	// ReasonSeamPieceMissing — a seam decision (seams.json, 1.3) names a cut piece the imported card
+	// does not have. Legal on the source (0411 keeps no FK to the piece: a deleted piece leaves an
+	// orphan seam the screen offers to remove), meaningless here. The seam and the steps' links to
+	// it are dropped; every other seam imports.
+	ReasonSeamPieceMissing Reason = "seam_piece_missing"
+	// ReasonSeamStepMissing — a step that sewed a seam did not survive the import: the FUSING
+	// reconciliation rebuilds automatic fusing steps from the pieces and may drop the archive's own.
+	// The seam imported; only that step's link to it was dropped — never moved to another step.
+	ReasonSeamStepMissing Reason = "seam_step_missing"
+
 	// ReasonStyleNumberTaken — the style number already exists in the target base.
 	ReasonStyleNumberTaken Reason = "style_number_taken"
 	// ReasonUnknownEntry — the archive holds a file this server does not know (a newer MINOR).

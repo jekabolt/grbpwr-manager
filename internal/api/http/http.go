@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 	"text/template"
 	"time"
@@ -22,10 +21,8 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	grpcSlog "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
@@ -36,6 +33,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -388,24 +386,6 @@ func limitBody(max int64) func(http.Handler) http.Handler {
 	}
 }
 
-// recoverMiddleware recovers panics in non-gRPC HTTP handlers, logs the stack via
-// slog, and returns 500 instead of letting net/http drop the connection silently.
-func recoverMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Default().ErrorContext(r.Context(), "recovered panic in http handler",
-					slog.Any("panic", rec),
-					slog.String("path", r.URL.Path),
-					slog.String("stack", string(debug.Stack())),
-				)
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-
 func localDevWriteGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isStateChangingMethod(r.Method) {
@@ -493,7 +473,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// swagger, fileserver, REST gateway). The gRPC interceptor chain covers only the
 	// gRPC path; without this a panic in a chi handler drops the connection with no
 	// slog stack and no clean 500. Placed at the root so it wraps every route.
-	r.Use(recoverMiddleware)
+	if observability.Enabled() {
+		// Outermost, so the recover below and every handler see the request's Sentry hub.
+		r.Use(observability.HTTPMiddleware)
+	}
+	r.Use(middleware.Recover)
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
@@ -707,7 +691,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // разбирают именно эту форму. Меняется РОВНО ОДИН бит — DiscardUnknown; остальные опции
 // воспроизводят дефолт v2.21.0 дословно.
 //
-// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь переснят 2026-09-08). Бандл admin-клиента СТАРШЕ последнего
+// ГРАНИЦА СОВМЕСТИМОСТИ (инвентарь переснят 2026-10-26). Бандл admin-клиента СТАРШЕ последнего
 // снятия члена enum / поля теперь получает 400 вместо тихой порчи — это принятое поведение, а не
 // регрессия. Инвентарь по proto/admin/admin/admin.proto + proto/common/common/*.proto: 15
 // зарезервированных ИМЁН членов enum (TECH_CARD_PRESS_ACTION_OPEN, TECH_CARD_TOPSTITCH_MODE_WIDTH,
@@ -716,7 +700,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // TECH_CARD_THREAD_TENSION_OTHER, TECH_CARD_PRESS_TOWARD_SIDE, TECH_CARD_PIECE_FUSING_MODE_SEAM_ALLOWANCE,
 // TECH_CARD_INSPECT_COVERAGE_FIRST_OUTPUT, TECH_CARD_CLEANING_KIND_CHALK_REMOVAL,
 // TECH_CARD_CLEANING_KIND_ADHESIVE_REMOVAL, TECH_CARD_ZIPPER_APPLICATION_SEPARATING_CF,
-// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 116 пар (сообщение, зарезервированное ИМЯ поля).
+// TECH_CARD_ZIPPER_APPLICATION_IN_SEAM_POCKET) и 117 пар (сообщение, зарезервированное ИМЯ поля).
 //
 // ЧЕТЫРЕ ПАРЫ ИЗ 116 ДОБАВИЛА ВОЛНА ЛЕНТЫ ДИЗАЙНА (уже в master): GetDesignBandResponse —
 // version_numbers, latest_version, journal (минты и версии листа сняты подсистемой целиком,
@@ -730,6 +714,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 // admin.grbpwr.com /assets/index-BgsnzCbh.js (1 461 395 Б, sha256 06faf4c5…) содержит 0 ключей и
 // 0 строк-литералов на все четыре имени в обоих написаниях. Поимённая раскладка этой пересъёмки —
 // у retiredFieldNamePairs в marshaler_test.go.
+//
+// ПЯТАЯ НОВАЯ ПАРА — SuggestAssemblySkeletonRequest.media_ids (811b791). Это вход и старый клиент
+// с ним получает 400 намеренно: глобальный media id позволял передать внешней модели картинку другой
+// карточки, поэтому дверь стала text-only и не должна молча принимать снятое поле.
 //
 // Клиент ветки feat/operation-kinds-ui не эмитит НИ ОДНОГО из ОСТАЛЬНЫХ: сгенерированные типы
 // src/api/proto-http/{admin,common}/index.ts не содержат ни одного зарезервированного ключа в
@@ -763,12 +751,24 @@ func newAdminServeMux() *runtime.ServeMux {
 			switch key {
 			case "Grpc-Metadata-Authorization":
 				return key, true
+			case observability.RequestIDHeader:
+				return forwardRequestID(key)
 			default:
 				return runtime.DefaultHeaderMatcher(key)
 			}
 		}),
 		runtime.WithMarshalerOption(runtime.MIMEWildcard, newAdminJSONMarshaler()),
 	)
+}
+
+// forwardRequestID hands the HTTP request id to the gRPC call as metadata, so a panic or error
+// logged on the gRPC side carries the same id. Only with Sentry on; otherwise the default matcher
+// decides, exactly as before.
+func forwardRequestID(key string) (string, bool) {
+	if observability.Enabled() {
+		return observability.RequestIDMetadataKey, true
+	}
+	return runtime.DefaultHeaderMatcher(key)
 }
 
 func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
@@ -795,6 +795,8 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 			switch key {
 			case "Grpc-Metadata-Authorization":
 				return key, true
+			case observability.RequestIDHeader:
+				return forwardRequestID(key)
 			default:
 				return runtime.DefaultHeaderMatcher(key)
 			}
@@ -817,6 +819,8 @@ func (s *Server) authJSONGateway(ctx context.Context) (http.Handler, error) {
 			switch key {
 			case "Grpc-Metadata-Authorization":
 				return key, true
+			case observability.RequestIDHeader:
+				return forwardRequestID(key)
 			default:
 				return runtime.DefaultHeaderMatcher(key)
 			}
@@ -953,17 +957,6 @@ func (s *Server) handleStatusz(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// panicRecoveryHandler logs a recovered panic with its stack trace and returns a
-// generic Internal error, so a single malformed request cannot crash the process
-// and panic internals are never leaked to the caller.
-func panicRecoveryHandler(ctx context.Context, p any) error {
-	slog.Default().ErrorContext(ctx, "recovered from panic in gRPC handler",
-		slog.Any("panic", p),
-		slog.String("stack", string(debug.Stack())),
-	)
-	return status.Error(codes.Internal, "internal server error")
-}
-
 // Start starts the server
 func (s *Server) Start(ctx context.Context,
 	adminServer *admin.Server,
@@ -980,7 +973,7 @@ func (s *Server) Start(ctx context.Context,
 	// logging/auth interceptors and the handlers alike; grpc-go runs each call in
 	// its own goroutine with no recover, so an unhandled panic kills the process.
 	recoveryOpts := []grpcRecovery.Option{
-		grpcRecovery.WithRecoveryHandlerContext(panicRecoveryHandler),
+		grpcRecovery.WithRecoveryHandlerContext(middleware.GRPCPanicHandler),
 	}
 
 	s.gs = grpc.NewServer(
@@ -1005,11 +998,15 @@ func (s *Server) Start(ctx context.Context,
 			PermitWithoutStream: true,
 		}),
 		grpc.ChainUnaryInterceptor(
+			// Outside recovery: the per-call Sentry hub must be in the context the recovery
+			// handler gets. A pass-through when SENTRY_DSN is unset.
+			observability.UnaryServerInterceptor(),
 			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
+			observability.StreamServerInterceptor(),
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 		),

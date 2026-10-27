@@ -1,0 +1,142 @@
+name: Backend tests
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "internal/store/sql/**"
+      - "scripts/ci-test.sh"
+      - "scripts/known-red-unit.txt"
+      - "internal/store/known-red.txt"
+      - ".github/workflows/tests.yml"
+  push:
+    branches:
+      - beta
+      - master
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "internal/store/sql/**"
+      - "scripts/ci-test.sh"
+      - "scripts/known-red-unit.txt"
+      - "internal/store/known-red.txt"
+      - ".github/workflows/tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-test
+          MYSQL_DATABASE: grbpwr_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --host=127.0.0.1 --user=root --password=ci-test --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      CI: "1"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ci-test
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: grbpwr_test
+      GRBPWR_DISPOSABLE_DB: grbpwr_test
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Install system libraries for cgo (go-webp, libheif)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev libheif-plugin-libde265
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.28.0
+
+      - name: Install generators
+        run: |
+          go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.16.3
+          go install github.com/vektra/mockery/v2@v2.52.2
+
+      - name: Run backend test gate
+        run: scripts/ci-test.sh
+
+  golangci-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Install system libraries for cgo (go-webp, libheif)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libwebp-dev libheif-dev libheif-plugin-libde265
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.28.0
+
+      - name: Install generators
+        run: |
+          go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.16.3
+          go install github.com/vektra/mockery/v2@v2.52.2
+
+      - name: Generate ignored Go sources
+        run: |
+          buf generate
+          make generate-resend-client generate-mocks
+
+      - name: Run golangci-lint
+        id: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.10.1
+          args: >-
+            --no-config
+            --output.text.path=golangci-lint.txt
+            --output.text.print-issued-lines=false
+            --max-issues-per-linter=0
+            --max-same-issues=0
+
+      - name: Report golangci-lint finding count
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [[ -f golangci-lint.txt ]]; then
+            cat golangci-lint.txt
+            count=$(grep -Ec '\.go:[0-9]+:[0-9]+:' golangci-lint.txt || true)
+          else
+            count=0
+          fi
+          echo "golangci-lint findings: $count"

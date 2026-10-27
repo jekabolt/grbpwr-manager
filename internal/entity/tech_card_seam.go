@@ -98,7 +98,27 @@ type TechCardSeamAnchor struct {
 	RangeTo    float64 `json:"range_to"`
 	EdgeHint   string  `json:"edge_hint"`
 	ContourSig string  `json:"contour_sig"`
+	// Placement is the hand placement of this anchor's piece on its host piece (an inner-line or
+	// free-spot target). nil = placed geometrically; omitted from the JSON then, so rows written
+	// before it existed and rows without it read the same.
+	Placement *TechCardSeamPlacement `json:"placement,omitempty"`
 }
+
+// TechCardSeamPlacement is a part piece's position on its host piece: mm in the host piece's frame
+// (origin at the host bbox min corner), rotation in degrees, and a mirror flag.
+type TechCardSeamPlacement struct {
+	XMm    float64 `json:"x_mm"`
+	YMm    float64 `json:"y_mm"`
+	RotDeg float64 `json:"rot_deg"`
+	Flip   bool    `json:"flip"`
+}
+
+// TechCardSeamPlacementMaxMm bounds a placement coordinate: a garment piece is under 2 m; anything
+// beyond 10 m is a unit bug (cm vs mm) or a runaway client.
+const TechCardSeamPlacementMaxMm = 10000
+
+// Operation → seam links (0434).
+const TechCardOperationMaxSeamKeys = 64
 
 // TechCardSeamInput is one seam as a client submits it (keyed upsert, replaced whole).
 type TechCardSeamInput struct {
@@ -397,6 +417,16 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 		}
 		if !finite(a.TurnDeg) {
 			return NewFieldViolation(af+".turn_deg", "out_of_range", "", "a finite angle")
+		}
+		if p := a.Placement; p != nil {
+			if !finite(p.XMm) || !finite(p.YMm) || math.Abs(p.XMm) > TechCardSeamPlacementMaxMm ||
+				math.Abs(p.YMm) > TechCardSeamPlacementMaxMm {
+				return NewFieldViolation(af+".placement", "out_of_range", "",
+					fmt.Sprintf("x_mm and y_mm are finite millimetres within ±%d", TechCardSeamPlacementMaxMm))
+			}
+			if !finite(p.RotDeg) {
+				return NewFieldViolation(af+".placement.rot_deg", "out_of_range", "", "a finite angle")
+			}
 		}
 		whole := a.RangeFrom == 0 && a.RangeTo == 0
 		if !whole && (!unitInterval(a.RangeFrom) || !unitInterval(a.RangeTo) || a.RangeFrom >= a.RangeTo) {

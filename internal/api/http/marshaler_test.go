@@ -351,23 +351,24 @@ var retiredEnumMemberNames = map[string]bool{
 // а строгий маршалер на их ИМЯ отвечает тем же 400 «unknown field», просто вне этого списка.
 // Известные такие снятия на 2026-08-21 (по «was …»-комментариям в proto; при переснятии инвентаря
 // по прод-бандлу проверять И ИХ):
-//   * TechCardSignoffSection: TECH_CARD_SIGNOFF_SECTION_POM       (techcard.proto:2744)
-//   * TechCardBomItem: placement, consumption, quantity, colorway_colors,
+//   - TechCardSignoffSection: TECH_CARD_SIGNOFF_SECTION_POM       (techcard.proto:2744)
+//   - TechCardBomItem: placement, consumption, quantity, colorway_colors,
 //     line_total, size_consumptions, size_run_total               (techcard.proto:844)
-//   * TechCardCosting: markup_multiplier, wholesale_price, retail_price,
+//   - TechCardCosting: markup_multiplier, wholesale_price, retail_price,
 //     materials_cost, total_cost, labour_cost                     (techcard.proto:2733-2734)
-//   * TechCardColorwayCost: materials_cost, size_run_total        (techcard.proto:2654)
-//   * TechCard: resolved_media                                    (techcard.proto:3324)
-//   * ReceiveProductionRunRequest: product_id                     (admin.proto:8680)
-//   * Size: sku_system                                            (product.proto:37)
+//   - TechCardColorwayCost: materials_cost, size_run_total        (techcard.proto:2654)
+//   - TechCard: resolved_media                                    (techcard.proto:3324)
+//   - ReceiveProductionRunRequest: product_id                     (admin.proto:8680)
+//   - Size: sku_system                                            (product.proto:37)
+//
 // Клиент origin/beta (пин зеркала ff1db0b0, protos байт-в-байт с этой веткой) не эмитит ни одного:
 // sizeRunTotal/lineTotal в colorway-recipe.tsx стоят undefined и выбрасываются JSON.stringify.
 //
 // ПЕРЕСНЯТО 2026-09-08 (волна ленты дизайна): 112 → 116. Четыре новые пары пришли не с этой ветки,
 // а уже стоят в master (её растяжка на master красная ровно этим же числом):
-//   * GetDesignBandResponse: version_numbers, latest_version, journal (admin.proto:11874 — минты и
+//   - GetDesignBandResponse: version_numbers, latest_version, journal (admin.proto:11874 — минты и
 //     версии листа сняты подсистемой целиком, 79f613c)
-//   * DesignBudget: cap                                               (common/design.proto:1368 —
+//   - DesignBudget: cap                                               (common/design.proto:1368 —
 //     потолок генерации снят как понятие, а не поднят, 931e03d)
 //
 // НИ ОДНА ИЗ ЧЕТЫРЁХ НЕ МОЖЕТ ДАТЬ 400 — и это свойство сильнее любого grep'а по бандлу, потому
@@ -376,19 +377,25 @@ var retiredEnumMemberNames = map[string]bool{
 // встречается ровно в трёх сообщениях (GetDesignBandResponse, StartDesignRunResponse,
 // DraftDesignIdeaResponse) — все три ответные, и ни одно не вложено в запрос. Свойство держится,
 // пока держится это; поэтому проверка по клиенту всё равно проведена, а не заменена рассуждением:
-//   * клиент feat/design-band-ui 4019d0a1 (рабочее дерево чистое): сгенерированные
+//   - клиент feat/design-band-ui 4019d0a1 (рабочее дерево чистое): сгенерированные
 //     src/api/proto-http/{admin,common}/index.ts переген уже БЕЗ этих полей (GetDesignBandResponse
 //     и common_DesignBudget их не объявляют), в src/ ноль литералов-ключей на все четыре имени в
 //     обоих написаниях. Те же нули на origin/feat/design-band-ui 22d31568 и на origin/beta —
 //     то есть и бета-бандл собран без них;
-//   * ПРОД-бандл admin.grbpwr.com /assets/index-BgsnzCbh.js (1 461 395 Б, sha256 06faf4c5…):
+//   - ПРОД-бандл admin.grbpwr.com /assets/index-BgsnzCbh.js (1 461 395 Б, sha256 06faf4c5…):
 //     0 ключей и 0 строк-литералов на все четыре. Слово journal встречается там 4 раза — куском
 //     URL api/admin/accounting/journal; слово cap 4 раза — в регулярке единиц Tailwind, двух
 //     подписях формы архива и карте SVG-атрибутов (cap-height). Ключей нет ни одного.
 //
 // Слепое пятно (список выше) волна НЕ расширила: оба новых `reserved N` стоят в паре с
 // `reserved "имя"`, то есть попали в счёт, а не мимо него.
-const retiredFieldNamePairs = 116
+//
+// ПЕРЕСНЯТО 2026-10-26: 116 → 117. Пятая пара — SuggestAssemblySkeletonRequest.media_ids
+// (admin.proto, 811b791): входное поле снято намеренно, потому что глобальный media id позволял
+// передать внешней модели картинку другой карточки. В отличие от четырёх ответных полей выше,
+// старый клиент с media_ids получит 400; это требуемый fail-closed разрыв, а не совместимость,
+// ради которой поле можно снова начать принимать.
+const retiredFieldNamePairs = 117
 
 // scanReservedNames разбирает `reserved "…"` по admin-поверхности, разделяя имена членов enum и
 // имена полей по тому, внутри какого блока стоит строка.

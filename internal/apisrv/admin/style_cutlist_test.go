@@ -28,11 +28,14 @@ func TestGetStyleCutList(t *testing.T) {
 	card.StyleNumber = sql.NullString{String: "S-1", Valid: true}
 	card.Name = "The Coat"
 	card.BomItems = []entity.TechCardBomItem{
-		{Id: 100, Name: "Shell Wool"},
-		{Id: 200, Name: "Canvas Fusing"},
+		{Id: 100, Name: "Shell Wool", Section: entity.BomSectionFabric},
+		{Id: 200, Name: "Canvas Fusing", Section: entity.BomSectionInterlining},
 	}
+	// Piece-material bindings are scoped to a real colourway. The cut-list projection deliberately
+	// walks colourways and unions their recipe rows with the legacy piece-material rows.
+	card.Colorways = []entity.TechCardColorway{{Id: 9, Name: "Black"}}
 	card.Pieces = []entity.TechCardPiece{
-		{Id: 1, Name: "Front", PiecesPerGarment: 1, Mirrored: true, Grainline: "lengthwise",
+		{Id: 1, Name: "Front", PiecesPerGarment: 1, Mirrored: true, Grainline: "lengthwise", Fused: true,
 			Materials: []entity.TechCardPieceMaterial{{ColorwayID: 9, BomItemId: nid(100), FusingBomItemId: nid(200)}}},
 		{Id: 2, Name: "Back", PiecesPerGarment: 1, Mirrored: false, Grainline: "lengthwise",
 			Materials: []entity.TechCardPieceMaterial{{ColorwayID: 9, BomItemId: nid(100)}}},
