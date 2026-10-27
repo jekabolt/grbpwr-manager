@@ -385,7 +385,7 @@ func classifyArchiveEntry(name string) archiveEntryClass {
 		return archiveEntryClass{known: true, ceiling: MaxCardJSONBytes}
 	case FileCard:
 		return archiveEntryClass{known: true, ceiling: MaxCardJSONBytes}
-	case FileSizeChart, FileAssembly, FileColorways, FileDesignQuiz,
+	case FileSizeChart, FileAssembly, FileColorways, FileDesignQuiz, FileSeams,
 		FileMaterialsIndex, FileMediaIndex, FilePatternsIndex, FileMarkersIndex:
 		return archiveEntryClass{known: true, ceiling: MaxCardJSONBytes}
 	}

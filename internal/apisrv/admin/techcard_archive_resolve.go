@@ -178,7 +178,12 @@ type resolvedTechCardImport struct {
 	AssemblyPlan  []entity.StyleAssemblyInsert
 	// DesignQuizPlan — design_quiz.json validated (62-DEEP-FIXES D2); nil when absent or dropped.
 	DesignQuizPlan []entity.TechCardQuizAnswer
-	LabelPlan      []tcimpLabelLink
+	// SeamPlan — seams.json validated (1.3), every anchor on a piece of the card; nil when absent.
+	// SeamStale names the keys the source read as stale. The steps' seam_keys in Insert are already
+	// cut down to SeamPlan's keys.
+	SeamPlan  []entity.TechCardSeamInput
+	SeamStale map[string]bool
+	LabelPlan []tcimpLabelLink
 	// GarmentLabelBomKeys / PackagingItemBomKeys (labels rework, 0386): position in
 	// Insert.GarmentLabels / Insert.PackagingItems → the BOM line key their source bom_item_id named.
 	// Stamped onto the entity (BomLineKey) right after conversion; the store resolves the key against
@@ -392,9 +397,8 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationBlockMembershipAware = true
 	insert.OperationSeamsAware = true
 	insert.OperationSeamKindAware = true
-	// Seam decisions do not travel (see stripArchive…: pb.Seams = nil), so neither do the steps'
-	// references to them — a file from an older exporter may still carry them.
-	stripOperationSeamKeys(insert)
+	// The steps' seam_keys are cut down to the seams of seams.json that survive (resolveSeams, 1.3);
+	// a 1.2 archive carries no seams, so every key goes.
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
 
@@ -431,6 +435,9 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		return nil, err
 	}
 	if err := r.resolveDesignQuiz(); err != nil {
+		return nil, err
+	}
+	if err := r.resolveSeams(); err != nil {
 		return nil, err
 	}
 	if err := r.resolveMarkers(); err != nil {

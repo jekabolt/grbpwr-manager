@@ -282,15 +282,11 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// its own warehouse, in its own buckets, through the RPC that owns them.
 	pb.OutputVariants = nil
 
-	// Seam decisions (tech_card_seam) do NOT travel in v1 (FORMAT.md §4.1 №32): a cloned or imported
-	// card starts with no decisions. They are the technologist's review of the ENGINE over THIS
-	// instance's DXF files, and their staleness speaks about the source's sheets, which the receiver
-	// re-uploads as its own. Carrying them is a P2 decision (owner's call), not a default: cut here
-	// so the file never ships them — the receiving side's engine proposes again and its
-	// technologist decides.
+	// Seam decisions (tech_card_seam) travel in seams.json since 1.3 (FORMAT.md §5.3b), not here:
+	// this read-model list carries the source's people and output-only stamps next to the decision.
+	// The steps' seam_keys (0434) STAY in card.json — they name the seams of seams.json by seam_key,
+	// the card's own identity of a seam, and the import cuts them down to the seams that land.
 	pb.Seams = nil
-	// …and the steps' references to them (0434) go with them.
-	stripOperationSeamKeys(pb.TechCard)
 
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.

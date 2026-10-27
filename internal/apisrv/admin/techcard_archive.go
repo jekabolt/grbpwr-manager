@@ -297,6 +297,7 @@ func (s *Server) buildArchiveInput(ctx context.Context, card *entity.TechCard, c
 		Colorways:   sc.Colorways,
 		Materials:   sc.Materials,
 		DesignQuiz:  designQuizToArchive(card.QuizAnswers),
+		Seams:       seamsToArchive(card.Seams),
 		Media:       sc.Media,
 		Patterns:    sc.Patterns,
 		Markers:     sc.Markers,
@@ -1100,10 +1101,13 @@ func (s *Server) tcciWrite(ctx context.Context, c tcciCommit) (*pb_admin.CommitT
 			Assembly:  c.res.AssemblyPlan,
 			// The moodboard quiz answers (design_quiz.json, 62-DEEP-FIXES D2), validated by the resolver.
 			DesignQuizAnswers: c.res.DesignQuizPlan,
-			Markers:           c.markers,
-			PieceAreas:        c.res.PieceAreaPlan,
-			Labels:            tcciLabelLinks(c.res.LabelPlan),
-			Report:            reportJSON,
+			// The seam decisions (seams.json, 1.3) and the keys the source read as stale.
+			Seams:      c.res.SeamPlan,
+			SeamsStale: c.res.SeamStale,
+			Markers:    c.markers,
+			PieceAreas: c.res.PieceAreaPlan,
+			Labels:     tcciLabelLinks(c.res.LabelPlan),
+			Report:     reportJSON,
 		})
 		if err == nil {
 			return s.tcciCommitted(ctx, c.importID, id)

@@ -97,6 +97,8 @@ type ArchiveInput struct {
 	Materials []MaterialPassport
 	// DesignQuiz — design_quiz.json (1.2), written only when the card has answers.
 	DesignQuiz []DesignQuizAnswer
+	// Seams — seams.json (1.3), written only when the card has seam decisions.
+	Seams []SeamPayload
 
 	// Media / Patterns / Markers are the three indexes. Their LENGTHS are the manifest's contents
 	// counters — not the number of files, which dedup makes smaller (two media ids with identical
@@ -273,6 +275,7 @@ func planArchive(in ArchiveInput) (Manifest, []archiveEntry, error) {
 			Patterns:  len(in.Patterns),
 			Markers:   len(in.Markers),
 			Materials: len(in.Materials),
+			Seams:     len(in.Seams),
 		},
 		ExportHoles: in.Holes,
 	}
@@ -313,6 +316,7 @@ func planArchive(in ArchiveInput) (Manifest, []archiveEntry, error) {
 		{FileAssembly, in.Assembly, len(in.Assembly) > 0},
 		{FileColorways, in.Colorways, len(in.Colorways) > 0},
 		{FileDesignQuiz, in.DesignQuiz, len(in.DesignQuiz) > 0},
+		{FileSeams, in.Seams, len(in.Seams) > 0},
 		{FileMaterialsIndex, in.Materials, len(in.Materials) > 0},
 		{FileMediaIndex, in.Media, len(in.Media) > 0},
 		{FilePatternsIndex, in.Patterns, len(in.Patterns) > 0},

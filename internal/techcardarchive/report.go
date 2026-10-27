@@ -69,8 +69,12 @@ const (
 	EntityMaterial    = "material"
 	EntityMeasurement = "measurement"
 	EntityPieceArea   = "piece_area"
-	EntityCard        = "card"
-	EntityArchive     = "archive"
+	// EntitySeam is one seam decision of seams.json (1.3) — a row of tech_card_seam. Counted (the
+	// counter appears only when the archive carries seams, see buildCounters), so a dropped seam
+	// moves a number as well as writing a line.
+	EntitySeam    = "seam"
+	EntityCard    = "card"
+	EntityArchive = "archive"
 )
 
 // CountedEntities is the fixed set of entities that carry a counter, in the order they appear in
@@ -374,6 +378,7 @@ func ValidateReportAgainstManifest(report *pb_admin.TechCardImportReport, manife
 		{manifest.Contents.Patterns, EntityPattern, "pattern sheets"},
 		{manifest.Contents.Markers, EntityMarker, "markers"},
 		{manifest.Contents.Materials, EntityBOMLine, "material passports"},
+		{manifest.Contents.Seams, EntitySeam, "seams"},
 	}
 	for _, c := range claims {
 		if c.count <= 0 {
@@ -502,6 +507,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"speak it, then type the translation on the colourway by hand — pressing «create " +
 			"colourways from archive» again does not revisit a colourway it already created."},
 
+	ReasonSeamPieceMissing: {StatusSkipped,
+		"This seam joins a piece the card does not have — on the source card it was already an orphan " +
+			"(its piece had been removed), so it was dropped together with the steps' links to it. The " +
+			"other seams imported. Connect the edges again on the pieces map if the seam is still wanted."},
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +
 			"different one. Rename the card if that is not what you want."},

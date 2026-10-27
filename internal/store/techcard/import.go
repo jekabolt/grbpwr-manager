@@ -200,6 +200,13 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	// Sheets and DXF aliases arrive with the exported card's bindings unchanged: a grandfathered
 	// unresolved one is carried, not a reason to abort the import.
 	card.FabricBindingsCopied = true
+	// The steps' seam links are taken OFF the card and written after the seams (insertImportedSeams):
+	// the card save checks every key against tech_card_seam, which is empty until then. Taken here,
+	// once, outside the closure — a retried attempt must see the same keys. The card is the CALLER's
+	// payload and the handler calls again with it after a style_number collision (tcciWrite), so
+	// the keys go back on when this call returns: a second call must find them where the first did.
+	opSeamKeys := takeImportedOperationSeamKeys(card)
+	defer restoreImportedOperationSeamKeys(card, opSeamKeys)
 
 	var newID int
 	var losses *importLosses
@@ -278,6 +285,11 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		}
 		deadSidecars, err = cleanupDeadFabricScopeSidecars(ctx, db, newID, lines)
 		if err != nil {
+			return err
+		}
+		// The seams AFTER the pieces, sheets and DXF links (the fingerprint is taken from them), and
+		// the steps' links to them after the seams.
+		if err := insertImportedSeams(ctx, db, newID, in.Seams, in.SeamsStale, opSeamKeys, in.Actor, losses); err != nil {
 			return err
 		}
 		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
@@ -1476,4 +1488,97 @@ func importedAssemblyRef(f importedComponentFacts, componentID int) string {
 		return "component_style_number=" + n
 	}
 	return fmt.Sprintf("component_tech_card_id=%d", componentID)
+}
+
+// ────────────────────────────── seams (format 1.3) ──────────────────────────────
+
+// takeImportedOperationSeamKeys removes every step's seam keys from the card and returns them by
+// step index. nil when no step names a seam.
+func takeImportedOperationSeamKeys(card *entity.TechCardInsert) [][]string {
+	var out [][]string
+	for i := range card.Operations {
+		if len(card.Operations[i].SeamKeys) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make([][]string, len(card.Operations))
+		}
+		out[i] = card.Operations[i].SeamKeys
+		card.Operations[i].SeamKeys = nil
+	}
+	return out
+}
+
+// insertImportedSeams writes the archive's seam decisions onto the new card and then the steps'
+// links to them, through the same writes UpsertTechCardSeams and the card save use.
+//
+// The resolver already dropped every seam that does not validate or that joins a piece card.json
+// does not carry. This is the write's own check against the pieces that actually LANDED: a seam
+// whose piece is not on the card is dropped with a counted line (seam_piece_missing), never a
+// refusal of the whole import — 0411 keeps no FK to the piece, so an orphan seam is legal on the
+// source. A step's key for a dropped seam goes with it.
+func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, seams []entity.TechCardSeamInput,
+	stale map[string]bool, opSeamKeys [][]string, actor string, losses *importLosses,
+) error {
+	kept := map[string]bool{}
+	if len(seams) > 0 {
+		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT line_key FROM tech_card_piece
+			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load piece keys of imported tech card %d: %w", techCardID, err)
+		}
+		onCard := make(map[string]bool, len(pieces))
+		for _, p := range pieces {
+			onCard[strings.ToUpper(strings.TrimSpace(p))] = true
+		}
+		write := make([]entity.TechCardSeamInput, 0, len(seams))
+	seam:
+		for _, s := range seams {
+			for _, k := range s.PieceLineKeys() {
+				if !onCard[k] {
+					losses.dropCounted(techcardarchive.EntitySeam, "seam_key="+s.SeamKey, techcardarchive.StatusSkipped,
+						techcardarchive.ReasonSeamPieceMissing,
+						fmt.Sprintf("the seam joins piece %s, which did not land on the card", k))
+					continue seam
+				}
+			}
+			write = append(write, s)
+		}
+		if len(write) > 0 {
+			// Re-validated, as UpsertTechCardSeams does: the store is the last gate before the
+			// column's JSON format. The resolver validated every row, so a failure here is a fault.
+			in := entity.TechCardSeamsWrite{TechCardId: techCardID, Seams: write, By: actor}
+			if err := entity.ValidateTechCardSeamsWrite(&in); err != nil {
+				return fmt.Errorf("imported seams of tech card %d: %w", techCardID, err)
+			}
+			if err := writeTechCardSeamsTx(ctx, db, techCardID, in.Seams, actor, seamWriteOpts{stale: stale}); err != nil {
+				return err
+			}
+			for _, s := range in.Seams {
+				kept[s.SeamKey] = true
+			}
+		}
+	}
+	if len(opSeamKeys) == 0 {
+		return nil
+	}
+	ops := make([]entity.TechCardOperation, len(opSeamKeys))
+	for i, keys := range opSeamKeys {
+		for _, k := range keys {
+			if k = entity.NormalizeTechCardSeamKey(k); kept[k] {
+				ops[i].SeamKeys = append(ops[i].SeamKeys, k)
+			}
+		}
+	}
+	return insertTechCardOperationSeams(ctx, db, techCardID, ops, nil)
+}
+
+// restoreImportedOperationSeamKeys puts back what takeImportedOperationSeamKeys took off.
+func restoreImportedOperationSeamKeys(card *entity.TechCardInsert, keys [][]string) {
+	for i := range keys {
+		if i < len(card.Operations) && len(keys[i]) > 0 {
+			card.Operations[i].SeamKeys = keys[i]
+		}
+	}
 }
