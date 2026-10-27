@@ -225,6 +225,17 @@ func TestMaterialCatalogV2(t *testing.T) {
 	require.ErrorIs(t, err, entity.ErrMaterialUnitLocked)
 	// same unit (no change) still updates fine (the rejected update did not bump the version).
 	require.NoError(t, tc.UpdateMaterial(ctx, m2, &entity.MaterialInsert{Name: "NF Fabric2 renamed", Section: "fabric", Unit: str("cm"), Code: str("NF-CODE-2")}, 1))
+
+	// a material stocked before its unit was set can still get one: filling a blank is a first
+	// declaration, not a change. Once filled, the lock holds as usual.
+	m3, err := tc.CreateMaterial(ctx, &entity.MaterialInsert{Name: "NF Button", Section: "trim", Code: str("NF-CODE-3")})
+	require.NoError(t, err)
+	ids = append(ids, m3)
+	_, err = s.MaterialStock().ReceiveMaterialStock(ctx, entity.MaterialReceiptInsert{MaterialId: m3, Quantity: decimal.NewFromInt(500)})
+	require.NoError(t, err)
+	require.NoError(t, tc.UpdateMaterial(ctx, m3, &entity.MaterialInsert{Name: "NF Button", Section: "trim", Unit: str("pcs"), Code: str("NF-CODE-3")}, 0))
+	err = tc.UpdateMaterial(ctx, m3, &entity.MaterialInsert{Name: "NF Button", Section: "trim", Unit: str("m"), Code: str("NF-CODE-3")}, 1)
+	require.ErrorIs(t, err, entity.ErrMaterialUnitLocked)
 }
 
 // TestTechCardIdeaStage exercises new-flow NF-03 at the store level: an `idea` draft persists with

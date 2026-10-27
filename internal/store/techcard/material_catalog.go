@@ -305,6 +305,12 @@ func checkMaterialUnitChange(ctx context.Context, db dependency.DB, id int, newU
 		strings.TrimSpace(cur.Unit.String) == strings.TrimSpace(newUnit.String) {
 		return nil
 	}
+	// Filling a BLANK unit is a first declaration, not a change: the movements were recorded with no
+	// unit at all, so there is no earlier meaning of their quantities to break. Without this a
+	// material stocked before its unit was set could never get one.
+	if strings.TrimSpace(cur.Unit.String) == "" {
+		return nil
+	}
 	n, err := storeutil.QueryCountNamed(ctx, db,
 		`SELECT COUNT(*) FROM material_stock_movement WHERE material_id = :id`, map[string]any{"id": id})
 	if err != nil {
