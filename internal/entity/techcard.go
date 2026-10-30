@@ -2998,9 +2998,9 @@ func tokenSet[T ~string](tokens []string) map[T]bool {
 	return m
 }
 
-// MaxTopstitchRows caps the row count. Four rows of topstitching is already decorative extremity;
-// past that it is a typo, and an unbounded count reaches the printed sheet as nonsense.
-const MaxTopstitchRows = 4
+// MaxTopstitchRows caps the row count (1..10, typed exactly). Past ten it is a typo, and an
+// unbounded count reaches the printed sheet as nonsense.
+const MaxTopstitchRows = 10
 
 // --- словари волны «виды операций» (0324) --------------------------------------------------------
 //
