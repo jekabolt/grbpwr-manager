@@ -4188,6 +4188,52 @@ message TechCardSeam {
   google.protobuf.Timestamp updated_at = 24;
 }
 
+// TechCardSeamDecisionAction is what the technologist did when closing one join step of the seam
+// picker / quiz with the engine's guess in front of them.
+enum TechCardSeamDecisionAction {
+  TECH_CARD_SEAM_DECISION_ACTION_UNKNOWN = 0;
+  // Saved the engine's guess unchanged.
+  TECH_CARD_SEAM_DECISION_ACTION_ACCEPT = 1;
+  // Saved a pick of their own instead of the guess.
+  TECH_CARD_SEAM_DECISION_ACTION_OWN = 2;
+  // Skipped the step; no seam row was written (seam_key empty).
+  TECH_CARD_SEAM_DECISION_ACTION_SKIP = 3;
+  // Rejected a proposal (the rejected seam row is seam_key).
+  TECH_CARD_SEAM_DECISION_ACTION_REFUSE = 4;
+}
+
+// TechCardSeamGuessTier is the confidence tier of the guess the UI showed for the step.
+enum TechCardSeamGuessTier {
+  // The client had no tier to report.
+  TECH_CARD_SEAM_GUESS_TIER_UNKNOWN = 0;
+  TECH_CARD_SEAM_GUESS_TIER_CONFIDENT = 1;
+  TECH_CARD_SEAM_GUESS_TIER_GUESS = 2;
+  // The engine had no guess for the step.
+  TECH_CARD_SEAM_GUESS_TIER_NONE = 3;
+}
+
+// TechCardSeamDecision is ONE immutable record of what the technologist did with a seam guess
+// (AddTechCardSeamDecisions). Append-only, apart from the seam row itself: tech_card_seam keeps
+// only the outcome (accept and own both land as source=manual, a skip leaves no row), this log keeps
+// the decision so the guess can be measured.
+message TechCardSeamDecision {
+  // The step: operation_number of the card's operation; 0 = the card-level seam review (no step).
+  int32 operation_number = 1;
+  TechCardSeamDecisionAction action = 2;
+  // TechCardSeam.seam_key of the row written (accept / own) or rejected (refuse); empty on skip.
+  string seam_key = 3;
+  // Tier of the guess shown; UNKNOWN when the client has none.
+  TechCardSeamGuessTier tier = 4;
+  // The proposal shown, as client-built JSON ({"a":[{piece,k,len}],"b":[…]}), ≤ 8 KB; may be empty.
+  string shown = 5;
+  // Client git sha / ranker version, ≤ 40 chars.
+  string client_version = 6;
+  // OUTPUT ONLY (ignored on write).
+  int64 id = 20;
+  string created_by = 21;
+  google.protobuf.Timestamp created_at = 22;
+}
+
 // TechCardSlotAreaEstimate — ОЦЕНКА РАСХОДА ОДНОГО РУЛОННОГО СЛОТА в ЭТОМ колорвее: сколько ткани
 // уходит на изделие, если норму никто не вписал, а детали кроя на слот назначены и их площади
 // измерены (Ф1, ступень 0).

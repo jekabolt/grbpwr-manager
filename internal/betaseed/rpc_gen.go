@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (436 rpc) ----
+// ---- admin (441 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -184,6 +184,14 @@ func (c *Client) AddTechCardDevExpense(ctx context.Context, in *admin.AddTechCar
 func (c *Client) AddTechCardIssue(ctx context.Context, in *admin.AddTechCardIssueRequest) (*admin.AddTechCardIssueResponse, error) {
 	out := new(admin.AddTechCardIssueResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/issue", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) AddTechCardSeamDecisions(ctx context.Context, in *admin.AddTechCardSeamDecisionsRequest) (*admin.AddTechCardSeamDecisionsResponse, error) {
+	out := new(admin.AddTechCardSeamDecisionsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/seam-decisions", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -856,6 +864,14 @@ func (c *Client) DeleteTechCardMarker(ctx context.Context, in *admin.DeleteTechC
 func (c *Client) DeleteTechCardOutputVariant(ctx context.Context, in *admin.DeleteTechCardOutputVariantRequest) (*admin.DeleteTechCardOutputVariantResponse, error) {
 	out := new(admin.DeleteTechCardOutputVariantResponse)
 	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/output-variant/{id}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) DeleteTechCardPatternRevision(ctx context.Context, in *admin.DeleteTechCardPatternRevisionRequest) (*admin.DeleteTechCardPatternRevisionResponse, error) {
+	out := new(admin.DeleteTechCardPatternRevisionResponse)
+	if err := c.call(ctx, "DELETE", "/api/admin/tech-card/{tech_card_id}/pattern-history/{history_id}", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2245,6 +2261,14 @@ func (c *Client) ListTechCardRoleAssignments(ctx context.Context, in *admin.List
 	return out, nil
 }
 
+func (c *Client) ListTechCardSnapshots(ctx context.Context, in *admin.ListTechCardSnapshotsRequest) (*admin.ListTechCardSnapshotsResponse, error) {
+	out := new(admin.ListTechCardSnapshotsResponse)
+	if err := c.call(ctx, "GET", "/api/admin/tech-card/{tech_card_id}/snapshots", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListTechCards(ctx context.Context, in *admin.ListTechCardsRequest) (*admin.ListTechCardsResponse, error) {
 	out := new(admin.ListTechCardsResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tech-card/list", in, out); err != nil {
@@ -2381,6 +2405,14 @@ func (c *Client) ReceiveMaterialStock(ctx context.Context, in *admin.ReceiveMate
 	return out, nil
 }
 
+func (c *Client) ReceiveMaterialStockBatch(ctx context.Context, in *admin.ReceiveMaterialStockBatchRequest) (*admin.ReceiveMaterialStockBatchResponse, error) {
+	out := new(admin.ReceiveMaterialStockBatchResponse)
+	if err := c.call(ctx, "POST", "/api/admin/inventory/receive-batch", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ReceiveProductionRun(ctx context.Context, in *admin.ReceiveProductionRunRequest) (*admin.ReceiveProductionRunResponse, error) {
 	out := new(admin.ReceiveProductionRunResponse)
 	if err := c.call(ctx, "POST", "/api/admin/production-runs/{run_id}/receive", in, out); err != nil {
@@ -2496,6 +2528,14 @@ func (c *Client) ResetAccountPassword(ctx context.Context, in *admin.ResetAccoun
 func (c *Client) ResolveAcctEvent(ctx context.Context, in *admin.ResolveAcctEventRequest) (*admin.ResolveAcctEventResponse, error) {
 	out := new(admin.ResolveAcctEventResponse)
 	if err := c.call(ctx, "POST", "/api/admin/accounting/events/resolve", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RestoreTechCardSnapshot(ctx context.Context, in *admin.RestoreTechCardSnapshotRequest) (*admin.RestoreTechCardSnapshotResponse, error) {
+	out := new(admin.RestoreTechCardSnapshotResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/snapshot/{snapshot_id}/restore", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

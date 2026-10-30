@@ -1203,6 +1203,12 @@ type (
 		// DeleteTechCardSeams removes seams by seam_key (unknown keys are not an error) and returns the
 		// card's full list plus how many rows went. Same lock and released-card refusal as the upsert.
 		DeleteTechCardSeams(ctx context.Context, techCardID int, seamKeys []string) ([]entity.TechCardSeam, int, error)
+		// AddTechCardSeamDecisions appends what the technologist did with seam guesses
+		// (tech_card_seam_decision): one immutable row each, in one statement. Never touches
+		// tech_card_seam, never bumps lock_version, works on a released card. `in` must already have
+		// passed entity.ValidateTechCardSeamDecisionsWrite (re-checked here). An unknown card returns
+		// sql.ErrNoRows (callers map it to NotFound). Returns the number of rows written.
+		AddTechCardSeamDecisions(ctx context.Context, in entity.TechCardSeamDecisionsWrite) (int, error)
 		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
 		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
 		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path

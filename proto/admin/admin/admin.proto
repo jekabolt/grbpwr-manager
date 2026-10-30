@@ -2934,6 +2934,18 @@ service AdminService {
     };
   }
 
+  // AddTechCardSeamDecisions appends what the technologist did with the seam guesses — accept,
+  // own pick, skip, refuse — one immutable row each, ≤ 50 per call. A log beside the seams: it never
+  // touches tech_card_seam, never moves lock_version, enters no digest, and works on a released card
+  // (a note about the review, not card content). Write only; nothing reads it over the API.
+  // wr(tech_cards), the same right as UpsertTechCardSeams.
+  rpc AddTechCardSeamDecisions(AddTechCardSeamDecisionsRequest) returns (AddTechCardSeamDecisionsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/seam-decisions"
+      body: "*"
+    };
+  }
+
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
   // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
@@ -11827,6 +11839,16 @@ message DeleteTechCardSeamsRequest {
 message DeleteTechCardSeamsResponse {
   repeated common.TechCardSeam seams = 1; // the card's full list after the delete, stale resolved
   int32 deleted = 2; // rows actually removed
+}
+
+message AddTechCardSeamDecisionsRequest {
+  int32 tech_card_id = 1;
+  // 1..50 decisions; output-only fields (id, created_by, created_at) are ignored.
+  repeated common.TechCardSeamDecision decisions = 2;
+}
+
+message AddTechCardSeamDecisionsResponse {
+  int32 written = 1; // rows appended
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

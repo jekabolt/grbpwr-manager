@@ -463,6 +463,9 @@ var methodRequirements = map[string]Requirement{
 	// двигают и в дайджест не входят; выпущенная карточка отказывает.
 	"UpsertTechCardSeams": wr(SectionTechCards),
 	"DeleteTechCardSeams": wr(SectionTechCards),
+	// Журнал решений по догадкам швов (tech_card_seam_decision): пишется тем же жестом, что и шов,
+	// поэтому то же право. Только дописывание; читать — через db.sh.
+	"AddTechCardSeamDecisions": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
