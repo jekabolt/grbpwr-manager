@@ -129,4 +129,22 @@ func TestTopstitchWidthWithoutModeIsRefusedNotDropped(t *testing.T) {
 				op.TopstitchMode, op.TopstitchWidthMm, op.TopstitchRows)
 		}
 	})
+
+	t.Run("ряды: 10 принимается, 11 отвергается, 0 = не задано", func(t *testing.T) {
+		ok := kindParse(t, step(classPlain, &pb_common.TechCardTopstitch{Mode: modeEdge, Rows: 10})).Operations[0]
+		if !ok.TopstitchRows.Valid || ok.TopstitchRows.Int32 != 10 {
+			t.Errorf("10 рядов не доехали: %+v", ok.TopstitchRows)
+		}
+		ve := kindRefusal(t, step(classPlain, &pb_common.TechCardTopstitch{Mode: modeEdge, Rows: 11}))
+		if ve.Field != wantedField[:len(wantedField)-len("topstitch")]+"topstitch_rows" && ve.Reason != "out_of_range" {
+			t.Errorf("11 рядов: %q/%q", ve.Field, ve.Reason)
+		}
+		if ve.Reason != "out_of_range" {
+			t.Errorf("11 рядов: причина %q, ожидалось out_of_range", ve.Reason)
+		}
+		zero := kindParse(t, step(classPlain, &pb_common.TechCardTopstitch{Mode: modeEdge, Rows: 0})).Operations[0]
+		if zero.TopstitchRows.Valid {
+			t.Errorf("0 рядов должен быть не задан: %+v", zero.TopstitchRows)
+		}
+	})
 }

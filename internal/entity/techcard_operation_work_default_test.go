@@ -162,8 +162,8 @@ func TestOperationWorkDefaultValueRules(t *testing.T) {
 		{"topstitch_width_mm", "2", ""},
 		{"topstitch_width_mm", "2.25", OperationWorkDefaultReasonScale},
 		{"topstitch_width_mm", "100", OperationWorkDefaultReasonRange}, // верх строгий: правило шага требует «меньше 100»
-		{"topstitch_rows", "4", ""},
-		{"topstitch_rows", "5", OperationWorkDefaultReasonRange},
+		{"topstitch_rows", "10", ""},
+		{"topstitch_rows", "11", OperationWorkDefaultReasonRange},
 		{"needle_gauge_mm", "1.6", ""},
 		{"needle_gauge_mm", "1.5", OperationWorkDefaultReasonRange},
 		{"fullness_ratio", "1.25", ""},
