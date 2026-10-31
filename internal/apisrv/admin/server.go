@@ -164,6 +164,10 @@ type Server struct {
 	// presses coalesced in flight (assembly_skeleton_ai.go). Zero values work.
 	skeletonAICache  skeletonAICache
 	skeletonAIFlight singleflight.Group
+	// seamHintsFlight / seamHintsForced — SuggestTechCardSeamHints: identical presses coalesced in
+	// flight, a double «rerun» pays once (techcard_seam_hints.go). Zero values work.
+	seamHintsFlight singleflight.Group
+	seamHintsForced seamHintsForceGuard
 	// designImageRunCap — the worker's wall-clock cap of an image run (SetDesignImageRunCap).
 	designImageRunCap time.Duration
 	// jpkTaxpayer is the Polish taxpayer identity (from JPK_* config) stamped into JPK_V7M exports.

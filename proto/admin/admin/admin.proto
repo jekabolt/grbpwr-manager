@@ -2946,6 +2946,61 @@ service AdminService {
     };
   }
 
+  // SuggestTechCardSeamHints (unit-seams line F) — the AI HINT per tech card: a role per piece (closed
+  // vocab) and a joins map per join step (which pieces go onto which, an edge word each side, a
+  // relation). ONE vision+JSON call (chat.techcard_seams, temperature 0) per card input: the server
+  // bounds input_json (the client-built input: pieces, units, ops, sketch_media_ids, atlas_png as
+  // base64), loads the sketches itself (each must be on the card's technical sheet, else
+  // InvalidArgument), adds the owner's matching dictionary rows and overrides, and digests the
+  // canonical input. Same digest → the stored run, no call (cached=true). force reruns and replaces
+  // the run of that digest (a second force within a minute returns the stored run). The answer is
+  // validated: unknown pieces / ops / words are dropped, a dropped step or piece lands in
+  // not_inferred. A hint never writes a seam; overrides survive reruns. wr(tech_cards): spends the key.
+  rpc SuggestTechCardSeamHints(SuggestTechCardSeamHintsRequest) returns (SuggestTechCardSeamHintsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/seam-hints:suggest"
+      body: "*"
+    };
+  }
+
+  // GetTechCardSeamHints reads the stored hint of a card without calling the model: the run of
+  // input_digest (or of the digest of input_json, computed exactly as Suggest does), else the card's
+  // newest run with stale=true; plus the card's overrides. No run → empty hints_json. rd(tech_cards).
+  rpc GetTechCardSeamHints(GetTechCardSeamHintsRequest) returns (GetTechCardSeamHintsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/seam-hints:get"
+      body: "*"
+    };
+  }
+
+  // SetTechCardSeamHintOverride writes the owner's word on one hint: kind role (hint_key = piece
+  // name, value_json {"role","hand"}) or join (hint_key = operation number, value_json
+  // {"a":{pieces,edge},"b":{pieces,edge},"relation"}); state ok | fixed | off; empty state deletes
+  // the row. Returns the card's full override list. Precedence the client applies: owner fix for
+  // this card > dictionary row > AI > static default. wr(tech_cards).
+  rpc SetTechCardSeamHintOverride(SetTechCardSeamHintOverrideRequest) returns (SetTechCardSeamHintOverrideResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/seam-hints/override"
+      body: "*"
+    };
+  }
+
+  // ListPieceCodeDictionary lists the owner's code dictionary («все карты»): a normalized upper
+  // token of a piece name → role (+ hand). rd(tech_cards).
+  rpc ListPieceCodeDictionary(ListPieceCodeDictionaryRequest) returns (ListPieceCodeDictionaryResponse) {
+    option (google.api.http) = {get: "/api/admin/piece-code-dictionary"};
+  }
+
+  // SetPieceCodeDictionaryEntry upserts one dictionary row (code normalized upper, 1..32 of
+  // A-Z 0-9 _ -; role from the closed vocab; hand L, R or empty); an empty role deletes the row.
+  // wr(tech_cards).
+  rpc SetPieceCodeDictionaryEntry(SetPieceCodeDictionaryEntryRequest) returns (SetPieceCodeDictionaryEntryResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/piece-code-dictionary/{code}"
+      body: "*"
+    };
+  }
+
   // ListTechCardFabricDirectionGaps is the worklist of кампания Д1: every roll-goods BOM line whose
   // НАПРАВЛЕНИЕ ТКАНИ nobody has set, grouped by tech card. fabric_direction has existed on
   // tech_card_bom_item since 0073 and fed nothing but the MATERIALS digest, so it is unset on almost
@@ -11849,6 +11904,93 @@ message AddTechCardSeamDecisionsRequest {
 
 message AddTechCardSeamDecisionsResponse {
   int32 written = 1; // rows appended
+}
+
+// SEAM HINTS (unit-seams line F). The hints travel as validated JSON (schema_version 1):
+// {"schema_version":1,"roles":[{piece,role,hand,conf,why}],
+//  "joins":[{op,a:{pieces,edge},b:{pieces,edge},relation,conf,why}],"not_inferred":["op:N","piece:NAME"]}
+
+message SuggestTechCardSeamHintsRequest {
+  int32 tech_card_id = 1;
+  // The client-built input (≤ 3 MiB): {"pieces":[{name,purpose,fused,symmetry,dict_role,aspect,area,
+  // perimeter,notches,inner_lines}],"units":[{name,inputs}],"ops":[{number,zone,work,operation_type,
+  // inputs,output}],"sketch_media_ids":[…≤ 4],"atlas_png":"<base64 PNG ≤ 2 MiB, not digested>"}.
+  string input_json = 2;
+  bool force = 3; // rerun even when a run of this digest exists
+}
+
+message SuggestTechCardSeamHintsResponse {
+  string hints_json = 1;
+  string input_digest = 2; // sha256 hex of the canonical input
+  string model = 3; // the slug that answered
+  google.protobuf.Timestamp created_at = 4; // when the run was made
+  bool cached = 5; // true = the stored run of this digest, no provider call
+  string cost_usd = 6; // this press's priced calls; "" when unknown or cached
+  int32 calls = 7; // provider calls this press made (0 when cached)
+}
+
+message GetTechCardSeamHintsRequest {
+  int32 tech_card_id = 1;
+  string input_digest = 2; // the digest to look for; "" = use input_json, or none
+  string input_json = 3; // optional: the same input as Suggest; its digest is computed (no call)
+}
+
+message GetTechCardSeamHintsResponse {
+  string hints_json = 1; // "" = the card has no run
+  string run_digest = 2; // the digest of the run returned
+  string model = 3;
+  google.protobuf.Timestamp created_at = 4;
+  bool stale = 5; // the run is of another digest than the one asked for
+  repeated TechCardSeamHintOverride overrides = 6;
+  string input_digest = 7; // the digest asked for (computed from input_json when sent)
+}
+
+// TechCardSeamHintOverride is the owner's word on one hint. Never touched by a run.
+message TechCardSeamHintOverride {
+  string kind = 1; // role | join
+  string hint_key = 2; // role: piece name; join: operation number
+  string value_json = 3; // role {"role","hand"}; join {"a":{pieces,edge},"b":{pieces,edge},"relation"}; "" with state off
+  string state = 4; // ok | fixed | off
+  google.protobuf.Timestamp updated_at = 5; // output only
+  string updated_by = 6; // output only
+}
+
+message SetTechCardSeamHintOverrideRequest {
+  int32 tech_card_id = 1;
+  string kind = 2;
+  string hint_key = 3;
+  string value_json = 4;
+  string state = 5; // "" deletes the override
+}
+
+message SetTechCardSeamHintOverrideResponse {
+  repeated TechCardSeamHintOverride overrides = 1; // the card's full list
+}
+
+// PieceCodeDictionaryEntry is one row of the owner's code dictionary («все карты»).
+message PieceCodeDictionaryEntry {
+  string code = 1; // normalized upper token
+  string role = 2;
+  string hand = 3; // L, R or ""
+  google.protobuf.Timestamp updated_at = 4; // output only
+  string updated_by = 5; // output only
+}
+
+message ListPieceCodeDictionaryRequest {}
+
+message ListPieceCodeDictionaryResponse {
+  repeated PieceCodeDictionaryEntry entries = 1;
+}
+
+message SetPieceCodeDictionaryEntryRequest {
+  string code = 1;
+  string role = 2; // "" deletes the row
+  string hand = 3;
+}
+
+message SetPieceCodeDictionaryEntryResponse {
+  PieceCodeDictionaryEntry entry = 1; // the stored row; empty after a delete
+  bool deleted = 2;
 }
 
 // MATERIAL WAREHOUSE (new-flow NF-01)

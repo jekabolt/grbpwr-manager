@@ -11,7 +11,7 @@ import (
 
 var _ = context.Background
 
-// ---- admin (441 rpc) ----
+// ---- admin (446 rpc) ----
 
 func (c *Client) AccrueCorporationTax(ctx context.Context, in *admin.AccrueCorporationTaxRequest) (*admin.AccrueCorporationTaxResponse, error) {
 	out := new(admin.AccrueCorporationTaxResponse)
@@ -1613,6 +1613,14 @@ func (c *Client) GetTechCardRelease(ctx context.Context, in *admin.GetTechCardRe
 	return out, nil
 }
 
+func (c *Client) GetTechCardSeamHints(ctx context.Context, in *admin.GetTechCardSeamHintsRequest) (*admin.GetTechCardSeamHintsResponse, error) {
+	out := new(admin.GetTechCardSeamHintsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/seam-hints:get", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) GetTierAuditLog(ctx context.Context, in *admin.GetTierAuditLogRequest) (*admin.GetTierAuditLogResponse, error) {
 	out := new(admin.GetTierAuditLogResponse)
 	if err := c.call(ctx, "GET", "/api/admin/tier-audit", in, out); err != nil {
@@ -2088,6 +2096,14 @@ func (c *Client) ListPackagingBom(ctx context.Context, in *admin.ListPackagingBo
 func (c *Client) ListPackagingRecipe(ctx context.Context, in *admin.ListPackagingRecipeRequest) (*admin.ListPackagingRecipeResponse, error) {
 	out := new(admin.ListPackagingRecipeResponse)
 	if err := c.call(ctx, "GET", "/api/admin/inventory/packaging-recipe", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListPieceCodeDictionary(ctx context.Context, in *admin.ListPieceCodeDictionaryRequest) (*admin.ListPieceCodeDictionaryResponse, error) {
+	out := new(admin.ListPieceCodeDictionaryResponse)
+	if err := c.call(ctx, "GET", "/api/admin/piece-code-dictionary", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -2901,6 +2917,14 @@ func (c *Client) SetMemberStatus(ctx context.Context, in *admin.SetMemberStatusR
 	return out, nil
 }
 
+func (c *Client) SetPieceCodeDictionaryEntry(ctx context.Context, in *admin.SetPieceCodeDictionaryEntryRequest) (*admin.SetPieceCodeDictionaryEntryResponse, error) {
+	out := new(admin.SetPieceCodeDictionaryEntryResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/piece-code-dictionary/{code}", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) SetShipmentActualCost(ctx context.Context, in *admin.SetShipmentActualCostRequest) (*admin.SetShipmentActualCostResponse, error) {
 	out := new(admin.SetShipmentActualCostResponse)
 	if err := c.call(ctx, "POST", "/api/admin/order/shipment/actual-cost", in, out); err != nil {
@@ -2936,6 +2960,14 @@ func (c *Client) SetTechCardFindingSeen(ctx context.Context, in *admin.SetTechCa
 func (c *Client) SetTechCardMarkerNorm(ctx context.Context, in *admin.SetTechCardMarkerNormRequest) (*admin.SetTechCardMarkerNormResponse, error) {
 	out := new(admin.SetTechCardMarkerNormResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/marker/{id}/norm", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SetTechCardSeamHintOverride(ctx context.Context, in *admin.SetTechCardSeamHintOverrideRequest) (*admin.SetTechCardSeamHintOverrideResponse, error) {
+	out := new(admin.SetTechCardSeamHintOverrideResponse)
+	if err := c.call(ctx, "PUT", "/api/admin/tech-card/{tech_card_id}/seam-hints/override", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -3040,6 +3072,14 @@ func (c *Client) SuggestPrompts(ctx context.Context, in *admin.SuggestPromptsReq
 func (c *Client) SuggestStyleNumber(ctx context.Context, in *admin.SuggestStyleNumberRequest) (*admin.SuggestStyleNumberResponse, error) {
 	out := new(admin.SuggestStyleNumberResponse)
 	if err := c.call(ctx, "POST", "/api/admin/tech-card/suggest-style-number", in, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) SuggestTechCardSeamHints(ctx context.Context, in *admin.SuggestTechCardSeamHintsRequest) (*admin.SuggestTechCardSeamHintsResponse, error) {
+	out := new(admin.SuggestTechCardSeamHintsResponse)
+	if err := c.call(ctx, "POST", "/api/admin/tech-card/{tech_card_id}/seam-hints:suggest", in, out); err != nil {
 		return nil, err
 	}
 	return out, nil

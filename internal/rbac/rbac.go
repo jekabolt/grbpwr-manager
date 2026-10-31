@@ -466,6 +466,13 @@ var methodRequirements = map[string]Requirement{
 	// Журнал решений по догадкам швов (tech_card_seam_decision): пишется тем же жестом, что и шов,
 	// поэтому то же право. Только дописывание; читать — через db.sh.
 	"AddTechCardSeamDecisions": wr(SectionTechCards),
+	// Seam hints (unit-seams line F): asking the model spends the key (write); reading the stored hint
+	// is card reading; an override and the code dictionary are the owner's edits (write).
+	"SuggestTechCardSeamHints":    wr(SectionTechCards),
+	"GetTechCardSeamHints":        rd(SectionTechCards),
+	"SetTechCardSeamHintOverride": wr(SectionTechCards),
+	"ListPieceCodeDictionary":     rd(SectionTechCards),
+	"SetPieceCodeDictionaryEntry": wr(SectionTechCards),
 	// НАПРАВЛЕНИЕ ТКАНИ gap report (Ф1.8) — tech-cards READ, and specifically not production nor a
 	// section of its own. Every field it returns is BOM-tab content the same account already reads
 	// card by card through GetTechCard (line name, section, назначение, семпловая, approval state);
