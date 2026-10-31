@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -186,4 +187,49 @@ func (s *Store) SetPieceCodeDictionaryEntry(ctx context.Context, e entity.PieceC
 		return e, false, fmt.Errorf("failed to read piece code %s back: %w", e.Code, err)
 	}
 	return got, true, nil
+}
+
+// ─── join rows per (op, op digest) — 0442, SPEC-F §5a ───
+
+const seamHintJoinColumns = `id, tech_card_id, op_number, op_digest, schema_version, outcome, hint, model, created_by, created_at`
+
+// ListTechCardSeamHintJoins reads every stored join row of the card under one store version,
+// ordered by op number, then newest first (id breaks a tie of the same millisecond).
+func (s *Store) ListTechCardSeamHintJoins(ctx context.Context, cardID int, schemaVersion int) ([]entity.TechCardSeamHintJoin, error) {
+	rows, err := storeutil.QueryListNamed[entity.TechCardSeamHintJoin](ctx, s.DB, `
+		SELECT `+seamHintJoinColumns+` FROM tech_card_seam_hint_join
+		WHERE tech_card_id = :card AND schema_version = :v
+		ORDER BY op_number, created_at DESC, id DESC`,
+		map[string]any{"card": cardID, "v": schemaVersion})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the seam hint joins of tech card %d: %w", cardID, err)
+	}
+	return rows, nil
+}
+
+// SaveTechCardSeamHintJoins upserts the rows (one statement): a row of the same (card, op, digest,
+// version) is replaced in place and becomes the newest. An unknown card is a foreign-key violation.
+func (s *Store) SaveTechCardSeamHintJoins(ctx context.Context, rows []entity.TechCardSeamHintJoin) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	var (
+		b    strings.Builder
+		args = make([]any, 0, len(rows)*8)
+	)
+	b.WriteString(`INSERT INTO tech_card_seam_hint_join
+		(tech_card_id, op_number, op_digest, schema_version, outcome, hint, model, created_by) VALUES `)
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
+		args = append(args, r.TechCardId, r.OpNumber, r.OpDigest, r.SchemaVersion, r.Outcome, r.Hint, r.Model, r.CreatedBy)
+	}
+	b.WriteString(` ON DUPLICATE KEY UPDATE outcome = VALUES(outcome), hint = VALUES(hint), model = VALUES(model),
+		created_by = VALUES(created_by), created_at = CURRENT_TIMESTAMP(3)`)
+	if _, err := s.DB.ExecContext(ctx, b.String(), args...); err != nil {
+		return fmt.Errorf("failed to save the seam hint joins of tech card %d: %w", rows[0].TechCardId, err)
+	}
+	return nil
 }

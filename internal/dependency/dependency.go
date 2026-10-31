@@ -1232,6 +1232,12 @@ type (
 		// SetPieceCodeDictionaryEntry upserts a row (Role non-empty) or deletes it (Role empty);
 		// found=false after a delete.
 		SetPieceCodeDictionaryEntry(ctx context.Context, e entity.PieceCodeDictionaryEntry) (entity.PieceCodeDictionaryEntry, bool, error)
+		// ListTechCardSeamHintJoins reads every stored join row of the card under one store version
+		// (0442), by op number, newest first.
+		ListTechCardSeamHintJoins(ctx context.Context, cardID int, schemaVersion int) ([]entity.TechCardSeamHintJoin, error)
+		// SaveTechCardSeamHintJoins upserts join rows per (card, op, op digest, version); an unknown card is
+		// a foreign-key violation.
+		SaveTechCardSeamHintJoins(ctx context.Context, rows []entity.TechCardSeamHintJoin) error
 		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
 		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
 		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path

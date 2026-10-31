@@ -482,3 +482,34 @@ func NormalizeOverride(kind, key, value, state string) (string, string, error) {
 	}
 	return key, string(b), nil
 }
+
+// JoinFits reports whether a stored join row still fits the input: its op exists and every piece on
+// both sides is among the pieces that op's inputs stand for now. A stored row of an older op digest
+// is shown (as stale) only when it fits.
+func JoinFits(in Input, j Join) bool {
+	ex := NewExpander(in)
+	for _, o := range in.Ops {
+		if o.Number != j.Op {
+			continue
+		}
+		live := ex.Pieces(o.Inputs)
+		if len(j.A.Pieces) == 0 || len(j.B.Pieces) == 0 {
+			return false
+		}
+		for _, side := range [][]string{j.A.Pieces, j.B.Pieces} {
+			for _, p := range side {
+				if !live[p] {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// Joinable reports whether an op can hold a join at all: its inputs stand for at least two pieces.
+// An op that cannot is stored as outcome none without asking the model.
+func Joinable(in Input, op Op) bool {
+	return len(NewExpander(in).Pieces(op.Inputs)) >= 2
+}

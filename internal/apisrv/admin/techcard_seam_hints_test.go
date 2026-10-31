@@ -33,7 +33,37 @@ type seamFakeStore struct {
 	order     []string
 	overrides map[string]entity.TechCardSeamHintOverride
 	dict      map[string]entity.PieceCodeDictionaryEntry
+	joins     []entity.TechCardSeamHintJoin
 	saves     int
+}
+
+func (f *seamFakeStore) ListTechCardSeamHintJoins(_ context.Context, cardID int, v int) ([]entity.TechCardSeamHintJoin, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []entity.TechCardSeamHintJoin
+	for i := len(f.joins) - 1; i >= 0; i-- { // newest first
+		if r := f.joins[i]; r.TechCardId == cardID && r.SchemaVersion == v {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].OpNumber < out[j].OpNumber })
+	return out, nil
+}
+
+func (f *seamFakeStore) SaveTechCardSeamHintJoins(_ context.Context, rows []entity.TechCardSeamHintJoin) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range rows {
+		kept := f.joins[:0]
+		for _, o := range f.joins {
+			if !(o.TechCardId == r.TechCardId && o.OpNumber == r.OpNumber && o.OpDigest == r.OpDigest && o.SchemaVersion == r.SchemaVersion) {
+				kept = append(kept, o)
+			}
+		}
+		r.CreatedAt = time.Now()
+		f.joins = append(kept, r)
+	}
+	return nil
 }
 
 func (f *seamFakeStore) TechCardTechnicalMediaIDs(_ context.Context, cardID int, ids []int) ([]int, error) {
@@ -162,6 +192,12 @@ const seamTestAnswer = "```json\n" + `{"roles":[{"piece":"CLR_SECOND","role":"st
 
 func seamTestInput(t *testing.T, extraPiece string) string {
 	t.Helper()
+	return seamTestInputWith(t, extraPiece, nil)
+}
+
+// seamTestInputWith lets a test edit the ops before the input is serialised.
+func seamTestInputWith(t *testing.T, extraPiece string, editOps func(ops []map[string]any) []map[string]any) string {
+	t.Helper()
 	atlas := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 1, 2, 3})
 	pieces := []map[string]any{
 		{"name": "P_L_MAIN", "purpose": "main", "dict_role": "front", "aspect": 2.8, "area": 180000.4},
@@ -173,13 +209,17 @@ func seamTestInput(t *testing.T, extraPiece string) string {
 	if extraPiece != "" {
 		pieces = append(pieces, map[string]any{"name": extraPiece, "purpose": "main"})
 	}
+	ops := []map[string]any{
+		{"number": 720, "zone": "front", "work": "placket", "operation_type": "MACHINE", "inputs": []string{"PLCK_L", "P_L_MAIN"}, "output": "FRONT_L"},
+		{"number": 860, "zone": "collar", "work": "collar", "operation_type": "MACHINE", "inputs": []string{"CLR"}, "output": "COLLAR_U"},
+		{"number": 870, "zone": "collar", "work": "stand", "operation_type": "MACHINE", "inputs": []string{"CLR_SECOND", "COLLAR_U"}},
+	}
+	if editOps != nil {
+		ops = editOps(ops)
+	}
 	raw, err := json.Marshal(map[string]any{
-		"pieces": pieces,
-		"ops": []map[string]any{
-			{"number": 720, "zone": "front", "work": "placket", "operation_type": "MACHINE", "inputs": []string{"PLCK_L", "P_L_MAIN"}, "output": "FRONT_L"},
-			{"number": 860, "zone": "collar", "work": "collar", "operation_type": "MACHINE", "inputs": []string{"CLR"}, "output": "COLLAR_U"},
-			{"number": 870, "zone": "collar", "work": "stand", "operation_type": "MACHINE", "inputs": []string{"CLR_SECOND", "COLLAR_U"}},
-		},
+		"pieces":           pieces,
+		"ops":              ops,
 		"sketch_media_ids": []int{5},
 		"atlas_png":        "data:image/png;base64," + atlas,
 	})
@@ -405,7 +445,9 @@ func TestSeamHintsDictionaryIsInTheDigestAndThePrompt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, before.InputDigest, got.InputDigest)
 	require.True(t, got.Stale)
-	require.Equal(t, before.InputDigest, got.RunDigest)
+	require.True(t, got.RolesStale, "a dictionary row is part of the pieces digest")
+	require.Equal(t, []int32{720, 860, 870}, got.StaleOps, "the roles digest is in every op digest")
+	require.Empty(t, got.RunDigest)
 	require.Equal(t, before.HintsJson, got.HintsJson)
 
 	after := seamSuggest(t, s, "alice", in, false)
@@ -446,4 +488,120 @@ func TestGetTechCardSeamHintsWithoutARun(t *testing.T) {
 	require.False(t, got.Stale)
 	_, err = s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard, InputDigest: "zz"})
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+// SPEC-F §5a: the AI runs by itself and incrementally. An edit of one op asks only that op (the roles
+// are known context); a new op asks only itself; an op that cannot hold a join is never asked; the
+// same input asks nothing; force asks everything.
+func TestSuggestTechCardSeamHintsIsIncremental(t *testing.T) {
+	c := &recordingChatter{text: []string{seamTestAnswer}}
+	s, store := newSeamRig(t, c)
+	first := seamSuggest(t, s, "alice", seamTestInput(t, ""), false)
+	require.True(t, first.RolesAsked)
+	require.Equal(t, []int32{720, 870}, first.AskedOps, "860 sews one piece: stored as none, never asked")
+	require.Contains(t, c.reqs[0].User, "- ROLES: give a role")
+	require.Contains(t, c.reqs[0].User, "- ASK JOINS FOR operations: 720, 870.")
+	require.Len(t, store.joins, 3)
+
+	// The owner edits op 870: Get names it stale without a call, Suggest asks only 870.
+	edited := seamTestInputWith(t, "", func(ops []map[string]any) []map[string]any {
+		ops[2]["work"] = "stand to collar"
+		return ops
+	})
+	got, err := s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard, InputJson: edited})
+	require.NoError(t, err)
+	require.True(t, got.Stale)
+	require.False(t, got.RolesStale)
+	require.Equal(t, []int32{870}, got.StaleOps)
+	require.Empty(t, got.MissingOps)
+	require.Equal(t, 1, c.calls())
+
+	second := seamSuggest(t, s, "alice", edited, false)
+	require.Equal(t, 2, c.calls())
+	require.False(t, second.Cached)
+	require.False(t, second.RolesAsked)
+	require.Equal(t, []int32{870}, second.AskedOps)
+	u := c.reqs[1].User
+	require.Contains(t, u, `- ROLES: known — output "roles": [].`)
+	require.Contains(t, u, "- ASK JOINS FOR operations: 870.")
+	require.Contains(t, u, `- "CLR_SECOND" → stand hand=-`, "the run's role is context")
+	require.Contains(t, u, `- "P_L_MAIN" → front hand=-`, "the dictionary role is context")
+	require.Contains(t, u, `- op 720: ["PLCK_L"] long → ["P_L_MAIN"] front_edge (boundary)`, "the known join is context")
+	var h hints.Hints
+	require.NoError(t, json.Unmarshal([]byte(second.HintsJson), &h))
+	require.Len(t, h.Roles, 1, "the stored roles are kept, the answer's roles ignored")
+	require.Len(t, h.Joins, 1)
+	require.Equal(t, 720, h.Joins[0].Op, "op 720 from the store, the model's 720 row not taken")
+
+	// Same input: nothing asked — even with the purpose switched off.
+	ai := s.ai
+	s.ai = router.NewStatic(nil)
+	again := seamSuggest(t, s, "bob", edited, false)
+	require.True(t, again.Cached)
+	require.Equal(t, 2, c.calls())
+	s.ai = ai
+
+	// A new op asks only itself; a new op over one piece asks nothing.
+	added := seamTestInputWith(t, "", func(ops []map[string]any) []map[string]any {
+		ops[2]["work"] = "stand to collar"
+		return append(ops,
+			map[string]any{"number": 880, "zone": "front", "work": "flap", "operation_type": "MACHINE", "inputs": []string{"FLP_R_MAIN", "FRONT_L"}},
+			map[string]any{"number": 905, "zone": "collar", "work": "press", "operation_type": "PRESS", "inputs": []string{"CLR"}})
+	})
+	got, err = s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard, InputJson: added})
+	require.NoError(t, err)
+	require.Equal(t, []int32{880, 905}, got.MissingOps)
+	third := seamSuggest(t, s, "alice", added, false)
+	require.Equal(t, 3, c.calls())
+	require.Equal(t, []int32{880}, third.AskedOps)
+	got, err = s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard, InputJson: added})
+	require.NoError(t, err)
+	require.False(t, got.Stale)
+	require.Equal(t, third.InputDigest, got.RunDigest)
+
+	// A piece changes: the roles and every op again.
+	piece := seamTestInput(t, "EXTRA")
+	fourth := seamSuggest(t, s, "alice", piece, false)
+	require.Equal(t, 4, c.calls())
+	require.True(t, fourth.RolesAsked)
+	require.Equal(t, []int32{720, 870}, fourth.AskedOps)
+
+	// Force: everything, though everything is stored.
+	forced := seamSuggest(t, s, "carol", piece, true)
+	require.Equal(t, 5, c.calls())
+	require.True(t, forced.RolesAsked)
+	require.Equal(t, []int32{720, 870}, forced.AskedOps)
+}
+
+// An op that cannot hold a join, added alone, is stored as none with no call and no purpose check.
+func TestSuggestTechCardSeamHintsStoresUnjoinableOpsWithoutACall(t *testing.T) {
+	c := &recordingChatter{text: []string{seamTestAnswer}}
+	s, store := newSeamRig(t, c)
+	seamSuggest(t, s, "alice", seamTestInput(t, ""), false)
+	s.ai = router.NewStatic(nil)
+	in := seamTestInputWith(t, "", func(ops []map[string]any) []map[string]any {
+		return append(ops, map[string]any{"number": 905, "zone": "collar", "work": "press", "operation_type": "PRESS", "inputs": []string{"CLR"}})
+	})
+	res := seamSuggest(t, s, "alice", in, false)
+	require.True(t, res.Cached)
+	require.Equal(t, 1, c.calls())
+	require.Len(t, store.joins, 4)
+	require.Equal(t, entity.SeamHintJoinOutcomeNone, store.joins[3].Outcome)
+	require.Equal(t, 905, store.joins[3].OpNumber)
+}
+
+// Without input_json the server cannot judge freshness: the newest of everything, stale when asked
+// about a digest.
+func TestGetTechCardSeamHintsWithoutInputShowsTheLatest(t *testing.T) {
+	c := &recordingChatter{text: []string{seamTestAnswer}}
+	s, _ := newSeamRig(t, c)
+	first := seamSuggest(t, s, "alice", seamTestInput(t, ""), false)
+	got, err := s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard, InputDigest: first.InputDigest})
+	require.NoError(t, err)
+	require.True(t, got.Stale)
+	require.JSONEq(t, first.HintsJson, got.HintsJson)
+	got, err = s.GetTechCardSeamHints(adminCtx("alice"), &pb_admin.GetTechCardSeamHintsRequest{TechCardId: seamTestCard})
+	require.NoError(t, err)
+	require.False(t, got.Stale)
+	require.JSONEq(t, first.HintsJson, got.HintsJson)
 }

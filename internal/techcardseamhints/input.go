@@ -386,66 +386,122 @@ type canonPiece struct {
 	InnerLines int     `json:"inner_lines"`
 }
 
-type canonical struct {
-	SchemaVersion int          `json:"schema_version"`
-	Pieces        []canonPiece `json:"pieces"`
-	Units         []Unit       `json:"units"`
-	Ops           []Op         `json:"ops"`
-	Sketches      []MediaFact  `json:"sketches"`
-	Dictionary    []DictRow    `json:"dictionary"`
-}
-
 func round(x float64, places int) float64 {
 	p := math.Pow(10, float64(places))
 	return math.Round(x*p) / p
 }
 
-// Canonical is the canonical JSON the digest is taken over: pieces sorted by name with the shape
-// summary rounded (aspect 0.01, area / perimeter 1), units sorted by name with sorted inputs, ops in
-// the card's order, sketches sorted by id with their hash, matched dictionary rows sorted by code,
-// and the schema version. Owner overrides are NOT in it (they survive reruns and the client merges
-// them on top); the atlas is not in it (see Input).
-func Canonical(in Input, sketches []MediaFact, dict []DictRow) []byte {
-	c := canonical{SchemaVersion: SchemaVersion,
-		Pieces: make([]canonPiece, 0, len(in.Pieces)), Units: make([]Unit, 0, len(in.Units)),
-		Ops: make([]Op, 0, len(in.Ops)), Sketches: append([]MediaFact{}, sketches...),
-		Dictionary: append([]DictRow{}, dict...)}
-	for _, p := range in.Pieces {
-		c.Pieces = append(c.Pieces, canonPiece{p.Name, p.Purpose, p.Fused, p.Symmetry, p.DictRole,
-			round(p.Aspect, 2), round(p.Area, 0), round(p.Perimeter, 0), p.Notches, p.InnerLines})
-	}
-	sort.Slice(c.Pieces, func(i, j int) bool { return c.Pieces[i].Name < c.Pieces[j].Name })
-	for _, u := range in.Units {
-		ins := append([]string{}, u.Inputs...)
-		sort.Strings(ins)
-		c.Units = append(c.Units, Unit{Name: u.Name, Inputs: ins})
-	}
-	sort.Slice(c.Units, func(i, j int) bool { return c.Units[i].Name < c.Units[j].Name })
-	for _, o := range in.Ops {
-		o.Inputs = append([]string{}, o.Inputs...)
-		if o.Inputs == nil {
-			o.Inputs = []string{}
-		}
-		c.Ops = append(c.Ops, o)
-	}
-	sort.Slice(c.Sketches, func(i, j int) bool { return c.Sketches[i].ID < c.Sketches[j].ID })
-	sort.Slice(c.Dictionary, func(i, j int) bool { return c.Dictionary[i].Code < c.Dictionary[j].Code })
-	for i := range c.Units {
-		if c.Units[i].Inputs == nil {
-			c.Units[i].Inputs = []string{}
-		}
-	}
-	b, err := json.Marshal(c)
+// StoreVersion — the version of the STORED cache (roles runs, join rows). v2 = the split cache of
+// SPEC-F §5a: a roles run per pieces digest and a join row per (op number, op digest). It is in every
+// digest, so a new store shape re-asks; v1 whole-card runs are never read again.
+const StoreVersion = 2
+
+// Digests are the fingerprints of one card input (SPEC-F §5a):
+//   - Roles: the pieces (sorted, shape summary rounded: aspect 0.01, area / perimeter 1), the sketches
+//     (sorted by id, with their content hash) and the matched dictionary rows (sorted by code). The key
+//     of the roles run: the same DXF + dictionary + sketch never runs twice.
+//   - Ops: per op number — the op's own fields (zone, work, type, inputs, output), the summaries of the
+//     pieces its inputs stand for (units expanded), and the roles digest. An edit of one op re-asks only
+//     that op; any change of the pieces re-asks all of them.
+//   - Full: the roles digest, the ops in the card's order with their digests, the units — the identity
+//     of the whole input (input_digest on the wire).
+//
+// Owner overrides are in none of them (they survive reruns and the client merges them on top); the
+// atlas is in none of them (see Input).
+type Digests struct {
+	Roles string
+	Ops   map[int]string
+	Full  string
+}
+
+func canonPieceOf(p Piece) canonPiece {
+	return canonPiece{p.Name, p.Purpose, p.Fused, p.Symmetry, p.DictRole,
+		round(p.Aspect, 2), round(p.Area, 0), round(p.Perimeter, 0), p.Notches, p.InnerLines}
+}
+
+func digestOf(v any) string {
+	b, err := json.Marshal(v)
 	if err != nil { // plain structs of strings / numbers: cannot fail
 		panic(err)
 	}
-	return b
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
-// Digest is the hex sha256 of Canonical.
+func orEmpty(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+// ComputeDigests fingerprints a card input.
+func ComputeDigests(in Input, sketches []MediaFact, dict []DictRow) Digests {
+	pieces := make(map[string]canonPiece, len(in.Pieces))
+	allPieces := make([]canonPiece, 0, len(in.Pieces))
+	for _, p := range in.Pieces {
+		c := canonPieceOf(p)
+		pieces[p.Name] = c
+		allPieces = append(allPieces, c)
+	}
+	sort.Slice(allPieces, func(i, j int) bool { return allPieces[i].Name < allPieces[j].Name })
+	sk := append([]MediaFact{}, sketches...)
+	sort.Slice(sk, func(i, j int) bool { return sk[i].ID < sk[j].ID })
+	dr := append([]DictRow{}, dict...)
+	sort.Slice(dr, func(i, j int) bool { return dr[i].Code < dr[j].Code })
+	d := Digests{Ops: make(map[int]string, len(in.Ops))}
+	d.Roles = digestOf(struct {
+		V          int          `json:"v"`
+		Pieces     []canonPiece `json:"pieces"`
+		Sketches   []MediaFact  `json:"sketches"`
+		Dictionary []DictRow    `json:"dictionary"`
+	}{StoreVersion, allPieces, sk, dr})
+
+	ex := NewExpander(in)
+	type opRef struct {
+		Number int    `json:"n"`
+		Digest string `json:"d"`
+	}
+	order := make([]opRef, 0, len(in.Ops))
+	for _, o := range in.Ops {
+		names := make([]string, 0)
+		for n := range ex.Pieces(o.Inputs) {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		ps := make([]canonPiece, 0, len(names))
+		for _, n := range names {
+			ps = append(ps, pieces[n])
+		}
+		o.Inputs = orEmpty(append([]string{}, o.Inputs...))
+		od := digestOf(struct {
+			V      int          `json:"v"`
+			Roles  string       `json:"roles"`
+			Op     Op           `json:"op"`
+			Pieces []canonPiece `json:"pieces"`
+		}{StoreVersion, d.Roles, o, ps})
+		d.Ops[o.Number] = od
+		order = append(order, opRef{o.Number, od})
+	}
+	units := make([]Unit, 0, len(in.Units))
+	for _, u := range in.Units {
+		ins := append([]string{}, u.Inputs...)
+		sort.Strings(ins)
+		units = append(units, Unit{Name: u.Name, Inputs: orEmpty(ins)})
+	}
+	sort.Slice(units, func(i, j int) bool { return units[i].Name < units[j].Name })
+	d.Full = digestOf(struct {
+		V     int     `json:"v"`
+		Roles string  `json:"roles"`
+		Ops   []opRef `json:"ops"`
+		Units []Unit  `json:"units"`
+	}{StoreVersion, d.Roles, order, units})
+	return d
+}
+
+// Digest is the full digest of an input (Digests.Full).
 func Digest(in Input, sketches []MediaFact, dict []DictRow) string {
-	sum := sha256.Sum256(Canonical(in, sketches, dict))
-	return hex.EncodeToString(sum[:])
+	return ComputeDigests(in, sketches, dict).Full
 }
 
 // ─── the owner's code dictionary ───

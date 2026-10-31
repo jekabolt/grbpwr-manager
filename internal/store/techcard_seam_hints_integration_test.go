@@ -180,12 +180,54 @@ func TestTechCardSeamHints(t *testing.T) {
 		require.NotEqual(t, "ZZWB", d.Code)
 	}
 
+	// --- join rows per (op, op digest) — 0442 ---
+	digC := strings.Repeat("c", 64)
+	join := sql.NullString{String: `{"op":720,"a":{"pieces":["PLCK_L"],"edge":"long"},"b":{"pieces":["P_L_MAIN"],"edge":"front_edge"},"relation":"boundary","conf":"high"}`, Valid: true}
+	require.NoError(t, tc.SaveTechCardSeamHintJoins(ctx, []entity.TechCardSeamHintJoin{
+		{TechCardId: cardID, OpNumber: 720, OpDigest: digA, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeJoin, Hint: join, Model: "m1", CreatedBy: "anna"},
+		{TechCardId: cardID, OpNumber: 870, OpDigest: digA, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeNotInferred, Model: "m1", CreatedBy: "anna"},
+		{TechCardId: cardID, OpNumber: 860, OpDigest: digA, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeNone, CreatedBy: "anna"},
+	}))
+	time.Sleep(5 * time.Millisecond)
+	// An edited op gets a row of its new digest; the old one stays. A rerun of a digest replaces it.
+	require.NoError(t, tc.SaveTechCardSeamHintJoins(ctx, []entity.TechCardSeamHintJoin{
+		{TechCardId: cardID, OpNumber: 870, OpDigest: digC, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeNone, Model: "m2", CreatedBy: "boris"},
+		{TechCardId: cardID, OpNumber: 720, OpDigest: digA, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeNotInferred, Model: "m2", CreatedBy: "boris"},
+	}))
+	require.NoError(t, tc.SaveTechCardSeamHintJoins(ctx, nil))
+	joins, err := tc.ListTechCardSeamHintJoins(ctx, cardID, 2)
+	require.NoError(t, err)
+	require.Len(t, joins, 4)
+	require.Equal(t, 720, joins[0].OpNumber)
+	require.Equal(t, entity.SeamHintJoinOutcomeNotInferred, joins[0].Outcome, "replaced in place")
+	require.False(t, joins[0].Hint.Valid)
+	require.Equal(t, "boris", joins[0].CreatedBy)
+	require.Equal(t, 860, joins[1].OpNumber)
+	require.False(t, joins[1].Hint.Valid)
+	require.Equal(t, 870, joins[2].OpNumber)
+	require.Equal(t, digC, joins[2].OpDigest, "newest first within an op")
+	require.Equal(t, digA, joins[3].OpDigest)
+	none, err := tc.ListTechCardSeamHintJoins(ctx, cardID, 1)
+	require.NoError(t, err)
+	require.Empty(t, none, "another store version is another cache")
+	require.NoError(t, tc.SaveTechCardSeamHintJoins(ctx, []entity.TechCardSeamHintJoin{
+		{TechCardId: cardID, OpNumber: 900, OpDigest: digB, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeJoin, Hint: join},
+	}))
+	joins, err = tc.ListTechCardSeamHintJoins(ctx, cardID, 2)
+	require.NoError(t, err)
+	require.JSONEq(t, join.String, joins[len(joins)-1].Hint.String)
+	err = tc.SaveTechCardSeamHintJoins(ctx, []entity.TechCardSeamHintJoin{
+		{TechCardId: maxID + 1_000_000, OpNumber: 1, OpDigest: digA, SchemaVersion: 2, Outcome: entity.SeamHintJoinOutcomeNone},
+	})
+	require.True(t, s.IsErrForeignKeyViolation(err), "%v", err)
+
 	// --- everything of the card dies with it ---
 	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card WHERE id = ?", cardID)
 	require.NoError(t, err)
 	var n int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM tech_card_seam_hint_run WHERE tech_card_id = ?) +
-		(SELECT COUNT(*) FROM tech_card_seam_hint_override WHERE tech_card_id = ?)`, cardID, cardID).Scan(&n))
+		(SELECT COUNT(*) FROM tech_card_seam_hint_override WHERE tech_card_id = ?) +
+		(SELECT COUNT(*) FROM tech_card_seam_hint_join WHERE tech_card_id = ?)`, cardID, cardID, cardID).Scan(&n))
 	require.Zero(t, n)
 }

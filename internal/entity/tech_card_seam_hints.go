@@ -44,3 +44,25 @@ type PieceCodeDictionaryEntry struct {
 	UpdatedAt time.Time      `db:"updated_at"`
 	UpdatedBy string         `db:"updated_by"`
 }
+
+// Outcomes of one asked operation (tech_card_seam_hint_join.outcome, 0442).
+const (
+	SeamHintJoinOutcomeJoin        = "join"         // Hint holds the validated join row
+	SeamHintJoinOutcomeNotInferred = "not_inferred" // the model could not tell
+	SeamHintJoinOutcomeNone        = "none"         // no join in this step (pressing, finishing …)
+)
+
+// TechCardSeamHintJoin is the stored answer for one operation of a card under one op digest
+// (SPEC-F §5a: op fields + its input pieces' summaries + the roles digest).
+type TechCardSeamHintJoin struct {
+	Id            int64          `db:"id"`
+	TechCardId    int            `db:"tech_card_id"`
+	OpNumber      int            `db:"op_number"`
+	OpDigest      string         `db:"op_digest"`
+	SchemaVersion int            `db:"schema_version"`
+	Outcome       string         `db:"outcome"`
+	Hint          sql.NullString `db:"hint"`
+	Model         string         `db:"model"`
+	CreatedBy     string         `db:"created_by"`
+	CreatedAt     time.Time      `db:"created_at"`
+}
