@@ -50,6 +50,8 @@ var purposes = []Purpose{
 		"tech card → patterns → import: says what each page of a pattern file is (tile, overview, instructions …)", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeAssemblySkeleton, "assembly skeleton",
 		"tech card → operations → suggest skeleton → ask ai: a second opinion on the order, the ambiguous joins and plausibility", PurposeGroupChat, entity.AICapabilityChat},
+	{entity.AIPurposeTechCardSeams, "seam hints",
+		"tech card → seams: piece roles and the joins map, once per card input", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeBoardLabel, "board labels",
 		"design → moodboard: the view of a target picture, a first read of a new picture", PurposeGroupChat, entity.AICapabilityChat},
 	{entity.AIPurposeBoardRead, "board read",

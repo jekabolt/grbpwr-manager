@@ -94,6 +94,7 @@ func TestAIShapePurposesAreThePlansTwelve(t *testing.T) {
 		"chat.pattern_pieces":    AICapabilityChat, // pattern import piece names (F9, 0408)
 		"chat.pattern_pages":     AICapabilityChat, // pattern import page roles (A9)
 		"chat.assembly_skeleton": AICapabilityChat, // assembly skeleton second opinion (lane E, 0409)
+		"chat.techcard_seams":    AICapabilityChat, // seam hints (unit-seams line F, 0441)
 		"chat.board_label":       AICapabilityChat, // moodboard view labels (101)
 		"chat.board_read":        AICapabilityChat, // unclear views + detail reads (101)
 		"chat.playground_ideas":  AICapabilityChat,

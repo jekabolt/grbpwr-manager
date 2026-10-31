@@ -1209,6 +1209,29 @@ type (
 		// passed entity.ValidateTechCardSeamDecisionsWrite (re-checked here). An unknown card returns
 		// sql.ErrNoRows (callers map it to NotFound). Returns the number of rows written.
 		AddTechCardSeamDecisions(ctx context.Context, in entity.TechCardSeamDecisionsWrite) (int, error)
+		// SEAM HINTS (0440, unit-seams line F). Not card content: no lock_version, no released-card
+		// refusal. Shapes are validated by the caller (internal/techcardseamhints).
+		//
+		// TechCardTechnicalMediaIDs returns which of ids are on the card's technical sheet
+		// (tech_card_media category 'technical'); an unknown card is sql.ErrNoRows.
+		TechCardTechnicalMediaIDs(ctx context.Context, techCardID int, ids []int) ([]int, error)
+		// GetTechCardSeamHintRun reads the run of exactly (card, digest, schema version).
+		GetTechCardSeamHintRun(ctx context.Context, techCardID int, digest string, schemaVersion int) (entity.TechCardSeamHintRun, bool, error)
+		// LatestTechCardSeamHintRun reads the card's newest run of the schema version, any digest.
+		LatestTechCardSeamHintRun(ctx context.Context, techCardID int, schemaVersion int) (entity.TechCardSeamHintRun, bool, error)
+		// SaveTechCardSeamHintRun inserts a run or replaces the run of the same (card, digest,
+		// schema version) in place (a forced rerun); never touches overrides. Returns the stored row.
+		SaveTechCardSeamHintRun(ctx context.Context, run entity.TechCardSeamHintRun) (entity.TechCardSeamHintRun, error)
+		// ListTechCardSeamHintOverrides reads the card's overrides (kind, hint_key order).
+		ListTechCardSeamHintOverrides(ctx context.Context, techCardID int) ([]entity.TechCardSeamHintOverride, error)
+		// SetTechCardSeamHintOverride upserts one override, or deletes it when State is empty; returns
+		// the card's full list. An unknown card is sql.ErrNoRows.
+		SetTechCardSeamHintOverride(ctx context.Context, o entity.TechCardSeamHintOverride) ([]entity.TechCardSeamHintOverride, error)
+		// ListPieceCodeDictionary reads the owner's code dictionary («все карты»), code order.
+		ListPieceCodeDictionary(ctx context.Context) ([]entity.PieceCodeDictionaryEntry, error)
+		// SetPieceCodeDictionaryEntry upserts a row (Role non-empty) or deletes it (Role empty);
+		// found=false after a delete.
+		SetPieceCodeDictionaryEntry(ctx context.Context, e entity.PieceCodeDictionaryEntry) (entity.PieceCodeDictionaryEntry, bool, error)
 		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
 		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
 		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path
