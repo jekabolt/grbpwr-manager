@@ -399,7 +399,7 @@ type DesignQuizAnswer struct {
 type SeamPayload struct {
 	SeamKey      string       `json:"seam_key"`
 	Status       string       `json:"status"`    // confirmed | rejected
-	Kind         string       `json:"kind"`      // edge | partial | composite | surface | closure
+	Kind         string       `json:"kind"`      // edge | partial | composite | surface | closure | pose (a hand pose, not a seam)
 	Direction    string       `json:"direction"` // reversed | same | unknown
 	Source       string       `json:"source"`    // graph | doll | order | manual | ai
 	SideA        []SeamAnchor `json:"side_a"`

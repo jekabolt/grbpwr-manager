@@ -55,7 +55,15 @@ const (
 	TechCardSeamKindComposite TechCardSeamKind = "composite"
 	TechCardSeamKindSurface   TechCardSeamKind = "surface"
 	TechCardSeamKindClosure   TechCardSeamKind = "closure"
+	// TechCardSeamKindPose is NOT a seam: a piece placed by hand in a step (P8). It rides this table
+	// because the anchor + placement shape already exists (no migration): side_a = the one anchor of
+	// the moved piece with its placement in the host's frame, side_b = the one anchor of the host
+	// piece. Every reader that counts or interprets seams skips it (IsSeam).
+	TechCardSeamKindPose TechCardSeamKind = "pose"
 )
+
+// IsSeam reports whether a row of this kind is a sewn (or closure) seam — false for a pose.
+func (k TechCardSeamKind) IsSeam() bool { return k != TechCardSeamKindPose }
 
 // TechCardSeamDirection is how the two sides walk against each other. Unknown is a legal stored
 // value: the reader then picks the pairing itself.
@@ -260,7 +268,7 @@ var techCardSeamStatuses = map[TechCardSeamStatus]bool{TechCardSeamConfirmed: tr
 
 var techCardSeamKinds = map[TechCardSeamKind]bool{
 	TechCardSeamKindEdge: true, TechCardSeamKindPartial: true, TechCardSeamKindComposite: true,
-	TechCardSeamKindSurface: true, TechCardSeamKindClosure: true,
+	TechCardSeamKindSurface: true, TechCardSeamKindClosure: true, TechCardSeamKindPose: true,
 }
 
 var techCardSeamDirections = map[TechCardSeamDirection]bool{
@@ -324,7 +332,7 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 			return NewFieldViolation(f+".status", "invalid", "", "confirmed or rejected")
 		}
 		if !techCardSeamKinds[s.Kind] {
-			return NewFieldViolation(f+".kind", "invalid", "", "edge, partial, composite, surface or closure")
+			return NewFieldViolation(f+".kind", "invalid", "", "edge, partial, composite, surface, closure or pose")
 		}
 		if s.Direction == "" {
 			s.Direction = TechCardSeamDirectionUnknown
@@ -354,6 +362,11 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 		}
 		if err := validateTechCardSeamSide(f+".side_b", s.SideB); err != nil {
 			return err
+		}
+		if s.Kind == TechCardSeamKindPose {
+			if err := validateTechCardSeamPose(f, s); err != nil {
+				return err
+			}
 		}
 		if s.Kind == TechCardSeamKindComposite && len(s.SideA) < 2 && len(s.SideB) < 2 {
 			return NewFieldViolation(f+".kind", "composite_needs_parts", "",
@@ -433,6 +446,28 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 			return NewFieldViolation(af+".range_from", "out_of_range", "",
 				"0 ≤ range_from < range_to ≤ 1, or both 0 for the whole run")
 		}
+	}
+	return nil
+}
+
+// validateTechCardSeamPose checks the shape of a pose row (P8): one moved piece, one host piece,
+// the moved piece's placement present. Runs after both sides passed validateTechCardSeamSide.
+func validateTechCardSeamPose(f string, s *TechCardSeamInput) error {
+	if s.Status != TechCardSeamConfirmed {
+		return NewFieldViolation(f+".status", "rejected_pose", "",
+			"a pose is confirmed; to drop it use DeleteTechCardSeams")
+	}
+	if len(s.SideA) != 1 {
+		return NewFieldViolation(f+".side_a.parts", "pose_one_anchor", "",
+			"a pose names exactly one anchor per side: the moved piece")
+	}
+	if len(s.SideB) != 1 {
+		return NewFieldViolation(f+".side_b.parts", "pose_one_anchor", "",
+			"a pose names exactly one anchor per side: the host piece")
+	}
+	if s.SideA[0].Placement == nil {
+		return NewFieldViolation(f+".side_a.parts[0].placement", "required", "",
+			"a pose carries the moved piece's placement in the host's frame")
 	}
 	return nil
 }

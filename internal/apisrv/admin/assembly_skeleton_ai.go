@@ -646,6 +646,10 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 	}
 
 	for i, sm := range req.GetSeams() {
+		// A pose (P8) is a piece placed by hand, not a seam: it never reaches the prompt.
+		if skeletonAIIsPose(sm) {
+			continue
+		}
 		field := fmt.Sprintf("seams[%d]", i)
 		if err := skeletonAIBound(field+".evidence", sm.GetEvidence(), skeletonAIMaxEvidenceRunes); err != nil {
 			return skeletonAIInput{}, err
@@ -792,9 +796,22 @@ func skeletonAIInputOf(req *pb_admin.SuggestAssemblySkeletonRequest) (skeletonAI
 // the request sends its own examples. With none, the server picks the house style FROM the card
 // (other cards than this one, its category first), so the card is part of the question: card 0 and
 // card 7 with the same body must not share an answer.
+// skeletonAIIsPose: a pose row (P8) is a piece placed by hand, never a seam of the skeleton.
+func skeletonAIIsPose(sm *pb_admin.AssemblySkeletonSeam) bool {
+	return strings.TrimSpace(sm.GetKind()) == string(entity.TechCardSeamKindPose)
+}
+
 func skeletonAIDigest(req *pb_admin.SuggestAssemblySkeletonRequest) [sha256.Size]byte {
 	c := proto.Clone(req).(*pb_admin.SuggestAssemblySkeletonRequest)
 	c.Force = false
+	// A pose is not a seam (skeletonAIInputOf drops it): moving a piece by hand must not miss the cache.
+	seams := c.Seams[:0]
+	for _, sm := range c.GetSeams() {
+		if !skeletonAIIsPose(sm) {
+			seams = append(seams, sm)
+		}
+	}
+	c.Seams = seams
 	if len(c.GetExamples()) > 0 {
 		c.TechCardId = 0
 	}

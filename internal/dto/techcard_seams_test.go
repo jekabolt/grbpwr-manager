@@ -153,3 +153,25 @@ func TestTechCardSeamsWriteFromPbBoundsBeforeCopy(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	require.Equal(t, "seams[0].side_b.parts", ve.Field)
 }
+
+// A pose row (P8) crosses the wire both ways: kind POSE, one anchor per side, the moved piece's
+// placement intact.
+func TestTechCardSeamsPoseRoundTrip(t *testing.T) {
+	pose := seamPb()
+	pose.Kind = pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE
+	pose.Direction = pb_common.TechCardSeamDirection_TECH_CARD_SEAM_DIRECTION_UNKNOWN
+	pose.Source = pb_common.TechCardSeamSource_TECH_CARD_SEAM_SOURCE_MANUAL
+	pose.SideA.Parts[0].Placement = &pb_common.TechCardSeamPlacement{XMm: 88.5, YMm: -12, RotDeg: 90, Flip: true}
+	in, err := TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{pose}, "ann")
+	require.NoError(t, err)
+	require.Equal(t, entity.TechCardSeamKindPose, in.Seams[0].Kind)
+	require.Equal(t, &entity.TechCardSeamPlacement{XMm: 88.5, YMm: -12, RotDeg: 90, Flip: true}, in.Seams[0].SideA[0].Placement)
+
+	out := TechCardSeamsToPb([]entity.TechCardSeam{{TechCardSeamInput: in.Seams[0], TechCardId: 7}})
+	require.Equal(t, pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE, out[0].GetKind())
+	require.True(t, proto.Equal(pose.SideA.Parts[0].Placement, out[0].GetSideA().GetParts()[0].GetPlacement()))
+
+	pose.SideA.Parts[0].Placement = nil
+	_, err = TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{pose}, "ann")
+	require.ErrorContains(t, err, "seams[0].side_a.parts[0].placement")
+}
