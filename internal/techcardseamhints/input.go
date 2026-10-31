@@ -398,7 +398,8 @@ const StoreVersion = 2
 
 // Digests are the fingerprints of one card input (SPEC-F §5a):
 //   - Roles: the pieces (sorted, shape summary rounded: aspect 0.01, area / perimeter 1), the sketches
-//     (sorted by id, with their content hash) and the matched dictionary rows (sorted by code). The key
+//     (sorted by id, with their content hash), the matched dictionary rows (sorted by code) and the
+//     PromptVersion (new rules ask once more; every op digest carries the roles digest). The key
 //     of the roles run: the same DXF + dictionary + sketch never runs twice.
 //   - Ops: per op number — the op's own fields (zone, work, type, inputs, output), the summaries of the
 //     pieces its inputs stand for (units expanded), and the roles digest. An edit of one op re-asks only
@@ -452,10 +453,11 @@ func ComputeDigests(in Input, sketches []MediaFact, dict []DictRow) Digests {
 	d := Digests{Ops: make(map[int]string, len(in.Ops))}
 	d.Roles = digestOf(struct {
 		V          int          `json:"v"`
+		Prompt     int          `json:"prompt"`
 		Pieces     []canonPiece `json:"pieces"`
 		Sketches   []MediaFact  `json:"sketches"`
 		Dictionary []DictRow    `json:"dictionary"`
-	}{StoreVersion, allPieces, sk, dr})
+	}{StoreVersion, PromptVersion, allPieces, sk, dr})
 
 	ex := NewExpander(in)
 	type opRef struct {
