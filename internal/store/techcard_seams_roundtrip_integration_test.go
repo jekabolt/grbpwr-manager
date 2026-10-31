@@ -135,6 +135,60 @@ func TestTechCardSeamsRoundTrip(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, key1, list[0].SeamKey)
 
+	// ── a pose row (P8): stored and read back with its placement, beside the seams, deleted by key ──
+	const poseKey = "01SEAMRT0000000000000000P1"
+	moved := anchor(rtPieceCuff, "")
+	moved.PerimShare = 1
+	moved.Placement = &entity.TechCardSeamPlacement{XMm: 61.25, YMm: -14.5, RotDeg: 90, Flip: true}
+	pose := entity.TechCardSeamInput{
+		SeamKey: poseKey, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindPose,
+		Direction: entity.TechCardSeamDirectionUnknown, Source: entity.TechCardSeamSourceManual,
+		SideA: []entity.TechCardSeamAnchor{moved},
+		SideB: []entity.TechCardSeamAnchor{anchor(rtPieceFront, "")},
+	}
+	list, _, err = T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+		TechCardId: fx.cardID, By: "ann", Seams: []entity.TechCardSeamInput{pose},
+	})
+	require.NoError(t, err)
+	require.Len(t, list, 2, "a pose upsert leaves the seams alone")
+	require.Equal(t, key1, list[0].SeamKey)
+	require.Equal(t, poseKey, list[1].SeamKey)
+	require.Equal(t, entity.TechCardSeamKindPose, list[1].Kind)
+	require.Equal(t, entity.TechCardSeamDirectionUnknown, list[1].Direction)
+	seamRTSameSide(t, pose.SideA, list[1].SideA)
+	seamRTSameSide(t, pose.SideB, list[1].SideB)
+	require.NotNil(t, list[1].SideA[0].Placement)
+	require.InDelta(t, 61.25, list[1].SideA[0].Placement.XMm, 1e-9)
+	require.InDelta(t, -14.5, list[1].SideA[0].Placement.YMm, 1e-9)
+	require.InDelta(t, 90, list[1].SideA[0].Placement.RotDeg, 1e-9)
+	require.True(t, list[1].SideA[0].Placement.Flip)
+	require.Nil(t, list[1].SideB[0].Placement)
+	pbPose := dto.TechCardSeamsToPb(list)[1]
+	require.Equal(t, "TECH_CARD_SEAM_KIND_POSE", pbPose.GetKind().String())
+
+	// a seam upsert does not wipe the pose
+	list, _, err = T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+		TechCardId: fx.cardID, By: "ann", Seams: []entity.TechCardSeamInput{rejected},
+	})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, poseKey, list[1].SeamKey)
+
+	// a pose with no placement is refused before the store writes anything
+	bad := pose
+	bad.SideA = []entity.TechCardSeamAnchor{anchor(rtPieceCuff, "")}
+	_, _, err = T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+		TechCardId: fx.cardID, By: "ann", Seams: []entity.TechCardSeamInput{bad},
+	})
+	require.ErrorAs(t, err, &ve)
+	require.Equal(t, "seams[0].side_a.parts[0].placement", ve.Field)
+
+	list, deleted, err = T.DeleteTechCardSeams(ctx, fx.cardID, []string{poseKey})
+	require.NoError(t, err)
+	require.Equal(t, 1, deleted)
+	require.Len(t, list, 1)
+	require.Equal(t, key1, list[0].SeamKey)
+
 	// ── a released card refuses both writes ──
 	_, err = testDB.ExecContext(ctx, "UPDATE tech_card SET approval_state = 'released' WHERE id = ?", fx.cardID)
 	require.NoError(t, err)

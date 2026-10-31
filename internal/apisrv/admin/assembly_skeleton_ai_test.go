@@ -918,3 +918,23 @@ func TestSkeletonAIDecodeToleratesProseAroundTheObject(t *testing.T) {
 		})
 	}
 }
+
+// A pose (P8) is a piece placed by hand, not a seam: it never reaches the prompt and never moves the
+// cache key, so dragging a piece does not re-ask the model.
+func TestSkeletonAIIgnoresPoseRows(t *testing.T) {
+	plain := skeletonAITestRequest()
+	posed := skeletonAITestRequest()
+	posed.Seams = append(posed.Seams, &pb_admin.AssemblySkeletonSeam{A: "SL", B: "BP", Score: 1, Kind: "pose"})
+	posed.Seams = append([]*pb_admin.AssemblySkeletonSeam{{A: "NOPE", B: "BP", Kind: " pose "}}, posed.Seams...)
+
+	in, err := skeletonAIInputOf(posed)
+	require.NoError(t, err, "a pose row is skipped, not validated as a seam")
+	want := skeletonAITestInput(t)
+	require.Len(t, in.Seams, len(want.Seams))
+	for _, sm := range in.Seams {
+		require.NotEqual(t, "pose", sm.GetKind())
+	}
+	require.Equal(t, skeletonAIUserPrompt(want), skeletonAIUserPrompt(in))
+	require.Equal(t, skeletonAIDigest(plain), skeletonAIDigest(posed))
+	require.Len(t, posed.Seams, 5, "the digest does not edit the caller's request")
+}

@@ -207,3 +207,56 @@ func TestValidateTechCardSeamsWriteKeepsPlacementAndInnerLineHint(t *testing.T) 
 	require.Equal(t, "i3", in.Seams[0].SideB[0].EdgeHint)
 	require.Equal(t, &TechCardSeamPlacement{XMm: -12.5, YMm: 40, RotDeg: 270, Flip: true}, in.Seams[0].SideB[0].Placement)
 }
+
+func seamTestPoseWrite() TechCardSeamsWrite {
+	in := seamTestWrite()
+	s := &in.Seams[0]
+	s.Kind = TechCardSeamKindPose
+	s.Source = TechCardSeamSourceManual
+	s.Direction = TechCardSeamDirectionUnknown
+	s.SideA[0].Placement = &TechCardSeamPlacement{XMm: 120, YMm: -35.5, RotDeg: 90, Flip: true}
+	return in
+}
+
+// A pose (P8): one moved piece with its placement, one host piece, confirmed.
+func TestValidateTechCardSeamsWritePose(t *testing.T) {
+	in := seamTestPoseWrite()
+	require.NoError(t, ValidateTechCardSeamsWrite(&in))
+	require.False(t, TechCardSeamKindPose.IsSeam())
+	for _, k := range []TechCardSeamKind{TechCardSeamKindEdge, TechCardSeamKindPartial, TechCardSeamKindComposite,
+		TechCardSeamKindSurface, TechCardSeamKindClosure} {
+		require.True(t, k.IsSeam(), k)
+	}
+
+	cases := []struct {
+		name  string
+		edit  func(*TechCardSeamInput)
+		field string
+		code  string
+	}{
+		{"no placement", func(s *TechCardSeamInput) { s.SideA[0].Placement = nil }, "seams[0].side_a.parts[0].placement", "required"},
+		{"placement on host only", func(s *TechCardSeamInput) {
+			s.SideB[0].Placement, s.SideA[0].Placement = s.SideA[0].Placement, nil
+		}, "seams[0].side_a.parts[0].placement", "required"},
+		{"two moved", func(s *TechCardSeamInput) {
+			s.SideA = append(s.SideA, seamTestAnchor("PIECE-SLEEVE", "SL#1"))
+		}, "seams[0].side_a.parts", "pose_one_anchor"},
+		{"two hosts", func(s *TechCardSeamInput) {
+			s.SideB = append(s.SideB, seamTestAnchor("PIECE-SLEEVE", "SL#1"))
+		}, "seams[0].side_b.parts", "pose_one_anchor"},
+		{"rejected", func(s *TechCardSeamInput) { s.Status = TechCardSeamRejected }, "seams[0].status", "rejected_pose"},
+		{"bad anchor still refused", func(s *TechCardSeamInput) { s.SideB[0].LenMm = 0 }, "seams[0].side_b.parts[0].len_mm", "out_of_range"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := seamTestPoseWrite()
+			c.edit(&in.Seams[0])
+			err := ValidateTechCardSeamsWrite(&in)
+			require.Error(t, err)
+			var fv *ValidationError
+			require.ErrorAs(t, err, &fv)
+			require.Equal(t, c.field, fv.Field)
+			require.Equal(t, c.code, fv.Reason)
+		})
+	}
+}

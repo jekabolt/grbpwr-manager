@@ -146,6 +146,16 @@ func TestRequestBytesPerDialect(t *testing.T) {
 			want: `{"model":"m","messages":[` + sys + `,{"role":"user","content":"u"}],"temperature":0.2,"usage":{"include":true}}`,
 		},
 		{
+			name: "openrouter caller temperature (seam hints: 0)", model: "m",
+			req:  aiprov.ChatRequest{System: "sys", User: "u", JSONMode: true, Temperature: new(float64)},
+			want: `{"model":"m","messages":[` + sys + `,{"role":"user","content":"u"}],"temperature":0,"response_format":{"type":"json_object"},"usage":{"include":true}}`,
+		},
+		{
+			name: "openai ignores a caller temperature", openAI: true, model: "gpt-5-mini",
+			req:  aiprov.ChatRequest{System: "sys", User: "u", Temperature: new(float64)},
+			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}]}`,
+		},
+		{
 			name: "openai text, provider defaults", openAI: true, model: "gpt-5-mini",
 			req:  aiprov.ChatRequest{System: "sys", User: "u"},
 			want: `{"model":"gpt-5-mini","messages":[` + sys + `,{"role":"user","content":"u"}]}`,

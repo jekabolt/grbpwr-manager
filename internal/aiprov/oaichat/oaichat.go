@@ -398,6 +398,9 @@ func (c *Client) buildRequest(model string, req aiprov.ChatRequest, opt Options)
 			ResponseFormat: format,
 			Usage:          &usageAccounting{Include: true},
 		}
+		if req.Temperature != nil {
+			r.Temperature = *req.Temperature
+		}
 		if req.Effort != "" {
 			r.Reasoning = &reasoningSpec{Effort: req.Effort}
 		}

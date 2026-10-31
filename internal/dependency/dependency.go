@@ -1203,6 +1203,41 @@ type (
 		// DeleteTechCardSeams removes seams by seam_key (unknown keys are not an error) and returns the
 		// card's full list plus how many rows went. Same lock and released-card refusal as the upsert.
 		DeleteTechCardSeams(ctx context.Context, techCardID int, seamKeys []string) ([]entity.TechCardSeam, int, error)
+		// AddTechCardSeamDecisions appends what the technologist did with seam guesses
+		// (tech_card_seam_decision): one immutable row each, in one statement. Never touches
+		// tech_card_seam, never bumps lock_version, works on a released card. `in` must already have
+		// passed entity.ValidateTechCardSeamDecisionsWrite (re-checked here). An unknown card returns
+		// sql.ErrNoRows (callers map it to NotFound). Returns the number of rows written.
+		AddTechCardSeamDecisions(ctx context.Context, in entity.TechCardSeamDecisionsWrite) (int, error)
+		// SEAM HINTS (0440, unit-seams line F). Not card content: no lock_version, no released-card
+		// refusal. Shapes are validated by the caller (internal/techcardseamhints).
+		//
+		// TechCardTechnicalMediaIDs returns which of ids are on the card's technical sheet
+		// (tech_card_media category 'technical'); an unknown card is sql.ErrNoRows.
+		TechCardTechnicalMediaIDs(ctx context.Context, techCardID int, ids []int) ([]int, error)
+		// GetTechCardSeamHintRun reads the run of exactly (card, digest, schema version).
+		GetTechCardSeamHintRun(ctx context.Context, techCardID int, digest string, schemaVersion int) (entity.TechCardSeamHintRun, bool, error)
+		// LatestTechCardSeamHintRun reads the card's newest run of the schema version, any digest.
+		LatestTechCardSeamHintRun(ctx context.Context, techCardID int, schemaVersion int) (entity.TechCardSeamHintRun, bool, error)
+		// SaveTechCardSeamHintRun inserts a run or replaces the run of the same (card, digest,
+		// schema version) in place (a forced rerun); never touches overrides. Returns the stored row.
+		SaveTechCardSeamHintRun(ctx context.Context, run entity.TechCardSeamHintRun) (entity.TechCardSeamHintRun, error)
+		// ListTechCardSeamHintOverrides reads the card's overrides (kind, hint_key order).
+		ListTechCardSeamHintOverrides(ctx context.Context, techCardID int) ([]entity.TechCardSeamHintOverride, error)
+		// SetTechCardSeamHintOverride upserts one override, or deletes it when State is empty; returns
+		// the card's full list. An unknown card is sql.ErrNoRows.
+		SetTechCardSeamHintOverride(ctx context.Context, o entity.TechCardSeamHintOverride) ([]entity.TechCardSeamHintOverride, error)
+		// ListPieceCodeDictionary reads the owner's code dictionary («все карты»), code order.
+		ListPieceCodeDictionary(ctx context.Context) ([]entity.PieceCodeDictionaryEntry, error)
+		// SetPieceCodeDictionaryEntry upserts a row (Role non-empty) or deletes it (Role empty);
+		// found=false after a delete.
+		SetPieceCodeDictionaryEntry(ctx context.Context, e entity.PieceCodeDictionaryEntry) (entity.PieceCodeDictionaryEntry, bool, error)
+		// ListTechCardSeamHintJoins reads every stored join row of the card under one store version
+		// (0442), by op number, newest first.
+		ListTechCardSeamHintJoins(ctx context.Context, cardID int, schemaVersion int) ([]entity.TechCardSeamHintJoin, error)
+		// SaveTechCardSeamHintJoins upserts join rows per (card, op, op digest, version); an unknown card is
+		// a foreign-key violation.
+		SaveTechCardSeamHintJoins(ctx context.Context, rows []entity.TechCardSeamHintJoin) error
 		// GetTechCardDerivedCostInputsDigest fingerprints the cost inputs the card's own write does
 		// not carry — measured piece areas and the recipe's piece→fabric assignments (Ф-П). The write
 		// path needs it to stamp a fresh COSTING approval over content it cannot see; the read path

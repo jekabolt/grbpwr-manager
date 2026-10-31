@@ -29,6 +29,10 @@ type ChatRequest struct {
 	// Ideas suggestions) have always sent that shape for a picture-less request, and a transport that
 	// speaks OpenAI-style content parts honours it (oaichat: Options.PartsAlways).
 	UserAsParts bool
+	// Temperature, when non-nil, replaces the transport's fixed sampling temperature — honoured by the
+	// OpenRouter dialect only (oaichat); the plain OpenAI dialect, Anthropic and Gemini keep their own
+	// rule. nil = the transport's default, byte for byte what every caller sent before the field.
+	Temperature *float64
 }
 
 // ChatResult is what came back, with the PROVENANCE the ledger books: Provider is the billing

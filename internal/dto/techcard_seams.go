@@ -22,6 +22,7 @@ var seamKindFromPb = map[pb_common.TechCardSeamKind]entity.TechCardSeamKind{
 	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_COMPOSITE: entity.TechCardSeamKindComposite,
 	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_SURFACE:   entity.TechCardSeamKindSurface,
 	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_CLOSURE:   entity.TechCardSeamKindClosure,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE:      entity.TechCardSeamKindPose,
 }
 
 var seamDirectionFromPb = map[pb_common.TechCardSeamDirection]entity.TechCardSeamDirection{
@@ -99,7 +100,7 @@ func TechCardSeamsWriteFromPb(techCardID int, seams []*pb_common.TechCardSeam, b
 		}
 		kind, ok := seamKindFromPb[s.GetKind()]
 		if !ok {
-			return in, entity.NewFieldViolation(f+".kind", "invalid", s.GetKind().String(), "EDGE, PARTIAL, COMPOSITE, SURFACE or CLOSURE")
+			return in, entity.NewFieldViolation(f+".kind", "invalid", s.GetKind().String(), "EDGE, PARTIAL, COMPOSITE, SURFACE, CLOSURE or POSE")
 		}
 		dir, ok := seamDirectionFromPb[s.GetDirection()]
 		if !ok {
