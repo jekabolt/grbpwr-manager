@@ -110,7 +110,18 @@ type TechCardSeamAnchor struct {
 	// free-spot target). nil = placed geometrically; omitted from the JSON then, so rows written
 	// before it existed and rows without it read the same.
 	Placement *TechCardSeamPlacement `json:"placement,omitempty"`
+	// Layer is the owner's explicit under/over of this anchor's piece against the other side in the
+	// step that sews the row. "" = unset (the client's own rule); omitted from the JSON then.
+	Layer TechCardSeamLayer `json:"layer,omitempty"`
 }
+
+// TechCardSeamLayer is an explicit stacking of an anchor's piece; "" is unset.
+type TechCardSeamLayer string
+
+const (
+	TechCardSeamLayerUnder TechCardSeamLayer = "under"
+	TechCardSeamLayerOver  TechCardSeamLayer = "over"
+)
 
 // TechCardSeamPlacement is a part piece's position on its host piece: mm in the host piece's frame
 // (origin at the host bbox min corner), rotation in degrees, and a mirror flag.
@@ -440,6 +451,9 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 			if !finite(p.RotDeg) {
 				return NewFieldViolation(af+".placement.rot_deg", "out_of_range", "", "a finite angle")
 			}
+		}
+		if a.Layer != "" && a.Layer != TechCardSeamLayerUnder && a.Layer != TechCardSeamLayerOver {
+			return NewFieldViolation(af+".layer", "invalid", string(a.Layer), "UNDER, OVER or unset")
 		}
 		whole := a.RangeFrom == 0 && a.RangeTo == 0
 		if !whole && (!unitInterval(a.RangeFrom) || !unitInterval(a.RangeTo) || a.RangeFrom >= a.RangeTo) {

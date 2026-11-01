@@ -375,3 +375,93 @@ func TestDigestsSplitRolesAndOps(t *testing.T) {
 		}
 	}
 }
+
+// A join's caught pieces (a pocket bag under the yoke): live inputs of the step, on neither side; a
+// bad piece is dropped from caught and the row stays.
+func TestValidateCaught(t *testing.T) {
+	in := card6Input(t)
+	in.Pieces = append(in.Pieces, Piece{Name: "P_R_MAIN", Purpose: "main", DictRole: "front"})
+	in.Ops = append(in.Ops, Op{Number: 780, Inputs: []string{"YOKE", "PB_1", "P_R_MAIN"}})
+	row := func(caught string) string {
+		return `{"roles":[],"joins":[{"op":780,"a":{"pieces":["YOKE"],"edge":"bottom"},"b":{"pieces":["P_R_MAIN"],"edge":"top"},` +
+			`"caught":` + caught + `,"relation":"layer","conf":"high"}]}`
+	}
+	cases := []struct {
+		name    string
+		caught  string
+		want    []string
+		dropped int
+	}{
+		{"kept", `["PB_1"]`, []string{"PB_1"}, 0},
+		{"absent", `null`, nil, 0},
+		{"empty", `[]`, nil, 0},
+		{"unknown piece dropped", `["PB_1","GHOST"]`, []string{"PB_1"}, 1},
+		{"not an input of the step dropped", `["PB_1","CLR"]`, []string{"PB_1"}, 1},
+		{"on a side dropped", `["YOKE","PB_1"]`, []string{"PB_1"}, 1},
+		{"duplicate once", `["PB_1"," PB_1 "]`, []string{"PB_1"}, 0},
+		{"all bad → no caught, row stays", `["P_R_MAIN"]`, nil, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, rep, err := Validate(row(c.caught), in)
+			require.NoError(t, err)
+			require.Len(t, h.Joins, 1)
+			require.Equal(t, c.want, h.Joins[0].Caught)
+			require.Len(t, rep.Dropped, c.dropped, "%v", rep.Dropped)
+			require.NotContains(t, h.NotInferred, "op:780")
+		})
+	}
+
+	// A unit in caught stands for its pieces; the stored form round-trips and omits an empty caught.
+	in.Ops = append(in.Ops, Op{Number: 790, Inputs: []string{"FRONT_L", "YOKE"}})
+	h, _, err := Validate(`{"joins":[{"op":790,"a":{"pieces":["YOKE"],"edge":"bottom"},"b":{"pieces":["P_L_MAIN"],"edge":"top"},"caught":["FRONT_L"],"relation":"layer"}]}`, in)
+	require.NoError(t, err)
+	require.Equal(t, []string{"PLCK_L"}, h.Joins[0].Caught, "FRONT_L = PLCK_L + P_L_MAIN; P_L_MAIN is on b")
+	var back Hints
+	require.NoError(t, json.Unmarshal([]byte(h.Marshal()), &back))
+	require.Equal(t, h, back)
+	plain, _, err := Validate(row(`[]`), in)
+	require.NoError(t, err)
+	require.NotContains(t, plain.Marshal(), "caught")
+
+	// A stored row whose caught piece left the step no longer fits.
+	j := h.Joins[0]
+	require.True(t, JoinFits(in, j))
+	j.Caught = []string{"CLR"}
+	require.False(t, JoinFits(in, j))
+}
+
+func TestNormalizeOverrideCaught(t *testing.T) {
+	k, v, err := NormalizeOverride("join", "770",
+		`{"a":{"pieces":["P_R_U"],"edge":"bottom"},"b":{"pieces":["P_R_MAIN"],"edge":"top"},"caught":[" PCK_R_MAIN ","P_R_U","PCK_R_MAIN"],"relation":"layer"}`, "ok")
+	require.NoError(t, err)
+	require.Equal(t, "770", k)
+	require.Equal(t, `{"a":{"pieces":["P_R_U"],"edge":"bottom"},"b":{"pieces":["P_R_MAIN"],"edge":"top"},"caught":["PCK_R_MAIN"],"relation":"layer"}`, v)
+
+	_, v, err = NormalizeOverride("join", "770",
+		`{"a":{"pieces":["P_R_U"],"edge":"bottom"},"b":{"pieces":["P_R_MAIN"],"edge":"top"},"caught":[],"relation":"layer"}`, "ok")
+	require.NoError(t, err)
+	require.NotContains(t, v, "caught")
+
+	_, _, err = NormalizeOverride("join", "770",
+		`{"a":{"pieces":["A"],"edge":"bottom"},"b":{"pieces":["B"],"edge":"top"},"caught":["  "],"relation":"layer"}`, "ok")
+	var ie *InputError
+	require.ErrorAs(t, err, &ie)
+	require.Equal(t, "value_json.caught[0]", ie.Field)
+}
+
+func TestPromptV2(t *testing.T) {
+	for _, w := range []string{`"caught"`, "pocket_bag, whatever its outline", "stand = the band between the body neckline and the collar leaf",
+		"neck-side edge of a collar leaf or stand", "not every piece of a unit"} {
+		require.Contains(t, SystemPrompt, w)
+	}
+	in := card6Input(t)
+	inc := UserPrompt(in, PromptCtx{RolesKnown: true, AskOps: []int{870},
+		KnownJoins: []Join{{Op: 770, A: Side{Pieces: []string{"YOKE"}, Edge: "bottom"}, B: Side{Pieces: []string{"P_L_MAIN"}, Edge: "top"}, Caught: []string{"PB_1"}, Relation: "layer"}}})
+	require.Contains(t, inc, `- op 770: ["YOKE"] bottom → ["P_L_MAIN"] top (layer) caught ["PB_1"]`)
+
+	// The prompt version is in the roles digest and so in every op's: new rules ask each card once more.
+	base := ComputeDigests(in, nil, nil)
+	require.Equal(t, 2, PromptVersion)
+	require.Len(t, base.Roles, 64)
+}

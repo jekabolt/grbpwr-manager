@@ -70,14 +70,17 @@ type Side struct {
 	Edge   string   `json:"edge"`
 }
 
-// Join is one join step's map: A goes onto B.
+// Join is one join step's map: A goes onto B. Caught names the pieces laid between the two sides and
+// caught in this seam without an edge of their own being sewn (a pocket bag under a yoke, a layer of
+// interlining); optional and additive within schema version 1, never on a or b.
 type Join struct {
-	Op       int    `json:"op"`
-	A        Side   `json:"a"`
-	B        Side   `json:"b"`
-	Relation string `json:"relation"`
-	Conf     string `json:"conf"`
-	Why      string `json:"why,omitempty"`
+	Op       int      `json:"op"`
+	A        Side     `json:"a"`
+	B        Side     `json:"b"`
+	Caught   []string `json:"caught,omitempty"`
+	Relation string   `json:"relation"`
+	Conf     string   `json:"conf"`
+	Why      string   `json:"why,omitempty"`
 }
 
 // Hints is what is stored and served (hints_json).
@@ -114,6 +117,7 @@ type rawJoin struct {
 	Op       json.Number `json:"op"`
 	A        rawSide     `json:"a"`
 	B        rawSide     `json:"b"`
+	Caught   []string    `json:"caught"`
 	Relation string      `json:"relation"`
 	Conf     string      `json:"conf"`
 	Why      string      `json:"why"`
@@ -147,6 +151,8 @@ func decodeObject(raw string) (answer, error) {
 //   - a join row: the op is in the input (else dropped); both sides name ≥ 1 piece, every piece (unit
 //     names are expanded) is among the op's live inputs, the sides do not overlap, both edges in
 //     Edges, relation in Relations (else the op goes to not_inferred); one row per op;
+//   - a join's caught pieces (units expanded) must be among the op's live inputs and on neither side:
+//     a piece that is not is dropped from caught (reported), the row stays;
 //   - conf outside high/medium/low reads as low; why is collapsed and cut to MaxWhyRunes;
 //   - the model's own not_inferred keeps only "op:<n>" / "piece:<name>" of the input;
 //   - every piece with neither a dictionary role nor a kept AI role is added to not_inferred.
@@ -230,6 +236,11 @@ func Validate(raw string, in Input) (Hints, Report, error) {
 			rep.drop("joins[%d] (op %d): %s", i, n, why)
 			notOps[n] = true
 			continue
+		}
+		var bad []string
+		j.Caught, bad = caughtOf(row.Caught, j, ex.Pieces(op.Inputs), ex)
+		for _, c := range bad {
+			rep.drop("joins[%d] (op %d): caught %s", i, n, c)
 		}
 		joined[n] = true
 		h.Joins = append(h.Joins, j)
@@ -350,6 +361,51 @@ func validJoin(row rawJoin, op Op, ex *Expander) (Join, string) {
 	return Join{Op: op.Number, A: a, B: b, Relation: rel, Conf: conf(row.Conf), Why: whyText(row.Why)}, ""
 }
 
+// caughtOf keeps the caught pieces of a join that are live inputs of its step and on neither side
+// (unit names expand to their pieces), deduplicated, at most maxSidePieces; the rest is named in bad.
+// Nil when nothing is kept, so a row without caught keeps its stored form.
+func caughtOf(names []string, j Join, live map[string]bool, ex *Expander) (kept, bad []string) {
+	onSide := map[string]bool{}
+	for _, p := range j.A.Pieces {
+		onSide[p] = true
+	}
+	for _, p := range j.B.Pieces {
+		onSide[p] = true
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		var expanded []string
+		if ex.IsPiece(n) {
+			expanded = []string{n}
+		} else {
+			for p := range ex.Pieces([]string{n}) {
+				expanded = append(expanded, p)
+			}
+			sort.Strings(expanded)
+		}
+		if len(expanded) == 0 {
+			bad = append(bad, "unknown piece")
+			continue
+		}
+		for _, p := range expanded {
+			switch {
+			case seen[p]:
+			case !live[p]:
+				bad = append(bad, "a piece that is not an input of the step")
+			case onSide[p]:
+				bad = append(bad, "a piece already on a side")
+			case len(kept) >= maxSidePieces:
+				bad = append(bad, "too many pieces")
+			default:
+				kept = append(kept, p)
+			}
+			seen[p] = true
+		}
+	}
+	return kept, bad
+}
+
 func conf(c string) string {
 	c = strings.ToLower(strings.TrimSpace(c))
 	if Confs[c] {
@@ -386,9 +442,10 @@ type RoleValue struct {
 
 // JoinValue is an override's value for kind join (the op is the hint key).
 type JoinValue struct {
-	A        Side   `json:"a"`
-	B        Side   `json:"b"`
-	Relation string `json:"relation"`
+	A        Side     `json:"a"`
+	B        Side     `json:"b"`
+	Caught   []string `json:"caught,omitempty"`
+	Relation string   `json:"relation"`
 }
 
 // MaxOverrideValueBytes bounds one override's value JSON.
@@ -397,7 +454,8 @@ const MaxOverrideValueBytes = 4 << 10
 // NormalizeOverride checks one owner override and returns its key and value in canonical form.
 // kind role: key = piece name (≤ 64 runes), value {"role","hand"} with role in Roles (required unless
 // state off). kind join: key = the op number as decimal text (> 0), value {"a":{pieces,edge},
-// "b":{pieces,edge},"relation"} in vocabulary (required unless state off). state off may carry no
+// "b":{pieces,edge},"caught"?,"relation"} in vocabulary (required unless state off); a caught name
+// already on a side is dropped. state off may carry no
 // value. An empty state is not handled here (the caller deletes the row).
 func NormalizeOverride(kind, key, value, state string) (string, string, error) {
 	if !Kinds[kind] {
@@ -470,6 +528,23 @@ func NormalizeOverride(kind, key, value, state string) (string, string, error) {
 				return "", "", inErr("value_json."+s.label+".edge", "unknown edge %q", s.side.Edge)
 			}
 		}
+		caught, err := nameList("value_json.caught", v.Caught)
+		if err != nil {
+			return "", "", err
+		}
+		onSide := map[string]bool{}
+		for _, p := range append(append([]string{}, v.A.Pieces...), v.B.Pieces...) {
+			onSide[p] = true
+		}
+		v.Caught = nil
+		for _, p := range caught { // a piece already on a side is not caught between them
+			if !onSide[p] {
+				v.Caught = append(v.Caught, p)
+			}
+		}
+		if len(v.Caught) > maxSidePieces {
+			return "", "", inErr("value_json.caught", "at most %d piece names", maxSidePieces)
+		}
 		v.Relation = strings.ToLower(strings.TrimSpace(v.Relation))
 		if !Relations[v.Relation] {
 			return "", "", inErr("value_json.relation", "unknown relation %q", v.Relation)
@@ -484,7 +559,7 @@ func NormalizeOverride(kind, key, value, state string) (string, string, error) {
 }
 
 // JoinFits reports whether a stored join row still fits the input: its op exists and every piece on
-// both sides is among the pieces that op's inputs stand for now. A stored row of an older op digest
+// both sides (and caught between them) is among the pieces that op's inputs stand for now. A stored row of an older op digest
 // is shown (as stale) only when it fits.
 func JoinFits(in Input, j Join) bool {
 	ex := NewExpander(in)
@@ -496,7 +571,7 @@ func JoinFits(in Input, j Join) bool {
 		if len(j.A.Pieces) == 0 || len(j.B.Pieces) == 0 {
 			return false
 		}
-		for _, side := range [][]string{j.A.Pieces, j.B.Pieces} {
+		for _, side := range [][]string{j.A.Pieces, j.B.Pieces, j.Caught} {
 			for _, p := range side {
 				if !live[p] {
 					return false
