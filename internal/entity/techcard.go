@@ -5052,6 +5052,10 @@ type TechCard struct {
 	// the single-card read (nil on lists/writes). Written only through Upsert/DeleteTechCardSeams —
 	// never part of TechCardInsert, so outside every section digest and outside lock_version.
 	Seams []TechCardSeam `db:"-"`
+	// PieceFolds are the fold lines on the card's pieces (tech_card_piece_fold, 0443), staleness
+	// resolved. Populated on the single-card read (nil on lists/writes). Written only through
+	// Upsert/DeleteTechCardPieceFolds — outside every section digest and outside lock_version.
+	PieceFolds []TechCardPieceFold `db:"-"`
 	// WorkshopSeamAllowanceMm is the SHOP's default seam allowance (0277) carried onto the card at
 	// read time, so a reader can resolve the standard's full cascade — card override, else shop — with
 	// RequiredSeamAllowanceMm(tc.RequiredSeamAllowanceMm, tc.WorkshopSeamAllowanceMm).

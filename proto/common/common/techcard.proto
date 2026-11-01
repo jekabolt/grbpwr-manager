@@ -4008,6 +4008,12 @@ message TechCard {
   // These are deleted sheets, newest first. They stay visible here so snapshot_id can restore the
   // whole pre-delete card and history_id can remove an unwanted retained revision.
   repeated TechCardPatternRevision removed_pattern_history = 33;
+  // OUTPUT-ONLY: the fold lines on the card's pieces (placket folded in half, cuff, hem turn-up),
+  // in seq order per piece, with the server's staleness verdict resolved on this read. Written ONLY
+  // through UpsertTechCardPieceFolds / DeleteTechCardPieceFolds — never through TechCardInsert, so a
+  // full card save cannot erase them; those RPCs never bump lock_version and the rows enter no
+  // section digest (the seams doctrine, seams = 32). Ignored on write.
+  repeated TechCardPieceFold piece_folds = 34;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.
@@ -4197,6 +4203,75 @@ message TechCardSeam {
   // sheets AND block→piece links of the pieces' fabric scopes, computed now, differs from the one
   // stamped on write (a DXF re-uploaded, a block re-aliased). A stale row must not be applied as is
   // — the client shows it and offers re-confirm, which rewrites it and clears the flag.
+  bool stale = 20;
+  string created_by = 21;
+  google.protobuf.Timestamp created_at = 22;
+  string updated_by = 23;
+  google.protobuf.Timestamp updated_at = 24;
+}
+
+// PIECE FOLDS (0443) — a fold line on one piece: a placket strip folded in half, a cuff, a hem turned
+// up. Construction data the paper doll folds BEFORE the solve; the solver never discovers or moves a
+// fold. One row = one straight line applied in `seq` order on its piece: a double turn-up is two rows
+// (seq 1, 2), a grown-on placket folded twice is two rows. Per piece, not per size: the line lives in
+// the piece's own bbox-normalised frame (the frame of TechCardSeamAnchor.samples), and an optional
+// EDGE LOCATOR (the edge the fold runs along + its distance in mm) keeps the allowance exact in mm
+// across graded sizes and re-uploads; the (u, v) line is the fallback. A fold that does not resolve
+// on a size is reported and left out, never approximated.
+
+// TechCardPieceFoldKind is which way the flipping part of the piece goes.
+enum TechCardPieceFoldKind {
+  TECH_CARD_PIECE_FOLD_KIND_UNKNOWN = 0;
+  // The flap lands on the piece's inside face (toward the body).
+  TECH_CARD_PIECE_FOLD_KIND_INWARD = 1;
+  // The flap lands on the piece's outside face.
+  TECH_CARD_PIECE_FOLD_KIND_OUTWARD = 2;
+}
+
+// TechCardPieceFoldSource is where the fold line came from.
+enum TechCardPieceFoldSource {
+  TECH_CARD_PIECE_FOLD_SOURCE_UNKNOWN = 0;
+  // The line is drawn in the DXF (layer 8 of an unfolded piece, the layer-6 axis of a band) and the
+  // owner gave it a kind.
+  TECH_CARD_PIECE_FOLD_SOURCE_DXF = 1;
+  // Drawn or edited by the owner.
+  TECH_CARD_PIECE_FOLD_SOURCE_OWNER = 2;
+  // A suggestion (a fold mark parallel to an edge) the owner accepted unchanged.
+  TECH_CARD_PIECE_FOLD_SOURCE_ACCEPTED_HINT = 3;
+}
+
+// TechCardPieceFold is one stored fold line, keyed by a client-minted ULID.
+message TechCardPieceFold {
+  // ULID (26 chars), client-minted, the row's identity across saves.
+  string fold_key = 1;
+  // tech_card_piece.line_key of the folded piece — never a block name, never an id.
+  string piece_line_key = 2;
+  // 1-based order of application on this piece; unique per piece.
+  int32 seq = 3;
+  TechCardPieceFoldKind kind = 4;
+  // Exactly two points of the straight fold line in the piece's frame (u, v in [0, 1]); the client
+  // extends the line to the contour.
+  repeated TechCardSeamSample line = 5;
+  // A point on the part that flips — which side moves is data, not «the smaller area».
+  TechCardSeamSample flip_at = 6;
+  // EDGE LOCATOR, all or nothing. edge_samples = five points of the edge the fold runs along (the
+  // shape of TechCardSeamAnchor.samples, walk order), offset_mm = the fold's distance from that edge
+  // inward, mm (> 0). On another size or after a re-upload the client finds the edge again and lays
+  // the line at offset_mm from it; without a locator it uses `line` as is. edge_hint = the engine's
+  // run id when written ('PLCK_L#2') — fast path + diagnostics, never trusted alone.
+  string edge_hint = 7;
+  repeated TechCardSeamSample edge_samples = 8;
+  double offset_mm = 9;
+  // The piece contour's signature when written (the fast path's guard).
+  string contour_sig = 10;
+  TechCardPieceFoldSource source = 11;
+  // Size code the line was written on — honesty for display.
+  string anchored_size = 12;
+  // The owner's words, at most 255 characters.
+  string note = 13;
+  // OUTPUT ONLY (ignored on write): the server's verdict and provenance, as on TechCardSeam — stale =
+  // the source of the piece (sheets AND block→piece links of its fabric scopes) moved since the row
+  // was written; a stale row is shown and offered for re-confirm, not applied as is.
   bool stale = 20;
   string created_by = 21;
   google.protobuf.Timestamp created_at = 22;

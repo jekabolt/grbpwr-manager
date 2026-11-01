@@ -1170,6 +1170,12 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 		return nil, err
 	}
 	cards[0].Seams = seams
+	// Piece folds (tech_card_piece_fold, 0443), staleness resolved the seams' way. Read model only.
+	folds, err := s.GetTechCardPieceFolds(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cards[0].PieceFolds = folds
 	// ЦЕХОВОЙ ЭТАЛОН ПРИПУСКА (0277) — вторая половина каскада, без которой первая ничего не решает.
 	// Режим дублирования «по припуску» (0304) берёт ширину полосы из этого эталона: переопределение
 	// карточки, иначе цеховой дефолт. Прочитать здесь — значит прочитать один раз для всех, кто

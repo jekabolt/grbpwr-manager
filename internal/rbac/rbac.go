@@ -461,8 +461,10 @@ var methodRequirements = map[string]Requirement{
 	// Подтверждённые швы (tech_card_seam): тот же уровень, что площади — решение технолога о
 	// сборке из выкроек карточки, пишется с вкладки конструкции. Отдельные RPC, lock_version не
 	// двигают и в дайджест не входят; выпущенная карточка отказывает.
-	"UpsertTechCardSeams": wr(SectionTechCards),
-	"DeleteTechCardSeams": wr(SectionTechCards),
+	"UpsertTechCardSeams":      wr(SectionTechCards),
+	"DeleteTechCardSeams":      wr(SectionTechCards),
+	"UpsertTechCardPieceFolds": wr(SectionTechCards),
+	"DeleteTechCardPieceFolds": wr(SectionTechCards),
 	// Журнал решений по догадкам швов (tech_card_seam_decision): пишется тем же жестом, что и шов,
 	// поэтому то же право. Только дописывание; читать — через db.sh.
 	"AddTechCardSeamDecisions": wr(SectionTechCards),
