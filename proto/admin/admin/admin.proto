@@ -2934,6 +2934,29 @@ service AdminService {
     };
   }
 
+  // UpsertTechCardPieceFolds stores fold lines on the card's pieces (placket, cuff, hem turn-up) —
+  // construction data the paper doll folds before the solve.
+  //
+  // KEYED AND PARTIAL, as UpsertTechCardSeams: a row per fold_key is inserted or replaced whole; rows
+  // not named are untouched. seq must stay unique per piece after the write. The server stamps each
+  // row's source fingerprint from its own tables and echoes the card's full list with `stale`
+  // resolved. NO lock_version bump, NO section digest; a released card refuses. wr(tech_cards).
+  rpc UpsertTechCardPieceFolds(UpsertTechCardPieceFoldsRequest) returns (UpsertTechCardPieceFoldsResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/piece-folds"
+      body: "*"
+    };
+  }
+
+  // DeleteTechCardPieceFolds removes fold lines by fold_key. Unknown keys are not an error. Same
+  // lock, same released-card refusal, same echo of the full list as UpsertTechCardPieceFolds.
+  rpc DeleteTechCardPieceFolds(DeleteTechCardPieceFoldsRequest) returns (DeleteTechCardPieceFoldsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/piece-folds:delete"
+      body: "*"
+    };
+  }
+
   // AddTechCardSeamDecisions appends what the technologist did with the seam guesses — accept,
   // own pick, skip, refuse — one immutable row each, ≤ 50 per call. A log beside the seams: it never
   // touches tech_card_seam, never moves lock_version, enters no digest, and works on a released card
@@ -11899,6 +11922,27 @@ message DeleteTechCardSeamsRequest {
 
 message DeleteTechCardSeamsResponse {
   repeated common.TechCardSeam seams = 1; // the card's full list after the delete, stale resolved
+  int32 deleted = 2; // rows actually removed
+}
+
+message UpsertTechCardPieceFoldsRequest {
+  int32 tech_card_id = 1;
+  // Rows to insert or replace whole, by fold_key. Output-only fields (stale, *_by, *_at) are ignored.
+  repeated common.TechCardPieceFold folds = 2;
+}
+
+message UpsertTechCardPieceFoldsResponse {
+  repeated common.TechCardPieceFold folds = 1; // the card's full list after the write, stale resolved
+  int32 written = 2; // rows inserted or replaced
+}
+
+message DeleteTechCardPieceFoldsRequest {
+  int32 tech_card_id = 1;
+  repeated string fold_keys = 2;
+}
+
+message DeleteTechCardPieceFoldsResponse {
+  repeated common.TechCardPieceFold folds = 1; // the card's full list after the delete, stale resolved
   int32 deleted = 2; // rows actually removed
 }
 

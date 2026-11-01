@@ -1641,7 +1641,8 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		PieceAreaScopes: TechCardPieceAreaScopesToPb(tc.PieceAreaScopes),
 		// Seam decisions (tech_card_seam) — read model only, written through Upsert/DeleteTechCardSeams;
 		// never on TechCardInsert, so outside every section digest.
-		Seams: TechCardSeamsToPb(tc.Seams),
+		Seams:      TechCardSeamsToPb(tc.Seams),
+		PieceFolds: TechCardPieceFoldsToPb(tc.PieceFolds),
 	}
 }
 

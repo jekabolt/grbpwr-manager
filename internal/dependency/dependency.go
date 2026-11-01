@@ -1203,6 +1203,16 @@ type (
 		// DeleteTechCardSeams removes seams by seam_key (unknown keys are not an error) and returns the
 		// card's full list plus how many rows went. Same lock and released-card refusal as the upsert.
 		DeleteTechCardSeams(ctx context.Context, techCardID int, seamKeys []string) ([]entity.TechCardSeam, int, error)
+		// PIECE FOLDS (0443). GetTechCardPieceFolds returns a card's fold lines in (piece, seq) order
+		// with staleness resolved against the piece's fabric scopes (the seams' fingerprint).
+		GetTechCardPieceFolds(ctx context.Context, techCardID int) ([]entity.TechCardPieceFold, error)
+		// UpsertTechCardPieceFolds inserts or replaces folds by fold_key (rows not named are untouched)
+		// and returns the card's full list plus the number written. Locks the card row FOR UPDATE
+		// first, refuses a released card, never bumps lock_version; seq stays unique per piece.
+		UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCardPieceFoldsWrite) ([]entity.TechCardPieceFold, int, error)
+		// DeleteTechCardPieceFolds removes folds by fold_key (unknown keys are not an error) and
+		// returns the card's full list plus how many rows went. Same lock and refusal as the upsert.
+		DeleteTechCardPieceFolds(ctx context.Context, techCardID int, foldKeys []string) ([]entity.TechCardPieceFold, int, error)
 		// AddTechCardSeamDecisions appends what the technologist did with seam guesses
 		// (tech_card_seam_decision): one immutable row each, in one statement. Never touches
 		// tech_card_seam, never bumps lock_version, works on a released card. `in` must already have
