@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -174,4 +175,45 @@ func TestTechCardSeamsPoseRoundTrip(t *testing.T) {
 	pose.SideA.Parts[0].Placement = nil
 	_, err = TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{pose}, "ann")
 	require.ErrorContains(t, err, "seams[0].side_a.parts[0].placement")
+}
+
+// The owner's under/over switch (asm-manual L) crosses the wire both ways on any row kind, through
+// the stored JSON too; unset stays unset (omitted), and an enum number this binary does not know is
+// refused with the field named instead of being dropped.
+func TestTechCardSeamLayerRoundTrip(t *testing.T) {
+	for _, l := range []pb_common.TechCardSeamLayer{
+		pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN,
+		pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNDER,
+		pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_OVER,
+	} {
+		s := seamPb()
+		s.SideA.Parts[0].Layer = l
+		in, err := TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{s}, "ann")
+		require.NoError(t, err)
+
+		raw, err := json.Marshal(in.Seams[0].SideA)
+		require.NoError(t, err)
+		require.Equal(t, l != pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN, strings.Contains(string(raw), `"layer"`))
+		var stored []entity.TechCardSeamAnchor
+		require.NoError(t, json.Unmarshal(raw, &stored))
+		in.Seams[0].SideA = stored
+
+		out := TechCardSeamsToPb([]entity.TechCardSeam{{TechCardSeamInput: in.Seams[0], TechCardId: 7}})
+		require.Equal(t, l, out[0].GetSideA().GetParts()[0].GetLayer(), l.String())
+		require.Equal(t, pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN, out[0].GetSideB().GetParts()[0].GetLayer())
+	}
+
+	s := seamPb()
+	s.SideB.Parts[0].Layer = pb_common.TechCardSeamLayer(9)
+	_, err := TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{s}, "ann")
+	var ve *entity.ValidationError
+	require.ErrorAs(t, err, &ve)
+	require.Equal(t, "seams[0].side_b.parts[0].layer", ve.Field)
+
+	// A stored token this binary does not know reads unset rather than failing the card read.
+	in, err := TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{seamPb()}, "ann")
+	require.NoError(t, err)
+	in.Seams[0].SideA[0].Layer = "sideways"
+	out := TechCardSeamsToPb([]entity.TechCardSeam{{TechCardSeamInput: in.Seams[0], TechCardId: 7}})
+	require.Equal(t, pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN, out[0].GetSideA().GetParts()[0].GetLayer())
 }

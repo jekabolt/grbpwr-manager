@@ -140,6 +140,7 @@ func TestTechCardSeamsRoundTrip(t *testing.T) {
 	moved := anchor(rtPieceCuff, "")
 	moved.PerimShare = 1
 	moved.Placement = &entity.TechCardSeamPlacement{XMm: 61.25, YMm: -14.5, RotDeg: 90, Flip: true}
+	moved.Layer = entity.TechCardSeamLayerOver // the owner's under/over rides in the side JSON, no DDL
 	pose := entity.TechCardSeamInput{
 		SeamKey: poseKey, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindPose,
 		Direction: entity.TechCardSeamDirectionUnknown, Source: entity.TechCardSeamSourceManual,
@@ -163,6 +164,8 @@ func TestTechCardSeamsRoundTrip(t *testing.T) {
 	require.InDelta(t, 90, list[1].SideA[0].Placement.RotDeg, 1e-9)
 	require.True(t, list[1].SideA[0].Placement.Flip)
 	require.Nil(t, list[1].SideB[0].Placement)
+	require.Equal(t, entity.TechCardSeamLayerOver, list[1].SideA[0].Layer)
+	require.Empty(t, list[1].SideB[0].Layer)
 	pbPose := dto.TechCardSeamsToPb(list)[1]
 	require.Equal(t, "TECH_CARD_SEAM_KIND_POSE", pbPose.GetKind().String())
 

@@ -68,6 +68,7 @@ func seamSideToArchive(side []entity.TechCardSeamAnchor) []techcardarchive.SeamA
 			EdgeHint:     a.EdgeHint,
 			ContourSig:   a.ContourSig,
 			Placement:    placement,
+			Layer:        string(a.Layer),
 		})
 	}
 	return out
@@ -110,6 +111,7 @@ func seamSideFromArchive(side []techcardarchive.SeamAnchor) []entity.TechCardSea
 			EdgeHint:     a.EdgeHint,
 			ContourSig:   a.ContourSig,
 			Placement:    placement,
+			Layer:        entity.TechCardSeamLayer(strings.TrimSpace(a.Layer)),
 		})
 	}
 	return out

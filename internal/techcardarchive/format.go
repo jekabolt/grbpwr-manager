@@ -422,6 +422,7 @@ type SeamAnchor struct {
 	EdgeHint     string         `json:"edge_hint"`
 	ContourSig   string         `json:"contour_sig"`
 	Placement    *SeamPlacement `json:"placement,omitempty"`
+	Layer        string         `json:"layer,omitempty"` // "under" / "over"; absent = unset
 }
 
 // SeamSample is one point of an edge's shape in the piece's bbox-normalised frame.

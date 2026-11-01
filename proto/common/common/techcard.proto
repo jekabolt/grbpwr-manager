@@ -4106,6 +4106,16 @@ message TechCardSeamAnchor {
   // inner line or a free spot rather than an edge (edge_hint "i<k>" names inner line k). Absent =
   // the client places the piece geometrically.
   TechCardSeamPlacement placement = 11;
+  // Which way THIS anchor's piece lies against the other side's pieces in the step that sews the
+  // row (the owner's under/over switch). UNKNOWN = unset: the client's own rule, as before.
+  TechCardSeamLayer layer = 12;
+}
+
+// TechCardSeamLayer is an explicit stacking of a seam side's piece: under or over the other side.
+enum TechCardSeamLayer {
+  TECH_CARD_SEAM_LAYER_UNKNOWN = 0;
+  TECH_CARD_SEAM_LAYER_UNDER = 1;
+  TECH_CARD_SEAM_LAYER_OVER = 2;
 }
 
 // TechCardSeamPlacement is where a part piece sits on its host piece: millimetres in the host

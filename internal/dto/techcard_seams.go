@@ -39,6 +39,12 @@ var seamSourceFromPb = map[pb_common.TechCardSeamSource]entity.TechCardSeamSourc
 	pb_common.TechCardSeamSource_TECH_CARD_SEAM_SOURCE_AI:     entity.TechCardSeamSourceAI,
 }
 
+var seamLayerFromPb = map[pb_common.TechCardSeamLayer]entity.TechCardSeamLayer{
+	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN: "",
+	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNDER:       entity.TechCardSeamLayerUnder,
+	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_OVER:        entity.TechCardSeamLayerOver,
+}
+
 func invertSeamMap[K comparable, V comparable](m map[K]V) map[V]K {
 	out := make(map[V]K, len(m))
 	for k, v := range m {
@@ -52,6 +58,7 @@ var (
 	seamKindToPb      = invertSeamMap(seamKindFromPb)
 	seamDirectionToPb = invertSeamMap(seamDirectionFromPb)
 	seamSourceToPb    = invertSeamMap(seamSourceFromPb)
+	seamLayerToPb     = invertSeamMap(seamLayerFromPb)
 )
 
 // TechCardSeamsWriteFromPb converts an UpsertTechCardSeams payload and validates it (shape,
@@ -148,6 +155,7 @@ func seamSideFromPb(side *pb_common.TechCardSeamSide) []entity.TechCardSeamAncho
 			EdgeHint:     p.GetEdgeHint(),
 			ContourSig:   p.GetContourSig(),
 			Placement:    seamPlacementFromPb(p.GetPlacement()),
+			Layer:        seamLayerOf(p.GetLayer()),
 		})
 	}
 	return out
@@ -172,9 +180,19 @@ func seamSideToPb(side []entity.TechCardSeamAnchor) *pb_common.TechCardSeamSide 
 			EdgeHint:     a.EdgeHint,
 			ContourSig:   a.ContourSig,
 			Placement:    seamPlacementToPb(a.Placement),
+			Layer:        seamLayerToPb[a.Layer], // a stored value this binary does not know reads unset
 		})
 	}
 	return &pb_common.TechCardSeamSide{Parts: parts}
+}
+
+// seamLayerOf maps the wire layer; an enum number this binary does not know becomes its own name, so
+// the validator refuses it with the field named instead of silently dropping the owner's choice.
+func seamLayerOf(l pb_common.TechCardSeamLayer) entity.TechCardSeamLayer {
+	if v, ok := seamLayerFromPb[l]; ok {
+		return v
+	}
+	return entity.TechCardSeamLayer(l.String())
 }
 
 func seamPlacementFromPb(p *pb_common.TechCardSeamPlacement) *entity.TechCardSeamPlacement {
