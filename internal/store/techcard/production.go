@@ -1052,6 +1052,19 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		opsByCard[pos.cardID][pos.index].SeamKeys = keys
 	}
 
+	// The folds that close on each step (0444), the same way.
+	foldKeysByOp, err := loadOperationFoldKeys(ctx, s.DB, ids)
+	if err != nil {
+		return err
+	}
+	for opID, keys := range foldKeysByOp {
+		pos, ok := posByOpID[opID]
+		if !ok {
+			continue
+		}
+		opsByCard[pos.cardID][pos.index].FoldKeys = keys
+	}
+
 	// Operation -> BOM-line links (0200), same keying as the piece links above.
 	bomLinkRows, err := storeutil.QueryListNamed[struct {
 		OpID      int    `db:"op_id"`

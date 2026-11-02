@@ -168,6 +168,12 @@ top-level JSON files.
 | `1.2` | 05.10: `design_quiz.json` — the moodboard quiz answers (§5.3a) |
 | `1.3` | 27.10: `seams.json` — the seam decisions (§5.3b), `contents.seams`, and the steps' `seam_keys` stay in `card.json`. An older server lists `seams.json` as `unknown_entry`, strips the steps' keys and imports the card without seams |
 
+The fold steps (`TechCardOperation.fold_keys`, 03.11, §5.3c) are in `1.3` without a bump: they add
+one repeated field inside `card.json`, which has carried `pieceFolds` all along, and no file and no
+`contents.*` claim. A server that does not know the field drops it (`DiscardUnknown`) and behaves
+exactly as before, the reader checks MINOR in neither direction, and an archive of a card with no
+fold steps reads byte for byte the same, so a bump would say nothing a reader could act on.
+
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
   file costs.
@@ -263,6 +269,7 @@ Four verdicts, and they are not synonyms:
 | 31 | `guided` | travels as source workflow provenance and is **ignored**. It is OUTPUT-ONLY and the import cannot put the receiving card into the source card's guided session. |
 | 32 | `seams` | **cleared in card.json — the seams travel in `seams.json` (1.3, §5.3b).** The read-model list carries the source's people and its `stale` verdict next to output-only stamps; the sidecar carries exactly what a seam decision is, and the steps' `seam_keys` (inside `operations`) point at it by `seam_key`. Before 1.3 seams did not travel at all and the steps' keys were cut. |
 | 33 | `removed_pattern_history` | travels as source history and is **ignored**. Its source row and snapshot ids are never resolved or written; the receiving card starts its own pattern history. |
+| 34 | `piece_folds` | travels and is **written** — see §5.3c. Nothing in a fold is a foreign id; the people, the stamps and `source_fingerprint` on the row are source provenance and are **ignored** (the importer is the author, the server computes the fingerprint), and a fold the source read as `stale` lands stale. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
@@ -538,6 +545,25 @@ FUSING reconciliation that runs after the steps land may insert automatic fusing
 archive's own and renumber everything. A link whose step did not survive is dropped with
 `seam_step_missing` (the seam itself imports) and is never attached to another step.
 
+### 5.3c Piece folds and fold steps in `card.json`
+
+No sidecar: `pieceFolds` (§4.1, field 34) has always been in `card.json`, and the steps' links are
+`TechCardOperation.fold_keys` next to `seam_keys`, omitted when empty. A `fold_key` is the card's own
+ULID and `piece_line_key` is the piece's stable key, so nothing is remapped. `contents` claims
+nothing about folds; the `fold` counter appears in the report only when the archive carries folds.
+
+An archive with `pieceFolds` and no `fold_keys` (every archive written before the fold steps) brings
+its folds with no step, which reads as flat: nothing derives a step for them.
+
+On import every fold is validated by the rules of a live `UpsertTechCardPieceFolds`; a fold that does
+not validate or repeats a `fold_key` or a (piece, `seq`) is dropped (`archive_row_invalid` on `fold`),
+a fold on a piece the card does not have is dropped (`fold_piece_missing`), and in both cases the
+steps' keys for it go too. The rule of fold steps (one fold on one step; on one piece a larger `seq`
+never on an earlier step than a smaller one) is held against the archive and again against the order
+the FUSING reconciliation leaves: a link that breaks it is dropped (`fold_step_conflict`), the fold
+imports. A link follows its OWN step's row, as a seam's does: a link whose step did not survive is
+dropped with `fold_step_missing`, never attached to another step. The import never fails for a fold.
+
 ### 5.4 `materials/index.json`
 
 Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
@@ -758,6 +784,9 @@ explanation and the report action text.
 | `language_unknown` | a colourway name's translation is keyed by a language this base does not have — that translation is dropped (EXPORT side: a translation whose language the dictionary could not name) |
 | `seam_piece_missing` | a seam decision (`seams.json`, 1.3) names a cut piece the imported card does not have — the seam and the steps' links to it are dropped, every other seam imports |
 | `seam_step_missing` | a step that sewed a seam did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the seam imports |
+| `fold_piece_missing` | a piece fold (`card.json` `pieceFolds`) is on a cut piece the imported card does not have — the fold and the steps' links to it are dropped, every other fold imports |
+| `fold_step_missing` | a step that closed a fold did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the fold imports |
+| `fold_step_conflict` | the archive's steps break the rule of fold steps (one fold on two steps, or a piece's folds in reverse order) — that link is dropped; the fold imports |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
@@ -811,7 +840,7 @@ which is the only question a reason code exists to answer:
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
 `pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,
-`seam`, `card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
+`seam`, `fold`, `card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
 `media_id=…`, `size_name=…`). `measurement` is the size chart's SECOND named axis and is
 deliberately not `size`: a measurement problem reported as a size problem sends the operator to the
 wrong dictionary. `piece_area` is the measured contour of one cut piece and is deliberately not

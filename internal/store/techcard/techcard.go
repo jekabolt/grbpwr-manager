@@ -1696,6 +1696,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := insertTechCardOperationSeams(ctx, db, id, tc.Operations, tc.RestoreSeams); err != nil {
 		return err
 	}
+	// The folds that close on each step (0444), same place and same reason. Checked against the card's
+	// fold table: a restore does not touch that table, and its handler cut the keys down to it.
+	if err := insertTechCardOperationFolds(ctx, db, id, tc.Operations); err != nil {
+		return err
+	}
 	// tc.Labels (legacy tech_card_label) is NOT written any more — read-only until the drop (0386, I-19).
 	if err := insertTechCardPackaging(ctx, db, id, tc.Packaging); err != nil {
 		return err

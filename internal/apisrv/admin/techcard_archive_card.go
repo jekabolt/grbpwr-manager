@@ -169,6 +169,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationReviewAware = true
 	probe.OperationBlockMembershipAware = true
 	probe.OperationSeamsAware = true
+	probe.OperationFoldsAware = true
 	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
 
@@ -287,6 +288,10 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// The steps' seam_keys (0434) STAY in card.json — they name the seams of seams.json by seam_key,
 	// the card's own identity of a seam, and the import cuts them down to the seams that land.
 	pb.Seams = nil
+
+	// Piece folds (0443) and the steps' fold_keys (0444) stay right here in card.json (FORMAT.md §5.3c):
+	// pieceFolds has travelled since the folds were born, and a fold_key is the card's own identity of
+	// a fold. The import writes the rows and links the steps; no sidecar and no contents.* claim.
 
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.

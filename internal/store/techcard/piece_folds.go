@@ -128,7 +128,7 @@ func (s *Store) UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCard
 		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
 			return err
 		}
-		if err := writeTechCardPieceFoldsTx(ctx, db, in.TechCardId, in.Folds, in.By); err != nil {
+		if err := writeTechCardPieceFoldsTx(ctx, db, in.TechCardId, in.Folds, in.By, pieceFoldWriteOpts{}); err != nil {
 			return err
 		}
 		// The echo is read in the same transaction. Assigned, never appended — txFunc may retry.
@@ -145,8 +145,15 @@ func (s *Store) UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCard
 	return out, len(in.Folds), nil
 }
 
+// pieceFoldWriteOpts is what differs when a fold write is not a live RPC.
+type pieceFoldWriteOpts struct {
+	// stale: fold keys written with seamFingerprintStale instead of today's fingerprint. An archive
+	// import brings a fold the source read as stale, and it must not land as «drawn on these patterns».
+	stale map[string]bool
+}
+
 // writeTechCardPieceFoldsTx IS THE FOLD WRITE; the caller holds the card row and checked it is mutable.
-func writeTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID int, folds []entity.TechCardPieceFoldInput, by string) error {
+func writeTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID int, folds []entity.TechCardPieceFoldInput, by string, opts pieceFoldWriteOpts) error {
 	pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
 		SELECT line_key FROM tech_card_piece
 		WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
@@ -206,6 +213,10 @@ func writeTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID
 		if err != nil {
 			return fmt.Errorf("encode fold %s edge_samples: %w", f.FoldKey, err)
 		}
+		fingerprint := src.fingerprint(pieceFoldKeys(f.PieceLineKey))
+		if opts.stale[f.FoldKey] {
+			fingerprint = seamFingerprintStale
+		}
 		// size_id stays NULL (v1 has no per-size rows), so the key is (card, fold_key, 0).
 		// created_* survive a replace; updated_* name the latest write.
 		if err := storeutil.ExecNamed(ctx, db, `
@@ -240,13 +251,16 @@ func writeTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID
 				"contour_sig":        f.ContourSig,
 				"anchored_size":      f.AnchoredSize,
 				"note":               f.Note,
-				"source_fingerprint": src.fingerprint(pieceFoldKeys(f.PieceLineKey)),
+				"source_fingerprint": fingerprint,
 				"by":                 by,
 			}); err != nil {
 			return fmt.Errorf("upsert fold %s of tech card %d: %w", f.FoldKey, techCardID, err)
 		}
 	}
-	return requireUniqueFoldSeqTx(ctx, db, techCardID, folds)
+	if err := requireUniqueFoldSeqTx(ctx, db, techCardID, folds); err != nil {
+		return err
+	}
+	return requireFoldLinkOrderTx(ctx, db, techCardID, folds)
 }
 
 // requireUniqueFoldSeqTx refuses a write after which two folds of one piece share a seq — judged on
@@ -327,6 +341,10 @@ func (s *Store) DeleteTechCardPieceFolds(ctx context.Context, techCardID int, fo
 				return fmt.Errorf("delete fold %s of tech card %d: %w", k, techCardID, err)
 			}
 			n += int(affected)
+			// The steps let go of it in this same transaction: a step never names a fold that is gone.
+			if err := unlinkFoldFromOperationsTx(ctx, db, techCardID, k); err != nil {
+				return err
+			}
 		}
 		list, err := listTechCardPieceFolds(ctx, db, techCardID)
 		if err != nil {

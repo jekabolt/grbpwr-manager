@@ -242,11 +242,13 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.OperationReviewAware = true
 	in.OperationBlockMembershipAware = true
 	in.OperationSeamsAware = true
+	in.OperationFoldsAware = true
 	in.OperationSeamKindAware = true
 	in.BomQtyAware = true
 	in.LabelsAware = true
 	// The backstops refuse an aware payload that would erase stored facts without saying so. Here the
 	// erasure IS the request (the snapshot had none), so it is said.
+	restoreOperationFoldKeys(in, stored)
 	in.AssemblyCleared = storedHasAssemblyFacts(stored) && !payloadCarriesAssemblyUnits(in)
 	in.MediaCleared = storedHasOperationMedia(stored) && !payloadCarriesOperationMedia(in)
 

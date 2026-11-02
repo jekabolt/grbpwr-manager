@@ -3533,6 +3533,11 @@ type TechCardOperation struct {
 	// (0434). Child table tech_card_operation_seam, written in the same transaction as the inputs.
 	// Every key must name a seam stored on the card; outside every section digest.
 	SeamKeys []string `db:"-"`
+
+	// FoldKeys — the piece folds that close on this step (tech_card_piece_fold.fold_key, normalised)
+	// (0444). Child table tech_card_operation_fold, written in the same transaction as the seam links.
+	// The rule over the whole card is CheckTechCardFoldLinks; outside every section digest.
+	FoldKeys []string `db:"-"`
 }
 
 // ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────

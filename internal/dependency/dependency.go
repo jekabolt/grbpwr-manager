@@ -1208,10 +1208,12 @@ type (
 		GetTechCardPieceFolds(ctx context.Context, techCardID int) ([]entity.TechCardPieceFold, error)
 		// UpsertTechCardPieceFolds inserts or replaces folds by fold_key (rows not named are untouched)
 		// and returns the card's full list plus the number written. Locks the card row FOR UPDATE
-		// first, refuses a released card, never bumps lock_version; seq stays unique per piece.
+		// first, refuses a released card, never bumps lock_version; seq stays unique per piece, and a write
+		// after which the steps' fold links read in reverse is refused (fold_order, 0444).
 		UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCardPieceFoldsWrite) ([]entity.TechCardPieceFold, int, error)
 		// DeleteTechCardPieceFolds removes folds by fold_key (unknown keys are not an error) and
-		// returns the card's full list plus how many rows went. Same lock and refusal as the upsert.
+		// returns the card's full list plus how many rows went. Same lock and refusal as the upsert. The
+		// steps that named a removed fold let go of it in the same transaction (0444).
 		DeleteTechCardPieceFolds(ctx context.Context, techCardID int, foldKeys []string) ([]entity.TechCardPieceFold, int, error)
 		// AddTechCardSeamDecisions appends what the technologist did with seam guesses
 		// (tech_card_seam_decision): one immutable row each, in one statement. Never touches

@@ -163,6 +163,17 @@ const (
 	// The seam imported; only that step's link to it was dropped — never moved to another step.
 	ReasonSeamStepMissing Reason = "seam_step_missing"
 
+	// ReasonFoldPieceMissing — a piece fold (card.json pieceFolds) is on a cut piece the imported card
+	// does not have. Legal on the source (0443 keeps no FK to the piece), meaningless here. The fold
+	// and the steps' links to it are dropped; every other fold imports.
+	ReasonFoldPieceMissing Reason = "fold_piece_missing"
+	// ReasonFoldStepMissing — a step that closed a fold did not survive the import (the FUSING
+	// reconciliation, as ReasonSeamStepMissing). The fold imported; only the link was dropped.
+	ReasonFoldStepMissing Reason = "fold_step_missing"
+	// ReasonFoldStepConflict — the archive's steps break the rule of fold steps (one fold on two steps,
+	// or a piece's folds in reverse order). The offending link was dropped; the fold imported.
+	ReasonFoldStepConflict Reason = "fold_step_conflict"
+
 	// ReasonStyleNumberTaken — the style number already exists in the target base.
 	ReasonStyleNumberTaken Reason = "style_number_taken"
 	// ReasonUnknownEntry — the archive holds a file this server does not know (a newer MINOR).

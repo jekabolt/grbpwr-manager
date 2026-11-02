@@ -72,7 +72,10 @@ const (
 	// EntitySeam is one seam decision of seams.json (1.3) — a row of tech_card_seam. Counted (the
 	// counter appears only when the archive carries seams, see buildCounters), so a dropped seam
 	// moves a number as well as writing a line.
-	EntitySeam    = "seam"
+	EntitySeam = "seam"
+	// EntityFold is one piece fold of card.json (pieceFolds) — a row of tech_card_piece_fold. Counted
+	// the seams' way: the counter appears only when the archive carries folds.
+	EntityFold    = "fold"
 	EntityCard    = "card"
 	EntityArchive = "archive"
 )
@@ -515,6 +518,18 @@ var reasonGuide = map[Reason]reasonGuidance{
 		"A step that sewed this seam did not survive the import — automatic fusing steps are rebuilt " +
 			"from the pieces on arrival — so that step's link to the seam was dropped. The seam itself " +
 			"imported. Pick the seam on the right step again if it is still wanted."},
+	ReasonFoldPieceMissing: {StatusSkipped,
+		"This fold is on a piece the card does not have — on the source card it was already an orphan " +
+			"(its piece had been removed), so it was dropped together with the steps' links to it. The " +
+			"other folds imported. Draw the fold again if it is still wanted."},
+	ReasonFoldStepMissing: {StatusDegraded,
+		"A step that closed this fold did not survive the import — automatic fusing steps are rebuilt " +
+			"from the pieces on arrival — so that step's link to the fold was dropped. The fold itself " +
+			"imported and its piece stays flat. Pick the fold on the right step again if it is still wanted."},
+	ReasonFoldStepConflict: {StatusDegraded,
+		"The steps of the archive break the rule of fold steps here — one fold on two steps, or a piece's " +
+			"folds in reverse order — so this link was dropped and the fold stays with no step or on its " +
+			"first. The fold itself imported. Pick the fold on the right step again if it is still wanted."},
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +
 			"different one. Rename the card if that is not what you want."},

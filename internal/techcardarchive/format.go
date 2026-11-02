@@ -36,6 +36,11 @@ const (
 	// positive control. A 1.2 archive has neither and imports with no seams, as before. An older
 	// server reading a 1.3 archive lists seams.json as unknown_entry, strips the steps' seam_keys
 	// itself and imports the card without seams — the card lands, the seams do not.
+	//
+	// The fold steps (0444, §5.3c) stay in 1.3: TechCardOperation.fold_keys and the piece folds they name
+	// both ride card.json, which has carried pieceFolds all along, so no file and no contents.* claim is
+	// added, the reader checks MINOR in neither direction, and a server without the feature drops the
+	// keys through DiscardUnknown and imports the card exactly as before.
 	FormatMajor = 1
 	FormatMinor = 3
 
