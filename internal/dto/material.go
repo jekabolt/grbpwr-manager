@@ -382,13 +382,13 @@ func pbHardwareAttrs(a *pb_common.MaterialHardwareAttrs) (*entity.MaterialHardwa
 	if err != nil {
 		return nil, fmt.Errorf("hardware_attrs.weight_g: %w", err)
 	}
-	// Отверстия пуговицы-артикула (0436): 0 = не указано = NULL, иначе 2 или 4 — те же значения,
+	// Отверстия пуговицы-артикула (0436): 0 = не указано = NULL, иначе 2, 3 или 4 — те же значения,
 	// что у шага пришивания, который копирует их отсюда, пока его собственное поле 0.
 	var holes sql.NullInt32
 	if h := a.GetButtonHoles(); h != 0 {
 		if !entity.ButtonHoleCounts[h] {
 			return nil, entity.NewFieldViolation("hardware_attrs.button_holes", "unknown_value", fmt.Sprint(h),
-				"a button has 2 or 4 holes here — pick one, or clear the field")
+				"a button has 2, 3 or 4 holes here — pick one, or clear the field")
 		}
 		holes = sql.NullInt32{Int32: h, Valid: true}
 	}

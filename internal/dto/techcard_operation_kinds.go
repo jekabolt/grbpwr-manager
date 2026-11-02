@@ -210,7 +210,7 @@ type operationKindFields struct {
 	pressAction sql.NullString
 	pressToward sql.NullString
 
-	// Отверстия пуговицы (0436): 2 | 4, NULL = не указано.
+	// Отверстия пуговицы (0436): 2 | 3 | 4, NULL = не указано.
 	buttonHoles sql.NullInt32
 }
 
@@ -814,14 +814,14 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 		if f.attachPattern.Valid && !machineIsOneOf(machineType, machineButtonAttach) {
 			return f, machineNotApplicable(step, "attach_pattern", machineType, []string{machineButtonAttach})
 		}
-		// Отверстия пуговицы (0436). 0 = не указано = NULL; иначе 2 или 4, и только на пришивании
+		// Отверстия пуговицы (0436). 0 = не указано = NULL; иначе 2, 3 или 4, и только на пришивании
 		// пуговиц — той же проверкой, что и рисунок. Противоречие ВНУТРИ шага теперь жёсткий отказ:
 		// с двумя отверстиями нельзя пришить крестом, квадратом или П-образно. Расхождение с
 		// артикулом BOM-строки остаётся мягким предупреждением формы — артикул может прийти позже.
 		if h := fa.GetButtonHoles(); h != 0 {
 			if !entity.ButtonHoleCounts[h] {
 				return f, entity.NewFieldViolation(step+".button_holes", "unknown_value", fmt.Sprint(h),
-					"a button has 2 or 4 holes here — pick one, or clear the field")
+					"a button has 2, 3 or 4 holes here — pick one, or clear the field")
 			}
 			if !machineIsOneOf(machineType, machineButtonAttach) {
 				return f, machineNotApplicable(step, "button_holes", machineType, []string{machineButtonAttach})
@@ -830,6 +830,10 @@ func parseOperationKindFields(o *pb_common.TechCardOperation, opType entity.Tech
 			if h == 2 && f.attachPattern.Valid && entity.ButtonAttachPatternsNeedFourHoles[entity.TechCardButtonAttachPattern(f.attachPattern.String)] {
 				return f, entity.NewFieldViolation(step+".attach_pattern", "needs_four_holes", f.attachPattern.String,
 					fmt.Sprintf("the pattern %q needs four holes, and this button has two — sew it with one bar (parallel), or set four holes", f.attachPattern.String))
+			}
+			if h == 3 && f.attachPattern.Valid && entity.ButtonAttachPatternsNotOnThreeHoles[entity.TechCardButtonAttachPattern(f.attachPattern.String)] {
+				return f, entity.NewFieldViolation(step+".attach_pattern", "not_on_three_holes", f.attachPattern.String,
+					fmt.Sprintf("the pattern %q cannot be sewn on three holes — pick triangle (square), V (u_shape) or other, or change the holes", f.attachPattern.String))
 			}
 		}
 		f.zipperApplication, err = parseEquipmentEnum(fa.GetZipperApplication(), zipperApplicationPbToToken,

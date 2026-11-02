@@ -215,7 +215,13 @@ func TestButtonHolesWriteRules(t *testing.T) {
 		{name: "2 и крест", op: button(2, cross), field: "operations[0].attach_pattern", code: "needs_four_holes"},
 		{name: "2 и квадрат", op: button(2, square), field: "operations[0].attach_pattern", code: "needs_four_holes"},
 		{name: "2 и П", op: button(2, uShape), field: "operations[0].attach_pattern", code: "needs_four_holes"},
-		{name: "3 отверстия", op: button(3, none), field: "operations[0].button_holes", code: "unknown_value"},
+		{name: "3 без рисунка", op: button(3, none), want: 3},
+		{name: "3 и треугольник", op: button(3, square), want: 3},
+		{name: "3 и V", op: button(3, uShape), want: 3},
+		{name: "3 и другое", op: button(3, other), want: 3},
+		{name: "3 и крест", op: button(3, cross), field: "operations[0].attach_pattern", code: "not_on_three_holes"},
+		{name: "3 и параллельно", op: button(3, parallel), field: "operations[0].attach_pattern", code: "not_on_three_holes"},
+		{name: "5 отверстий", op: button(5, none), field: "operations[0].button_holes", code: "unknown_value"},
 		{name: "минус", op: button(-2, none), field: "operations[0].button_holes", code: "unknown_value"},
 		{name: "не на пуговичной машинке", op: func() *pb_common.TechCardOperation {
 			o := opIconStep(lockstitch)
@@ -404,13 +410,13 @@ func TestOperationIconFieldsBornNullMoveNoTail(t *testing.T) {
 	}
 }
 
-// TestMaterialHardwareButtonHoles — отверстия пуговицы-артикула (0436): 0 = NULL, 2 | 4 проходят и
+// TestMaterialHardwareButtonHoles — отверстия пуговицы-артикула (0436): 0 = NULL, 2 | 3 | 4 проходят и
 // возвращаются на провод, всё прочее — отказ с именем поля.
 func TestMaterialHardwareButtonHoles(t *testing.T) {
 	for _, c := range []struct {
 		holes int32
 		ok    bool
-	}{{0, true}, {2, true}, {4, true}, {1, false}, {3, false}, {6, false}, {-4, false}} {
+	}{{0, true}, {2, true}, {3, true}, {4, true}, {1, false}, {5, false}, {6, false}, {-4, false}} {
 		got, err := pbHardwareAttrs(&pb_common.MaterialHardwareAttrs{ButtonHoles: c.holes})
 		if !c.ok {
 			ve := workFieldViolation(t, err)

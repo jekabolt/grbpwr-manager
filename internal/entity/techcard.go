@@ -3477,7 +3477,7 @@ type TechCardOperation struct {
 	SeamKind sql.NullString `db:"seam_kind"`
 	// WorkVariant — исполнение внутри Work, токен entity.WorkVariants[Work]; хвост "work".
 	WorkVariant sql.NullString `db:"work_variant"`
-	// ButtonHoles — 2 | 4 отверстия пуговицы шага; только при machine_type = button_attach; хвост
+	// ButtonHoles — 2 | 3 | 4 отверстия пуговицы шага; только при machine_type = button_attach; хвост
 	// "fastening".
 	ButtonHoles sql.NullInt32 `db:"button_holes"`
 
