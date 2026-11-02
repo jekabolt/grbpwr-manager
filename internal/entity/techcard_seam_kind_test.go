@@ -133,7 +133,7 @@ func TestWorkVariantsPinned(t *testing.T) {
 }
 
 func TestButtonHoleVocabulary(t *testing.T) {
-	if !reflect.DeepEqual(ButtonHoleCounts, map[int32]bool{2: true, 4: true}) {
+	if !reflect.DeepEqual(ButtonHoleCounts, map[int32]bool{2: true, 3: true, 4: true}) {
 		t.Fatalf("ButtonHoleCounts = %v", ButtonHoleCounts)
 	}
 	want := map[TechCardButtonAttachPattern]bool{"cross_x": true, "square": true, "u_shape": true}

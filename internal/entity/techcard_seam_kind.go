@@ -129,7 +129,7 @@ func IsWorkVariant(work, variant string) bool {
 
 // ButtonHoleCounts — законные значения числа отверстий пуговицы (шаг и артикул). 0 на проводе =
 // «не указано» и хранится NULL; сервер его не выводит.
-var ButtonHoleCounts = map[int32]bool{2: true, 4: true}
+var ButtonHoleCounts = map[int32]bool{2: true, 3: true, 4: true}
 
 // ButtonAttachPatternsNeedFourHoles — рисунки пришивания, которые с двумя отверстиями невозможны:
 // с двумя отверстиями пришивают одной перемычкой (parallel) или «другое» + note. Противоречие внутри
@@ -138,4 +138,12 @@ var ButtonAttachPatternsNeedFourHoles = map[TechCardButtonAttachPattern]bool{
 	"cross_x": true,
 	"square":  true,
 	"u_shape": true,
+}
+
+// ButtonAttachPatternsNotOnThreeHoles — рисунки, которые с тремя отверстиями невозможны. Отдельных
+// токенов у трёх отверстий нет: square на такой пуговице — треугольник (замкнутая нить через все
+// отверстия), u_shape — V (открытая нить через все отверстия), other остаётся other.
+var ButtonAttachPatternsNotOnThreeHoles = map[TechCardButtonAttachPattern]bool{
+	"cross_x":  true,
+	"parallel": true,
 }
