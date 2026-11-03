@@ -335,10 +335,13 @@ type ColorwayBodyInsert struct {
 	SkuColorToken string `db:"sku_color_token" valid:"-"`
 	// Colours / ColourNameI18n are READ-ONLY projections of the palette and the per-language name
 	// (T45), filled by the admin colourway read. Writes travel on the development patch.
-	Colours            []ColorwayColour    `db:"-" valid:"-"`
-	ColourNameI18n     map[int]string      `db:"-" valid:"-"`
-	ColorHexOverride   sql.NullString      `db:"color_hex" valid:"-"`
-	CountryOfOrigin    string              `db:"country_of_origin" valid:"required"`
+	Colours          []ColorwayColour `db:"-" valid:"-"`
+	ColourNameI18n   map[int]string   `db:"-" valid:"-"`
+	ColorHexOverride sql.NullString   `db:"color_hex" valid:"-"`
+	CountryOfOrigin  string           `db:"country_of_origin" valid:"required"`
+	// CountryCode is a READ-ONLY projection of product.country_code (the ISO code the label prints),
+	// filled by the colourway detail read. Writes go through CountryOfOrigin or UpdateColorwayCountry.
+	CountryCode        sql.NullString      `db:"-" valid:"-"`
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage" valid:"-"`
 	TopCategoryId      int                 `db:"top_category_id" valid:"required"`
 	SubCategoryId      sql.NullInt32       `db:"sub_category_id" valid:"-"`

@@ -673,3 +673,45 @@ func TestBackfillPLNProductPricesMigration(t *testing.T) {
 		`SELECT COUNT(*) FROM product_price WHERE product_id = ? AND currency = 'PLN'`, activeID).Scan(&plnCount))
 	require.Equal(t, 1, plnCount, "re-running the backfill must be a no-op (crash-idempotent)")
 }
+
+// TestColorwayDetailReadsTheCountryCode: the detail read carries product.country_code, the code the
+// composition label reads as its country of origin. Without it merchandising.country_code came back
+// empty on every read, and a colourway with a saved country still asked for one.
+func TestColorwayDetailReadsTheCountryCode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cfg := *testCfg
+	cfg.Automigrate = true
+	s, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer s.Close()
+
+	mediaID, langID, prices := commonWriteTestFixtures(ctx, t, s)
+	styleID := insertSeasonedTestStyle(ctx, t, "TCWCC", "SS", "SS26", 2026)
+	// The detail read scans the style's category into a plain int.
+	_, err = testDB.ExecContext(ctx, `UPDATE tech_card SET top_category_id = 1 WHERE id = ?`, styleID)
+	require.NoError(t, err)
+
+	prd := newColorwayInsert("BLK", "black", "TCWCC-BLACK", mediaID, langID, prices)
+	colorwayID, err := s.Products().CreateColorway(ctx, styleID, prd, []int{mediaID}, []entity.ColorwayTagInsert{}, prices, nil)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, "DELETE FROM product WHERE id = ?", colorwayID) }()
+
+	code := func() string {
+		full, err := s.Products().GetProductByIdShowHidden(ctx, colorwayID, true)
+		require.NoError(t, err)
+		return full.Product.ProductDisplay.ProductBody.ProductBodyInsert.CountryCode.String
+	}
+	require.Equal(t, "IT", code(), "a saved colourway reads back the code the write derived")
+
+	var lockVersion int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT lock_version FROM tech_card WHERE id = ?`, styleID).Scan(&lockVersion))
+	_, err = s.Products().UpdateColorwayCountry(ctx, colorwayID, lockVersion, "PT")
+	require.NoError(t, err)
+	require.Equal(t, "PT", code(), "the country-only write shows on the next read")
+
+	_, err = testDB.ExecContext(ctx, `UPDATE product SET country_code = NULL WHERE id = ?`, colorwayID)
+	require.NoError(t, err)
+	require.Empty(t, code(), "no code stays empty, the free text is not guessed")
+}
