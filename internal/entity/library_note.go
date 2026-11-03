@@ -110,3 +110,29 @@ type LibraryNoteSaveResult struct {
 	// UpdatedAt is the row's stamp after a successful write; zero on conflict.
 	UpdatedAt time.Time
 }
+
+// LibraryFileContentSave is the compare-and-set write of a file's bytes outside the note editor. The
+// fields mean what they mean on LibraryNoteSave. There is no excerpt: it is derived from a note's
+// text, and this write leaves that column alone.
+type LibraryFileContentSave struct {
+	FileId     int
+	BaseSha256 string
+	Force      bool
+	ObjectKey  string
+	Sha256     string
+	SizeBytes  int64
+	EditedBy   string
+}
+
+// LibraryFileContentSaveResult is what that write answers. On Conflict nothing was written and the
+// fields describe the stored version. The two previous keys are filled only on success, for removal
+// after the commit.
+type LibraryFileContentSaveResult struct {
+	Conflict           bool
+	CurrentSha256      string
+	SizeBytes          int64
+	LastEditedBy       string
+	LastEditedAt       sql.NullTime
+	PreviousObjectKey  string
+	PreviousPreviewKey string
+}

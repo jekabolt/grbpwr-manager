@@ -1225,6 +1225,18 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/task/{task_id}/file/{file_id}/content"};
   }
 
+  // SaveTaskFileContent replaces the bytes of an .xlsx or .csv attached to this task,
+  // under a compare-and-set on sha256. It changes the library file itself: every task
+  // with this file and the library see the new bytes at once, and no old version is
+  // kept. Gated on tasks:write plus the attachment, files:write is not needed. A file
+  // that is not attached to this task, or that the caller may not see, is NotFound.
+  rpc SaveTaskFileContent(SaveTaskFileContentRequest) returns (SaveTaskFileContentResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/task/file/content/save"
+      body: "*"
+    };
+  }
+
   // UpdateTask replaces a task's content (title, description, assignee, priority,
   // due_date, labels, media, entity links). Placement — board, column (status),
   // ordering — is NOT touched here; it changes only through MoveTask.
@@ -6788,6 +6800,35 @@ message GetTaskFileContentResponse {
   // The file is over the viewing ceiling, content is empty. Data rather than an
   // error: it is an ordinary state of an ordinary file, and it ends in a download.
   bool too_large = 2;
+  // sha256 is the base for SaveTaskFileContent. These three come from the row and are
+  // filled on too_large as well.
+  string sha256 = 3;
+  // Empty and null for a file that was never edited in place.
+  string last_edited_by = 4;
+  google.protobuf.Timestamp last_edited_at = 5;
+}
+
+message SaveTaskFileContentRequest {
+  int32 task_id = 1;
+  int32 file_id = 2;
+  bytes content = 3;
+  // base_sha256 is the sha256 this edit started from. A mismatch means somebody else
+  // saved in the meantime.
+  string base_sha256 = 4;
+  // force writes over that other version deliberately.
+  bool force = 5;
+}
+
+message SaveTaskFileContentResponse {
+  // conflict = true means NOTHING WAS WRITTEN and the fields below describe the stored
+  // version. It does not carry the other bytes: the client re-reads them through
+  // GetTaskFileContent.
+  bool conflict = 1;
+  // current_sha256 is what is stored now, and the base for this editor's next save.
+  string current_sha256 = 2;
+  string last_edited_by = 3;
+  google.protobuf.Timestamp last_edited_at = 4;
+  int64 size_bytes = 5;
 }
 
 message GetTaskResponse {

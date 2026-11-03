@@ -954,6 +954,11 @@ type (
 		// (PreviousObjectKey) — порядок «строка раньше байтов» тот же, что в DeleteFile: упавшая
 		// заливка не трогает строку вообще, а осиротевший объект стоит дешевле потерянного текста.
 		SaveNoteContent(ctx context.Context, in entity.LibraryNoteSave) (*entity.LibraryNoteSaveResult, error)
+		// SaveFileContent is the same compare-and-set write for a file that is not a note (a sheet
+		// edited inside a task): no excerpt, and the preview is cleared because it would show the old
+		// bytes. The caller uploads first and removes PreviousObjectKey and PreviousPreviewKey after a
+		// successful return. A conflict is data; sql.ErrNoRows when the file is gone or invisible.
+		SaveFileContent(ctx context.Context, in entity.LibraryFileContentSave) (*entity.LibraryFileContentSaveResult, error)
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned

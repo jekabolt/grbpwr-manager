@@ -1,11 +1,16 @@
 package admin
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
@@ -15,6 +20,7 @@ import (
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // taskFKViolationMsg перечисляет ВСЕ поля карточки, у которых есть внешний ключ и которые поэтому
@@ -169,10 +175,41 @@ const taskFileViewLimit = 10 * 1024 * 1024
 // comes through ListFilesByIds, which applies the same visibility as the attachment list in GetTask:
 // a restricted file is NotFound here exactly as it is absent there. The key comes from that row only.
 func (s *Server) GetTaskFileContent(ctx context.Context, req *pb_admin.GetTaskFileContentRequest) (*pb_admin.GetTaskFileContentResponse, error) {
-	if req.GetTaskId() <= 0 || req.GetFileId() <= 0 {
+	f, err := s.attachedTaskFile(ctx, req.GetTaskId(), req.GetFileId())
+	if err != nil {
+		return nil, err
+	}
+	resp := &pb_admin.GetTaskFileContentResponse{
+		Sha256:       f.Sha256,
+		LastEditedBy: f.ContentUpdatedBy,
+		LastEditedAt: nullTimeToPb(f.ContentUpdatedAt),
+	}
+	if f.SizeBytes > taskFileViewLimit {
+		resp.TooLarge = true
+		return resp, nil
+	}
+	content, err := s.bucket.GetLibraryObjectWithin(ctx, f.ObjectKey, taskFileViewLimit)
+	if err != nil {
+		// The row can understate the object, so the bucket read has the last word on the ceiling.
+		if errors.Is(err, bucket.ErrLibraryObjectTooLarge) {
+			resp.TooLarge = true
+			return resp, nil
+		}
+		slog.Default().ErrorContext(ctx, "can't read task file", slog.Int("file_id", f.Id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't read file")
+	}
+	resp.Content = content
+	return resp, nil
+}
+
+// attachedTaskFile resolves a file through a task: the task exists, the file is attached to it, and
+// the caller may see it. All three failures answer the same NotFound, so a task id cannot be used to
+// find out that a file exists. The read and the save share this, so they can never disagree.
+func (s *Server) attachedTaskFile(ctx context.Context, taskID, fileID int32) (*entity.LibraryFile, error) {
+	if taskID <= 0 || fileID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "task id and file id are required")
 	}
-	t, err := s.repo.Tasks().GetTaskById(ctx, int(req.GetTaskId()))
+	t, err := s.repo.Tasks().GetTaskById(ctx, int(taskID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "file not found")
@@ -180,32 +217,139 @@ func (s *Server) GetTaskFileContent(ctx context.Context, req *pb_admin.GetTaskFi
 		slog.Default().ErrorContext(ctx, "can't get task for file content", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get file")
 	}
-	fileID := int(req.GetFileId())
-	if !slices.Contains(t.FileIds, fileID) {
+	id := int(fileID)
+	if !slices.Contains(t.FileIds, id) {
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
-	files, err := s.repo.Files().ListFilesByIds(ctx, []int{fileID})
+	files, err := s.repo.Files().ListFilesByIds(ctx, []int{id})
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "can't resolve task file", slog.Int("file_id", fileID), slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "can't resolve task file", slog.Int("file_id", id), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get file")
 	}
 	if len(files) == 0 {
 		return nil, status.Error(codes.NotFound, "file not found")
 	}
-	f := files[0]
-	if f.SizeBytes > taskFileViewLimit {
-		return &pb_admin.GetTaskFileContentResponse{TooLarge: true}, nil
-	}
-	content, err := s.bucket.GetLibraryObjectWithin(ctx, f.ObjectKey, taskFileViewLimit)
+	return &files[0], nil
+}
+
+// SaveTaskFileContent replaces the bytes of a sheet attached to a task, under a compare-and-set on
+// sha256. It changes the library file itself: other tasks with this file and the library see the new
+// bytes at once, and no old version is kept.
+//
+// The order is the note editor's: bytes into the bucket, then the row, and only after that the old
+// objects go. A failed upload never touches the row, and an orphaned object costs far less than a row
+// that points at nothing.
+func (s *Server) SaveTaskFileContent(ctx context.Context, req *pb_admin.SaveTaskFileContentRequest) (*pb_admin.SaveTaskFileContentResponse, error) {
+	f, err := s.attachedTaskFile(ctx, req.GetTaskId(), req.GetFileId())
 	if err != nil {
-		// The row can understate the object, so the bucket read has the last word on the ceiling.
-		if errors.Is(err, bucket.ErrLibraryObjectTooLarge) {
-			return &pb_admin.GetTaskFileContentResponse{TooLarge: true}, nil
-		}
-		slog.Default().ErrorContext(ctx, "can't read task file", slog.Int("file_id", fileID), slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "can't read file")
+		return nil, err
 	}
-	return &pb_admin.GetTaskFileContentResponse{Content: content}, nil
+	ext := strings.ToLower(filepath.Ext(f.FileName))
+	if ext != taskSheetXLSX && ext != taskSheetCSV {
+		return nil, status.Error(codes.FailedPrecondition, "only .xlsx and .csv files can be edited")
+	}
+	content := req.GetContent()
+	if err := validateTaskSheetBytes(ext, content); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	username := authsrv.GetAdminUsername(ctx)
+
+	objectKey, sha256hex, size, err := s.bucket.UploadLibraryObject(ctx, bytes.NewReader(content), f.ContentType, strings.TrimPrefix(ext, "."))
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't store task file object",
+			slog.String("username", username), slog.Int("file_id", f.Id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "could not store the file")
+	}
+
+	res, err := s.repo.Files().SaveFileContent(ctx, entity.LibraryFileContentSave{
+		FileId:     f.Id,
+		BaseSha256: req.GetBaseSha256(),
+		Force:      req.GetForce(),
+		ObjectKey:  objectKey,
+		Sha256:     sha256hex,
+		SizeBytes:  size,
+		EditedBy:   username,
+	})
+	if err != nil {
+		cleanupObjects(ctx, s.bucket, objectKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't save task file content",
+			slog.String("username", username), slog.Int("file_id", f.Id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "could not save the file")
+	}
+
+	resp := &pb_admin.SaveTaskFileContentResponse{
+		Conflict:      res.Conflict,
+		CurrentSha256: res.CurrentSha256,
+		LastEditedBy:  res.LastEditedBy,
+		LastEditedAt:  nullTimeToPb(res.LastEditedAt),
+		SizeBytes:     res.SizeBytes,
+	}
+	if res.Conflict {
+		// Nothing was written, so the object just uploaded belongs to nobody.
+		cleanupObjects(ctx, s.bucket, objectKey)
+		slog.Default().InfoContext(ctx, "task file save conflicted",
+			slog.String("username", username), slog.Int("file_id", f.Id),
+			slog.String("last_edited_by", res.LastEditedBy))
+		return resp, nil
+	}
+
+	// The row comes before the bytes: removing the old object first would leave a failed write
+	// pointing at nothing.
+	var previous []string
+	if res.PreviousObjectKey != "" {
+		previous = append(previous, res.PreviousObjectKey)
+	}
+	if res.PreviousPreviewKey != "" {
+		previous = append(previous, res.PreviousPreviewKey)
+	}
+	if len(previous) > 0 {
+		cleanupObjects(ctx, s.bucket, previous...)
+	}
+	slog.Default().InfoContext(ctx, "task file saved",
+		slog.String("username", username), slog.Int("file_id", f.Id), slog.Int("task_id", int(req.GetTaskId())),
+		slog.Int64("size_bytes", size), slog.Bool("forced", req.GetForce()))
+	return resp, nil
+}
+
+const (
+	taskSheetXLSX = ".xlsx"
+	taskSheetCSV  = ".csv"
+	// xlsxWorkbookPart is the one part every workbook has. A zip without it is not a workbook.
+	xlsxWorkbookPart = "xl/workbook.xml"
+)
+
+// validateTaskSheetBytes refuses what must never replace a plan: nothing, more than the ceiling (the
+// read could not return it), and bytes that are not a workbook under an .xlsx name.
+func validateTaskSheetBytes(ext string, content []byte) error {
+	if len(content) == 0 {
+		return errors.New("content is required")
+	}
+	if len(content) > taskFileViewLimit {
+		return fmt.Errorf("content is over the %d byte limit", taskFileViewLimit)
+	}
+	if ext != taskSheetXLSX {
+		return nil
+	}
+	zr, err := zip.NewReader(bytes.NewReader(content), int64(len(content)))
+	if err != nil {
+		return errors.New("content is not an xlsx workbook")
+	}
+	for _, part := range zr.File {
+		if part.Name == xlsxWorkbookPart {
+			return nil
+		}
+	}
+	return errors.New("content is not an xlsx workbook")
+}
+
+func nullTimeToPb(t sql.NullTime) *timestamppb.Timestamp {
+	if !t.Valid {
+		return nil
+	}
+	return timestamppb.New(t.Time)
 }
 
 // UpdateTask replaces a task's content. Placement is not touched here (see MoveTask).
