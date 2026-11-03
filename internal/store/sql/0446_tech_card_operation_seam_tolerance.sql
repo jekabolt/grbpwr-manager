@@ -1,7 +1,7 @@
 -- +migrate Up
 
 -- A step states how far apart its seam sides may be before the assembly map calls them different
--- (TechCardOperation.seam_tolerance_mm, proto field 75).
+-- (TechCardOperation.seam_tolerance_mm, proto field 76).
 --
 -- ADDITIVE ONLY. Born NULL on every row: NULL = «the client's default», 0 is a real value, so no
 -- DEFAULT and no backfill. No CHECK (it would COPY the table); the range is checked in dto.
