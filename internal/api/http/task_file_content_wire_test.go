@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A 10 MB SAVE THROUGH THE REAL STACK.
+// A 10 MB SHEET THROUGH THE REAL STACK, BOTH WAYS.
 //
 // Server.Start on a real port: the HTTP listener, the /api route with its body cap, WithAuth, the
 // gateway, the loopback gRPC hop with its message limits, the interceptors and RBAC, the real
@@ -59,6 +59,7 @@ func TestTaskFileContentTenMegabytesThroughTheRealStack(t *testing.T) {
 			return "files-library/new.csv", "new-sha", int64(len(uploaded)), err
 		})
 	fs.EXPECT().RemoveObjectsByKeys(mock.Anything, row.ObjectKey).Return(nil)
+	fs.EXPECT().GetLibraryObjectWithin(mock.Anything, row.ObjectKey, int64(size)).Return(content, nil)
 
 	adminServer, err := admin.New(repo, fs, nil, nil, nil, nil, nil, nil, nil, nil, entity.LabelAddress{}, "", "", jpk.Taxpayer{}, decimal.Zero)
 	require.NoError(t, err)
@@ -129,4 +130,15 @@ func TestTaskFileContentTenMegabytesThroughTheRealStack(t *testing.T) {
 		require.True(t, bytes.Equal(content, uploaded), "the bucket got other bytes (%d)", len(uploaded))
 	})
 
+	t.Run("read", func(t *testing.T) {
+		var out struct {
+			Content string `json:"content"`
+			Sha256  string `json:"sha256"`
+		}
+		require.NoError(t, json.Unmarshal(call(t, http.MethodGet, "/api/admin/task/3/file/7/content", nil), &out))
+		got, err := base64.StdEncoding.DecodeString(out.Content)
+		require.NoError(t, err)
+		require.True(t, bytes.Equal(content, got), "the client got other bytes (%d)", len(got))
+		require.Equal(t, "base-sha", out.Sha256)
+	})
 }
