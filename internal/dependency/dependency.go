@@ -1039,6 +1039,9 @@ type (
 		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
+		// ExistingLibraryFileIds says which ids are still library files, with no viewer. It answers a
+		// server-built write (the snapshot restore), not a person looking at the library.
+		ExistingLibraryFileIds(ctx context.Context, ids []int) (map[int]bool, error)
 		// GetTechCardSnapshot loads one tech_card_snapshot row OF THIS CARD; a missing id or one owned by
 		// another card is sql.ErrNoRows.
 		GetTechCardSnapshot(ctx context.Context, techCardID int, snapshotID int64) (*entity.TechCardSnapshot, error)

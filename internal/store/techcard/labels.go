@@ -158,19 +158,24 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		}
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_garment_label
-				(tech_card_id, label_key, placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order)
-			VALUES (:tech_card_id, :label_key, :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order)`,
+				(tech_card_id, label_key, placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
+				 callout_number, artwork_per_size, artwork_per_colorway)
+			VALUES (:tech_card_id, :label_key, :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
+				 :callout_number, :artwork_per_size, :artwork_per_colorway)`,
 			map[string]any{
-				"tech_card_id":    tcID,
-				"label_key":       l.Key,
-				"placement":       l.Placement,
-				"attachment":      l.Attachment,
-				"folding":         l.Folding,
-				"size":            l.Size,
-				"qty_per_garment": qty,
-				"bom_item_id":     bom,
-				"note":            l.Note,
-				"display_order":   i,
+				"tech_card_id":         tcID,
+				"label_key":            l.Key,
+				"placement":            l.Placement,
+				"attachment":           l.Attachment,
+				"folding":              l.Folding,
+				"size":                 l.Size,
+				"qty_per_garment":      qty,
+				"bom_item_id":          bom,
+				"note":                 l.Note,
+				"display_order":        i,
+				"callout_number":       l.CalloutNumber,
+				"artwork_per_size":     l.ArtworkPerSize,
+				"artwork_per_colorway": l.ArtworkPerColorway,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card garment label: %w", err)
@@ -178,6 +183,32 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		if err := insertLabelMedia(ctx, db, "tech_card_garment_label_media", "label_id", id, l.MediaIds); err != nil {
 			return err
 		}
+		if err := insertGarmentLabelFiles(ctx, db, id, l.Files); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertGarmentLabelFiles writes the artwork files of one label. A library file FK failure here means
+// the file was deleted between the handler's check and this save: it surfaces as an error, it does
+// not lose the row silently.
+func insertGarmentLabelFiles(ctx context.Context, db dependency.DB, labelID int, files []entity.TechCardGarmentLabelFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(files))
+	for _, f := range files {
+		rows = append(rows, map[string]any{
+			"label_id":        labelID,
+			"colorway_id":     f.ColorwayId,
+			"size_id":         f.SizeId,
+			"library_file_id": f.LibraryFileId,
+			"source_hash":     f.SourceHash,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_garment_label_file", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card garment label files: %w", err)
 	}
 	return nil
 }
@@ -254,7 +285,23 @@ type garmentLabelRow struct {
 	Size          sql.NullString `db:"size"`
 	QtyPerGarment int            `db:"qty_per_garment"`
 	BomItemId     sql.NullInt32  `db:"bom_item_id"`
+	BomLineKey    sql.NullString `db:"bom_line_key"`
 	Note          sql.NullString `db:"note"`
+
+	CalloutNumber      int  `db:"callout_number"`
+	ArtworkPerSize     bool `db:"artwork_per_size"`
+	ArtworkPerColorway bool `db:"artwork_per_colorway"`
+}
+
+// garmentLabelFileRow is one artwork file with the state of its public link. LinkEpoch is 0 unless
+// the link is live now, the same conditions the public route checks.
+type garmentLabelFileRow struct {
+	LabelID       int    `db:"label_id"`
+	ColorwayId    int    `db:"colorway_id"`
+	SizeId        int    `db:"size_id"`
+	LibraryFileId int    `db:"library_file_id"`
+	SourceHash    string `db:"source_hash"`
+	LinkEpoch     int    `db:"link_epoch"`
 }
 
 type packagingItemRow struct {
@@ -266,6 +313,7 @@ type packagingItemRow struct {
 	Size          sql.NullString `db:"size"`
 	QtyPerGarment int            `db:"qty_per_garment"`
 	BomItemId     sql.NullInt32  `db:"bom_item_id"`
+	BomLineKey    sql.NullString `db:"bom_line_key"`
 	Note          sql.NullString `db:"note"`
 }
 
@@ -289,6 +337,53 @@ func (s *Store) labelMediaByParent(ctx context.Context, table, parentCol string,
 	}
 	for _, r := range rows {
 		out[r.ParentID] = append(out[r.ParentID], r.MediaID)
+	}
+	return out, nil
+}
+
+// ExistingLibraryFileIds says which of the ids are still library files, with no viewer: it answers a
+// server-built write, not a person looking at the library.
+func (s *Store) ExistingLibraryFileIds(ctx context.Context, ids []int) (map[int]bool, error) {
+	out := make(map[int]bool, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryScalarListNamed[int](ctx, s.DB,
+		`SELECT id FROM library_file WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't check library files: %w", err)
+	}
+	for _, id := range rows {
+		out[id] = true
+	}
+	return out, nil
+}
+
+// garmentLabelFilesByLabel reads the artwork files of the labels, in (colourway, size) order, with the
+// generation of each file's live public link.
+func (s *Store) garmentLabelFilesByLabel(ctx context.Context, labelIDs []int) (map[int][]entity.TechCardGarmentLabelFile, error) {
+	out := make(map[int][]entity.TechCardGarmentLabelFile, len(labelIDs))
+	if len(labelIDs) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[garmentLabelFileRow](ctx, s.DB, `
+		SELECT f.label_id, f.colorway_id, f.size_id, f.library_file_id, f.source_hash,
+			CASE WHEN lf.access_level = 'link' AND pa.file_id IS NOT NULL AND pa.revoked_at IS NULL
+				AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
+				THEN pa.epoch ELSE 0 END AS link_epoch
+		FROM tech_card_garment_label_file f
+		JOIN library_file lf ON lf.id = f.library_file_id
+		LEFT JOIN library_file_public_access pa ON pa.file_id = f.library_file_id
+		WHERE f.label_id IN (:ids)
+		ORDER BY f.label_id, f.colorway_id, f.size_id`, map[string]any{"ids": labelIDs})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card garment label files: %w", err)
+	}
+	for _, r := range rows {
+		out[r.LabelID] = append(out[r.LabelID], entity.TechCardGarmentLabelFile{
+			ColorwayId: r.ColorwayId, SizeId: r.SizeId, LibraryFileId: r.LibraryFileId,
+			SourceHash: r.SourceHash, LinkEpoch: r.LinkEpoch,
+		})
 	}
 	return out, nil
 }
@@ -363,9 +458,12 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	}
 
 	glRows, err := storeutil.QueryListNamed[garmentLabelRow](ctx, s.DB, `
-		SELECT id, tech_card_id, label_key, placement, attachment, folding, size, qty_per_garment, bom_item_id, note
-		FROM tech_card_garment_label WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+		SELECT l.id, l.tech_card_id, l.label_key, l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
+			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway
+		FROM tech_card_garment_label l
+		LEFT JOIN tech_card_bom_item b ON b.id = l.bom_item_id
+		WHERE l.tech_card_id IN (:ids)
+		ORDER BY l.tech_card_id, l.display_order, l.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card garment labels: %w", err)
 	}
@@ -377,18 +475,28 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	if err != nil {
 		return err
 	}
+	glFiles, err := s.garmentLabelFilesByLabel(ctx, glIDs)
+	if err != nil {
+		return err
+	}
 	glByCard := make(map[int][]entity.TechCardGarmentLabel, len(ids))
 	for _, r := range glRows {
 		glByCard[r.TechCardID] = append(glByCard[r.TechCardID], entity.TechCardGarmentLabel{
 			Key: r.Key, Placement: r.Placement, Attachment: r.Attachment, Folding: r.Folding, Size: r.Size,
-			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, Note: r.Note, MediaIds: glMedia[r.Id],
+			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, BomLineKey: r.BomLineKey.String,
+			Note: r.Note, MediaIds: glMedia[r.Id],
+			CalloutNumber: r.CalloutNumber, ArtworkPerSize: r.ArtworkPerSize, ArtworkPerColorway: r.ArtworkPerColorway,
+			Files: glFiles[r.Id],
 		})
 	}
 
 	piRows, err := storeutil.QueryListNamed[packagingItemRow](ctx, s.DB, `
-		SELECT id, tech_card_id, item_key, item_usage, packing, size, qty_per_garment, bom_item_id, note
-		FROM tech_card_packaging_item WHERE tech_card_id IN (:ids)
-		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+		SELECT i.id, i.tech_card_id, i.item_key, i.item_usage, i.packing, i.size, i.qty_per_garment,
+			i.bom_item_id, b.line_key AS bom_line_key, i.note
+		FROM tech_card_packaging_item i
+		LEFT JOIN tech_card_bom_item b ON b.id = i.bom_item_id
+		WHERE i.tech_card_id IN (:ids)
+		ORDER BY i.tech_card_id, i.display_order, i.id`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card packaging items: %w", err)
 	}
@@ -404,7 +512,8 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	for _, r := range piRows {
 		piByCard[r.TechCardID] = append(piByCard[r.TechCardID], entity.TechCardPackagingItem{
 			Key: r.Key, Usage: r.Usage, Packing: r.Packing, Size: r.Size,
-			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, Note: r.Note, MediaIds: piMedia[r.Id],
+			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, BomLineKey: r.BomLineKey.String,
+			Note: r.Note, MediaIds: piMedia[r.Id],
 		})
 	}
 

@@ -1285,20 +1285,60 @@ func colourProjection(tc *entity.TechCardInsert) any {
 // рождает.
 //
 // Кортеж этикетки: ключ, размещение, крепление, складывание, размер, штук на изделие, строка BOM,
-// заметка, макеты (порядок макетов — содержание: первый показывается в слоте). BomLineKey — транспорт
-// клона, не содержание, в проекцию не входит.
+// заметка, макеты (порядок макетов — содержание: первый показывается в слоте). BomLineKey — адрес
+// линии, а не содержание, в проекцию не входит: содержание — BomItemId.
+//
+// Хвост этикетки — сортированные пары [колонка, значение], и только непустые: этикетка без пина, без
+// режимов и без файлов хешируется ровно как до 0447, ни одна старая подпись не протухает. Файлы входят
+// в подпись: смена файла — это «изменено после подписи». LinkEpoch и PublicURL — свойство ответа, не
+// содержание, отзыв ссылки подпись не трогает.
 func labelsProjection(tc *entity.TechCardInsert) any {
 	out := make([]any, 0, len(tc.GarmentLabels)+1)
-	for _, l := range tc.GarmentLabels {
-		out = append(out, []any{
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		row := []any{
 			l.Key, l.Placement.String, l.Attachment.String, l.Folding.String, l.Size.String,
 			l.QtyPerGarment, l.BomItemId.Int32, l.Note.String, digestList(l.MediaIds),
-		})
+		}
+		if tail := garmentLabelArtworkTail(l); len(tail) > 0 {
+			row = append(row, []any{"artwork", tail})
+		}
+		out = append(out, row)
 	}
 	if care := blankAsAbsent(tc.CareLabel, careLabelRow); care != nil {
 		out = append(out, []any{"care_label", care})
 	}
 	return out
+}
+
+// garmentLabelArtworkTail — пары хвоста этикетки, отсортированные по имени колонки.
+func garmentLabelArtworkTail(l *entity.TechCardGarmentLabel) []any {
+	var tail []any
+	if l.ArtworkPerColorway {
+		tail = append(tail, []any{"artwork_per_colorway", true})
+	}
+	if l.ArtworkPerSize {
+		tail = append(tail, []any{"artwork_per_size", true})
+	}
+	if l.CalloutNumber != 0 {
+		tail = append(tail, []any{"callout_number", l.CalloutNumber})
+	}
+	if len(l.Files) > 0 {
+		files := make([]entity.TechCardGarmentLabelFile, len(l.Files))
+		copy(files, l.Files)
+		sort.SliceStable(files, func(i, j int) bool {
+			if files[i].ColorwayId != files[j].ColorwayId {
+				return files[i].ColorwayId < files[j].ColorwayId
+			}
+			return files[i].SizeId < files[j].SizeId
+		})
+		rows := make([]any, 0, len(files))
+		for _, f := range files {
+			rows = append(rows, []any{f.ColorwayId, f.SizeId, f.LibraryFileId, f.SourceHash})
+		}
+		tail = append(tail, []any{"files", rows})
+	}
+	return tail
 }
 
 // careLabelRow — строка составника для blankAsAbsent: нулевая запись и запись из дефолтов

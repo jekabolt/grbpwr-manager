@@ -178,7 +178,7 @@ func (s *Server) DeleteLibraryFile(ctx context.Context, req *pb_admin.DeleteLibr
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.NotFound, "file not found")
 		}
-		if errors.Is(err, entity.ErrLibraryFileInUse) {
+		if errors.Is(err, entity.ErrLibraryFileInUse) || errors.Is(err, entity.ErrLibraryFileOnTechCard) {
 			// FailedPrecondition, not InvalidArgument: the request was fine, the
 			// world is not ready for it. The message names the holding cards.
 			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)

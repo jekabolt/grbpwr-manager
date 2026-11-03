@@ -213,6 +213,20 @@ func archiveCardRef(card *entity.TechCard) string {
 // operator who ran the import, and the archive's journal never becomes the target's (FORMAT.md
 // §4.2 — free-text change notes are the last channel by which somebody else's prices could enter
 // our permanent records as prose, and neither money layer can read prose).
+func sanitizeGarmentLabelsForArchive(ins *pb_common.TechCardInsert) {
+	for _, l := range ins.GetGarmentLabels() {
+		if l != nil {
+			l.Files = nil
+			l.BomLineKey = ""
+		}
+	}
+	for _, it := range ins.GetPackagingItems() {
+		if it != nil {
+			it.BomLineKey = ""
+		}
+	}
+}
+
 func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	if pb == nil {
 		return
@@ -248,6 +262,12 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 			sc.Stale = false
 		}
 	}
+
+	// Garment label files are ids in THIS instance's library and their public links are secrets, so
+	// they do not travel; the copy rebuilds them (FORMAT.md §5.3). The line key is an address the
+	// receiving side derives again from bom_item_id. The pin and the artwork mode travel: the callouts
+	// travel with their numbers.
+	sanitizeGarmentLabelsForArchive(pb.GetTechCard())
 
 	// Colourways are products and do not travel as products (FORMAT.md §5.3): what a receiving
 	// instance can use of them — the recipe and the piece materials — rides in colorways.json,

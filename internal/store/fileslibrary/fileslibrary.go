@@ -146,6 +146,20 @@ func (s *Store) DeleteFile(ctx context.Context, id int) ([]string, error) {
 		if len(holders) > 0 {
 			return entity.NewErrLibraryFileInUse(holders)
 		}
+		// Этикетка техкарты держит файл так же, как задача: на него ведёт напечатанный QR.
+		cards, err := storeutil.QueryScalarListNamed[int](ctx, rep.DB(),
+			`SELECT DISTINCT l.tech_card_id
+			   FROM tech_card_garment_label_file f
+			   JOIN tech_card_garment_label l ON l.id = f.label_id
+			  WHERE f.library_file_id = :id
+			  ORDER BY l.tech_card_id`,
+			map[string]any{"id": id})
+		if err != nil {
+			return fmt.Errorf("failed to list holding tech cards: %w", err)
+		}
+		if len(cards) > 0 {
+			return entity.NewErrLibraryFileOnTechCard(cards)
+		}
 		f, err := storeutil.QueryNamedOne[entity.LibraryFile](ctx, rep.DB(),
 			`SELECT * FROM library_file WHERE id = :id`, map[string]any{"id": id})
 		if err != nil {

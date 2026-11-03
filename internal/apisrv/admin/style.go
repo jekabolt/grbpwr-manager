@@ -489,6 +489,9 @@ func legacyCloneCostingHasMonetaryAmounts(costing *entity.TechCardCosting) bool 
 //   - The composition label's per-colourway overrides name the SOURCE style's colourways, which a clone
 //     does not create; they are dropped (the new card's colourways start derived). The card-level
 //     overrides (logo, prose, QR, caption, address) carry over as they are.
+//   - A garment label's files of a SOURCE colourway are dropped for the same reason: the composition
+//     row is rebuilt on the copy. Files of any colourway stay, the library is the same on this
+//     contour and printed QR keep working. The pin stays, callouts keep their numbers.
 func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
 	if source == nil || insert == nil {
 		return
@@ -506,6 +509,9 @@ func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
 			l.BomItemId = sql.NullInt32{}
 		}
 	}
+	// No colourway is a colourway of the new card yet, so only files of any colourway survive.
+	dto.DropForeignGarmentLabelColorwayFiles(nil, insert)
+	dto.ClearDanglingGarmentLabelPins(insert)
 	for i := range insert.PackagingItems {
 		it := &insert.PackagingItems[i]
 		if it.BomItemId.Valid {

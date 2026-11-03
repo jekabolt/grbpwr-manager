@@ -242,6 +242,8 @@ func (res *resolvedTechCardImport) stampLabelBomLineKeys(card *entity.TechCardIn
 	if res == nil || card == nil {
 		return
 	}
+	// A pin whose callout did not survive the translation is not a pin.
+	dto.ClearDanglingGarmentLabelPins(card)
 	for i, key := range res.GarmentLabelBomKeys {
 		if i >= 0 && i < len(card.GarmentLabels) {
 			card.GarmentLabels[i].BomLineKey = key
@@ -1232,7 +1234,14 @@ func (r *tcimpResolver) resolveForeignScalars() {
 	// Labels rework (0386): the same translation for garment labels and packaging items. A source id
 	// with no key behind it is simply dropped (the link was already broken in the source).
 	for i, l := range ins.GetGarmentLabels() {
-		if l == nil || l.GetBomItemId() <= 0 {
+		if l == nil {
+			continue
+		}
+		// A library id from another contour must never be written, whatever the file says. An export
+		// strips these; a hand-made or foreign file may not. The copy rebuilds its files.
+		l.Files = nil
+		l.BomLineKey = ""
+		if l.GetBomItemId() <= 0 {
 			continue
 		}
 		if key := lineKeyByBomID[l.GetBomItemId()]; key != "" {
@@ -1244,7 +1253,11 @@ func (r *tcimpResolver) resolveForeignScalars() {
 		l.BomItemId = 0
 	}
 	for i, it := range ins.GetPackagingItems() {
-		if it == nil || it.GetBomItemId() <= 0 {
+		if it == nil {
+			continue
+		}
+		it.BomLineKey = ""
+		if it.GetBomItemId() <= 0 {
 			continue
 		}
 		if key := lineKeyByBomID[it.GetBomItemId()]; key != "" {

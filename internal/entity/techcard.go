@@ -3880,12 +3880,48 @@ type TechCardGarmentLabel struct {
 	Size          sql.NullString
 	QtyPerGarment int           // ≥ 1
 	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
-	// BomLineKey is WRITE-SIDE TRANSPORT for server-built payloads (the season clone): the source
-	// card's BOM ids mean nothing on the new card, so the link travels as the line's stable key and
-	// the store resolves it against the ids it just minted. Never read back, never hashed.
+	// BomLineKey names the BOM line by its stable key: a client links a line born in the same save
+	// this way, and a server-built payload (the season clone) moves a link across cards. A non-empty
+	// key wins over BomItemId in the store. Read back through the link, never hashed: BomItemId is
+	// the content, this is its address.
 	BomLineKey string
 	Note       sql.NullString
 	MediaIds   []int // mockups, in display order
+	// CalloutNumber is the pin: Number of a TechCardCallout of this card; 0 = no pin.
+	CalloutNumber int
+	// ArtworkPerSize / ArtworkPerColorway: one artwork file per size / per colourway. Independent;
+	// both off = one file for the whole style.
+	ArtworkPerSize     bool
+	ArtworkPerColorway bool
+	// Files are the artwork files, unique by (ColorwayId, SizeId), sorted by them on parse and read.
+	Files []TechCardGarmentLabelFile
+	// ArtworkOmitted is the presence bit of artwork_per_size: the payload came from a client that
+	// knows nothing of the pin, the mode and the files, and the stored ones are carried. Parse only.
+	ArtworkOmitted bool
+}
+
+// GarmentLabelKeyComposition is the row holding the composition label's location, material and files.
+// It is shown in the composition block, not among the labels, and it is not asked for a mockup: the
+// engine draws its picture.
+const GarmentLabelKeyComposition = "composition"
+
+// IsComposition reports whether this is the composition label's own row.
+func (l *TechCardGarmentLabel) IsComposition() bool {
+	return strings.EqualFold(strings.TrimSpace(l.Key), GarmentLabelKeyComposition)
+}
+
+// TechCardGarmentLabelFile is one artwork file of a garment label (tech_card_garment_label_file).
+type TechCardGarmentLabelFile struct {
+	ColorwayId    int    // product.id of this style; 0 = any colourway
+	SizeId        int    // size.id; 0 = all sizes
+	LibraryFileId int    // library_file.id; deleting the file is refused while a row holds it
+	SourceHash    string // hash of the inputs of a generated file; "" = uploaded by hand
+	// LinkEpoch is READ-SIDE: the generation of the file's live public link, 0 = no live link
+	// (access is not `link`, revoked, or expired). Never written, never hashed.
+	LinkEpoch int
+	// PublicURL is RESPONSE-ONLY, set where a card is read for a response. Snapshots and archives
+	// stay token-free. Never hashed.
+	PublicURL string
 }
 
 // TechCardPackagingItem is one packaging item (tech_card_packaging_item) — the garment label with

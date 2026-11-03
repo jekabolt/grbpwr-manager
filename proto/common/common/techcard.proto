@@ -3072,6 +3072,33 @@ message TechCardGarmentLabel {
   int32 bom_item_id = 7; // FK to a BOM line of THIS card; 0 = none
   string note = 8;
   repeated int32 media_ids = 9; // FK media(id): the mockups, in display order
+  // The BOM line this label is bought as, by its stable line key: lets a row link a line born in the
+  // same save (no id yet). Non-empty wins over bom_item_id on write; the read path returns it too.
+  // A key that names no line of the payload BOM is cleared, it never breaks a save.
+  string bom_line_key = 10;
+  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. The label holds no
+  // geometry. A number no callout carries any more is cleared on write, it never breaks a save.
+  int32 callout_number = 11;
+  // Artwork per size (true) or one for all sizes (false). PRESENCE BIT: a client that knows this block
+  // always sends it; absent means an older client, whose save keeps the stored pin, modes and files.
+  optional bool artwork_per_size = 12;
+  // Artwork files of this label, one per (colorway, size). The key `composition` holds the
+  // composition label's own row: one file per colourway x size.
+  repeated TechCardGarmentLabelFile files = 13;
+  // Artwork per colourway (true) or one for all colourways (false). Independent of artwork_per_size;
+  // both off = one file for the whole style. Carried with artwork_per_size when that is absent.
+  bool artwork_per_colorway = 14;
+}
+
+// TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.
+message TechCardGarmentLabelFile {
+  int32 colorway_id = 1; // colourway = product.id of this style; 0 = any colourway
+  int32 size_id = 2; // size(id); 0 = all sizes
+  int32 library_file_id = 3; // FK library_file(id)
+  string source_hash = 4; // hash of the inputs a generated file was built from; "" = uploaded by hand
+  // OUTPUT-ONLY: the public link of the library file, filled when the card is read for a response.
+  // Empty when the file has no live link (revoked, expired, access changed): no QR may be printed.
+  string public_url = 5;
 }
 
 // TechCardPackagingItem is one packaging item (labels rework, 0386): the label card with two words
@@ -3085,6 +3112,8 @@ message TechCardPackagingItem {
   int32 bom_item_id = 6; // FK to a BOM line of THIS card; 0 = none
   string note = 7;
   repeated int32 media_ids = 8; // FK media(id): the mockups, in display order
+  // The BOM line this item is bought as, by its stable line key (see TechCardGarmentLabel.bom_line_key).
+  string bom_line_key = 14;
 }
 
 // TechCardCostLine is one currency bucket of the materials rollup.

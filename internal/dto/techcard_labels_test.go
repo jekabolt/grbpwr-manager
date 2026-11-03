@@ -135,6 +135,7 @@ func TestParseCareLabelNormalises(t *testing.T) {
 
 // Round trip pb → entity → pb keeps every field of the three sections.
 func TestLabelsReworkRoundTrip(t *testing.T) {
+	perSize := true
 	in := &pb_common.TechCardInsert{
 		CareLabel: &pb_common.TechCardCareLabel{
 			LogoMediaId: 44, CareProseLines: []string{"MACHINE WASH COLD"}, QrPreset: "fixed",
@@ -143,9 +144,11 @@ func TestLabelsReworkRoundTrip(t *testing.T) {
 				Fibers: []*pb_common.TechCardCareLabelFiber{{Part: pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_SHELL, FiberCode: "COT", Pct: 100}}}},
 		},
 		GarmentLabels: []*pb_common.TechCardGarmentLabel{{Key: "brand", Placement: "neck", Attachment: "sewn", Folding: "end fold",
-			Size: "15x60", QtyPerGarment: 1, BomItemId: 3, Note: "n", MediaIds: []int32{8, 2}}},
+			Size: "15x60", QtyPerGarment: 1, BomItemId: 3, Note: "n", MediaIds: []int32{8, 2},
+			BomLineKey: "k1", CalloutNumber: 4, ArtworkPerSize: &perSize, ArtworkPerColorway: true,
+			Files: []*pb_common.TechCardGarmentLabelFile{{ColorwayId: 7, SizeId: 2, LibraryFileId: 9, SourceHash: "h"}}}},
 		PackagingItems: []*pb_common.TechCardPackagingItem{{Key: "polybag", Usage: "each", Packing: "folded", Size: "30x40",
-			QtyPerGarment: 2, BomItemId: 4, Note: "m", MediaIds: []int32{6}}},
+			QtyPerGarment: 2, BomItemId: 4, Note: "m", MediaIds: []int32{6}, BomLineKey: "k2"}},
 	}
 	care, err := parseTechCardCareLabel(in.CareLabel)
 	require.NoError(t, err)
@@ -246,4 +249,174 @@ func TestGarmentLabelsWithoutMockup(t *testing.T) {
 	}}
 	require.Equal(t, []string{"hangtag (#2)", "tax stamp (#3)"}, GarmentLabelsWithoutMockup(tc))
 	require.Nil(t, GarmentLabelsWithoutMockup(&entity.TechCardInsert{}))
+}
+
+// --- sewn-in labels (0447) --------------------------------------------------------------------------
+
+func artworkLabel() entity.TechCardGarmentLabel {
+	return entity.TechCardGarmentLabel{Key: "size", QtyPerGarment: 1}
+}
+
+// A label with no pin, no modes and no files hashes exactly as before 0447: no old signature goes stale.
+func TestLabelsDigestFrozenWithoutArtwork(t *testing.T) {
+	legacy := digestOf([]any{[]any{"size", "", "", "", "", 1, int32(0), "", digestList([]int(nil))}})
+	require.Equal(t, legacy, labelsDigest(&entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{artworkLabel()}}))
+}
+
+func TestLabelsDigestSeesArtworkChanges(t *testing.T) {
+	base := func(mut func(*entity.TechCardGarmentLabel)) string {
+		l := artworkLabel()
+		mut(&l)
+		return labelsDigest(&entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{l}})
+	}
+	plain := base(func(*entity.TechCardGarmentLabel) {})
+	seen := map[string]string{"plain": plain}
+	for name, mut := range map[string]func(*entity.TechCardGarmentLabel){
+		"per size":   func(l *entity.TechCardGarmentLabel) { l.ArtworkPerSize = true },
+		"per colour": func(l *entity.TechCardGarmentLabel) { l.ArtworkPerColorway = true },
+		"pin":        func(l *entity.TechCardGarmentLabel) { l.CalloutNumber = 4 },
+		"file": func(l *entity.TechCardGarmentLabel) {
+			l.Files = []entity.TechCardGarmentLabelFile{{LibraryFileId: 1}}
+		},
+		"other file": func(l *entity.TechCardGarmentLabel) {
+			l.Files = []entity.TechCardGarmentLabelFile{{LibraryFileId: 2}}
+		},
+		"file of a colour": func(l *entity.TechCardGarmentLabel) {
+			l.Files = []entity.TechCardGarmentLabelFile{{ColorwayId: 9, LibraryFileId: 1}}
+		},
+		"rebuilt from other inputs": func(l *entity.TechCardGarmentLabel) {
+			l.Files = []entity.TechCardGarmentLabelFile{{LibraryFileId: 1, SourceHash: "x"}}
+		},
+	} {
+		d := base(mut)
+		for other, od := range seen {
+			require.NotEqualf(t, od, d, "%s must not hash as %s", name, other)
+		}
+		seen[name] = d
+	}
+}
+
+// Read and write forms of one label hash the same: the read adds the link, the key and the sort order,
+// none of which is content. A signature taken on a write is not stale on the next read.
+func TestLabelsDigestReadEqualsWrite(t *testing.T) {
+	write := artworkLabel()
+	write.ArtworkOmitted = false
+	write.BomItemId = sql.NullInt32{Int32: 5, Valid: true}
+	write.Files = []entity.TechCardGarmentLabelFile{
+		{ColorwayId: 9, SizeId: 2, LibraryFileId: 2},
+		{ColorwayId: 1, SizeId: 1, LibraryFileId: 1},
+	}
+	read := write
+	read.BomLineKey = "k1"
+	read.Files = []entity.TechCardGarmentLabelFile{
+		{ColorwayId: 1, SizeId: 1, LibraryFileId: 1, LinkEpoch: 3, PublicURL: "https://x/api/f/a"},
+		{ColorwayId: 9, SizeId: 2, LibraryFileId: 2},
+	}
+	require.Equal(t,
+		labelsDigest(&entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{write}}),
+		labelsDigest(&entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{read}}))
+}
+
+func TestParseGarmentLabelArtwork(t *testing.T) {
+	perSize := true
+	labels, err := parseTechCardGarmentLabels([]*pb_common.TechCardGarmentLabel{
+		{Key: "size", ArtworkPerSize: &perSize, ArtworkPerColorway: true, CalloutNumber: 2, BomLineKey: "  k1 ",
+			Files: []*pb_common.TechCardGarmentLabelFile{
+				{ColorwayId: 9, SizeId: 1, LibraryFileId: 3, PublicUrl: "https://ignored"},
+				{ColorwayId: 0, SizeId: 1, LibraryFileId: 4},
+			}},
+		{Key: "brand"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "k1", labels[0].BomLineKey)
+	require.True(t, labels[0].ArtworkPerSize)
+	require.True(t, labels[0].ArtworkPerColorway)
+	require.False(t, labels[0].ArtworkOmitted)
+	require.Equal(t, 0, labels[0].Files[0].ColorwayId, "sorted by colourway, size")
+	require.Empty(t, labels[0].Files[1].PublicURL, "the link is output only")
+	require.True(t, labels[1].ArtworkOmitted, "no artwork_per_size = a client that does not know the block")
+
+	for name, f := range map[string][]*pb_common.TechCardGarmentLabelFile{
+		"duplicate slot": {{LibraryFileId: 1}, {LibraryFileId: 2}},
+		"no file":        {{ColorwayId: 1}},
+		"bad colourway":  {{ColorwayId: -1, LibraryFileId: 1}},
+		"bad size":       {{SizeId: -1, LibraryFileId: 1}},
+	} {
+		_, err := parseTechCardGarmentLabels([]*pb_common.TechCardGarmentLabel{{Key: "size", Files: f}})
+		require.Errorf(t, err, name)
+	}
+	_, err = parseTechCardGarmentLabels([]*pb_common.TechCardGarmentLabel{{Key: "size", CalloutNumber: -1}})
+	require.Error(t, err)
+}
+
+func TestCarryOmittedGarmentLabelArtwork(t *testing.T) {
+	stored := &entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{{
+		Key: "size", CalloutNumber: 3, ArtworkPerSize: true, ArtworkPerColorway: true,
+		Files: []entity.TechCardGarmentLabelFile{{SizeId: 1, LibraryFileId: 7}},
+	}}}
+	tc := &entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{
+		{Key: "size", ArtworkOmitted: true},
+		{Key: "brand", ArtworkOmitted: true},
+	}}
+	CarryOmittedGarmentLabelArtwork(stored, tc)
+	require.Equal(t, 3, tc.GarmentLabels[0].CalloutNumber)
+	require.True(t, tc.GarmentLabels[0].ArtworkPerSize)
+	require.True(t, tc.GarmentLabels[0].ArtworkPerColorway)
+	require.Len(t, tc.GarmentLabels[0].Files, 1)
+	require.Empty(t, tc.GarmentLabels[1].Files)
+
+	// A client that speaks is taken at its word: cleared stays cleared.
+	spoken := &entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{{Key: "size"}}}
+	CarryOmittedGarmentLabelArtwork(stored, spoken)
+	require.Zero(t, spoken.GarmentLabels[0].CalloutNumber)
+	require.Empty(t, spoken.GarmentLabels[0].Files)
+}
+
+func TestGarmentLabelLinksNeverBreakASave(t *testing.T) {
+	stored := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{{Id: 11, LineKey: "kept"}, {Id: 12, LineKey: "gone"}}}
+	tc := &entity.TechCardInsert{
+		BomItems: []entity.TechCardBomItem{{LineKey: "kept"}, {LineKey: "born"}},
+		Callouts: []entity.TechCardCallout{{Number: 5}},
+		GarmentLabels: []entity.TechCardGarmentLabel{
+			{Key: "a", BomLineKey: "kept", CalloutNumber: 5},
+			{Key: "b", BomLineKey: "gone", BomItemId: sql.NullInt32{Int32: 12, Valid: true}, CalloutNumber: 6},
+			{Key: "c", BomLineKey: "born", BomItemId: sql.NullInt32{Int32: 99, Valid: true}},
+			{Key: "d", BomItemId: sql.NullInt32{Int32: 11, Valid: true}},
+		},
+		PackagingItems: []entity.TechCardPackagingItem{{Key: "p", BomLineKey: "gone", BomItemId: sql.NullInt32{Int32: 12, Valid: true}}},
+	}
+	ClearDanglingGarmentLabelPins(tc)
+	NormalizeLabelBomLinks(stored, tc)
+
+	require.Equal(t, 5, tc.GarmentLabels[0].CalloutNumber)
+	require.Zero(t, tc.GarmentLabels[1].CalloutNumber, "the callout is gone, the link is cleared")
+	require.Equal(t, int32(11), tc.GarmentLabels[0].BomItemId.Int32, "the key gets the id the read will report")
+	require.Empty(t, tc.GarmentLabels[1].BomLineKey, "a removed line clears the link")
+	require.False(t, tc.GarmentLabels[1].BomItemId.Valid)
+	require.Equal(t, "born", tc.GarmentLabels[2].BomLineKey)
+	require.False(t, tc.GarmentLabels[2].BomItemId.Valid, "a line born now has no id yet")
+	require.Equal(t, int32(11), tc.GarmentLabels[3].BomItemId.Int32, "a row without a key is left alone")
+	require.False(t, tc.PackagingItems[0].BomItemId.Valid)
+	require.Equal(t, []string{"c"}, LabelsLinkedToBornBomLines(tc))
+}
+
+func TestDropForeignGarmentLabelColorwayFiles(t *testing.T) {
+	tc := &entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{{Key: "size", Files: []entity.TechCardGarmentLabelFile{
+		{ColorwayId: 0, LibraryFileId: 1}, {ColorwayId: 7, LibraryFileId: 2}, {ColorwayId: 8, LibraryFileId: 3},
+	}}}}
+	DropForeignGarmentLabelColorwayFiles([]entity.TechCardColorway{{Id: 7}}, tc)
+	require.Len(t, tc.GarmentLabels[0].Files, 2)
+	DropForeignGarmentLabelColorwayFiles(nil, tc)
+	require.Len(t, tc.GarmentLabels[0].Files, 1)
+	require.Equal(t, 1, tc.GarmentLabels[0].Files[0].LibraryFileId)
+}
+
+func TestGarmentLabelsWithoutMockupSeesFilesAndSkipsComposition(t *testing.T) {
+	missing := GarmentLabelsWithoutMockup(&entity.TechCardInsert{GarmentLabels: []entity.TechCardGarmentLabel{
+		{Key: "composition"},
+		{Key: "brand", Files: []entity.TechCardGarmentLabelFile{{LibraryFileId: 1}}},
+		{Key: "flag", MediaIds: []int{1}},
+		{Key: "size"},
+	}})
+	require.Equal(t, []string{"size (#4)"}, missing)
 }

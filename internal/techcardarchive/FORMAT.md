@@ -293,6 +293,14 @@ foreign id worn as a local one or a fact about nothing. That last refusal is a
 `size_not_in_card_range` line and NOT `size_unknown`: the dictionary placed the size perfectly well,
 and an operator sent to the dictionary would find nothing to fix there.
 
+**A garment label's artwork stays home, its pin and modes travel.** Inside `tech_card`, the export
+cuts each garment label's `files` and the `bom_line_key` of labels and packaging items, and the import
+forces both empty on whatever a file claims: a library id is a fact about the SOURCE's library, and a
+`public_url` would print the source's QR on the receiving base. `callout_number`, `artwork_per_size`
+and `artwork_per_colorway` travel, the callouts travel with them, and a number the card's callouts do
+not hold is cleared on arrival. The receiving card shows empty tiles: rebuild the composition row and
+upload the rest there.
+
 **The fibre breakdown (14) is DERIVED here and is therefore not written.** `composition_entries`
 projects `style_composition`, whose only writer re-derives the whole set from the card's own
 shell-fabric BOM lines against **this** catalogue's articles, on every save of the card. Writing the

@@ -809,3 +809,19 @@ func TestC7C8C9CollapseOnTheDraftOfCard8(t *testing.T) {
 		t.Errorf("на черновике readiness — ровно одна находка, got %d", n)
 	}
 }
+
+// The composition row holds location, material and files of the composition label block: it is no
+// sewn-in of its own, and asks neither for a mockup nor for a line of its own.
+func TestC3bAndBridgeSkipTheCompositionRow(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: entity.GarmentLabelKeyComposition, QtyPerGarment: 1}}
+	rtNone(t, ctExpanded(c), "mockup")
+}
+
+// A row whose files carry the artwork has a mockup, whichever way the file came.
+func TestC3bSeesFilesAsArtwork(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1,
+		Files: []entity.TechCardGarmentLabelFile{{LibraryFileId: 1}}}}
+	rtNone(t, ctExpanded(c), "mockup")
+}
