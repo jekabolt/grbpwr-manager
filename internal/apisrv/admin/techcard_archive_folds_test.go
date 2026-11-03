@@ -116,6 +116,19 @@ func TestResolveFoldsKeepsTheStaleVerdict(t *testing.T) {
 
 // A hand-made or damaged card.json: the rule is held here too, softly. The refusal would be the
 // store's, and the import never fails for a fold.
+// A step naming a fold no row of pieceFolds carries: no row of the archive explains the lost link, so
+// the link gets a line of its own. A key of a row the import dropped stays covered by that row's line.
+func TestResolveFoldsReportsAStepKeyWithNoRow(t *testing.T) {
+	r := archFoldResolve([]*pb_common.TechCardPieceFold{
+		archFold(archFoldA, archFlap, 1),
+		archFold(archFoldB, "01JRSTGONE0000000000000000", 1),
+	}, []string{archFoldC, archFoldA}, []string{archFoldB})
+	require.Equal(t, [][]string{{archFoldA}, nil}, archFoldKeys(r))
+	archFoldLine(t, r, "fold_key="+archFoldC+" step=1", techcardarchive.ReasonFoldStepConflict)
+	archFoldLine(t, r, "fold_key="+archFoldB, techcardarchive.ReasonFoldPieceMissing)
+	require.Len(t, r.out.Holes, 2, "the dropped row's own line already covers its link")
+}
+
 func TestResolveFoldsCutsWhatBreaksTheRule(t *testing.T) {
 	r := archFoldResolve([]*pb_common.TechCardPieceFold{
 		archFold(archFoldA, archFlap, 1), archFold(archFoldB, archFlap, 2), archFold(archFoldC, archCuff, 1),

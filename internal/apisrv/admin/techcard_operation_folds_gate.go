@@ -76,11 +76,12 @@ func stripOperationFoldKeys(pb *pb_common.TechCardInsert) {
 	}
 }
 
-// restoreOperationFoldKeys cuts a snapshot's step links down to what the card's folds admit TODAY. A
-// restore does not touch tech_card_piece_fold (a snapshot does not bring the fold rows back), so a key
-// of a fold deleted since, a repeat, or a pair whose seq was swapped since would make the snapshot
-// unrestorable if the store refused it. The link goes and the piece stays flat at that step; a fold
-// deleted in the race after this read gets the store's honest refusal, and the operator retries.
+// restoreOperationFoldKeys cuts a snapshot's step links down to what the card's folds admit TODAY, so
+// the body the write model reconciles names no dead link. A restore does not touch tech_card_piece_fold
+// (a snapshot does not bring the fold rows back), so a key of a fold deleted since, a repeat, or a pair
+// whose seq was swapped since would make the snapshot unrestorable if the store refused it. The link
+// goes and the piece stays flat at that step. The store cuts again (TechCardInsert.RestoreFolds): only
+// it sees the order the FUSING reconciliation leaves and a fold deleted in the race after this read.
 func restoreOperationFoldKeys(in *pb_common.TechCardInsert, stored *entity.TechCard) {
 	ops := in.GetOperations()
 	steps := make([][]string, len(ops))

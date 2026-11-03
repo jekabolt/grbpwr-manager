@@ -3,10 +3,12 @@ package techcard
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fusingops"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
@@ -39,9 +41,13 @@ func techCardOperationFoldRefs(ctx context.Context, db dependency.DB, tcID int) 
 	return refs, nil
 }
 
-// foldLinkViolation words the refusal of a card save.
-func foldLinkViolation(p entity.TechCardFoldLinkProblem) error {
-	field := fmt.Sprintf("operations[%d].fold_keys[%d]", p.Step, p.Pos)
+// foldLinkViolation words the refusal of a card save. addressOf holds the address of a link the
+// reconciliation moved in the body as it was sent: the client never saw the position it landed on.
+func foldLinkViolation(p entity.TechCardFoldLinkProblem, addressOf map[string]string) error {
+	field := addressOf[p.Key]
+	if field == "" {
+		field = fmt.Sprintf("operations[%d].fold_keys[%d]", p.Step, p.Pos)
+	}
 	switch p.Kind {
 	case entity.TechCardFoldLinkUnknown:
 		return entity.NewFieldViolation(field, string(p.Kind), "",
@@ -57,9 +63,87 @@ func foldLinkViolation(p entity.TechCardFoldLinkProblem) error {
 	}
 }
 
-func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
+// placeDisplacedFoldLinks puts the links the FUSING reconciliation took off their steps on the steps
+// that take them over, and returns each placed key's address in the body. A link with no new step is
+// refused by that address; soft (a snapshot restore) leaves the fold flat instead. A fold whose piece
+// left the card goes with its piece: no step can close it, and refusing would block deleting the piece.
+func placeDisplacedFoldLinks(displaced []entity.TechCardDisplacedFoldKey, steps [][]string, views []fusingops.FoldStep,
+	refs map[string]entity.TechCardFoldOrderRef, piecesOnCard []string, soft bool,
+) (map[string]string, error) {
+	addressOf := make(map[string]string, len(displaced))
+	named := make(map[string]bool)
+	for _, keys := range steps {
+		for _, k := range keys {
+			named[entity.NormalizeTechCardSeamKey(k)] = true
+		}
+	}
+	for _, link := range displaced {
+		key := entity.NormalizeTechCardSeamKey(link.Key)
+		if named[key] {
+			continue // the body already closes it on a step that stays
+		}
+		ref, known := refs[key]
+		if !known {
+			if soft {
+				continue
+			}
+			return nil, entity.NewFieldViolation(link.Field, string(entity.TechCardFoldLinkUnknown), "",
+				"fold "+key+" is not stored on this card — save the fold first (UpsertTechCardPieceFolds), or reload: it may have been deleted")
+		}
+		onCard := false
+		for _, piece := range piecesOnCard {
+			onCard = onCard || strings.EqualFold(strings.TrimSpace(piece), strings.TrimSpace(ref.PieceLineKey))
+		}
+		if !onCard {
+			continue
+		}
+		home := fusingops.FoldHome(ref.PieceLineKey, link.Pieces, views)
+		if home < 0 {
+			if soft {
+				continue
+			}
+			return nil, entity.NewFieldViolation(link.Field, string(entity.TechCardFoldLinkStepGone), "",
+				"the step closing this fold is removed by this save and no other step takes its piece — move the fold to another step first")
+		}
+		steps[home] = append(slices.Clip(steps[home]), key)
+		named[key] = true
+		addressOf[key] = link.Field
+	}
+	return addressOf, nil
+}
+
+// settleFoldLinks holds the rule against the steps in their final order: the first problem refuses the
+// save, or with soft (a snapshot restore) the offending links are cut.
+func settleFoldLinks(steps [][]string, refs map[string]entity.TechCardFoldOrderRef, addressOf map[string]string, soft bool) ([][]string, error) {
+	if soft {
+		cut, _ := entity.CutTechCardFoldLinks(steps, refs)
+		return cut, nil
+	}
+	if problems := entity.CheckTechCardFoldLinks(steps, refs); len(problems) > 0 {
+		return nil, foldLinkViolation(problems[0], addressOf)
+	}
+	return steps, nil
+}
+
+// foldLinkRows is the table's rows for the steps' keys; opIDs is parallel to steps.
+func foldLinkRows(steps [][]string, opIDs []int) []map[string]any {
+	rows := make([]map[string]any, 0)
+	for i, keys := range steps {
+		for pos, k := range keys {
+			rows = append(rows, map[string]any{
+				"operation_id":  opIDs[i],
+				"fold_key":      entity.NormalizeTechCardSeamKey(k),
+				"display_order": pos,
+			})
+		}
+	}
+	return rows
+}
+
+func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID int, tc *entity.TechCardInsert) error {
+	ops := tc.Operations
 	steps := make([][]string, len(ops))
-	wanted := false
+	wanted := len(tc.DisplacedFoldKeys) > 0
 	for i := range ops {
 		steps[i] = ops[i].FoldKeys
 		wanted = wanted || len(ops[i].FoldKeys) > 0
@@ -72,8 +156,17 @@ func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID in
 	if err != nil {
 		return err
 	}
-	if problems := entity.CheckTechCardFoldLinks(steps, refs); len(problems) > 0 {
-		return foldLinkViolation(problems[0])
+	piecesOnCard := make([]string, 0, len(tc.Pieces))
+	for i := range tc.Pieces {
+		piecesOnCard = append(piecesOnCard, tc.Pieces[i].LineKey)
+	}
+	addressOf, err := placeDisplacedFoldLinks(tc.DisplacedFoldKeys, steps, fusingops.FoldStepsOf(ops, tc.Pieces),
+		refs, piecesOnCard, tc.RestoreFolds)
+	if err != nil {
+		return err
+	}
+	if steps, err = settleFoldLinks(steps, refs, addressOf, tc.RestoreFolds); err != nil {
+		return err
 	}
 
 	opRows, err := storeutil.QueryListNamed[importedOperationRow](ctx, db,
@@ -86,26 +179,130 @@ func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID in
 	for _, r := range opRows {
 		opIDByOrder[r.DisplayOrder] = r.Id
 	}
-
-	rows := make([]map[string]any, 0)
-	for i, o := range ops {
-		if len(o.FoldKeys) == 0 {
+	opIDs := make([]int, len(steps))
+	for i, keys := range steps {
+		if len(keys) == 0 {
 			continue
 		}
 		opID, ok := opIDByOrder[i]
 		if !ok {
 			return fmt.Errorf("operation %d missing after insert", i)
 		}
-		for pos, k := range o.FoldKeys {
-			rows = append(rows, map[string]any{
-				"operation_id":  opID,
-				"fold_key":      entity.NormalizeTechCardSeamKey(k),
-				"display_order": pos,
-			})
+		opIDs[i] = opID
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_fold", foldLinkRows(steps, opIDs)); err != nil {
+		return fmt.Errorf("failed to insert operation fold links: %w", err)
+	}
+	return nil
+}
+
+// liftDisplacedFoldLinks takes the fold links off the steps a plan deletes or splits (the DELETE of a
+// step would cascade them away) and returns them. A plan that does neither costs no statement, which
+// is every save whose write model was already reconciled.
+func liftDisplacedFoldLinks(ctx context.Context, db dependency.DB, plan fusingops.Plan, operations []fusingops.Operation,
+	rowByID map[int]fusingOperationRow, pieceKeyByID map[int]string,
+) ([]entity.TechCardDisplacedFoldKey, error) {
+	ids := append([]int(nil), plan.DeletedIDs...)
+	for _, op := range plan.Operations {
+		if op.ID == 0 && op.CopyOf > 0 && !slices.Contains(ids, op.CopyOf) {
+			ids = append(ids, op.CopyOf)
 		}
 	}
-	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_fold", rows); err != nil {
-		return fmt.Errorf("failed to insert operation fold links: %w", err)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	links, err := storeutil.QueryListNamed[struct {
+		OpID    int    `db:"operation_id"`
+		FoldKey string `db:"fold_key"`
+	}](ctx, db, `
+		SELECT operation_id, fold_key FROM tech_card_operation_fold
+		WHERE operation_id IN (:ids)
+		ORDER BY operation_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("load fold links of reconciled operations: %w", err)
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	// operations is in display_order, the order the body was written in.
+	var out []entity.TechCardDisplacedFoldKey
+	for index, op := range operations {
+		pos := 0
+		for _, l := range links {
+			if l.OpID != op.ID {
+				continue
+			}
+			pieces := make([]string, 0, len(op.PieceIDs)+1)
+			for _, id := range op.PieceIDs {
+				pieces = append(pieces, pieceKeyByID[id])
+			}
+			if owner := rowByID[op.ID].AutoFusingPieceKey; owner.Valid {
+				pieces = append(pieces, owner.String)
+			}
+			out = append(out, entity.TechCardDisplacedFoldKey{
+				Key: l.FoldKey, Field: fmt.Sprintf("operations[%d].fold_keys[%d]", index, pos), Pieces: pieces,
+			})
+			pos++
+		}
+	}
+	if err := storeutil.ExecNamed(ctx, db, `DELETE FROM tech_card_operation_fold WHERE operation_id IN (:ids)`,
+		map[string]any{"ids": ids}); err != nil {
+		return nil, fmt.Errorf("lift fold links of reconciled operations: %w", err)
+	}
+	return out, nil
+}
+
+// settleReconciledFoldLinks runs after the reconciliation has its final ids and order: it places the
+// links liftDisplacedFoldLinks took and holds the rule against the new order. Nothing moved, no
+// statement. soft is a snapshot restore: it cuts where a save refuses.
+func settleReconciledFoldLinks(ctx context.Context, db dependency.DB, techCardID int, plan fusingops.Plan,
+	displaced []entity.TechCardDisplacedFoldKey, pieceKeyByID map[int]string, soft bool,
+) error {
+	current, err := loadOperationFoldKeys(ctx, db, []int{techCardID})
+	if err != nil {
+		return err
+	}
+	if len(displaced) == 0 && len(current) == 0 {
+		return nil
+	}
+	refs, err := techCardOperationFoldRefs(ctx, db, techCardID)
+	if err != nil {
+		return err
+	}
+	steps := make([][]string, len(plan.Operations))
+	views := make([]fusingops.FoldStep, len(plan.Operations))
+	opIDs := make([]int, len(plan.Operations))
+	for i, op := range plan.Operations {
+		steps[i], opIDs[i] = current[op.ID], op.ID
+		for _, id := range op.PieceIDs {
+			views[i].Pieces = append(views[i].Pieces, pieceKeyByID[id])
+		}
+		if op.Kind == fusingops.KindAuto && !op.IsOrphan() {
+			views[i].Owner = pieceKeyByID[op.Owner]
+		}
+	}
+	piecesOnCard := make([]string, 0, len(pieceKeyByID))
+	for _, key := range pieceKeyByID {
+		piecesOnCard = append(piecesOnCard, key)
+	}
+	addressOf, err := placeDisplacedFoldLinks(displaced, steps, views, refs, piecesOnCard, soft)
+	if err != nil {
+		return err
+	}
+	settled, err := settleFoldLinks(steps, refs, addressOf, soft)
+	if err != nil {
+		return err
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE l FROM tech_card_operation_fold l
+		JOIN tech_card_operation o ON o.id = l.operation_id
+		WHERE o.tech_card_id = :id`, map[string]any{"id": techCardID}); err != nil {
+		return fmt.Errorf("clear fold links of tech card %d: %w", techCardID, err)
+	}
+	if rows := foldLinkRows(settled, opIDs); len(rows) > 0 {
+		if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_fold", rows); err != nil {
+			return fmt.Errorf("failed to insert reconciled fold links: %w", err)
+		}
 	}
 	return nil
 }

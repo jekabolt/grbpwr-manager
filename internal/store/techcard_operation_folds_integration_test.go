@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fusingops"
 	"github.com/stretchr/testify/require"
 )
 
@@ -263,6 +264,189 @@ func TestTechCardOperationFolds(t *testing.T) {
 	require.Empty(t, cloned.PieceFolds, "a clone starts flat, as it starts with no seams")
 	for _, op := range cloned.Operations {
 		require.Empty(t, op.FoldKeys)
+	}
+}
+
+// TestTechCardFoldLinksFollowTheFusingRebuild: a fold on a FUSING step the reconciliation removes or
+// splits moves to the step that takes over, or the save is refused by the link's address in the body;
+// a snapshot restore cuts instead. Both reconcile passes hold it: the write model the API runs, and the
+// transaction's own pass on rows, reached by a store-level save of an unreconciled body.
+//
+// SAFE ONLY against a local container DSN or CI — see mysql_test.go.
+func TestTechCardFoldLinksFollowTheFusingRebuild(t *testing.T) {
+	if os.Getenv("CI") == "" &&
+		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
+		!strings.Contains(testCfg.DSN, "localhost") {
+		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	cfg := *testCfg
+	cfg.Automigrate = true
+	st, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer st.Close()
+	T := st.TechCards()
+
+	const pieceCuff = "01OPFOLDPIECECUFF000000003"
+	const foldCuff = "01FDSTEP000000000000000004"
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+	piece := func(key, name string, fused bool) entity.TechCardPiece {
+		return entity.TechCardPiece{LineKey: key, Name: name, PiecesPerGarment: 1, Grainline: "lengthwise", Fused: fused}
+	}
+	inputs := func(op entity.TechCardOperation, pieces ...string) entity.TechCardOperation {
+		for _, p := range pieces {
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{Kind: entity.AssemblyInputPiece, Key: p})
+			op.InputKeys = append(op.InputKeys, p)
+			op.PieceLineKeys = append(op.PieceLineKeys, p)
+		}
+		return op
+	}
+	sew := func(note string, keys []string, pieces ...string) entity.TechCardOperation {
+		return inputs(entity.TechCardOperation{OperationType: entity.OpTypeMachine, MachineType: ns("lockstitch"),
+			Zone: entity.ZoneOuter, Note: ns(note), FoldKeys: keys}, pieces...)
+	}
+	fuse := func(note string, draft bool, keys []string, pieces ...string) entity.TechCardOperation {
+		return inputs(entity.TechCardOperation{OperationType: entity.OpTypeFusing, Zone: entity.ZoneInterlining,
+			PressEquipment: ns("fusing_press"), Draft: draft, Note: ns(note), FoldKeys: keys}, pieces...)
+	}
+	auto := func(note string, draft bool, keys []string, owner string) entity.TechCardOperation {
+		op := fuse(note, draft, keys, owner)
+		op.AutoFusingPieceKey = ns(owner)
+		return op
+	}
+	number := func(ops []entity.TechCardOperation) []entity.TechCardOperation {
+		for i := range ops {
+			ops[i].OperationNumber = sql.NullInt32{Int32: int32((i + 1) * 10), Valid: true}
+		}
+		return ops
+	}
+
+	for style, viaWriteModel := range map[string]bool{"OPF-REBUILD-W": true, "OPF-REBUILD-L": false} {
+		t.Run(style, func(t *testing.T) {
+			cardID, err := T.AddTechCard(ctx, &entity.TechCardInsert{
+				Name: "OP FOLDS REBUILD", Stage: entity.TechCardStageProto, StyleNumber: ns(style),
+				MeasurementUnit: entity.TechCardUnitMm, ApprovalState: entity.TechCardApprovalDraft,
+				Pieces: []entity.TechCardPiece{piece(opFoldPieceFlap, "flap", false), piece(opFoldPieceBack, "back", false),
+					piece(pieceCuff, "cuff", false)},
+				Operations: []entity.TechCardOperation{sew("a", nil, opFoldPieceFlap)},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = T.DeleteTechCard(context.Background(), cardID) })
+			_, _, err = T.UpsertTechCardPieceFolds(ctx, entity.TechCardPieceFoldsWrite{
+				TechCardId: cardID, By: "test",
+				Folds: []entity.TechCardPieceFoldInput{opFoldInput(opFoldFirst, opFoldPieceFlap, 1),
+					opFoldInput(opFoldSecond, opFoldPieceFlap, 2), opFoldInput(opFoldBack, opFoldPieceBack, 1),
+					opFoldInput(foldCuff, pieceCuff, 1)},
+			})
+			require.NoError(t, err)
+			rig := opFoldRig{t: t, ctx: ctx, T: T, cardID: cardID}
+
+			// write saves the steps with the pieces' fusing state, down the path of this subtest.
+			write := func(fused map[string]bool, restore bool, without string, ops ...entity.TechCardOperation) error {
+				t.Helper()
+				card, _ := rig.read()
+				edit := card.TechCardInsert
+				edit.Pieces = nil
+				for _, p := range card.Pieces {
+					if p.LineKey != without {
+						p.Fused = fused[p.LineKey]
+						edit.Pieces = append(edit.Pieces, p)
+					}
+				}
+				edit.Operations = number(ops)
+				edit.ReconcileFusing = true
+				edit.RestoreFolds = restore
+				if viaWriteModel {
+					if verr := fusingops.ReconcileTechCard(&edit); verr != nil {
+						return verr
+					}
+				}
+				return T.UpdateTechCard(ctx, cardID, &edit, card.LockVersion)
+			}
+			ownerOf := func(card *entity.TechCard, owner string) []string {
+				t.Helper()
+				for _, op := range card.Operations {
+					if op.AutoFusingPieceKey.Valid && op.AutoFusingPieceKey.String == owner {
+						return op.FoldKeys
+					}
+				}
+				t.Fatalf("no automatic step of %s in %d steps", owner, len(card.Operations))
+				return nil
+			}
+			refused := func(err error, field, reason string) {
+				t.Helper()
+				var ve *entity.ValidationError
+				require.ErrorAs(t, err, &ve, "%v", err)
+				require.Equal(t, field, ve.Field)
+				require.Equal(t, reason, ve.Reason)
+			}
+			flap := map[string]bool{opFoldPieceFlap: true}
+			both := map[string]bool{opFoldPieceFlap: true, opFoldPieceBack: true}
+
+			// ── the duplicate goes, its key moves to the survivor of the same piece ──
+			require.NoError(t, write(flap, false, "",
+				auto("keeper", false, nil, opFoldPieceFlap),
+				auto("duplicate", true, []string{opFoldFirst}, opFoldPieceFlap),
+				sew("a", []string{opFoldSecond}, opFoldPieceFlap)))
+			card, links := rig.read()
+			require.Len(t, card.Operations, 2)
+			require.NotContains(t, links, "duplicate")
+			require.Equal(t, []string{opFoldFirst}, links["keeper"])
+			require.Equal(t, []string{opFoldSecond}, links["a"])
+
+			// ── a grouped step splits: each key lands on the step of its own piece ──
+			grouped := fuse("group", true, []string{opFoldFirst, opFoldBack}, opFoldPieceFlap, opFoldPieceBack)
+			grouped.AutoFusingLineKey = ns("01OPFOLDLINEGONE0000000001")
+			require.NoError(t, write(both, false, "", grouped, sew("a", nil, opFoldPieceFlap, opFoldPieceBack)))
+			card, links = rig.read()
+			require.Len(t, card.Operations, 3)
+			require.Equal(t, []string{opFoldFirst}, ownerOf(card, opFoldPieceFlap), "the kept row keeps its own piece's key")
+			require.Equal(t, []string{opFoldBack}, ownerOf(card, opFoldPieceBack), "the copy takes the other piece's key")
+			require.Equal(t, []string{opFoldFirst}, links["group"], "the kept row is the group's own")
+
+			// ── no step can take it over: refused by the address in the body, nothing written ──
+			err = write(map[string]bool{}, false, "",
+				sew("a", nil, opFoldPieceFlap), auto("only", true, []string{opFoldBack}, opFoldPieceBack))
+			refused(err, "operations[1].fold_keys[0]", "fold_step_gone")
+			card, _ = rig.read()
+			require.Equal(t, []string{opFoldBack}, ownerOf(card, opFoldPieceBack), "a refused save changes nothing")
+
+			// ── a piece leaving the card takes its fold's link along: no step could ever close it ──
+			require.NoError(t, write(map[string]bool{pieceCuff: true}, false, "",
+				sew("a", nil, opFoldPieceFlap), auto("cuff step", true, []string{foldCuff}, pieceCuff)))
+			// The API strips the dead input before the first validation (PrepareTechCardUpdateAssembly).
+			cuffStep := auto("cuff step", true, []string{foldCuff}, pieceCuff)
+			cuffStep.AssemblyInputs, cuffStep.InputKeys, cuffStep.PieceLineKeys = nil, nil, nil
+			require.NoError(t, write(map[string]bool{}, false, pieceCuff, sew("a", nil, opFoldPieceFlap), cuffStep))
+			card, links = rig.read()
+			require.NotContains(t, links, "cuff step")
+			require.Len(t, card.PieceFolds, 4, "the fold row is not this save's to delete")
+
+			// ── the move would reverse the piece's folds: refused by the moved link's address ──
+			reversal := func() []entity.TechCardOperation {
+				return []entity.TechCardOperation{
+					fuse("skeleton", true, []string{opFoldFirst}, opFoldPieceFlap),
+					sew("a", []string{opFoldSecond}, opFoldPieceBack),
+					auto("keeper", false, nil, opFoldPieceFlap),
+				}
+			}
+			refused(write(flap, false, pieceCuff, reversal()...), "operations[0].fold_keys[0]", "fold_order")
+
+			// ── a snapshot restore cuts the same link and goes on ──
+			require.NoError(t, write(flap, true, pieceCuff, reversal()...))
+			card, links = rig.read()
+			require.NotContains(t, links, "skeleton")
+			require.Equal(t, []string{opFoldSecond}, links["a"])
+			require.Empty(t, links["keeper"], "the reversing link is cut, the piece stays flat at that step")
+			require.Len(t, card.Operations, 2)
+
+			// ── a restore with no step left for the fold does not fail either ──
+			require.NoError(t, write(map[string]bool{}, true, pieceCuff,
+				sew("a", nil, opFoldPieceFlap), auto("only", true, []string{opFoldBack}, opFoldPieceBack)))
+			_, links = rig.read()
+			require.Empty(t, links["a"])
+		})
 	}
 }
 

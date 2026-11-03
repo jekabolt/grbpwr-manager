@@ -527,9 +527,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"from the pieces on arrival — so that step's link to the fold was dropped. The fold itself " +
 			"imported and its piece stays flat. Pick the fold on the right step again if it is still wanted."},
 	ReasonFoldStepConflict: {StatusDegraded,
-		"The steps of the archive break the rule of fold steps here — one fold on two steps, or a piece's " +
-			"folds in reverse order — so this link was dropped and the fold stays with no step or on its " +
-			"first. The fold itself imported. Pick the fold on the right step again if it is still wanted."},
+		"The steps of the archive break the rule of fold steps here — one fold on two steps, a piece's " +
+			"folds in reverse order, or a fold the archive does not carry — so this link was dropped and " +
+			"the fold, if the archive has it, stays with no step or on its first. Pick the fold on the " +
+			"right step again if it is still wanted."},
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +
 			"different one. Rename the card if that is not what you want."},

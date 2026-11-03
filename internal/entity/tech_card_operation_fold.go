@@ -5,7 +5,8 @@ import "strings"
 // OPERATION → FOLD LINKS (0444). A step names the piece folds that close on it; a fold no step names
 // leaves its piece flat. The one rule over a card's steps lives here as a pure function, because five
 // paths hold it against different things: the card save and the fold write refuse on the first
-// problem, the archive import and the snapshot restore cut the offending links and go on.
+// problem, the archive import and the snapshot restore (TechCardInsert.RestoreFolds) cut the offending
+// links and go on.
 
 // TechCardOperationMaxFoldKeys bounds one step's folds, as TechCardOperationMaxSeamKeys does.
 const TechCardOperationMaxFoldKeys = 64
@@ -29,7 +30,19 @@ const (
 	TechCardFoldLinkTwoSteps TechCardFoldLinkProblemKind = "fold_on_two_steps"
 	// TechCardFoldLinkOrder: an earlier step closes a fold of the same piece with a larger seq.
 	TechCardFoldLinkOrder TechCardFoldLinkProblemKind = "fold_order"
+	// TechCardFoldLinkStepGone: the FUSING reconciliation removes the step and no other step can take
+	// the fold over. Never produced by CheckTechCardFoldLinks: it is about steps that stop existing.
+	TechCardFoldLinkStepGone TechCardFoldLinkProblemKind = "fold_step_gone"
 )
+
+// TechCardDisplacedFoldKey is a fold link the FUSING reconciliation took off its step because it
+// removed or split that step. The write model does not know which piece a fold is on, so it leaves the
+// choice of the new step to the store, inside the save's transaction.
+type TechCardDisplacedFoldKey struct {
+	Key    string
+	Field  string   // the link's address in the body as it was sent, for a refusal
+	Pieces []string // the pieces of the step it sat on
+}
 
 // TechCardFoldLinkProblem is one link the rule does not admit.
 type TechCardFoldLinkProblem struct {

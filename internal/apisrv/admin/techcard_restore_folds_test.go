@@ -71,3 +71,10 @@ func TestRestoreOfAnOldSnapshotPassesTheFoldGate(t *testing.T) {
 		require.Empty(t, written.Operations[i].FoldKeys)
 	}
 }
+
+// A restore asks the store to cut what its own write would refuse: only the store sees the order the
+// FUSING reconciliation leaves.
+func TestRestoreMakesTheStoreCutFoldLinks(t *testing.T) {
+	written := restoreCapture(t, restoreSnapshotRow(t, restoreCardAtV6()))
+	require.True(t, written.RestoreFolds)
+}

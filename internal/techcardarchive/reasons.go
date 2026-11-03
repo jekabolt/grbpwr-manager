@@ -171,7 +171,8 @@ const (
 	// reconciliation, as ReasonSeamStepMissing). The fold imported; only the link was dropped.
 	ReasonFoldStepMissing Reason = "fold_step_missing"
 	// ReasonFoldStepConflict — the archive's steps break the rule of fold steps (one fold on two steps,
-	// or a piece's folds in reverse order). The offending link was dropped; the fold imported.
+	// a piece's folds in reverse order, or a key no row of pieceFolds names). The offending link was
+	// dropped; every fold card.json carries imported.
 	ReasonFoldStepConflict Reason = "fold_step_conflict"
 
 	// ReasonStyleNumberTaken — the style number already exists in the target base.

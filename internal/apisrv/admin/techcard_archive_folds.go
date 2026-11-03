@@ -97,8 +97,9 @@ func (r *tcimpResolver) resolveFolds() {
 	r.out.FoldPlan = plan
 	r.out.FoldStale = stale
 
-	// The steps keep only the keys of folds that will exist; a key of a dropped fold goes silently, as
-	// the fold's own line already says so. Then the rule, with a line per cut link.
+	// A key of a dropped fold goes silently, as the fold's own line already says so. A key no row of
+	// pieceFolds names has no such line: it stays in for the rule, which reports it as unknown_fold and
+	// cuts it with a line of its own, so no link leaves the card unreported.
 	ops := r.out.Insert.GetOperations()
 	steps := make([][]string, len(ops))
 	wanted := false
@@ -106,11 +107,13 @@ func (r *tcimpResolver) resolveFolds() {
 		seenHere := map[string]bool{}
 		for _, k := range op.GetFoldKeys() {
 			k = entity.NormalizeTechCardSeamKey(k)
-			if _, kept := refs[k]; kept && !seenHere[k] {
-				seenHere[k] = true
-				steps[i] = append(steps[i], k)
-				wanted = true
+			_, kept := refs[k]
+			if seenHere[k] || (!kept && seen[k]) {
+				continue
 			}
+			seenHere[k] = true
+			steps[i] = append(steps[i], k)
+			wanted = true
 		}
 	}
 	var problems []entity.TechCardFoldLinkProblem

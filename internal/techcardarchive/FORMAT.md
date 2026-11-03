@@ -560,8 +560,8 @@ not validate or repeats a `fold_key` or a (piece, `seq`) is dropped (`archive_ro
 a fold on a piece the card does not have is dropped (`fold_piece_missing`), and in both cases the
 steps' keys for it go too. The rule of fold steps (one fold on one step; on one piece a larger `seq`
 never on an earlier step than a smaller one) is held against the archive and again against the order
-the FUSING reconciliation leaves: a link that breaks it is dropped (`fold_step_conflict`), the fold
-imports. A link follows its OWN step's row, as a seam's does: a link whose step did not survive is
+the FUSING reconciliation leaves: a link that breaks it, or whose key no row of `pieceFolds` names, is
+dropped (`fold_step_conflict`), the fold imports. A link follows its OWN step's row, as a seam's does: a link whose step did not survive is
 dropped with `fold_step_missing`, never attached to another step. The import never fails for a fold.
 
 ### 5.4 `materials/index.json`
@@ -786,7 +786,7 @@ explanation and the report action text.
 | `seam_step_missing` | a step that sewed a seam did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the seam imports |
 | `fold_piece_missing` | a piece fold (`card.json` `pieceFolds`) is on a cut piece the imported card does not have — the fold and the steps' links to it are dropped, every other fold imports |
 | `fold_step_missing` | a step that closed a fold did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the fold imports |
-| `fold_step_conflict` | the archive's steps break the rule of fold steps (one fold on two steps, or a piece's folds in reverse order) — that link is dropped; the fold imports |
+| `fold_step_conflict` | the archive's steps break the rule of fold steps (one fold on two steps, a piece's folds in reverse order, or a key no row of `pieceFolds` names) — that link is dropped; every fold `card.json` carries imports |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |

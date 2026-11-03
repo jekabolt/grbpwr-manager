@@ -125,6 +125,7 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	}
 	tc.SnapshotChangedPaths = []string{"restored " + snap.CreatedAt.UTC().Format("02.01 15:04")}
 	tc.SnapshotPinned = true
+	tc.RestoreFolds = true
 	if tc.RestoreSeams, err = restoreSeamsFromSnapshot(id, snap.Snapshot, frozen, authsrv.GetAdminUsername(ctx)); err != nil {
 		return nil, err
 	}

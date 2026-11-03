@@ -652,6 +652,7 @@ func carryMissingAutoFusingOps(stored, incoming *entity.TechCardInsert, matched 
 	}
 	for _, i := range missing {
 		carried := slot{op: carriedAutoFusingOp(stored.Operations[i], pieceKeys, bomKeys)}
+		carried.op.FoldKeys = foldKeysNoStepNames(carried.op.FoldKeys, incoming.Operations)
 		carried.pieces = carried.op.PieceLineKeys
 		position := -1
 		for s := range slots {

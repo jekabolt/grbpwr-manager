@@ -395,6 +395,7 @@ func ReconcileTechCard(tc *entity.TechCardInsert) *entity.ValidationError {
 	}
 	operations := m.operations()
 	plan := ReconcileFusingOps(m.pieces, operations)
+	split := displaceFoldKeys(tc, plan)
 
 	oldNumber := func(id int) sql.NullInt32 {
 		if id <= 0 {
@@ -415,6 +416,9 @@ func ReconcileTechCard(tc *entity.TechCardInsert) *entity.ValidationError {
 		switch {
 		case planned.ID > 0:
 			op = tc.Operations[planned.ID-1]
+			if split[planned.ID] {
+				op.FoldKeys = nil // displaced: the store puts each on the step of its own piece
+			}
 		case planned.CopyOf > 0:
 			op = newAutoFusingOp(&tc.Operations[planned.CopyOf-1])
 		default:
