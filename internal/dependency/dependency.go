@@ -1038,6 +1038,10 @@ type (
 		// returns only those no other card/fitting references after the transaction.
 		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
+		// PackagingPickTargets says which of these ids a packaging item of this card may name: materials
+		// of class packaging, auxiliary cards, the card's colourways. The save refuses the others; the
+		// snapshot restore drops them first.
+		PackagingPickTargets(ctx context.Context, cardID int, materialIDs, auxIDs []int) (entity.PackagingPickTargets, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
 		// ExistingLibraryFileIds says which ids are still library files, with no viewer. It answers a
 		// server-built write (the snapshot restore), not a person looking at the library.

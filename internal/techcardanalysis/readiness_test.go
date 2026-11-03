@@ -287,6 +287,21 @@ func TestC3bAggregatesAndCoversPackagingItems(t *testing.T) {
 	rtOne(t, fs, "The polybag packaging item has no mockup")
 }
 
+// A pick already says what the item looks like, so only the item without one is asked for a mockup.
+func TestC3bAcceptsAPickInsteadOfAMockup(t *testing.T) {
+	picked := sql.NullInt32{Int32: 5, Valid: true}
+	c := card8()
+	c.PackagingItems = []entity.TechCardPackagingItem{
+		{Key: "polybag", MaterialId: picked},
+		{Key: "swing tag", AuxTechCardId: picked},
+		{Key: "tissue", MediaIds: []int{1}},
+	}
+	rtNone(t, ctExpanded(c), "packaging item")
+
+	c.PackagingItems = append(c.PackagingItems, entity.TechCardPackagingItem{Key: "sticker"})
+	rtOne(t, ctExpanded(c), "The sticker packaging item has no mockup")
+}
+
 // ── C4 ──────────────────────────────────────────────────────────────────────────────────────────
 
 func TestC4FiresOnCard8WithNoParkAtAll(t *testing.T) {

@@ -3826,6 +3826,9 @@ type TechCardPackaging struct {
 	WeightNetGrams   sql.NullInt32  `db:"weight_net_grams"`
 	WeightGrossGrams sql.NullInt32  `db:"weight_gross_grams"`
 	Notes            sql.NullString `db:"notes"`
+	// PackedSize / PackedMediaId are the finished pack: its size in free text and its photo (0448).
+	PackedSize    sql.NullString `db:"packed_size"`
+	PackedMediaId sql.NullInt32  `db:"packed_media_id"`
 }
 
 // --- labels rework (0386) --------------------------------------------------------------------------
@@ -3936,11 +3939,37 @@ type TechCardPackagingItem struct {
 	BomLineKey    string // see TechCardGarmentLabel.BomLineKey
 	Note          sql.NullString
 	MediaIds      []int
+	// MaterialId / AuxTechCardId are the thing this item IS, picked from the catalog (0448): a material
+	// of class packaging or an auxiliary tech card, at most one. Checked in the save transaction.
+	MaterialId    sql.NullInt32
+	AuxTechCardId sql.NullInt32
+	// PerOrder: QtyPerGarment counts per order instead of per garment.
+	PerOrder bool
+	// PickedName / PickedThumbnail are READ-SIDE: resolved from the pick on every read, never written
+	// and never hashed. The pick is the ids above, and what it is called today can move.
+	PickedName      string
+	PickedThumbnail *MediaFull
+	// ColorwayIds are the colourways of this card the item applies to, ascending; empty = all of them.
+	ColorwayIds []int
+}
+
+// PackagingPickTargets says, of a set of ids, which ones a packaging item may pick: Materials are the
+// ones of class packaging, AuxCards the ones of purpose auxiliary, Colorways the colourways of the card
+// being asked about.
+type PackagingPickTargets struct {
+	Materials map[int]bool
+	AuxCards  map[int]bool
+	Colorways map[int]bool
+}
+
+// HasPick reports whether the item names a catalog material or an auxiliary tech card.
+func (it *TechCardPackagingItem) HasPick() bool {
+	return it.MaterialId.Valid || it.AuxTechCardId.Valid
 }
 
 // LabelMediaIds is every media id the labels rework references on this card — the composition
-// label's logo override, then each garment label's mockups, then each packaging item's mockups —
-// deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
+// label's logo override, then each garment label's mockups, then each packaging item's mockups, then
+// the photo of the finished pack — deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
 // (M-02): the client must not depend on its media-library page to turn these ids into pictures.
 func (tc *TechCardInsert) LabelMediaIds() []int {
 	var out []int
@@ -3964,6 +3993,9 @@ func (tc *TechCardInsert) LabelMediaIds() []int {
 		for _, id := range it.MediaIds {
 			add(id)
 		}
+	}
+	if tc.Packaging != nil && tc.Packaging.PackedMediaId.Valid {
+		add(int(tc.Packaging.PackedMediaId.Int32))
 	}
 	return out
 }

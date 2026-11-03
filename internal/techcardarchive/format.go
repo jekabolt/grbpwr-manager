@@ -41,6 +41,9 @@ const (
 	// both ride card.json, which has carried pieceFolds all along, so no file and no contents.* claim is
 	// added, the reader checks MINOR in neither direction, and a server without the feature drops the
 	// keys through DiscardUnknown and imports the card exactly as before.
+	//
+	// The packaging picks (0448, §4.1a) stay in 1.3 as well: fields inside card.json, one optional map
+	// under id_maps, passports in the existing index, and no file and no contents.* claim.
 	FormatMajor = 1
 	FormatMinor = 3
 
@@ -163,6 +166,10 @@ type IDMaps struct {
 	// a colourway is a product and does not travel — see colorways.json and reason
 	// colorways_not_applied.
 	Colorways map[string]string `json:"colorways"`
+	// AuxTechCards maps the id of an auxiliary card a packaging item picked to its style number, the
+	// identity a style has across bases (§5.2). Only the cards picked; an archive older than the field
+	// has none, and an item naming a card with no entry here imports without the pick.
+	AuxTechCards map[string]string `json:"aux_tech_cards"`
 }
 
 // Contents is what the archive CLAIMS to contain, and it is a positive control, not decoration: an

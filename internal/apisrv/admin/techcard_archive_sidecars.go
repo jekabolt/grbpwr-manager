@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
@@ -679,6 +680,16 @@ func (s *Server) collectArchiveMaterials(ctx context.Context, card *entity.TechC
 			wantedBy[card.OutputMaterialId.Int64] = archiveRefOutputMaterial
 		}
 	}
+	// A packaging item's picked material travels the same way: a passport to match on the far side.
+	for i := range card.PackagingItems {
+		id := int64(card.PackagingItems[i].MaterialId.Int32)
+		if id <= 0 {
+			continue
+		}
+		if _, ok := wantedBy[id]; !ok {
+			wantedBy[id] = fmt.Sprintf("packaging_items[%d]", i)
+		}
+	}
 	if len(wantedBy) == 0 {
 		return []techcardarchive.MaterialPassport{}, nil, nil
 	}
@@ -911,6 +922,10 @@ func archiveCardMediaSlots(card *entity.TechCard) []archiveMediaSlot {
 		for _, id := range it.MediaIds {
 			add(id, "", "")
 		}
+	}
+	// The photo of the finished pack.
+	if card.Packaging != nil && card.Packaging.PackedMediaId.Valid {
+		add(int(card.Packaging.PackedMediaId.Int32), "", "")
 	}
 	return out
 }
@@ -1222,6 +1237,40 @@ func archiveKnownEnumName(name, unknown string) string {
 func archiveStringPtr(s string) *string {
 	v := s
 	return &v
+}
+
+// collectArchiveAuxPicks names every auxiliary card a packaging item picked by its style number, for
+// manifest.id_maps.aux_tech_cards: across databases a card id means nothing and the number is what the
+// assembly bill travels by too (§5.2). A card with no number has nothing to travel by, so its pick does
+// not arrive; the hole says so here, and the import reports the other half.
+func (s *Server) collectArchiveAuxPicks(ctx context.Context, card *entity.TechCard) (map[string]string, []techcardarchive.ExportHole, error) {
+	out := map[string]string{}
+	var holes []techcardarchive.ExportHole
+	seen := map[int]bool{}
+	for i := range card.PackagingItems {
+		id := int(card.PackagingItems[i].AuxTechCardId.Int32)
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		number := ""
+		picked, err := s.repo.TechCards().GetTechCardById(ctx, id)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, nil, fmt.Errorf("tech card archive: load picked auxiliary card %d: %w", id, err)
+		case picked != nil:
+			number = strings.TrimSpace(picked.StyleNumber.String)
+		}
+		if number == "" {
+			holes = append(holes, archiveHole(techcardarchive.EntityAssembly, fmt.Sprintf("packaging_items[%d]", i),
+				techcardarchive.ReasonAssemblyComponentNotFound,
+				fmt.Sprintf("the picked auxiliary card %d is gone or carries no style number; the item travels without the pick", id)))
+			continue
+		}
+		out[strconv.Itoa(id)] = number
+	}
+	return out, holes, nil
 }
 
 // rememberSize запоминает пару id→имя для manifest.id_maps.sizes.

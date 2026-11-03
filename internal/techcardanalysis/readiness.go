@@ -173,7 +173,7 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 func isEmptyPackaging(p *entity.TechCardPackaging) bool {
 	return nsEmpty(p.FoldingMethod) && niEmpty(p.UnitsPerBox) && nsEmpty(p.BoxMarking) &&
 		nsEmpty(p.BoxDimensions) && niEmpty(p.WeightNetGrams) && niEmpty(p.WeightGrossGrams) &&
-		nsEmpty(p.Notes)
+		nsEmpty(p.Notes) && nsEmpty(p.PackedSize) && niEmpty(p.PackedMediaId)
 }
 
 // ── C3. МОСТ ЛЕЙБЛЫ ↔ BOM ───────────────────────────────────────────────────────────────────────
@@ -354,8 +354,10 @@ func checkC3bMockups(v *cardView) []Finding {
 	}
 
 	var items []string
-	for _, p := range v.card.PackagingItems {
-		if len(p.MediaIds) == 0 {
+	for i := range v.card.PackagingItems {
+		p := &v.card.PackagingItems[i]
+		// A pick already says what the item looks like: the material's or the card's own picture.
+		if len(p.MediaIds) == 0 && !p.HasPick() {
 			items = append(items, garmentLabelName(p.Key))
 		}
 	}

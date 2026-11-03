@@ -312,6 +312,11 @@ type tcimpResolver struct {
 	// a line that loses BOTH its catalogue link and its wastage badge is one degraded row and not
 	// two. Keyed by the payload's own pointer — see degradeBomLine.
 	bomDegraded map[*pb_common.TechCardBomItem]bool
+
+	// passports and packagingArticles are what resolveMaterials read, kept for the packaging picks: the
+	// archive's passports by source id, and which articles of this base are of class packaging.
+	passports         map[int64]techcardarchive.MaterialPassport
+	packagingArticles map[int]bool
 }
 
 // resolveTechCardImport turns an opened archive into a plan for THIS base.
@@ -412,6 +417,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	// The steps' fold_keys likewise (resolveFolds): an older archive has none and its folds land flat.
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
+	insert.PackagingPicksAware = true
 
 	r.resolveCategory(di.Categories)
 	if err := r.resolveMedia(ctx); err != nil {
@@ -436,6 +442,9 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 		return nil, err
 	}
 	r.resolveForeignScalars()
+	if err := r.resolvePackagingPicks(ctx); err != nil {
+		return nil, err
+	}
 	if err := r.resolveSizeChart(); err != nil {
 		return nil, err
 	}
@@ -808,7 +817,14 @@ func (r *tcimpResolver) resolveMaterials(ctx context.Context) error {
 			id, verdict := techcardarchive.MatchMaterial(p, catalog)
 			r.out.MaterialPlan[p.Ref] = tcimpMaterialMatch{TargetID: id, Verdict: verdict}
 		}
+		r.packagingArticles = make(map[int]bool, len(catalog))
+		for i := range catalog {
+			if string(catalog[i].MaterialClass) == string(entity.MaterialClassPackaging) {
+				r.packagingArticles[catalog[i].Id] = true
+			}
+		}
 	}
+	r.passports = byRef
 
 	var imported, degraded int
 	for _, b := range lines {
@@ -1275,6 +1291,21 @@ func (r *tcimpResolver) resolveForeignScalars() {
 			slog.Int("colourways", len(cl.GetColorways())))
 		cl.Colorways = nil
 	}
+	// A packaging item's colourways name the same products. The list empties, which reads «all
+	// colourways», so the item lands wider than it was: logged, and said in the report, because an
+	// operator with two items for two colours has to scope them again.
+	for i, it := range ins.GetPackagingItems() {
+		if it == nil || len(it.GetColorwayIds()) == 0 {
+			continue
+		}
+		slog.Default().Warn("tech card import: packaging item colourways dropped (colourways do not travel)",
+			slog.Int("item", i), slog.String("key", it.GetKey()), slog.Int("colourways", len(it.GetColorwayIds())))
+		it.ColorwayIds = nil
+		r.hole(techcardarchive.EntityColorway, fmt.Sprintf("packaging_items[%d]", i),
+			techcardarchive.StatusSkipped, techcardarchive.ReasonColorwaysNotApplied,
+			fmt.Sprintf("packaging item %q applied to some colourways only, and colourways are products that an "+
+				"import does not create; it imported for all colourways", it.GetKey()))
+	}
 
 	for _, b := range ins.GetBomItems() {
 		if b != nil {
@@ -1524,6 +1555,79 @@ func (r *tcimpResolver) resolveAssembly(ctx context.Context) error {
 	r.out.Counters.AddImported(techcardarchive.EntityAssembly, imported)
 	r.out.Counters.AddSkipped(techcardarchive.EntityAssembly, skipped)
 	return nil
+}
+
+// resolvePackagingPicks turns each packaging item's picks from the source's ids into this base's: a
+// material through its passport, an auxiliary card through its style number. Nothing else on the item
+// depends on the pick, so a pick that does not resolve drops alone and the report names it. Past this
+// point the save's own validation cannot refuse the card over a pick, unless the catalog changes in
+// between.
+func (r *tcimpResolver) resolvePackagingPicks(ctx context.Context) error {
+	items := r.out.Insert.GetPackagingItems()
+	var byNumber map[string]int
+	for i, it := range items {
+		if it == nil {
+			continue
+		}
+		it.PickedName, it.PickedThumbnail = "", nil
+		ref := fmt.Sprintf("packaging_items[%d]", i)
+		material, auxCard := it.GetMaterialId(), it.GetAuxTechCardId()
+		it.MaterialId, it.AuxTechCardId = 0, 0
+		// One of the two, as the save requires: our exporter never writes both, a hand-made archive can.
+		if material > 0 {
+			if target, ok := r.packagingPickMaterial(ref, it.GetKey(), int64(material)); ok {
+				it.MaterialId = int32(target)
+			}
+			continue
+		}
+		if auxCard <= 0 {
+			continue
+		}
+		if byNumber == nil {
+			var err error
+			if byNumber, err = r.s.auxiliaryStyleNumbers(ctx); err != nil {
+				return err
+			}
+		}
+		number := strings.TrimSpace(r.a.Manifest.IDMaps.AuxTechCards[strconv.Itoa(int(auxCard))])
+		target, found := byNumber[tcimpKey(number)]
+		if number == "" || !found {
+			r.hole(techcardarchive.EntityAssembly, ref, techcardarchive.StatusDegraded,
+				techcardarchive.ReasonAssemblyComponentNotFound,
+				fmt.Sprintf("packaging item %q picked an auxiliary style %q that is not in this base; it imported "+
+					"without the pick", it.GetKey(), number))
+			continue
+		}
+		it.AuxTechCardId = int32(target)
+	}
+	return nil
+}
+
+// packagingPickMaterial is one material pick. The matcher finds the same article whatever its class,
+// and a save takes only class packaging, so a match of another class counts as no match here.
+func (r *tcimpResolver) packagingPickMaterial(ref, key string, source int64) (int64, bool) {
+	p, ok := r.passports[source]
+	if !ok {
+		r.hole(techcardarchive.EntityMaterial, ref, techcardarchive.StatusDegraded, techcardarchive.ReasonMaterialNotFound,
+			fmt.Sprintf("the archive carries no passport for material_id=%d, so there was nothing to match; packaging "+
+				"item %q imported without the pick", source, key))
+		return 0, false
+	}
+	match := r.out.MaterialPlan[p.Ref]
+	if match.Verdict != techcardarchive.MaterialMatched || match.TargetID <= 0 {
+		r.hole(techcardarchive.EntityMaterial, ref, techcardarchive.StatusDegraded,
+			techcardarchive.ReasonForMaterialVerdict(match.Verdict),
+			fmt.Sprintf("passport %q (%s / %s) did not resolve to one live article here; packaging item %q imported "+
+				"without the pick", p.Code, p.Supplier, p.SupplierRef, key))
+		return 0, false
+	}
+	if !r.packagingArticles[int(match.TargetID)] {
+		r.hole(techcardarchive.EntityMaterial, ref, techcardarchive.StatusDegraded, techcardarchive.ReasonMaterialNotFound,
+			fmt.Sprintf("passport %q matched an article here that is not of class packaging; packaging item %q imported "+
+				"without the pick", p.Code, key))
+		return 0, false
+	}
+	return match.TargetID, true
 }
 
 // auxiliaryStyleNumbers indexes this base's auxiliary styles by style number, folded for comparison.

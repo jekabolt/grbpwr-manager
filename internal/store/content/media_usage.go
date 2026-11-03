@@ -181,6 +181,11 @@ var mediaRefRegistry = []mediaRefSource{
 		slotExpr: `CONCAT_WS(' ', 'label', NULLIF(tcgl.label_key, ''))`,
 	},
 	{
+		kind: "tech_card", table: "tech_card_packaging tcpkg", column: "tcpkg.packed_media_id",
+		joins:      `JOIN tech_card tc ON tc.id = tcpkg.tech_card_id`,
+		entityExpr: "tc.id", labelExpr: techCardLabel, slot: "packed photo",
+	},
+	{
 		kind: "tech_card", table: "tech_card_packaging_item_media tcpim", column: "tcpim.media_id",
 		joins: `JOIN tech_card_packaging_item tcpi ON tcpi.id = tcpim.item_id ` +
 			`JOIN tech_card tc ON tc.id = tcpi.tech_card_id`,

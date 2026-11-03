@@ -617,9 +617,11 @@ func insertTechCardPackaging(ctx context.Context, db dependency.DB, tcID int, p 
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_packaging
 			(tech_card_id, folding_method, polybag, bag_sticker, inserts, units_per_box,
-			 box_marking, box_dimensions, weight_net_grams, weight_gross_grams, notes)
+			 box_marking, box_dimensions, weight_net_grams, weight_gross_grams, notes,
+			 packed_size, packed_media_id)
 		VALUES (:tech_card_id, :folding_method, :polybag, :bag_sticker, :inserts, :units_per_box,
-			 :box_marking, :box_dimensions, :weight_net_grams, :weight_gross_grams, :notes)`,
+			 :box_marking, :box_dimensions, :weight_net_grams, :weight_gross_grams, :notes,
+			 :packed_size, :packed_media_id)`,
 		map[string]any{
 			"tech_card_id":       tcID,
 			"folding_method":     p.FoldingMethod,
@@ -632,6 +634,8 @@ func insertTechCardPackaging(ctx context.Context, db dependency.DB, tcID int, p 
 			"weight_net_grams":   p.WeightNetGrams,
 			"weight_gross_grams": p.WeightGrossGrams,
 			"notes":              p.Notes,
+			"packed_size":        p.PackedSize,
+			"packed_media_id":    p.PackedMediaId,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card packaging: %w", err)
 	}
@@ -1170,7 +1174,8 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	// unmapped columns.
 	pkgRows, err := storeutil.QueryListNamed[techCardPackagingRow](ctx, s.DB,
 		`SELECT tech_card_id, folding_method, polybag, bag_sticker, inserts, units_per_box,
-		        box_marking, box_dimensions, weight_net_grams, weight_gross_grams, notes
+		        box_marking, box_dimensions, weight_net_grams, weight_gross_grams, notes,
+		        packed_size, packed_media_id
 		 FROM tech_card_packaging WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card packaging: %w", err)

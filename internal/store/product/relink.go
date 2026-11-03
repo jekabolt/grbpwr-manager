@@ -41,6 +41,12 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 		DELETE FROM tech_card_piece_material WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
 		return fmt.Errorf("delete source piece-material mappings for colourway %d: %w", colorwayID, err)
 	}
+	// A packaging item names colourways of its own card: left in place, the row would make the source
+	// card's next save refuse with not_in_tech_card over a colourway it no longer has.
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_packaging_item_colorway WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
+		return fmt.Errorf("delete source packaging item scope for colourway %d: %w", colorwayID, err)
+	}
 	return nil
 }
 
