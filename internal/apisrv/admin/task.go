@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"slices"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -155,6 +157,55 @@ func (s *Server) GetTask(ctx context.Context, req *pb_admin.GetTaskRequest) (*pb
 		Files:         files,
 		StatusHistory: dto.ConvertEntityTaskStatusHistoryToPb(t.StatusHistory),
 	}, nil
+}
+
+// taskFileViewLimit is the viewing ceiling for an attachment: the bytes sit in memory and then travel
+// as base64 inside JSON. A bigger file is downloaded through its presigned url.
+const taskFileViewLimit = 10 * 1024 * 1024
+
+// GetTaskFileContent returns the bytes of a file attached to a task.
+//
+// tasks:read alone must not open the library, so the file has to be attached to THIS task. The row
+// comes through ListFilesByIds, which applies the same visibility as the attachment list in GetTask:
+// a restricted file is NotFound here exactly as it is absent there. The key comes from that row only.
+func (s *Server) GetTaskFileContent(ctx context.Context, req *pb_admin.GetTaskFileContentRequest) (*pb_admin.GetTaskFileContentResponse, error) {
+	if req.GetTaskId() <= 0 || req.GetFileId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "task id and file id are required")
+	}
+	t, err := s.repo.Tasks().GetTaskById(ctx, int(req.GetTaskId()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get task for file content", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get file")
+	}
+	fileID := int(req.GetFileId())
+	if !slices.Contains(t.FileIds, fileID) {
+		return nil, status.Error(codes.NotFound, "file not found")
+	}
+	files, err := s.repo.Files().ListFilesByIds(ctx, []int{fileID})
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't resolve task file", slog.Int("file_id", fileID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get file")
+	}
+	if len(files) == 0 {
+		return nil, status.Error(codes.NotFound, "file not found")
+	}
+	f := files[0]
+	if f.SizeBytes > taskFileViewLimit {
+		return &pb_admin.GetTaskFileContentResponse{TooLarge: true}, nil
+	}
+	content, err := s.bucket.GetLibraryObjectWithin(ctx, f.ObjectKey, taskFileViewLimit)
+	if err != nil {
+		// The row can understate the object, so the bucket read has the last word on the ceiling.
+		if errors.Is(err, bucket.ErrLibraryObjectTooLarge) {
+			return &pb_admin.GetTaskFileContentResponse{TooLarge: true}, nil
+		}
+		slog.Default().ErrorContext(ctx, "can't read task file", slog.Int("file_id", fileID), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't read file")
+	}
+	return &pb_admin.GetTaskFileContentResponse{Content: content}, nil
 }
 
 // UpdateTask replaces a task's content. Placement is not touched here (see MoveTask).

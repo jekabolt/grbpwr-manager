@@ -1216,6 +1216,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/task/{id}"};
   }
 
+  // GetTaskFileContent returns the BYTES of a file attached to a task, so the task
+  // can show it in place. They travel over the RPC because JS cannot read a
+  // presigned url: the bucket has no CORS for the panel. Gated on tasks:read, like
+  // the attachment list in GetTask; a file that is not attached to this task, or
+  // that the caller may not see, is NotFound.
+  rpc GetTaskFileContent(GetTaskFileContentRequest) returns (GetTaskFileContentResponse) {
+    option (google.api.http) = {get: "/api/admin/task/{task_id}/file/{file_id}/content"};
+  }
+
   // UpdateTask replaces a task's content (title, description, assignee, priority,
   // due_date, labels, media, entity links). Placement — board, column (status),
   // ordering — is NOT touched here; it changes only through MoveTask.
@@ -6767,6 +6776,18 @@ message AddTaskResponse {
 
 message GetTaskRequest {
   int32 id = 1;
+}
+
+message GetTaskFileContentRequest {
+  int32 task_id = 1;
+  int32 file_id = 2;
+}
+
+message GetTaskFileContentResponse {
+  bytes content = 1;
+  // The file is over the viewing ceiling, content is empty. Data rather than an
+  // error: it is an ordinary state of an ordinary file, and it ends in a download.
+  bool too_large = 2;
 }
 
 message GetTaskResponse {
