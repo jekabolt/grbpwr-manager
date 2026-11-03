@@ -734,14 +734,15 @@ var methodRequirements = map[string]Requirement{
 	"DeleteTaskBoard":   wr(SectionTasks),
 
 	// files library
-	"GetLibraryFile":    rd(SectionFiles),
-	"ListLibraryFiles":  rd(SectionFiles),
-	"UpdateLibraryFile": wr(SectionFiles),
-	"DeleteLibraryFile": wr(SectionFiles),
-	"ListFileTopics":    rd(SectionFiles),
-	"CreateFileTopic":   wr(SectionFiles),
-	"RenameFileTopic":   wr(SectionFiles),
-	"DeleteFileTopic":   wr(SectionFiles),
+	"GetLibraryFile":        rd(SectionFiles),
+	"GetLibraryFileContent": rd(SectionFiles),
+	"ListLibraryFiles":      rd(SectionFiles),
+	"UpdateLibraryFile":     wr(SectionFiles),
+	"DeleteLibraryFile":     wr(SectionFiles),
+	"ListFileTopics":        rd(SectionFiles),
+	"CreateFileTopic":       wr(SectionFiles),
+	"RenameFileTopic":       wr(SectionFiles),
+	"DeleteFileTopic":       wr(SectionFiles),
 	// Merge edits the topic vocabulary, assign labels files: same section as
 	// rename/delete, and both write.
 	"MergeFileTopics":         wr(SectionFiles),

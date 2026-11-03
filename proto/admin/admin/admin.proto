@@ -1429,6 +1429,15 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/files/{id}"};
   }
 
+  // GetLibraryFileContent returns the BYTES of a library file, so its card can show
+  // a preview of a file attached to no task. They travel over the RPC because JS
+  // cannot read a presigned url: the bucket has no CORS for the panel. Gated on
+  // files:read, and it refuses exactly what GetLibraryFile refuses: a file the caller
+  // may not see, like an unknown id, is NotFound.
+  rpc GetLibraryFileContent(GetLibraryFileContentRequest) returns (GetLibraryFileContentResponse) {
+    option (google.api.http) = {get: "/api/admin/files/{id}/content"};
+  }
+
   // ListLibraryFiles is the grid: a page of files filtered by topic, by "no topic
   // at all", or by a search that matches file names AND topic names.
   // Declared AFTER GET /files/{id} on purpose — same reason as the task routes:
@@ -6989,6 +6998,17 @@ message GetLibraryFileRequest {
 
 message GetLibraryFileResponse {
   LibraryFile file = 1;
+}
+
+message GetLibraryFileContentRequest {
+  int32 id = 1;
+}
+
+message GetLibraryFileContentResponse {
+  bytes content = 1;
+  // The file is over the viewing ceiling, content is empty. Data rather than an
+  // error: it is an ordinary state of an ordinary file, and it ends in a download.
+  bool too_large = 2;
 }
 
 // LibraryFileSort is the grid's sort order for the columns that are not time.

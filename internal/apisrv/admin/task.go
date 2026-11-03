@@ -165,8 +165,9 @@ func (s *Server) GetTask(ctx context.Context, req *pb_admin.GetTaskRequest) (*pb
 	}, nil
 }
 
-// taskFileViewLimit is the viewing ceiling for an attachment: the bytes sit in memory and then travel
-// as base64 inside JSON. A bigger file is downloaded through its presigned url.
+// taskFileViewLimit is the viewing ceiling for a library file, on a task and on its own card: the
+// bytes sit in memory and then travel as base64 inside JSON. A bigger file is downloaded through its
+// presigned url.
 const taskFileViewLimit = 10 * 1024 * 1024
 
 // GetTaskFileContent returns the bytes of a file attached to a task.

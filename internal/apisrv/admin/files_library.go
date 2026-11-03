@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -83,6 +84,38 @@ func (s *Server) GetLibraryFile(ctx context.Context, req *pb_admin.GetLibraryFil
 	return &pb_admin.GetLibraryFileResponse{
 		File: s.withLibraryURLs(ctx, f, dto.ConvertEntityLibraryFileToPb(f)),
 	}, nil
+}
+
+// GetLibraryFileContent returns the bytes of a library file for the preview on its card.
+//
+// The row comes through GetFileById, the very read of the card, so the store's visibility predicate
+// decides here exactly as it decides there: a file the caller may not see is ErrNoRows before any key
+// reaches the bucket, and hidden is indistinguishable from unknown. The key comes from that row only.
+func (s *Server) GetLibraryFileContent(ctx context.Context, req *pb_admin.GetLibraryFileContentRequest) (*pb_admin.GetLibraryFileContentResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "file id is required")
+	}
+	f, err := s.repo.Files().GetFileById(ctx, int(req.GetId()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "file not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get library file for content", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get file")
+	}
+	if f.SizeBytes > taskFileViewLimit {
+		return &pb_admin.GetLibraryFileContentResponse{TooLarge: true}, nil
+	}
+	content, err := s.bucket.GetLibraryObjectWithin(ctx, f.ObjectKey, taskFileViewLimit)
+	if err != nil {
+		// The row can understate the object, so the bucket read has the last word on the ceiling.
+		if errors.Is(err, bucket.ErrLibraryObjectTooLarge) {
+			return &pb_admin.GetLibraryFileContentResponse{TooLarge: true}, nil
+		}
+		slog.Default().ErrorContext(ctx, "can't read library file", slog.Int("file_id", f.Id), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't read file")
+	}
+	return &pb_admin.GetLibraryFileContentResponse{Content: content}, nil
 }
 
 // ListLibraryFiles is the grid.
