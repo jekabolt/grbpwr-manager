@@ -183,6 +183,11 @@ type resolvedTechCardImport struct {
 	// cut down to SeamPlan's keys.
 	SeamPlan  []entity.TechCardSeamInput
 	SeamStale map[string]bool
+	// FoldPlan — card.json pieceFolds validated, each on a piece of the card; nil when none. FoldStale
+	// names the keys the source read as stale. The steps' fold_keys in Insert are already cut down to
+	// FoldPlan's keys and to the rule of fold steps.
+	FoldPlan  []entity.TechCardPieceFoldInput
+	FoldStale map[string]bool
 	LabelPlan []tcimpLabelLink
 	// GarmentLabelBomKeys / PackagingItemBomKeys (labels rework, 0386): position in
 	// Insert.GarmentLabels / Insert.PackagingItems → the BOM line key their source bom_item_id named.
@@ -396,9 +401,11 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationReviewAware = true
 	insert.OperationBlockMembershipAware = true
 	insert.OperationSeamsAware = true
+	insert.OperationFoldsAware = true
 	insert.OperationSeamKindAware = true
 	// The steps' seam_keys are cut down to the seams of seams.json that survive (resolveSeams, 1.3);
 	// a 1.2 archive carries no seams, so every key goes.
+	// The steps' fold_keys likewise (resolveFolds): an older archive has none and its folds land flat.
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
 
@@ -440,6 +447,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	if err := r.resolveSeams(); err != nil {
 		return nil, err
 	}
+	r.resolveFolds()
 	if err := r.resolveMarkers(); err != nil {
 		return nil, err
 	}

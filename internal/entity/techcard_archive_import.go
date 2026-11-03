@@ -83,6 +83,15 @@ type TechCardArchiveImport struct {
 	// matches no source), so the import never re-stamps «decided on these patterns».
 	SeamsStale map[string]bool
 
+	// Folds are the piece folds (card.json pieceFolds), validated by the resolver with
+	// ValidateTechCardPieceFoldsWrite's rules, keys normalised, each on a piece of Card. Written after
+	// the card's pieces, sheets and DXF links; Card.Operations[i].FoldKeys name only these keys and
+	// are linked after the folds exist. A fold whose piece did not land is dropped with a report line,
+	// never failing the import. An archive from before the step links brings its folds with no step.
+	Folds []TechCardPieceFoldInput
+	// FoldsStale names the fold keys the source read as stale: they land stale, as SeamsStale.
+	FoldsStale map[string]bool
+
 	// Markers are the card's раскладки. Each carries its own BomLineKey — the cloth it was
 	// measured on, re-sewn to the imported BOM inside the transaction — and a Composition whose
 	// sizes are already local. ProductionRunId is not a member of an import: only card markers

@@ -216,6 +216,9 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 	// the keys go back on when this call returns: a second call must find them where the first did.
 	opSeamKeys := takeImportedOperationSeamKeys(card)
 	defer restoreImportedOperationSeamKeys(card, opSeamKeys)
+	// The fold links the same way and for the same reason (insertImportedFolds).
+	opFoldKeys := takeImportedOperationFoldKeys(card)
+	defer restoreImportedOperationFoldKeys(card, opFoldKeys)
 
 	var newID int
 	var losses *importLosses
@@ -313,6 +316,10 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		// The seams AFTER the pieces, sheets and DXF links (the fingerprint is taken from them), and
 		// the steps' links to them after the seams.
 		if err := insertImportedSeams(ctx, db, newID, in.Seams, in.SeamsStale, opSeamKeys, opIDs, in.Actor, losses); err != nil {
+			return err
+		}
+		// The folds on the same terms: their fingerprint comes from the same sources.
+		if err := insertImportedFolds(ctx, db, newID, in.Folds, in.FoldsStale, opFoldKeys, opIDs, in.Actor, losses); err != nil {
 			return err
 		}
 		if err := insertImportedAssembly(ctx, db, newID, in.Assembly, in.Actor, rng, losses); err != nil {
@@ -1621,6 +1628,146 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_seam", rows); err != nil {
 		return fmt.Errorf("insert imported operation seam links: %w", err)
+	}
+	return nil
+}
+
+// ────────────────────────────── piece folds (card.json pieceFolds) ──────────────────────────────
+
+// takeImportedOperationFoldKeys removes every step's fold keys from the card and returns them by step
+// index. nil when no step names a fold, which is every archive from before the links.
+func takeImportedOperationFoldKeys(card *entity.TechCardInsert) [][]string {
+	var out [][]string
+	for i := range card.Operations {
+		if len(card.Operations[i].FoldKeys) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make([][]string, len(card.Operations))
+		}
+		out[i] = card.Operations[i].FoldKeys
+		card.Operations[i].FoldKeys = nil
+	}
+	return out
+}
+
+// restoreImportedOperationFoldKeys puts back what takeImportedOperationFoldKeys took off.
+func restoreImportedOperationFoldKeys(card *entity.TechCardInsert, keys [][]string) {
+	for i := range keys {
+		if i < len(card.Operations) && len(keys[i]) > 0 {
+			card.Operations[i].FoldKeys = keys[i]
+		}
+	}
+}
+
+// insertImportedFolds writes the archive's folds onto the new card and then the steps' links to them,
+// through the same write UpsertTechCardPieceFolds uses. People are the importer, stamps are now, the
+// fingerprint is computed here from the imported sources; a fold the source read as stale lands stale.
+//
+// The resolver already dropped every fold that does not validate or sits on a piece card.json does not
+// carry. This is the write's own check against the pieces that LANDED: a fold whose piece is not on
+// the card goes with a counted line, never a refusal of the whole import.
+//
+// A link follows its OWN step's row, never the step that now sits at its old position, and the rule
+// over the links is held against the order the reconciliation left: it may move a fusing step, and
+// what no longer reads in order is cut with a report line rather than refused.
+func insertImportedFolds(ctx context.Context, db dependency.DB, techCardID int, folds []entity.TechCardPieceFoldInput,
+	stale map[string]bool, opFoldKeys [][]string, opIDs []int, actor string, losses *importLosses,
+) error {
+	refs := map[string]entity.TechCardFoldOrderRef{}
+	if len(folds) > 0 {
+		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT line_key FROM tech_card_piece
+			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load piece keys of imported tech card %d: %w", techCardID, err)
+		}
+		onCard := make(map[string]bool, len(pieces))
+		for _, p := range pieces {
+			onCard[strings.ToUpper(strings.TrimSpace(p))] = true
+		}
+		write := make([]entity.TechCardPieceFoldInput, 0, len(folds))
+		for _, f := range folds {
+			if !onCard[strings.ToUpper(strings.TrimSpace(f.PieceLineKey))] {
+				losses.dropCounted(techcardarchive.EntityFold, "fold_key="+f.FoldKey, techcardarchive.StatusSkipped,
+					techcardarchive.ReasonFoldPieceMissing,
+					fmt.Sprintf("the fold is on piece %s, which did not land on the card", f.PieceLineKey))
+				continue
+			}
+			write = append(write, f)
+		}
+		if len(write) > 0 {
+			// Re-validated, as UpsertTechCardPieceFolds does; the resolver validated every row, so a
+			// failure here is a fault, not an archive problem.
+			in := entity.TechCardPieceFoldsWrite{TechCardId: techCardID, Folds: write, By: actor}
+			if err := entity.ValidateTechCardPieceFoldsWrite(&in); err != nil {
+				return fmt.Errorf("imported folds of tech card %d: %w", techCardID, err)
+			}
+			if err := writeTechCardPieceFoldsTx(ctx, db, techCardID, in.Folds, actor, pieceFoldWriteOpts{stale: stale}); err != nil {
+				return err
+			}
+			for _, f := range in.Folds {
+				refs[f.FoldKey] = entity.TechCardFoldOrderRef{PieceLineKey: f.PieceLineKey, Seq: f.Seq}
+			}
+		}
+	}
+	if len(opFoldKeys) == 0 {
+		return nil
+	}
+	// The steps that exist NOW, in the order they stand NOW.
+	now, err := storeutil.QueryListNamed[importedOperationRow](ctx, db, archiveImportOperationRowsQuery,
+		map[string]any{"card": techCardID})
+	if err != nil {
+		return fmt.Errorf("load reconciled operations of tech card %d: %w", techCardID, err)
+	}
+	orderOf := make(map[int]int, len(now))
+	for _, r := range now {
+		orderOf[r.Id] = r.DisplayOrder
+	}
+	// The archive steps that survived and name a fold that landed, walked in today's order.
+	var walk []int
+	links := make(map[int][]string, len(opFoldKeys))
+	for i, keys := range opFoldKeys {
+		var alive bool
+		if i < len(opIDs) {
+			_, alive = orderOf[opIDs[i]]
+		}
+		for _, k := range keys {
+			k = entity.NormalizeTechCardSeamKey(k)
+			if _, kept := refs[k]; !kept {
+				continue
+			}
+			if !alive {
+				losses.drop(techcardarchive.EntityFold, fmt.Sprintf("fold_key=%s step=%d", k, i+1),
+					techcardarchive.StatusDegraded, techcardarchive.ReasonFoldStepMissing,
+					fmt.Sprintf("step %d of the archive, which closed this fold, did not survive the fusing reconciliation", i+1))
+				continue
+			}
+			if len(links[i]) == 0 {
+				walk = append(walk, i)
+			}
+			links[i] = append(links[i], k)
+		}
+	}
+	sort.Slice(walk, func(a, b int) bool { return orderOf[opIDs[walk[a]]] < orderOf[opIDs[walk[b]]] })
+	steps := make([][]string, len(walk))
+	for n, i := range walk {
+		steps[n] = links[i]
+	}
+	cut, problems := entity.CutTechCardFoldLinks(steps, refs)
+	for _, p := range problems {
+		losses.drop(techcardarchive.EntityFold, fmt.Sprintf("fold_key=%s step=%d", p.Key, walk[p.Step]+1),
+			techcardarchive.StatusDegraded, techcardarchive.ReasonFoldStepConflict,
+			fmt.Sprintf("step %d of the archive cannot close this fold after the fusing reconciliation (%s)", walk[p.Step]+1, p.Kind))
+	}
+	rows := make([]map[string]any, 0)
+	for n, i := range walk {
+		for pos, k := range cut[n] {
+			rows = append(rows, map[string]any{"operation_id": opIDs[i], "fold_key": k, "display_order": pos})
+		}
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation_fold", rows); err != nil {
+		return fmt.Errorf("insert imported operation fold links: %w", err)
 	}
 	return nil
 }

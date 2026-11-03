@@ -459,6 +459,12 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, err
 		}
 
+		// Сгибы шага (0444), тот же порядок: форма здесь, правило по всей карте в сторе.
+		foldKeys, err := operationFoldKeysFromPb(i, o.FoldKeys)
+		if err != nil {
+			return nil, err
+		}
+
 		// Фотографии шага с выносками (0308). Разбираются здесь же, чтобы отказ назвал конкретную
 		// выноску конкретной картинки конкретного шага: путь собирается от `step`, который уже
 		// посчитан выше для отказов по типу и зоне.
@@ -522,6 +528,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			Media:                 media,
 			SeamKeys:              seamKeys,
+			FoldKeys:              foldKeys,
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
@@ -933,6 +940,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			OutputUnitName:        pbStringFromNull(o.OutputUnitName),
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			SeamKeys:              o.SeamKeys,
+			FoldKeys:              o.FoldKeys,
 
 			// Виды операций (0324). Два дискриминатора — полями шага, восемь семейств — блоками, и
 			// блок эмитится только когда в нём есть заполненный факт: пустая обёртка читалась бы

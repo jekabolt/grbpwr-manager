@@ -125,6 +125,7 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	}
 	tc.SnapshotChangedPaths = []string{"restored " + snap.CreatedAt.UTC().Format("02.01 15:04")}
 	tc.SnapshotPinned = true
+	tc.RestoreFolds = true
 	if tc.RestoreSeams, err = restoreSeamsFromSnapshot(id, snap.Snapshot, frozen, authsrv.GetAdminUsername(ctx)); err != nil {
 		return nil, err
 	}
@@ -242,11 +243,13 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.OperationReviewAware = true
 	in.OperationBlockMembershipAware = true
 	in.OperationSeamsAware = true
+	in.OperationFoldsAware = true
 	in.OperationSeamKindAware = true
 	in.BomQtyAware = true
 	in.LabelsAware = true
 	// The backstops refuse an aware payload that would erase stored facts without saying so. Here the
 	// erasure IS the request (the snapshot had none), so it is said.
+	restoreOperationFoldKeys(in, stored)
 	in.AssemblyCleared = storedHasAssemblyFacts(stored) && !payloadCarriesAssemblyUnits(in)
 	in.MediaCleared = storedHasOperationMedia(stored) && !payloadCarriesOperationMedia(in)
 

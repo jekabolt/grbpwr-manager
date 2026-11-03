@@ -353,10 +353,13 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	pbInsert.OperationReviewAware = true
 	pbInsert.OperationBlockMembershipAware = true
 	pbInsert.OperationSeamsAware = true
+	pbInsert.OperationFoldsAware = true
 	// Иконные поля шага (0436) — клон строит payload сам и несёт их; щит 129 иначе отверг бы его.
 	pbInsert.OperationSeamKindAware = true
 	// The clone starts with no seam decisions (they are not copied), so the steps cannot name any.
 	stripOperationSeamKeys(pbInsert)
+	// Сгибы (0443) в клон тоже не копируются, как швы, значит и шаги не могут их называть (0444).
+	stripOperationFoldKeys(pbInsert)
 	pbInsert.LabelsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {

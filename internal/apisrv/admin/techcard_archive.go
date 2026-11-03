@@ -869,6 +869,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		assemblyCapabilityWireGate,
 		operationBlockMembershipWireGate,
 		operationSeamsWireGate,
+		operationFoldsWireGate,
 		operationSeamKindWireGate,
 		operationKindsWireGate,
 		operationWorkWireGate,
@@ -885,6 +886,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		assemblyCapabilityStoredGate,
 		operationBlockMembershipStoredGate,
 		operationSeamsStoredGate,
+		operationFoldsStoredGate,
 		operationSeamKindStoredGate,
 		operationWorkRetiredGate,
 	} {
@@ -1104,6 +1106,9 @@ func (s *Server) tcciWrite(ctx context.Context, c tcciCommit) (*pb_admin.CommitT
 			// The seam decisions (seams.json, 1.3) and the keys the source read as stale.
 			Seams:      c.res.SeamPlan,
 			SeamsStale: c.res.SeamStale,
+			// The piece folds (card.json pieceFolds) and the keys the source read as stale.
+			Folds:      c.res.FoldPlan,
+			FoldsStale: c.res.FoldStale,
 			Markers:    c.markers,
 			PieceAreas: c.res.PieceAreaPlan,
 			Labels:     tcciLabelLinks(c.res.LabelPlan),

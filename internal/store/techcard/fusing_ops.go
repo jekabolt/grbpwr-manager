@@ -190,6 +190,12 @@ func soleOperationPieceKey(op *entity.TechCardOperation) (string, bool) {
 // classifies them (fusingops.ReconcileTechCard), so a reconciled write model is a no-op here.
 // db is the caller's transaction: this function deliberately never opens or commits a transaction.
 func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) error {
+	return reconcileFusingOps(ctx, db, techCardID, false)
+}
+
+// reconcileFusingOps is ReconcileFusingOps; softFolds is a snapshot restore, whose fold links are cut
+// where a save's would be refused (TechCardInsert.RestoreFolds).
+func reconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int, softFolds bool) error {
 	params := map[string]any{"tech_card_id": techCardID}
 	interlinings, err := storeutil.QueryListNamed[fusingInterliningRow](ctx, db, `
 		SELECT id, line_key
@@ -319,6 +325,10 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	}
 
 	plan := fusingops.ReconcileFusingOps(pieces, operations)
+	displaced, err := liftDisplacedFoldLinks(ctx, db, plan, operations, rowByID, pieceKeyByID)
+	if err != nil {
+		return err
+	}
 	for _, operationID := range plan.DeletedIDs {
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_operation
@@ -379,11 +389,13 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 	if err := remapFusingIssueNumbers(ctx, db, techCardID, plan.Operations, plan.DeletedIDs, oldNumberByID); err != nil {
 		return err
 	}
+	moved := len(displaced) > 0 // a step that moved may have moved a fold link past another
 	for i, op := range plan.Operations {
 		row := rowByID[op.ID]
 		if row.DisplayOrder == i && row.OperationNumber.Valid && row.OperationNumber.Int64 == int64((i+1)*10) {
 			continue
 		}
+		moved = true
 		if err := storeutil.ExecNamed(ctx, db, `
 			UPDATE tech_card_operation
 			SET display_order = :display_order, operation_number = :operation_number
@@ -394,7 +406,10 @@ func ReconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int) e
 			return fmt.Errorf("order reconciled operation %d: %w", op.ID, err)
 		}
 	}
-	return nil
+	if !moved {
+		return nil
+	}
+	return settleReconciledFoldLinks(ctx, db, techCardID, plan, displaced, pieceKeyByID, softFolds)
 }
 
 // applyManualFusingInputs removes only piece links covered by automatic FUSING steps. Unit inputs

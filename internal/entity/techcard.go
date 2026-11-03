@@ -3533,6 +3533,11 @@ type TechCardOperation struct {
 	// (0434). Child table tech_card_operation_seam, written in the same transaction as the inputs.
 	// Every key must name a seam stored on the card; outside every section digest.
 	SeamKeys []string `db:"-"`
+
+	// FoldKeys — the piece folds that close on this step (tech_card_piece_fold.fold_key, normalised)
+	// (0444). Child table tech_card_operation_fold, written in the same transaction as the seam links.
+	// The rule over the whole card is CheckTechCardFoldLinks; outside every section digest.
+	FoldKeys []string `db:"-"`
 }
 
 // ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────
@@ -4518,6 +4523,13 @@ type TechCardInsert struct {
 	// tech_card_seam to exactly this list inside its transaction. nil (every other save) leaves the
 	// seams alone — they are written by Upsert/DeleteTechCardSeams, never by the card form.
 	RestoreSeams *TechCardSeamsRestore `db:"-"`
+	// RestoreFolds is set by RestoreTechCardSnapshot only: the store cuts a fold link the rule does not
+	// admit instead of refusing it, on the order the FUSING reconciliation leaves. A restore must not
+	// fail on what happened to the folds since the snapshot.
+	RestoreFolds bool `db:"-"`
+	// DisplacedFoldKeys is write-command metadata from fusingops.ReconcileTechCard: the fold links of
+	// the steps it removed or split, which insertTechCardOperationFolds places on their new steps.
+	DisplacedFoldKeys []TechCardDisplacedFoldKey `db:"-"`
 	// Purpose is `sellable` (default) or `auxiliary` (NF-07). An auxiliary card (dust bag, garment
 	// bag, shopper) is not sold: its run output is received into OutputMaterialId in the material
 	// warehouse, and it may not link products.
