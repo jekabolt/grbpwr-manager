@@ -3538,6 +3538,11 @@ type TechCardOperation struct {
 	// (0444). Child table tech_card_operation_fold, written in the same transaction as the seam links.
 	// The rule over the whole card is CheckTechCardFoldLinks; outside every section digest.
 	FoldKeys []string `db:"-"`
+
+	// LayerOrder — the order the owner set for this step's inputs, bottom to top, in the vocabulary
+	// of InputKeys (0445). Empty is NULL: no order set. Stale keys are the reader's to skip, so it is
+	// never checked against the inputs. Outside every section digest.
+	LayerOrder TechCardLayerOrder `db:"layer_order"`
 }
 
 // ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────

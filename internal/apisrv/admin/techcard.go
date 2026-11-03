@@ -139,6 +139,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationFoldsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationLayerOrderWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	if err := operationSeamKindWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
@@ -432,6 +435,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationFoldsWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationLayerOrderWireGate(in); err != nil {
+		return nil, err
+	}
 	if err := operationSeamKindWireGate(in); err != nil {
 		return nil, err
 	}
@@ -512,6 +518,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		return nil, err
 	}
 	if err := operationFoldsStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	if err := operationLayerOrderStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	// Иконные поля шага (0436) — щит 129, копия 116: полная замена операций стёрла бы вид шва,

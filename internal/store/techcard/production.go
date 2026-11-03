@@ -236,6 +236,7 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"output_unit_key":         o.OutputUnitKey,
 			"output_unit_name":        o.OutputUnitName,
 			"assembly_block_detached": o.AssemblyBlockDetached,
+			"layer_order":             o.LayerOrder,
 
 			// --- ВИДЫ ОПЕРАЦИЙ: 32 колонки волны 0324 ------------------------------------------
 			//
@@ -816,7 +817,7 @@ const techCardOperationsQuery = `
 		       o.press_equipment, o.press_profile_key, o.press_temperature_c, o.press_dwell_sec,
 		       o.press_pressure_n_cm2, o.press_steam, o.press_cloth,
 		       o.smv, o.note, o.callout_number,
-		       o.output_unit_key, o.output_unit_name, o.assembly_block_detached,
+		       o.output_unit_key, o.output_unit_name, o.assembly_block_detached, o.layer_order,
 		       o.needle_count, o.needle_gauge_mm, o.seam_securing, o.row_spacing_mm,
 		       o.fullness_ratio,
 		       o.placement_count, o.pitch_mm,

@@ -2951,6 +2951,14 @@ message TechCardOperation {
   // are outside every digest and outside lock_version.
   repeated string fold_keys = 74;
 
+  // The order the owner set for this step's inputs, bottom to top, in the vocabulary of input_keys.
+  // Empty = no order set: the picture reads the seam and pose rows as it always did. Not checked
+  // against input_keys: a key no longer among the inputs is skipped and a new input lies on top, so
+  // a later edit of the inputs never makes this refuse a save. Written only with
+  // operation_layer_order_aware (131). Enters no section digest: it says how a step is drawn, not
+  // what is sewn.
+  repeated string layer_order = 75;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3900,6 +3908,11 @@ message TechCardInsert {
   // carries fold_keys, or that would replace a card whose steps carry them, is refused
   // (FailedPrecondition) instead of silently leaving the pieces flat. Transport, not content.
   bool operation_folds_aware = 130;
+
+  // Declares support for TechCardOperation.layer_order on full-replace writes. Without it a write
+  // that carries layer_order, or that would replace a card whose steps carry it, is refused
+  // (FailedPrecondition) instead of silently losing the order. Transport, not content.
+  bool operation_layer_order_aware = 131;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

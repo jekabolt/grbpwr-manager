@@ -870,6 +870,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		operationBlockMembershipWireGate,
 		operationSeamsWireGate,
 		operationFoldsWireGate,
+		operationLayerOrderWireGate,
 		operationSeamKindWireGate,
 		operationKindsWireGate,
 		operationWorkWireGate,
@@ -887,6 +888,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		operationBlockMembershipStoredGate,
 		operationSeamsStoredGate,
 		operationFoldsStoredGate,
+		operationLayerOrderStoredGate,
 		operationSeamKindStoredGate,
 		operationWorkRetiredGate,
 	} {

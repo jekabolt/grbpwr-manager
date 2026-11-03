@@ -244,6 +244,7 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.OperationBlockMembershipAware = true
 	in.OperationSeamsAware = true
 	in.OperationFoldsAware = true
+	in.OperationLayerOrderAware = true
 	in.OperationSeamKindAware = true
 	in.BomQtyAware = true
 	in.LabelsAware = true

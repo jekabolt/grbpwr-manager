@@ -465,6 +465,12 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, err
 		}
 
+		// Порядок слоёв шага (0445): только форма, с входами не сверяется.
+		layerOrder, err := operationLayerOrderFromPb(i, o.LayerOrder)
+		if err != nil {
+			return nil, err
+		}
+
 		// Фотографии шага с выносками (0308). Разбираются здесь же, чтобы отказ назвал конкретную
 		// выноску конкретной картинки конкретного шага: путь собирается от `step`, который уже
 		// посчитан выше для отказов по типу и зоне.
@@ -529,6 +535,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Media:                 media,
 			SeamKeys:              seamKeys,
 			FoldKeys:              foldKeys,
+			LayerOrder:            layerOrder,
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
@@ -941,6 +948,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			SeamKeys:              o.SeamKeys,
 			FoldKeys:              o.FoldKeys,
+			LayerOrder:            o.LayerOrder,
 
 			// Виды операций (0324). Два дискриминатора — полями шага, восемь семейств — блоками, и
 			// блок эмитится только когда в нём есть заполненный факт: пустая обёртка читалась бы
