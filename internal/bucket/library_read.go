@@ -45,7 +45,7 @@ var (
 	// случай, когда ответ не зависит от того, что лежит в хранилище.
 	ErrLibraryObjectKeyNotManaged = errors.New("bucket: object key is not a managed files-library key")
 	// ErrLibraryObjectTooLarge — объект длиннее потолка чтения. Отказ, а не обрезка.
-	ErrLibraryObjectTooLarge = errors.New("bucket: library object is larger than the note read limit")
+	ErrLibraryObjectTooLarge = errors.New("bucket: library object is larger than the read limit")
 )
 
 // GetLibraryObject reads a PRIVATE library object into memory.
@@ -61,6 +61,13 @@ var (
 // ровно затем, чтобы отличить «ровно потолок» от «больше потолка». Скачать объект целиком это
 // по-прежнему не даёт: чтение обрывается на потолке, а соединение закрывается по `defer`.
 func (b *Bucket) GetLibraryObject(ctx context.Context, objectKey string) ([]byte, error) {
+	return b.GetLibraryObjectWithin(ctx, objectKey, maxLibraryReadBytes)
+}
+
+// GetLibraryObjectWithin is GetLibraryObject with the caller's own ceiling. Просмотр вложения в
+// задаче читает файлы крупнее заметки, но гарды те же: ключ только под files-library/, и превышение
+// потолка это отказ, а не обрезка.
+func (b *Bucket) GetLibraryObjectWithin(ctx context.Context, objectKey string, limit int64) ([]byte, error) {
 	key := strings.Trim(objectKey, "/")
 	// Гард ПЕРВЫМ и до всякого обращения к клиенту: метод не должен уметь сходить в бакет за
 	// произвольным ключом, даже чтобы получить оттуда отказ.
@@ -78,7 +85,7 @@ func (b *Bucket) GetLibraryObject(ctx context.Context, objectKey string) ([]byte
 
 	// minio отдаёт объект лениво: отсутствующий ключ и любой отказ бакета приезжают ПЕРВЫМ Read,
 	// а не из GetObject — поэтому единственное место, где их видно, здесь.
-	data, err := readWithinLimit(obj, maxLibraryReadBytes)
+	data, err := readWithinLimit(obj, limit)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't read library object",
 			slog.String("key", key), slog.String("err", err.Error()))

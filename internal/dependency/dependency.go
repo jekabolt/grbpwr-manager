@@ -2540,6 +2540,9 @@ type (
 		// потолка заметки. Метод не должен УМЕТЬ вытащить произвольный объект бакета — чужой
 		// префикс и превышение размера это отказ, а не усечение.
 		GetLibraryObject(ctx context.Context, objectKey string) ([]byte, error)
+		// GetLibraryObjectWithin is GetLibraryObject with the caller's own ceiling: the same
+		// guards, and over the limit is still a refusal rather than a truncation.
+		GetLibraryObjectWithin(ctx context.Context, objectKey string, limit int64) ([]byte, error)
 		// RemoveObjectsByKeys best-effort deletes objects addressed by KEY rather than
 		// url. DeleteObjects takes urls, which library files do not store — they keep
 		// keys, because a private object has no durable url to keep.
