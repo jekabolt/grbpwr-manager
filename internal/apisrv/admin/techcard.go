@@ -136,6 +136,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err := operationSeamsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
+	if err := operationSeamToleranceWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
 	if err := operationFoldsWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
@@ -432,6 +435,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationSeamsWireGate(in); err != nil {
 		return nil, err
 	}
+	if err := operationSeamToleranceWireGate(in); err != nil {
+		return nil, err
+	}
 	if err := operationFoldsWireGate(in); err != nil {
 		return nil, err
 	}
@@ -515,6 +521,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		return nil, err
 	}
 	if err := operationSeamsStoredGate(in, stored); err != nil {
+		return nil, err
+	}
+	if err := operationSeamToleranceStoredGate(in, stored); err != nil {
 		return nil, err
 	}
 	if err := operationFoldsStoredGate(in, stored); err != nil {

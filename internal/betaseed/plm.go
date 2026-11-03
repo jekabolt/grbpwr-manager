@@ -211,6 +211,7 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	tc.OperationSeamsAware = true
 	tc.OperationFoldsAware = true
 	tc.OperationLayerOrderAware = true
+	tc.OperationSeamToleranceAware = true
 	tc.OperationSeamKindAware = true
 	// Осведомлённость о 32 колонках волны видов операций (0324): та же природа read-modify-write —
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
@@ -880,6 +881,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.OperationSeamsAware = true
 	neg.OperationFoldsAware = true
 	neg.OperationLayerOrderAware = true
+	neg.OperationSeamToleranceAware = true
 	neg.OperationSeamKindAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
@@ -1537,6 +1539,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.OperationSeamsAware = true
 	tc2.OperationFoldsAware = true
 	tc2.OperationLayerOrderAware = true
+	tc2.OperationSeamToleranceAware = true
 	tc2.OperationSeamKindAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
@@ -2284,6 +2287,7 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.OperationSeamsAware = true
 			body.OperationFoldsAware = true
 			body.OperationLayerOrderAware = true
+			body.OperationSeamToleranceAware = true
 			body.OperationSeamKindAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true

@@ -403,6 +403,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.OperationSeamsAware = true
 	insert.OperationFoldsAware = true
 	insert.OperationLayerOrderAware = true
+	insert.OperationSeamToleranceAware = true
 	insert.OperationSeamKindAware = true
 	// The steps' seam_keys are cut down to the seams of seams.json that survive (resolveSeams, 1.3);
 	// a 1.2 archive carries no seams, so every key goes.

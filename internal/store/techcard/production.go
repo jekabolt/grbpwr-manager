@@ -320,6 +320,9 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 			"seam_kind":    o.SeamKind,
 			"work_variant": o.WorkVariant,
 			"button_holes": o.ButtonHoles,
+
+			// Порог швов (0445). NULL = «по умолчанию клиента», 0 = настоящее значение.
+			"seam_tolerance_mm": o.SeamToleranceMm,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_operation", rows); err != nil {
@@ -833,7 +836,8 @@ const techCardOperationsQuery = `
 		       o.binding_style, o.label_attach_stitch,
 		       o.press_action, o.press_toward,
 		       o.work, o.draft, o.review, o.auto_fusing_line_key, o.auto_fusing_piece_key,
-		       o.seam_kind, o.work_variant, o.button_holes
+		       o.seam_kind, o.work_variant, o.button_holes,
+		       o.seam_tolerance_mm
 		FROM tech_card_operation o
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.operation_number IS NULL, o.operation_number, o.display_order`

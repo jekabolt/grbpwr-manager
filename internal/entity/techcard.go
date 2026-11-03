@@ -3480,6 +3480,10 @@ type TechCardOperation struct {
 	// ButtonHoles — 2 | 3 | 4 отверстия пуговицы шага; только при machine_type = button_attach; хвост
 	// "fastening".
 	ButtonHoles sql.NullInt32 `db:"button_holes"`
+	// SeamToleranceMm — how far apart the sides of this step's seams may be before the map calls them
+	// different (0445). NULL = the client's default, 0 is a real value. Shield:
+	// operation_seam_tolerance_aware (131). Outside every digest.
+	SeamToleranceMm decimal.NullDecimal `db:"seam_tolerance_mm"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").

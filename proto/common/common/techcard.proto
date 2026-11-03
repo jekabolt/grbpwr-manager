@@ -2958,6 +2958,11 @@ message TechCardOperation {
   // operation_layer_order_aware (131). Enters no section digest: it says how a step is drawn, not
   // what is sewn.
   repeated string layer_order = 75;
+  // How far apart the two sides of this step's seams may be before the assembly map calls them
+  // different, millimetres. UNSET = the client's default (1 mm), and 0 is a real value: only equal
+  // rounded lengths pass. Display only: it fits nothing and changes no PDF. Written only with
+  // operation_seam_tolerance_aware (132). Enters no section digest.
+  google.type.Decimal seam_tolerance_mm = 76;
 
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
@@ -3913,6 +3918,10 @@ message TechCardInsert {
   // that carries layer_order, or that would replace a card whose steps carry it, is refused
   // (FailedPrecondition) instead of silently losing the order. Transport, not content.
   bool operation_layer_order_aware = 131;
+  // Declares support for TechCardOperation.seam_tolerance_mm on full-replace writes. Without it a
+  // write that carries the field, or that would replace a card whose steps state it, is refused
+  // (FailedPrecondition) instead of silently returning them to the default. Transport, not content.
+  bool operation_seam_tolerance_aware = 132;
 
   reserved 108;
   reserved "required_seam_allowance_cm";
