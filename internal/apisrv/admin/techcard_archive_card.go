@@ -172,6 +172,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationFoldsAware = true
 	probe.OperationLayerOrderAware = true
 	probe.OperationSeamToleranceAware = true
+	probe.PackagingPicksAware = true
 	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
 
@@ -268,6 +269,15 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// receiving side derives again from bom_item_id. The pin and the artwork mode travel: the callouts
 	// travel with their numbers.
 	sanitizeGarmentLabelsForArchive(pb.GetTechCard())
+
+	// A packaging pick's name and thumbnail are a READ of the pick against THIS base, and the thumbnail
+	// carries this base's URLs. The ids stay: the far side matches them (§5.4, id_maps.aux_tech_cards)
+	// and reads its own name and picture.
+	for _, it := range pb.GetTechCard().GetPackagingItems() {
+		if it != nil {
+			it.PickedName, it.PickedThumbnail = "", nil
+		}
+	}
 
 	// Colourways are products and do not travel as products (FORMAT.md §5.3): what a receiving
 	// instance can use of them — the recipe and the piece materials — rides in colorways.json,

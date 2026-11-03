@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"reflect"
+	"slices"
 
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/proto"
@@ -91,6 +92,12 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	if !after.GetLabelsAware() {
 		after.GarmentLabels = cloneMessages(before.GetGarmentLabels())
 		after.PackagingItems = cloneMessages(before.GetPackagingItems())
+	}
+	for _, item := range before.GetPackagingItems() {
+		stripPackagingItemReadOnly(item)
+	}
+	for _, item := range after.GetPackagingItems() {
+		stripPackagingItemReadOnly(item)
 	}
 
 	beforeBom := bomByDiffKey(before.GetBomItems())
@@ -220,6 +227,17 @@ func materializePreservedBomFields(before, after *pb_common.TechCardBomItem) {
 	if after.EstUsage == nil {
 		after.EstUsage = cloneMessage(before.EstUsage)
 	}
+}
+
+// stripPackagingItemReadOnly cuts what a read adds to the pick, and puts the colourways in the order a
+// read gives them: the list means a set, so a reorder is no change.
+func stripPackagingItemReadOnly(item *pb_common.TechCardPackagingItem) {
+	if item == nil {
+		return
+	}
+	item.PickedName = ""
+	item.PickedThumbnail = nil
+	slices.Sort(item.ColorwayIds)
 }
 
 func stripBomReadOnly(item *pb_common.TechCardBomItem) {

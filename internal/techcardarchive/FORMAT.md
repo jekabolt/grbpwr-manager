@@ -104,7 +104,8 @@ top-level JSON files.
   "id_maps": {
     "sizes": {"3": "s", "4": "m", "5": "l"},
     "category_path": ["clothing", "outerwear", "jacket"],
-    "colorways": {"812": "BLK", "813": "OLV"}
+    "colorways": {"812": "BLK", "813": "OLV"},
+    "aux_tech_cards": {"417": "GRB-AUX-0012"}
   },
   "contents": {
     "media": 14,
@@ -145,7 +146,8 @@ top-level JSON files.
   names sizes that need never appear in `card.json` at all — a miss there is a `size_unknown` hole
   that drops the WHOLE marker. `category_path` is the category triple by name; `colorways` maps
   colourway ids (= `product.id` on the source) to their `color_code` — reference only, because a
-  colourway is a product and does not travel (§5.3).
+  colourway is a product and does not travel (§5.3). `aux_tech_cards` maps the auxiliary cards picked
+  by packaging items to their style numbers (§4.1a); an archive without it reads as no such picks.
 * `contents` counts what the archive claims to contain. It is a **positive control**: an import
   whose parse produced zero media while `contents.media > 0` has a broken parser, not a clean
   card, and must fail rather than report success.
@@ -177,6 +179,12 @@ fold steps reads byte for byte the same, so a bump would say nothing a reader co
 The steps' layer order (`TechCardOperation.layer_order`, 03.11) is in `1.3` without a bump for the
 same reasons: one repeated field inside `card.json`, omitted when empty, naming the step's own input
 keys, so nothing is remapped.
+
+The packaging picks (0448, §4.1a) are in `1.3` without a bump too: fields inside `card.json` that are
+omitted when empty, one optional map under `id_maps` and passports in the existing materials index,
+and no file and no `contents.*` claim. A server that does not know them drops the fields and the map
+and imports plain items; a passport nothing refers to does no harm. An archive of a card with no picks
+reads byte for byte the same.
 
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
@@ -346,6 +354,28 @@ fingerprint of its own for it (see `insertImportedPieceAreas`), so a carried `fa
 partner-visible claim that the measurement is current when the reader is about to compute the
 opposite. Nothing is lost with it: the areas, their conditions and their provenance all travel, and
 the verdict over them is the reader's to take.
+
+### 4.1a Packaging items and the finished pack (0448)
+
+`card.json` carries, per `packaging_items[i]`, `material_id`, `aux_tech_card_id`, `per_order` and
+`colorway_ids`, and on `packaging`, `packed_size` and `packed_media_id`. The export clears
+`picked_name` and `picked_thumbnail`: they are a read of the pick against the source base, and the far
+side reads its own.
+
+* **Material pick.** Its passport rides `materials/index.json` (§5.4), `ref` being the source id. The
+  import matches it as a BOM link is matched, then also requires class `packaging`: the matcher ignores
+  class and a save refuses any other.
+* **Auxiliary card pick.** Its style number rides `id_maps.aux_tech_cards`, the key a component of the
+  assembly bill travels by (§5.2). A card with no style number has nothing to travel by, so the export
+  writes a hole for it.
+* **A pick that does not resolve drops alone**: the item imports without it and the report has a line
+  under `packaging_items[i]` (`material_*` reasons for a material, `assembly_component_not_found` for a
+  card). Both ids on one item, which only a hand-made archive has, keeps the material.
+* **`colorway_ids` drop on every import**, because colourways do not travel (§5.3). An empty list reads
+  as «all colourways», so the item lands wider than it was: the server logs it and the report has a
+  `colorways_not_applied` line under `packaging_items[i]`. The «create colourways from archive» action
+  does not scope the items again.
+* **`packed_media_id`** is a media slot like the other media ids (§5.5).
 
 ### 4.2 The revision journal is NOT transferable
 
@@ -579,7 +609,8 @@ dropped with `fold_step_missing`, never attached to another step. The import nev
 ### 5.4 `materials/index.json`
 
 Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
-pins, and an auxiliary card's `output_material_id` (the warehouse bucket its run receipts into).
+pins, an auxiliary card's `output_material_id` (the warehouse bucket its run receipts into), and the
+materials picked by packaging items (§4.1a).
 **Without prices**, and without price history.
 
 ```json

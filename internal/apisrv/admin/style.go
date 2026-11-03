@@ -356,6 +356,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	pbInsert.OperationFoldsAware = true
 	pbInsert.OperationLayerOrderAware = true
 	pbInsert.OperationSeamToleranceAware = true
+	pbInsert.PackagingPicksAware = true
 	// Иконные поля шага (0436) — клон строит payload сам и несёт их; щит 129 иначе отверг бы его.
 	pbInsert.OperationSeamKindAware = true
 	// The clone starts with no seam decisions (they are not copied), so the steps cannot name any.
@@ -492,6 +493,9 @@ func legacyCloneCostingHasMonetaryAmounts(costing *entity.TechCardCosting) bool 
 //   - A garment label's files of a SOURCE colourway are dropped for the same reason: the composition
 //     row is rebuilt on the copy. Files of any colourway stay, the library is the same on this
 //     contour and printed QR keep working. The pin stays, callouts keep their numbers.
+//   - A packaging item's colourways name the same source colourways, so the list goes the same way and
+//     the new card's item applies to all its colourways. Its pick is a catalog row of this same base,
+//     so it carries over.
 func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
 	if source == nil || insert == nil {
 		return
@@ -518,6 +522,7 @@ func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
 			it.BomLineKey = lineKeyByID[it.BomItemId.Int32]
 			it.BomItemId = sql.NullInt32{}
 		}
+		it.ColorwayIds = nil
 	}
 	if insert.CareLabel != nil {
 		insert.CareLabel.Colorways = nil

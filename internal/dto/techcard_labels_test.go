@@ -420,3 +420,128 @@ func TestGarmentLabelsWithoutMockupSeesFilesAndSkipsComposition(t *testing.T) {
 	}})
 	require.Equal(t, []string{"size (#4)"}, missing)
 }
+
+// Packaging picks (0448): shape on parse, the rest (exists, right kind, of this card) in the store.
+func TestParsePackagingItemPicksRefusesBadShape(t *testing.T) {
+	item := func(edit func(*pb_common.TechCardPackagingItem)) []*pb_common.TechCardPackagingItem {
+		it := &pb_common.TechCardPackagingItem{Key: "polybag"}
+		edit(it)
+		return []*pb_common.TechCardPackagingItem{it}
+	}
+	for field, edit := range map[string]func(*pb_common.TechCardPackagingItem){
+		"packaging_items[0].material_id":      func(it *pb_common.TechCardPackagingItem) { it.MaterialId = -1 },
+		"packaging_items[0].aux_tech_card_id": func(it *pb_common.TechCardPackagingItem) { it.MaterialId, it.AuxTechCardId = 1, 2 },
+		"packaging_items[0].colorway_ids[1]":  func(it *pb_common.TechCardPackagingItem) { it.ColorwayIds = []int32{5, -5} },
+	} {
+		_, err := parseTechCardPackagingItems(item(edit))
+		requireLabelFieldViolation(t, err, field)
+	}
+	_, err := parseTechCardPackagingItems(item(func(it *pb_common.TechCardPackagingItem) { it.AuxTechCardId = -1 }))
+	requireLabelFieldViolation(t, err, "packaging_items[0].aux_tech_card_id")
+	_, err = parseTechCardPackagingItems(item(func(it *pb_common.TechCardPackagingItem) { it.ColorwayIds = []int32{5, 5} }))
+	requireLabelFieldViolation(t, err, "packaging_items[0].colorway_ids[1]")
+	_, err = parseTechCardPackaging(&pb_common.TechCardPackaging{PackedMediaId: -1})
+	requireLabelFieldViolation(t, err, "packaging.packed_media_id")
+}
+
+// Wire → entity → wire keeps every field, the colourways ascending; output-only fields sent by a client
+// are not believed, and a read fills them in.
+func TestPackagingItemPicksRoundTrip(t *testing.T) {
+	out, err := parseTechCardPackagingItems([]*pb_common.TechCardPackagingItem{
+		{Key: "polybag", MaterialId: 7, PerOrder: true, ColorwayIds: []int32{9, 3}, PickedName: "forged"},
+		{Key: "polybag", AuxTechCardId: 8},
+		{Key: "tissue"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, sql.NullInt32{Int32: 7, Valid: true}, out[0].MaterialId)
+	require.True(t, out[0].PerOrder)
+	require.Equal(t, []int{3, 9}, out[0].ColorwayIds)
+	require.Empty(t, out[0].PickedName, "picked_name is output-only")
+	require.Equal(t, sql.NullInt32{Int32: 8, Valid: true}, out[1].AuxTechCardId)
+	require.False(t, out[1].MaterialId.Valid)
+	require.False(t, out[2].HasPick())
+	require.Nil(t, out[2].ColorwayIds)
+
+	out[0].PickedName = "Polybag"
+	out[0].PickedThumbnail = &entity.MediaFull{Id: 4, MediaItem: entity.MediaItem{ThumbnailMediaURL: "https://x/t.jpg"}}
+	back := techCardPackagingItemsToPb(out)
+	require.EqualValues(t, 7, back[0].MaterialId)
+	require.True(t, back[0].PerOrder)
+	require.Equal(t, []int32{3, 9}, back[0].ColorwayIds)
+	require.Equal(t, "Polybag", back[0].PickedName)
+	require.EqualValues(t, 4, back[0].PickedThumbnail.GetId())
+	require.Equal(t, "https://x/t.jpg", back[0].PickedThumbnail.GetMedia().GetThumbnail().GetMediaUrl())
+	require.EqualValues(t, 8, back[1].AuxTechCardId)
+	require.Nil(t, back[2].PickedThumbnail)
+	require.Nil(t, back[2].ColorwayIds)
+
+	sheet, err := parseTechCardPackaging(&pb_common.TechCardPackaging{PackedSize: "30x20", PackedMediaId: 6})
+	require.NoError(t, err)
+	require.Equal(t, "30x20", sheet.PackedSize.String)
+	require.EqualValues(t, 6, sheet.PackedMediaId.Int32)
+	sheetBack := techCardPackagingToPb(sheet)
+	require.Equal(t, "30x20", sheetBack.PackedSize)
+	require.EqualValues(t, 6, sheetBack.PackedMediaId)
+}
+
+// Every pick field moves the packaging digest; what a read adds and the order of a set do not; and a
+// card with none of them hashes the bytes it always did, so no signature goes stale at deploy.
+func TestPackagingDigestPicksTail(t *testing.T) {
+	withItem := func(it entity.TechCardPackagingItem) string {
+		tc := packagingGoldCard()
+		tc.PackagingItems = []entity.TechCardPackagingItem{it}
+		return packagingDigest(tc)
+	}
+	base := entity.TechCardPackagingItem{Key: "polybag", QtyPerGarment: 1}
+	plain := withItem(base)
+	seen := map[string]string{"plain": plain}
+	for name, edit := range map[string]func(*entity.TechCardPackagingItem){
+		"material":  func(it *entity.TechCardPackagingItem) { it.MaterialId = sql.NullInt32{Int32: 7, Valid: true} },
+		"aux":       func(it *entity.TechCardPackagingItem) { it.AuxTechCardId = sql.NullInt32{Int32: 7, Valid: true} },
+		"per order": func(it *entity.TechCardPackagingItem) { it.PerOrder = true },
+		"colourway": func(it *entity.TechCardPackagingItem) { it.ColorwayIds = []int{3} },
+	} {
+		it := base
+		edit(&it)
+		hex := withItem(it)
+		for other, otherHex := range seen {
+			require.NotEqual(t, otherHex, hex, "%s hashes like %s", name, other)
+		}
+		seen[name] = hex
+	}
+
+	// A read adds these, a write form does not have them: the two forms must hash alike.
+	read := base
+	read.MaterialId = sql.NullInt32{Int32: 7, Valid: true}
+	read.PickedName = "Polybag"
+	read.PickedThumbnail = &entity.MediaFull{Id: 4}
+	require.Equal(t, seen["material"], withItem(read))
+
+	// False and empty add no pair.
+	falsy := base
+	falsy.PerOrder = false
+	falsy.ColorwayIds = []int{}
+	require.Equal(t, plain, withItem(falsy))
+
+	// The colourways are a set, and hashing must not sort the caller's slice in place.
+	a, b := base, base
+	a.ColorwayIds = []int{9, 3}
+	b.ColorwayIds = []int{3, 9}
+	require.Equal(t, withItem(a), withItem(b))
+	require.Equal(t, []int{9, 3}, a.ColorwayIds)
+
+	gold := packagingGoldCard()
+	require.Equal(t, packagingGoldDigestHex, packagingDigest(gold), "no picks: the frozen hex stands")
+
+	sized := packagingGoldCard()
+	sized.Packaging.PackedSize = sql.NullString{String: "30x20", Valid: true}
+	photo := packagingGoldCard()
+	photo.Packaging.PackedMediaId = sql.NullInt32{Int32: 6, Valid: true}
+	require.NotEqual(t, packagingGoldDigestHex, packagingDigest(sized))
+	require.NotEqual(t, packagingGoldDigestHex, packagingDigest(photo))
+	require.NotEqual(t, packagingDigest(sized), packagingDigest(photo))
+
+	// A sheet holding only the packed facts is not an empty sheet.
+	require.NotEqual(t, packagingDigest(&entity.TechCardInsert{}),
+		packagingDigest(&entity.TechCardInsert{Packaging: &entity.TechCardPackaging{PackedSize: sized.Packaging.PackedSize}}))
+}

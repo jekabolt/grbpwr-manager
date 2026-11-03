@@ -383,6 +383,14 @@ func parseTechCardPackagingItems(pbs []*pb_common.TechCardPackagingItem) ([]enti
 		if err != nil {
 			return nil, err
 		}
+		if err := checkPackagingItemPick(f, it); err != nil {
+			return nil, err
+		}
+		colorways, err := parsePackagingItemColorways(f+".colorway_ids", it.ColorwayIds)
+		if err != nil {
+			return nil, err
+		}
+		// picked_name / picked_thumbnail are output-only and are not read here.
 		out = append(out, entity.TechCardPackagingItem{
 			Key:           it.Key,
 			Usage:         nullStringFromPb(it.Usage),
@@ -393,9 +401,55 @@ func parseTechCardPackagingItems(pbs []*pb_common.TechCardPackagingItem) ([]enti
 			Note:          nullStringFromPb(it.Note),
 			MediaIds:      media,
 			BomLineKey:    lineKey,
+			MaterialId:    nullInt32FromPb(it.MaterialId),
+			AuxTechCardId: nullInt32FromPb(it.AuxTechCardId),
+			PerOrder:      it.PerOrder,
+			ColorwayIds:   colorways,
 		})
 	}
 	return out, nil
+}
+
+// parsePackagingItemColorways returns the ids ascending, the order a read gives them, because the list
+// means a set. That each one is a colourway of this card is the store's check, inside the save.
+func parsePackagingItemColorways(field string, ids []int32) ([]int, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > maxLabelEntries {
+		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(ids)), fmt.Sprintf("at most %d colourways", maxLabelEntries))
+	}
+	out := make([]int, 0, len(ids))
+	seen := make(map[int32]bool, len(ids))
+	for j, id := range ids {
+		f := fmt.Sprintf("%s[%d]", field, j)
+		if id <= 0 {
+			return nil, entity.NewFieldViolation(f, "must be positive", fmt.Sprint(id), "a colourway id")
+		}
+		if seen[id] {
+			return nil, entity.NewFieldViolation(f, "duplicate colourway", fmt.Sprint(id), "name a colourway once")
+		}
+		seen[id] = true
+		out = append(out, int(id))
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// checkPackagingItemPick checks the shape of a pick: no negative id, at most one of the two. That the
+// picked row exists and is of the right kind is the store's check, inside the save transaction.
+func checkPackagingItemPick(f string, it *pb_common.TechCardPackagingItem) error {
+	if it.MaterialId < 0 {
+		return entity.NewFieldViolation(f+".material_id", "must not be negative", fmt.Sprint(it.MaterialId), "send 0 for no material")
+	}
+	if it.AuxTechCardId < 0 {
+		return entity.NewFieldViolation(f+".aux_tech_card_id", "must not be negative", fmt.Sprint(it.AuxTechCardId), "send 0 for no card")
+	}
+	if it.MaterialId > 0 && it.AuxTechCardId > 0 {
+		return entity.NewFieldViolation(f+".aux_tech_card_id", "at most one pick", fmt.Sprint(it.AuxTechCardId),
+			"pick a material or an auxiliary card, not both")
+	}
+	return nil
 }
 
 // --- entity → pb -------------------------------------------------------------------------------
@@ -485,7 +539,7 @@ func garmentLabelFilesToPb(files []entity.TechCardGarmentLabelFile) []*pb_common
 func techCardPackagingItemsToPb(items []entity.TechCardPackagingItem) []*pb_common.TechCardPackagingItem {
 	out := make([]*pb_common.TechCardPackagingItem, 0, len(items))
 	for _, it := range items {
-		out = append(out, &pb_common.TechCardPackagingItem{
+		row := &pb_common.TechCardPackagingItem{
 			Key:           it.Key,
 			Usage:         pbStringFromNull(it.Usage),
 			Packing:       pbStringFromNull(it.Packing),
@@ -495,7 +549,18 @@ func techCardPackagingItemsToPb(items []entity.TechCardPackagingItem) []*pb_comm
 			Note:          pbStringFromNull(it.Note),
 			MediaIds:      labelMediaIdsToPb(it.MediaIds),
 			BomLineKey:    it.BomLineKey,
-		})
+			MaterialId:    it.MaterialId.Int32,
+			AuxTechCardId: it.AuxTechCardId.Int32,
+			PerOrder:      it.PerOrder,
+			PickedName:    it.PickedName,
+		}
+		for _, colorwayID := range it.ColorwayIds {
+			row.ColorwayIds = append(row.ColorwayIds, int32(colorwayID))
+		}
+		if it.PickedThumbnail != nil {
+			row.PickedThumbnail = ConvertEntityToCommonMedia(it.PickedThumbnail)
+		}
+		out = append(out, row)
 	}
 	return out
 }

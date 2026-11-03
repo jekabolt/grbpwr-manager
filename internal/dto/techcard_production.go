@@ -756,6 +756,7 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 		{"packaging inserts", pb.Inserts, maxVarchar255},
 		{"packaging box_marking", pb.BoxMarking, maxVarchar255},
 		{"packaging box_dimensions", pb.BoxDimensions, maxVarchar128},
+		{"packaging packed_size", pb.PackedSize, maxVarchar64},
 	} {
 		if len(c.val) > c.max {
 			return nil, fmt.Errorf("%s must be at most %d characters", c.field, c.max)
@@ -770,6 +771,9 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 	if pb.WeightNetGrams > weightGramsLimit || pb.WeightGrossGrams > weightGramsLimit {
 		return nil, fmt.Errorf("packaging weight exceeds max %d grams", weightGramsLimit)
 	}
+	if pb.PackedMediaId < 0 {
+		return nil, entity.NewFieldViolation("packaging.packed_media_id", "must not be negative", fmt.Sprint(pb.PackedMediaId), "send 0 for no photo")
+	}
 	return &entity.TechCardPackaging{
 		FoldingMethod:    nullStringFromPb(pb.FoldingMethod),
 		Polybag:          nullStringFromPb(pb.Polybag),
@@ -781,6 +785,8 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 		WeightNetGrams:   nullInt32FromPb(pb.WeightNetGrams),
 		WeightGrossGrams: nullInt32FromPb(pb.WeightGrossGrams),
 		Notes:            nullStringFromPb(pb.Notes),
+		PackedSize:       nullStringFromPb(pb.PackedSize),
+		PackedMediaId:    nullInt32FromPb(pb.PackedMediaId),
 	}, nil
 }
 
@@ -1266,6 +1272,8 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 		WeightNetGrams:   pbInt32FromNull(p.WeightNetGrams),
 		WeightGrossGrams: pbInt32FromNull(p.WeightGrossGrams),
 		Notes:            pbStringFromNull(p.Notes),
+		PackedSize:       pbStringFromNull(p.PackedSize),
+		PackedMediaId:    pbInt32FromNull(p.PackedMediaId),
 	}
 }
 

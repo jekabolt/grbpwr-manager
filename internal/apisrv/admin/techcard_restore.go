@@ -106,6 +106,9 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	if err != nil {
 		return nil, err
 	}
+	if err := s.dropDeadPackagingReferences(ctx, id, in); err != nil {
+		return nil, err
+	}
 	if _, canWriteCosting := s.costingAccess(ctx); !canWriteCosting {
 		// The payload may not carry money (prepare refuses it), and the stored money the pipeline puts
 		// back is the CURRENT one. That is a faithful restore only if the snapshot's money is the same;
@@ -249,6 +252,7 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.OperationSeamKindAware = true
 	in.BomQtyAware = true
 	in.LabelsAware = true
+	in.PackagingPicksAware = true
 	// The backstops refuse an aware payload that would erase stored facts without saying so. Here the
 	// erasure IS the request (the snapshot had none), so it is said.
 	restoreOperationFoldKeys(in, stored)
@@ -434,6 +438,72 @@ func restoreLabelBomLinks(frozenBom []*pb_common.TechCardBomItem) func(*entity.T
 				it.BomItemId = sql.NullInt32{}
 			}
 		}
+	}
+}
+
+// dropDeadPackagingReferences makes a snapshot's packaging items safe to write. A snapshot names what
+// existed when it was taken: a picked material or card may have gone or changed kind since, and a
+// colourway may have been deleted or moved to another style. The save refuses each of those, and one of
+// them must not cost the owner the whole restore, so only that reference drops.
+func (s *Server) dropDeadPackagingReferences(ctx context.Context, id int, in *pb_common.TechCardInsert) error {
+	var materials, auxCards []int
+	scoped := false
+	for _, it := range in.GetPackagingItems() {
+		if it.GetMaterialId() > 0 {
+			materials = append(materials, int(it.GetMaterialId()))
+		}
+		if it.GetAuxTechCardId() > 0 {
+			auxCards = append(auxCards, int(it.GetAuxTechCardId()))
+		}
+		scoped = scoped || len(it.GetColorwayIds()) > 0
+	}
+	if len(materials) == 0 && len(auxCards) == 0 && !scoped {
+		return nil
+	}
+	targets, err := s.repo.TechCards().PackagingPickTargets(ctx, id, materials, auxCards)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't check packaging references before restore",
+			slog.Int("tech_card_id", id), slog.String("err", err.Error()))
+		return status.Error(codes.Internal, "can't load tech card; try again")
+	}
+	pruneDeadPackagingReferences(ctx, id, in, targets)
+	return nil
+}
+
+// pruneDeadPackagingReferences is the decision, apart from the read. A list that loses every colourway
+// reads as «all colourways», so that one case is logged: the item now applies more widely than it did.
+func pruneDeadPackagingReferences(ctx context.Context, id int, in *pb_common.TechCardInsert, targets entity.PackagingPickTargets) {
+	for i, it := range in.GetPackagingItems() {
+		if it == nil {
+			continue
+		}
+		if m := it.GetMaterialId(); m > 0 && !targets.Materials[int(m)] {
+			it.MaterialId = 0
+			slog.Default().WarnContext(ctx, "tech card restore: dropped a packaging pick that no longer resolves",
+				slog.Int("tech_card_id", id), slog.Int("item", i), slog.Int("material_id", int(m)))
+		}
+		if a := it.GetAuxTechCardId(); a > 0 && !targets.AuxCards[int(a)] {
+			it.AuxTechCardId = 0
+			slog.Default().WarnContext(ctx, "tech card restore: dropped a packaging pick that no longer resolves",
+				slog.Int("tech_card_id", id), slog.Int("item", i), slog.Int("aux_tech_card_id", int(a)))
+		}
+		named := it.GetColorwayIds()
+		if len(named) == 0 {
+			continue
+		}
+		kept := make([]int32, 0, len(named))
+		for _, colorwayID := range named {
+			if targets.Colorways[int(colorwayID)] {
+				kept = append(kept, colorwayID)
+			}
+		}
+		if len(kept) == len(named) {
+			continue
+		}
+		it.ColorwayIds = kept
+		slog.Default().WarnContext(ctx, "tech card restore: dropped packaging item colourways no longer on the card",
+			slog.Int("tech_card_id", id), slog.Int("item", i), slog.String("key", it.GetKey()),
+			slog.Int("named", len(named)), slog.Int("kept", len(kept)))
 	}
 }
 

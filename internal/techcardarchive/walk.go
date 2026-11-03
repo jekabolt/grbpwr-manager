@@ -241,6 +241,8 @@ var MediaFieldNames = map[string]bool{
 	"swatch_media_id": true,
 	// labels rework (0386): the composition label's SVG logo (TechCardCareLabel).
 	"logo_media_id": true,
+	// the photo of the finished pack (TechCardPackaging, 0448).
+	"packed_media_id": true,
 }
 
 // moneyFieldNamesCosting is a VERBATIM COPY of costingRedactedFieldNames from

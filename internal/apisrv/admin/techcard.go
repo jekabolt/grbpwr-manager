@@ -535,6 +535,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationSeamToleranceStoredGate(in, stored); err != nil {
 		return nil, err
 	}
+	if err := packagingPicksStoredGate(in, stored); err != nil {
+		return nil, err
+	}
 	if err := operationFoldsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
