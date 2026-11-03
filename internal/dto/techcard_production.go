@@ -465,6 +465,21 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, err
 		}
 
+		// Порядок слоёв шага (0445): только форма, с входами не сверяется.
+		layerOrder, err := operationLayerOrderFromPb(i, o.LayerOrder)
+		if err != nil {
+			return nil, err
+		}
+
+		// Допуск сходимости швов шага (0446): NULL = значение клиента по умолчанию, 0 настоящий.
+		seamTolerance, err := nullDecimalFromPb(o.SeamToleranceMm)
+		if err != nil {
+			return nil, fmt.Errorf("%s.seam_tolerance_mm: %w", step, err)
+		}
+		if err := validateDecimalScale(seamTolerance, step+".seam_tolerance_mm", 3, 1_000); err != nil {
+			return nil, err
+		}
+
 		// Фотографии шага с выносками (0308). Разбираются здесь же, чтобы отказ назвал конкретную
 		// выноску конкретной картинки конкретного шага: путь собирается от `step`, который уже
 		// посчитан выше для отказов по типу и зоне.
@@ -529,6 +544,8 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Media:                 media,
 			SeamKeys:              seamKeys,
 			FoldKeys:              foldKeys,
+			LayerOrder:            layerOrder,
+			SeamToleranceMm:       seamTolerance,
 
 			MachineType:       machine.machineType,
 			MachineProfileKey: machine.profileKey,
@@ -941,6 +958,8 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			SeamKeys:              o.SeamKeys,
 			FoldKeys:              o.FoldKeys,
+			LayerOrder:            o.LayerOrder,
+			SeamToleranceMm:       pbDecimalFromNull(o.SeamToleranceMm),
 
 			// Виды операций (0324). Два дискриминатора — полями шага, восемь семейств — блоками, и
 			// блок эмитится только когда в нём есть заполненный факт: пустая обёртка читалась бы

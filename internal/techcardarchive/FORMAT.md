@@ -174,6 +174,10 @@ one repeated field inside `card.json`, which has carried `pieceFolds` all along,
 exactly as before, the reader checks MINOR in neither direction, and an archive of a card with no
 fold steps reads byte for byte the same, so a bump would say nothing a reader could act on.
 
+The steps' layer order (`TechCardOperation.layer_order`, 03.11) is in `1.3` without a bump for the
+same reasons: one repeated field inside `card.json`, omitted when empty, naming the step's own input
+keys, so nothing is remapped.
+
 * **MAJOR mismatch = refusal of the whole import**, with words saying the archive is newer or
   older than this server. A MAJOR bump is what renaming a field, changing its meaning, or moving a
   file costs.

@@ -3480,6 +3480,10 @@ type TechCardOperation struct {
 	// ButtonHoles — 2 | 3 | 4 отверстия пуговицы шага; только при machine_type = button_attach; хвост
 	// "fastening".
 	ButtonHoles sql.NullInt32 `db:"button_holes"`
+	// SeamToleranceMm — how far apart the sides of this step's seams may be before the map calls them
+	// different (0445). NULL = the client's default, 0 is a real value. Shield:
+	// operation_seam_tolerance_aware (131). Outside every digest.
+	SeamToleranceMm decimal.NullDecimal `db:"seam_tolerance_mm"`
 
 	// PieceLineKeys is the wire reference to the cut-pieces this operation works on, by their stable
 	// TechCardPiece.line_key (WS4). The store resolves them to PieceIds. Not persisted (db:"-").
@@ -3538,6 +3542,11 @@ type TechCardOperation struct {
 	// (0444). Child table tech_card_operation_fold, written in the same transaction as the seam links.
 	// The rule over the whole card is CheckTechCardFoldLinks; outside every section digest.
 	FoldKeys []string `db:"-"`
+
+	// LayerOrder — the order the owner set for this step's inputs, bottom to top, in the vocabulary
+	// of InputKeys (0445). Empty is NULL: no order set. Stale keys are the reader's to skip, so it is
+	// never checked against the inputs. Outside every section digest.
+	LayerOrder TechCardLayerOrder `db:"layer_order"`
 }
 
 // ── ВЫНОСКИ НА ФОТО УЗЛА ────────────────────────────────────────────────────────────────────────

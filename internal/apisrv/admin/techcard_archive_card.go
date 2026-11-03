@@ -170,6 +170,8 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationBlockMembershipAware = true
 	probe.OperationSeamsAware = true
 	probe.OperationFoldsAware = true
+	probe.OperationLayerOrderAware = true
+	probe.OperationSeamToleranceAware = true
 	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
 
