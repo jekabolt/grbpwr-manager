@@ -1622,9 +1622,15 @@ func pickedLabelLines(tc *entity.TechCard) map[int64]bool {
 func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool {
 	held := pickedLabelLines(tc)
 	for i := range cw.Usages {
-		if usageIsRecipeRow(&cw.Usages[i], held) {
-			return true
+		if !usageIsRecipeRow(&cw.Usages[i], held) {
+			continue
 		}
+		// Packaging is not a recipe: a colourway holding only that must keep inheriting the style's
+		// price, not drop to its packaging plus the manual articles.
+		if tc != nil && usageIsPackagingLine(tc.BomItems, &cw.Usages[i]) {
+			continue
+		}
+		return true
 	}
 	if tc == nil || len(tc.PieceAreaScopes) == 0 {
 		return false
@@ -1672,6 +1678,64 @@ func colorwayHasPieceAssignmentForBom(tc *entity.TechCard, cw *entity.TechCardCo
 		}
 	}
 	return false
+}
+
+// usageIsPackagingLine says a usage sits on a BOM line of section packaging.
+func usageIsPackagingLine(bomItems []entity.TechCardBomItem, u *entity.TechCardColorwayUsage) bool {
+	bom := resolveUsageBom(bomItems, u)
+	return bom != nil && bom.Section == entity.BomSectionPackaging
+}
+
+// packagingCostLine is one packaging item in the cost of one piece of a colourway.
+type packagingCostLine struct {
+	name      string
+	unit      string
+	perPiece  decimal.Decimal
+	unitPrice decimal.Decimal
+	currency  string
+	priced    bool
+}
+
+// colorwayPackagingLines prices the card's packaging items for one colourway: the items that name a
+// pick, cover the colourway and ship with the piece. An item with no price, or an auxiliary pick with no
+// warehouse output, comes back not priced so the cost is refused rather than quietly short.
+func colorwayPackagingLines(tc *entity.TechCard, cw *entity.TechCardColorway, linked map[int]entity.MaterialWithPrice, costingCcy, baseCcy string) []packagingCostLine {
+	if tc == nil || cw == nil {
+		return nil
+	}
+	var folding sql.NullString
+	var unitsPerBox sql.NullInt32
+	if tc.Packaging != nil {
+		folding, unitsPerBox = tc.Packaging.FoldingMethod, tc.Packaging.UnitsPerBox
+	}
+	var out []packagingCostLine
+	for i := range tc.PackagingItems {
+		it := &tc.PackagingItems[i]
+		if !it.HasPick() || !entity.PackagingItemShips(it.Key, folding) {
+			continue
+		}
+		if cw.ProductId.Valid && !it.AppliesToColorway(int(cw.ProductId.Int32)) {
+			continue
+		}
+		line := packagingCostLine{name: it.PickedName, perPiece: entity.PackagingItemQtyPerPiece(it.Key, it.QtyPerGarment, unitsPerBox)}
+		materialID := int(it.MaterialId.Int32)
+		if it.AuxTechCardId.Valid {
+			o := tc.PackagingAuxOutputs[int(it.AuxTechCardId.Int32)]
+			res := entity.ResolveAssemblyOutput(cw.ColorCode, o.Variants, o.Legacy)
+			materialID = res.ResolvedMaterialId
+			if res.Unresolved {
+				materialID = 0
+			}
+		}
+		if m, ok := linked[materialID]; ok {
+			line.unit = m.Unit.String
+			if price := m.LatestPriceForCurrencies(costingCcy, baseCcy); price != nil {
+				line.unitPrice, line.currency, line.priced = price.Price, price.Currency, true
+			}
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // colorwayForProduct returns the card's colourway bound to productID, or nil.
@@ -1986,6 +2050,11 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		if u.IsPieceMaterialAssignment() {
 			continue
 		}
+		// Packaging is priced from the card's packaging items below and written off at shipment; a
+		// usage on a packaging line would charge it twice.
+		if usageIsPackagingLine(bomItems, u) {
+			continue
+		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
 		// positional index, and a nil bom here silently zeroes the whole colourway's material cost.
 		// ЦЕНА И КОЭФФИЦИЕНТ БЕРУТСЯ У ОДНОГО АРТИКУЛА — у эффективного (пин колорвея, иначе
@@ -2047,6 +2116,20 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		}
 		byCcy[ccy] = byCcy[ccy].Add(amount)
 		if ccy != "" && ccy != costingCcy {
+			hasUnconverted = true
+		}
+	}
+
+	for _, line := range colorwayPackagingLines(tc, cw, linked, costingCcy, fx.Base) {
+		if !line.priced {
+			hasUnpriced = true
+			continue
+		}
+		if _, seen := byCcy[line.currency]; !seen {
+			order = append(order, line.currency)
+		}
+		byCcy[line.currency] = byCcy[line.currency].Add(line.perPiece.Mul(line.unitPrice))
+		if line.currency != "" && line.currency != costingCcy {
 			hasUnconverted = true
 		}
 	}

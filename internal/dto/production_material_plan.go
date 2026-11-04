@@ -372,6 +372,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				continue
 			}
 			bom := planBomLine(u, card.BomItems)
+			// Packaging leaves the stock at shipment, per order; a run reserving it too would take
+			// the same bag twice.
+			if bom != nil && bom.Section == entity.BomSectionPackaging {
+				continue
+			}
 			if bom == nil {
 				if !noBomNoted[cw.Name] {
 					caveats = append(caveats, fmt.Sprintf("colourway %q has a usage with no resolvable BOM line — not counted", cw.Name))

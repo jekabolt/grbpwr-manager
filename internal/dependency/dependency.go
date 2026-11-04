@@ -1555,11 +1555,10 @@ type (
 		// ListPackagingBom returns the packaging recipe joined with material name/unit.
 		ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem, error)
 		// ConsumePackagingForOrder writes off packaging for a shipped order and closes its reservation
-		// claims, idempotently (PK guard) and best-effort (a short material is skipped, never failing the
-		// ship). itemCount is unused (per-item quantities come from the order's lines).
-		ConsumePackagingForOrder(ctx context.Context, orderID, itemCount int, username string) ([]entity.MaterialMovement, error)
+		// claims, idempotently (PK guard). A short material never fails the ship; a re-ship tries it again.
+		ConsumePackagingForOrder(ctx context.Context, orderID int, username string) ([]entity.MaterialMovement, error)
 		// ReservePackagingForOrder soft-reserves an order's packaging at placement (S22): resolves the
-		// per-material requirement (product→style→global) and appends idempotent 'reserve' claims. Never
+		// per-material requirement from the card's packaging items and appends idempotent 'reserve' claims. Never
 		// blocks — an oversell is surfaced via available, not refused.
 		ReservePackagingForOrder(ctx context.Context, orderID int, username string) error
 		// ReleasePackagingForOrder closes an order's open packaging claims with 'release' rows (cancel/

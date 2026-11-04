@@ -5223,6 +5223,8 @@ type TechCard struct {
 	// lists/writes), exactly like PieceAreaScopes above — and INVALID is honest there: a list row
 	// derives no norms.
 	WorkshopSeamAllowanceMm decimal.NullDecimal `db:"-"`
+	// PackagingAuxOutputs is what each auxiliary pick of a packaging item resolves from, keyed by card id.
+	PackagingAuxOutputs map[int]PackagingAuxOutput `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -1127,6 +1128,31 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 			addID(cards[0].Colorways[i].Usages[j].MaterialId)
 		}
 	}
+	// Packaging items are priced from their own pick: the material itself, or what an auxiliary card's
+	// output resolves to in each colour.
+	var auxIDs []int
+	for i := range cards[0].PackagingItems {
+		it := &cards[0].PackagingItems[i]
+		if it.MaterialId.Valid {
+			addID(sql.NullInt64{Int64: int64(it.MaterialId.Int32), Valid: true})
+		}
+		if it.AuxTechCardId.Valid {
+			auxIDs = append(auxIDs, int(it.AuxTechCardId.Int32))
+		}
+	}
+	auxOutputs, err := inventory.LoadPackagingAuxOutputs(ctx, s.DB, auxIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range auxOutputs {
+		if o.Legacy.MaterialId.Valid {
+			addID(sql.NullInt64{Int64: int64(o.Legacy.MaterialId.Int32), Valid: true})
+		}
+		for i := range o.Variants {
+			addID(sql.NullInt64{Int64: int64(o.Variants[i].MaterialId), Valid: true})
+		}
+	}
+	cards[0].PackagingAuxOutputs = auxOutputs
 	linked, err := s.getMaterialsByIDs(ctx, ids)
 	if err != nil {
 		return nil, err

@@ -1674,34 +1674,37 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := s.C.UpsertPackagingRecipe(ctx, &admin.UpsertPackagingRecipeRequest{
-		Scope: "product", ProductId: st.res.Colorway1ID,
-		Items: []*admin.PackagingRecipeItem{
-			{MaterialId: int32(m.DustBag), QtyPerOrder: decv("0"), QtyPerItem: decv("1"), Active: true},
-			{MaterialId: int32(m.Packaging), QtyPerOrder: decv("1"), QtyPerItem: decv("0"), Active: true},
-			{MaterialId: int32(m.Insert), QtyPerOrder: decv("0"), QtyPerItem: decv("1"), Active: true},
-		},
-	}); err != nil {
-		return fmt.Errorf("UpsertPackagingRecipe: %w", err)
+	body, err := s.tcFetch(ctx, sid)
+	if err != nil {
+		return err
 	}
-	s.pass(st, "G.20 packaging recipe: dust_bag=%d(1/item) box=%d(1/order) insert=%d(1/item)", m.DustBag, m.Packaging, m.Insert)
+	onlyFirst := []int32{st.res.Colorway1ID}
+	body.PackagingItems = append(body.PackagingItems,
+		&common.TechCardPackagingItem{Key: "dust_bag", QtyPerGarment: 1, MaterialId: int32(m.DustBag), ColorwayIds: onlyFirst},
+		&common.TechCardPackagingItem{Key: "box", QtyPerGarment: 1, MaterialId: int32(m.Packaging), PerOrder: true, ColorwayIds: onlyFirst},
+		&common.TechCardPackagingItem{Key: "insert_card", QtyPerGarment: 1, MaterialId: int32(m.Insert), ColorwayIds: onlyFirst},
+	)
+	if err := s.tcSave(ctx, sid, body, "packaging items"); err != nil {
+		return fmt.Errorf("save packaging items: %w", err)
+	}
+	s.pass(st, "G.20 packaging items: dust_bag=%d(1/item) box=%d(1/order) insert=%d(1/item)", m.DustBag, m.Packaging, m.Insert)
 
 	// G.21 kit readable.
-	s.step(st, "G.21 ListPackagingRecipe shows product-scoped rows")
-	pr, err := s.C.ListPackagingRecipe(ctx, &admin.ListPackagingRecipeRequest{})
+	s.step(st, "G.21 the card shows its packaging items with their picks")
+	saved, err := s.tcFetch(ctx, sid)
 	if err != nil {
-		return fmt.Errorf("ListPackagingRecipe: %w", err)
+		return err
 	}
 	rows := 0
-	for _, it := range pr.GetItems() {
-		if it.GetScope() == "product" && it.GetProductId() == st.res.Colorway1ID {
+	for _, it := range saved.GetPackagingItems() {
+		if it.GetMaterialId() != 0 {
 			rows++
 		}
 	}
 	if rows < 3 {
-		return fmt.Errorf("expected >=3 product-scoped packaging rows, got %d", rows)
+		return fmt.Errorf("expected >=3 picked packaging items, got %d", rows)
 	}
-	s.pass(st, "G.21 ListPackagingRecipe -> %d product-scoped rows", rows)
+	s.pass(st, "G.21 tech card -> %d picked packaging items", rows)
 	return nil
 }
 

@@ -115,7 +115,7 @@ func TestPackagingReservationLedger(t *testing.T) {
 	recv(matC, 10)
 	o3 := newOrder()
 	reserveClaim(matC, o3, 5)
-	mvs, err := MS.ConsumePackagingForOrder(ctx, o3, 0, "tester") // itemCount ignored — claim drives it
+	mvs, err := MS.ConsumePackagingForOrder(ctx, o3, "tester") // the claim drives it
 	require.NoError(t, err)
 	require.Len(t, mvs, 1)
 	require.Equal(t, matC, mvs[0].MaterialId)
@@ -126,7 +126,7 @@ func TestPackagingReservationLedger(t *testing.T) {
 	av, err = MS.MaterialAvailable(ctx, matC)
 	require.NoError(t, err)
 	require.True(t, eq(av.Reserved, 0), "claim closed by consume, got reserved %s", av.Reserved)
-	again, err := MS.ConsumePackagingForOrder(ctx, o3, 0, "tester")
+	again, err := MS.ConsumePackagingForOrder(ctx, o3, "tester")
 	require.NoError(t, err)
 	require.Empty(t, again, "re-ship consumes nothing more")
 }

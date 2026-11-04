@@ -95,7 +95,7 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 	for _, cw := range snap.GetColorways() {
 		for _, u := range cw.GetUsages() {
 			use := frozenUsage(u)
-			if !usageIsRecipeRow(&use, held) {
+			if !usageIsRecipeRow(&use, held) || pbUsageIsPackagingLine(snap, u) {
 				continue
 			}
 			authored[int(cw.GetColorwayId())] = true
@@ -135,7 +135,11 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 	if len(out.UnitCostByColorway) == 0 {
 		return nil
 	}
-	out.CostingCard = releaseCostingCardFromSnapshot(snap)
+	// The snapshot does not freeze the price of a packaging pick, so a recomputation would come out
+	// without it and beat the frozen figure that has it. Such a card stays on the frozen figure.
+	if !snapshotHasPackagingPick(snap) {
+		out.CostingCard = releaseCostingCardFromSnapshot(snap)
+	}
 	return out
 }
 
@@ -345,6 +349,32 @@ func frozenDecimal(d *pb_decimal.Decimal) decimal.NullDecimal {
 		return decimal.NullDecimal{}
 	}
 	return v
+}
+
+// pbUsageIsPackagingLine is usageIsPackagingLine on a frozen card.
+func pbUsageIsPackagingLine(snap *pb_common.TechCard, u *pb_common.TechCardColorwayUsage) bool {
+	const packaging = pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_PACKAGING
+	items := snap.GetTechCard().GetBomItems()
+	if id := u.GetBomItemId(); id > 0 {
+		for _, b := range items {
+			if int64(b.GetId()) == id {
+				return b.GetSection() == packaging
+			}
+		}
+	}
+	if u.BomItemIndex != nil && int(u.GetBomItemIndex()) >= 0 && int(u.GetBomItemIndex()) < len(items) {
+		return items[u.GetBomItemIndex()].GetSection() == packaging
+	}
+	return false
+}
+
+func snapshotHasPackagingPick(snap *pb_common.TechCard) bool {
+	for _, it := range snap.GetTechCard().GetPackagingItems() {
+		if it.GetMaterialId() > 0 || it.GetAuxTechCardId() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ComputeReleaseRunPlannedUnitCost — плановая цена изделия РЕЛИЗНОГО прогона: клетки

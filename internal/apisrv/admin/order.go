@@ -139,14 +139,10 @@ func (s *Server) shipOrder(ctx context.Context, orderUUID, trackingCode string) 
 
 // consumePackagingOnShip writes off the configured packaging materials for a just-shipped order
 // (gap-07 v2 B). Errors are logged, never returned: shipping succeeded and must not be undone by a
-// warehouse problem. itemCount is the order's total unit count.
+// warehouse problem.
 func (s *Server) consumePackagingOnShip(ctx context.Context, orderFull *entity.OrderFull) {
-	itemCount := decimal.Zero
-	for _, it := range orderFull.OrderItems {
-		itemCount = itemCount.Add(it.Quantity)
-	}
 	mvs, err := s.repo.MaterialStock().ConsumePackagingForOrder(
-		ctx, orderFull.Order.Id, int(itemCount.IntPart()), authsrv.GetAdminUsername(ctx))
+		ctx, orderFull.Order.Id, authsrv.GetAdminUsername(ctx))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "packaging auto-consume failed on ship",
 			slog.Int("order_id", orderFull.Order.Id), slog.String("err", err.Error()))

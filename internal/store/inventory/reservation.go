@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -20,104 +21,235 @@ import (
 // writeoff (reason=packaging); the ledger only tracks whether a claim is still open, giving a soft
 //   available(material) = on_hand − Σ qty of OPEN claims.
 
-// recipeRow is one packaging_recipe line used during resolution.
-type recipeRow struct {
-	MaterialId  int             `db:"material_id"`
-	QtyPerOrder decimal.Decimal `db:"qty_per_order"`
-	QtyPerItem  decimal.Decimal `db:"qty_per_item"`
-}
-
-// orderPackagingLine is one order line aggregated for packaging resolution: the colourway, its owning
-// style, and the total units of that colourway in the order.
-type orderPackagingLine struct {
-	ProductId  int             `db:"product_id"`
-	TechCardId sql.NullInt32   `db:"tech_card_id"`
-	Qty        decimal.Decimal `db:"qty"`
-}
-
-// resolvedRecipe is the recipe that won resolution for one line, plus a stable identity key used to
-// count qty_per_order (the box) only once per distinct recipe present on the order.
-type resolvedRecipe struct {
-	Key  string
-	Rows []recipeRow
-}
-
 // decRow scans a single decimal aggregate.
 type decRow struct {
 	V decimal.Decimal `db:"v"`
 }
 
-// aggregatePackaging is the pure resolution math (unit-testable without a DB): for every order line,
-// add qty_per_item × line units for each material in the line's resolved recipe; add qty_per_order
-// once per DISTINCT resolved recipe (a box per recipe present on the order). In the common all-global
-// case this reduces to exactly the legacy flat behaviour: one box + Σ per-item × total units.
-func aggregatePackaging(lines []orderPackagingLine, resolve func(orderPackagingLine) (resolvedRecipe, error)) (map[int]decimal.Decimal, error) {
+// packagingItemRow is one packaging item of a card that covers one line of an order.
+type packagingItemRow struct {
+	ItemId        int             `db:"item_id"`
+	ProductId     int             `db:"product_id"`
+	ColorCode     string          `db:"color_code"`
+	Pieces        decimal.Decimal `db:"pieces"`
+	ItemKey       string          `db:"item_key"`
+	MaterialId    sql.NullInt32   `db:"material_id"`
+	AuxTechCardId sql.NullInt32   `db:"aux_tech_card_id"`
+	QtyPerGarment int             `db:"qty_per_garment"`
+	PerOrder      sql.NullBool    `db:"per_order"`
+	FoldingMethod sql.NullString  `db:"folding_method"`
+	UnitsPerBox   sql.NullInt32   `db:"units_per_box"`
+}
+
+// aggregatePackagingItems is the pure resolution math: per material, what the rows need. A per-order
+// item counts once however many of its colourways the order holds, keyed by item id: every row comes
+// from one statement, so a save recreating the items cannot split one item into two ids here. The rows
+// arrive sorted by colourway, so an auxiliary per-order item takes the colour of the lowest colourway
+// whatever order the lines were placed in. It also returns how many rows name a pick with no output.
+func aggregatePackagingItems(rows []packagingItemRow, auxMaterial func(packagingItemRow) (int, bool)) (map[int]decimal.Decimal, int) {
 	req := map[int]decimal.Decimal{}
-	seen := map[string]struct{}{}
-	for _, ln := range lines {
-		rr, err := resolve(ln)
-		if err != nil {
-			return nil, err
+	counted := map[int]struct{}{}
+	unresolved := 0
+	for _, r := range rows {
+		if !entity.PackagingItemShips(r.ItemKey, r.FoldingMethod) {
+			continue
 		}
-		_, boxDone := seen[rr.Key]
-		for _, r := range rr.Rows {
-			if r.QtyPerItem.IsPositive() {
-				req[r.MaterialId] = req[r.MaterialId].Add(r.QtyPerItem.Mul(ln.Qty))
+		need, once := entity.PackagingItemOrderQty(r.ItemKey, r.QtyPerGarment, r.PerOrder.Bool, r.UnitsPerBox, r.Pieces)
+		if once {
+			if _, done := counted[r.ItemId]; done {
+				continue
 			}
-			if !boxDone && r.QtyPerOrder.IsPositive() {
-				req[r.MaterialId] = req[r.MaterialId].Add(r.QtyPerOrder)
-			}
+			counted[r.ItemId] = struct{}{}
 		}
-		seen[rr.Key] = struct{}{}
+		materialID := int(r.MaterialId.Int32)
+		if !r.MaterialId.Valid {
+			id, ok := auxMaterial(r)
+			if !ok {
+				unresolved++
+				continue
+			}
+			materialID = id
+		}
+		req[materialID] = req[materialID].Add(need)
 	}
 	for m, q := range req {
 		if q.LessThanOrEqual(decimal.Zero) {
 			delete(req, m)
 		}
 	}
-	return req, nil
+	return req, unresolved
 }
 
-// resolvePackagingRequirement computes, per material, the total packaging quantity an order needs. It
-// reads the order's colourway lines and resolves each line's recipe most-specific-first (product →
-// style → global; the first scope with any active row wins entirely), then applies aggregatePackaging.
-func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, error) {
-	lines, err := storeutil.QueryListNamed[orderPackagingLine](ctx, db, `
-		SELECT oi.product_id AS product_id, p.style_id AS tech_card_id, SUM(oi.quantity) AS qty
-		FROM order_item oi JOIN product p ON p.id = oi.product_id
-		WHERE oi.order_id = :order_id
-		GROUP BY oi.product_id, p.style_id`, map[string]any{"order_id": orderID})
-	if err != nil {
-		return nil, fmt.Errorf("read order %d packaging lines: %w", orderID, err)
+// LoadPackagingAuxOutputs reads what the auxiliary cards' warehouse outputs resolve from: every colour
+// variant, retired ones too (entity.ResolveAssemblyOutput decides on them), and the legacy output.
+func LoadPackagingAuxOutputs(ctx context.Context, db dependency.DB, cardIDs []int) (map[int]entity.PackagingAuxOutput, error) {
+	out := make(map[int]entity.PackagingAuxOutput, len(cardIDs))
+	if len(cardIDs) == 0 {
+		return out, nil
 	}
-	return aggregatePackaging(lines, func(ln orderPackagingLine) (resolvedRecipe, error) {
-		return resolveRecipeRows(ctx, db, ln.ProductId, ln.TechCardId)
-	})
+	type legacyRow struct {
+		Id           int            `db:"id"`
+		MaterialId   sql.NullInt32  `db:"material_id"`
+		MaterialName sql.NullString `db:"material_name"`
+		Archived     sql.NullBool   `db:"archived"`
+	}
+	cards, err := storeutil.QueryListNamed[legacyRow](ctx, db, `
+		SELECT tc.id, tc.output_material_id AS material_id, m.name AS material_name, m.archived
+		FROM tech_card tc LEFT JOIN material m ON m.id = tc.output_material_id
+		WHERE tc.id IN (:ids)`, map[string]any{"ids": cardIDs})
+	if err != nil {
+		return nil, fmt.Errorf("read packaging aux outputs: %w", err)
+	}
+	for _, c := range cards {
+		out[c.Id] = entity.PackagingAuxOutput{Legacy: entity.AssemblyLegacyOutput{
+			MaterialId: c.MaterialId, MaterialName: c.MaterialName, Archived: c.Archived.Bool,
+		}}
+	}
+	variants, err := storeutil.QueryListNamed[entity.TechCardOutputVariant](ctx, db, `
+		SELECT v.id, v.tech_card_id, v.color_code, v.material_id, v.active,
+		       v.created_by, v.updated_by, v.created_at, v.updated_at,
+		       c.name AS color_name, m.name AS material_name, COALESCE(m.unit, '') AS unit,
+		       m.archived AS material_archived
+		FROM tech_card_output_variant v
+		JOIN color c ON c.code = v.color_code
+		JOIN material m ON m.id = v.material_id
+		WHERE v.tech_card_id IN (:ids)
+		ORDER BY v.tech_card_id, v.active DESC, c.name, v.id`, map[string]any{"ids": cardIDs})
+	if err != nil {
+		return nil, fmt.Errorf("read packaging aux variants: %w", err)
+	}
+	for _, v := range variants {
+		o := out[v.TechCardId]
+		o.Variants = append(o.Variants, v)
+		out[v.TechCardId] = o
+	}
+	return out, nil
 }
 
-// resolveConsumeRequirement determines what a ship should consume, in priority order:
-//  1. the order's OPEN reservation claims — consume exactly what placement reserved (drift-proof: a
-//     recipe change after placement can't change what this order is billed);
-//  2. a fresh resolution from the order's lines — an unreserved real order (reserve failed / predates
-//     the ledger) still gets its per-product/style packaging;
-//  3. the flat global recipe × itemCount — an order with no persisted lines (a synthetic/legacy order),
-//     preserving the pre-ledger behaviour.
-func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID, itemCount int) (map[int]decimal.Decimal, error) {
+// resolvePackagingRequirement computes, per material, what an order needs from the packaging items of
+// its cards: the items that name a pick and cover the line's colourway. One statement, so one save
+// cannot land between two lines. It returns how many rows named a pick with no warehouse output.
+func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, int, error) {
+	rows, err := storeutil.QueryListNamed[packagingItemRow](ctx, db, `
+		SELECT i.id AS item_id, l.product_id, l.color_code, l.pieces, i.item_key, i.material_id,
+		       i.aux_tech_card_id, i.qty_per_garment, i.per_order, tp.folding_method, tp.units_per_box
+		FROM (SELECT oi.product_id, p.style_id, p.color_code, SUM(oi.quantity) AS pieces
+		      FROM order_item oi JOIN product p ON p.id = oi.product_id
+		      WHERE oi.order_id = :order_id
+		      GROUP BY oi.product_id, p.style_id, p.color_code) l
+		JOIN tech_card_packaging_item i ON i.tech_card_id = l.style_id
+		LEFT JOIN tech_card_packaging tp ON tp.tech_card_id = i.tech_card_id
+		WHERE (i.material_id IS NOT NULL OR i.aux_tech_card_id IS NOT NULL)
+		  AND (NOT EXISTS (SELECT 1 FROM tech_card_packaging_item_colorway c WHERE c.item_id = i.id)
+		       OR EXISTS (SELECT 1 FROM tech_card_packaging_item_colorway c
+		                  WHERE c.item_id = i.id AND c.colorway_id = l.product_id))
+		ORDER BY l.product_id, i.display_order, i.id`, map[string]any{"order_id": orderID})
+	if err != nil {
+		return nil, 0, fmt.Errorf("read order %d packaging items: %w", orderID, err)
+	}
+	var auxIDs []int
+	seenAux := map[int]bool{}
+	for _, r := range rows {
+		if id := int(r.AuxTechCardId.Int32); r.AuxTechCardId.Valid && !seenAux[id] {
+			seenAux[id] = true
+			auxIDs = append(auxIDs, id)
+		}
+	}
+	aux, err := LoadPackagingAuxOutputs(ctx, db, auxIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, unresolved := aggregatePackagingItems(rows, func(r packagingItemRow) (int, bool) {
+		o := aux[int(r.AuxTechCardId.Int32)]
+		res := entity.ResolveAssemblyOutput(r.ColorCode, o.Variants, o.Legacy)
+		if res.Unresolved || res.ResolvedMaterialId <= 0 {
+			slog.Default().WarnContext(ctx, "packaging item has no warehouse output",
+				slog.Int("order_id", orderID), slog.Int("aux_tech_card_id", int(r.AuxTechCardId.Int32)),
+				slog.String("color_code", r.ColorCode))
+			return 0, false
+		}
+		return res.ResolvedMaterialId, true
+	})
+	return req, unresolved, nil
+}
+
+// settleFractions rounds a requirement to the stock's three places without losing the remainder: a
+// fractional need takes the material's carried remainder, books the rounded figure and carries what is
+// left. Twelve orders of 1/12 of a box book exactly one box, not 0.996; a share below the third place
+// books nothing now and is not lost. Materials go in id order so two orders cannot deadlock on the
+// carry rows. Whole needs do not touch the carry.
+func settleFractions(ctx context.Context, db dependency.DB, req map[int]decimal.Decimal) (map[int]decimal.Decimal, error) {
+	out := make(map[int]decimal.Decimal, len(req))
+	for _, materialID := range sortedMaterialIDs(req) {
+		need := req[materialID]
+		if need.Equal(need.Round(qtyScale)) {
+			out[materialID] = need
+			continue
+		}
+		params := map[string]any{"material_id": materialID}
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT INTO packaging_fraction_carry (material_id, carry) VALUES (:material_id, 0)
+			ON DUPLICATE KEY UPDATE material_id = material_id`, params); err != nil {
+			return nil, fmt.Errorf("open packaging carry for material %d: %w", materialID, err)
+		}
+		carry, err := storeutil.QueryNamedOne[decRow](ctx, db, `
+			SELECT carry AS v FROM packaging_fraction_carry WHERE material_id = :material_id FOR UPDATE`, params)
+		if err != nil {
+			return nil, fmt.Errorf("read packaging carry for material %d: %w", materialID, err)
+		}
+		exact := need.Add(carry.V)
+		booked := exact.Round(qtyScale)
+		if err := storeutil.ExecNamed(ctx, db, `
+			UPDATE packaging_fraction_carry SET carry = :carry WHERE material_id = :material_id`,
+			map[string]any{"carry": exact.Sub(booked), "material_id": materialID}); err != nil {
+			return nil, fmt.Errorf("write packaging carry for material %d: %w", materialID, err)
+		}
+		if booked.IsPositive() {
+			out[materialID] = booked
+		}
+	}
+	return out, nil
+}
+
+func sortedMaterialIDs(req map[int]decimal.Decimal) []int {
+	ids := make([]int, 0, len(req))
+	for id := range req {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// resolveConsumeRequirement determines what a ship should consume: the order's OPEN reservation claims
+// (consume exactly what placement reserved, so a card edit after placement can't change what this
+// order is billed), else a fresh resolution from its lines, for an order that was never reserved. The
+// second figure counts picks with no warehouse output on the fresh path.
+func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, int, error) {
 	req, err := claimedRequirement(ctx, db, orderID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(req) > 0 {
-		return req, nil
+		return req, 0, nil
 	}
-	req, err = resolvePackagingRequirement(ctx, db, orderID)
+	settled, err := storeutil.QueryNamedOne[decRow](ctx, db, `
+		SELECT COUNT(*) AS v FROM order_packaging_settled WHERE order_id = :order_id`,
+		map[string]any{"order_id": orderID})
 	if err != nil {
-		return nil, err
+		return nil, 0, fmt.Errorf("read order %d packaging settled: %w", orderID, err)
 	}
-	if len(req) > 0 {
-		return req, nil
+	if settled.V.IsPositive() {
+		return map[int]decimal.Decimal{}, 0, nil
 	}
-	return globalRequirementByItemCount(ctx, db, itemCount)
+	req, unresolved, err := resolvePackagingRequirement(ctx, db, orderID)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err = settleFractions(ctx, db, req)
+	if err != nil {
+		return nil, 0, err
+	}
+	return req, unresolved, nil
 }
 
 // claimedRequirement folds an order's OPEN reservation claims into a per-material requirement — what
@@ -138,61 +270,6 @@ func claimedRequirement(ctx context.Context, db dependency.DB, orderID int) (map
 		req[c.MaterialId] = req[c.MaterialId].Add(c.Qty)
 	}
 	return req, nil
-}
-
-// globalRequirementByItemCount is the legacy flat computation over the global recipe: qty_per_order
-// once plus qty_per_item × itemCount. Used only as the last-resort fallback for an order with no
-// resolvable lines and no reservation.
-func globalRequirementByItemCount(ctx context.Context, db dependency.DB, itemCount int) (map[int]decimal.Decimal, error) {
-	rows, err := queryRecipeRows(ctx, db, "scope = 'global'", map[string]any{})
-	if err != nil {
-		return nil, err
-	}
-	req := map[int]decimal.Decimal{}
-	ic := decimal.NewFromInt(int64(itemCount))
-	for _, r := range rows {
-		q := r.QtyPerOrder.Add(r.QtyPerItem.Mul(ic))
-		if q.IsPositive() {
-			req[r.MaterialId] = req[r.MaterialId].Add(q)
-		}
-	}
-	return req, nil
-}
-
-// resolveRecipeRows returns the active recipe rows that win for one colourway, product → style →
-// global, together with a stable identity key for box-once de-duplication.
-func resolveRecipeRows(ctx context.Context, db dependency.DB, productID int, techCardID sql.NullInt32) (resolvedRecipe, error) {
-	rows, err := queryRecipeRows(ctx, db, "scope = 'product' AND product_id = :id", map[string]any{"id": productID})
-	if err != nil {
-		return resolvedRecipe{}, err
-	}
-	if len(rows) > 0 {
-		return resolvedRecipe{Key: fmt.Sprintf("product:%d", productID), Rows: rows}, nil
-	}
-	if techCardID.Valid {
-		rows, err = queryRecipeRows(ctx, db, "scope = 'style' AND tech_card_id = :id", map[string]any{"id": techCardID.Int32})
-		if err != nil {
-			return resolvedRecipe{}, err
-		}
-		if len(rows) > 0 {
-			return resolvedRecipe{Key: fmt.Sprintf("style:%d", techCardID.Int32), Rows: rows}, nil
-		}
-	}
-	rows, err = queryRecipeRows(ctx, db, "scope = 'global'", map[string]any{})
-	if err != nil {
-		return resolvedRecipe{}, err
-	}
-	return resolvedRecipe{Key: "global", Rows: rows}, nil
-}
-
-func queryRecipeRows(ctx context.Context, db dependency.DB, cond string, params map[string]any) ([]recipeRow, error) {
-	rows, err := storeutil.QueryListNamed[recipeRow](ctx, db, fmt.Sprintf(`
-		SELECT material_id, qty_per_order, qty_per_item FROM packaging_recipe
-		WHERE active = TRUE AND %s`, cond), params)
-	if err != nil {
-		return nil, fmt.Errorf("resolve packaging recipe: %w", err)
-	}
-	return rows, nil
 }
 
 // openReservedQty returns Σ qty of a material's OPEN reservation claims — a 'reserve' row with no
@@ -305,23 +382,44 @@ func ReleaseOpenClaimsInTx(ctx context.Context, db dependency.DB, orderID int, u
 }
 
 // ReservePackagingForOrder soft-reserves the packaging an order needs at placement time (S22): it
-// resolves the per-material requirement (product → style → global) and appends a 'reserve' claim per
-// material, idempotently. It never blocks — a sale must not fail on packaging; an oversell is
-// surfaced later via available, not refused here.
+// resolves the per-material requirement from the card's packaging items and appends a 'reserve' claim
+// per material, idempotently: a repeat finds the order's claims and leaves them and the fraction carry
+// alone. It never blocks — a sale must not fail on packaging; an oversell is surfaced later via
+// available, not refused here.
 func (s *Store) ReservePackagingForOrder(ctx context.Context, orderID int, username string) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
-		req, err := resolvePackagingRequirement(ctx, db, orderID)
+		placed, err := storeutil.QueryNamedOne[decRow](ctx, db, `
+			SELECT (SELECT COUNT(*) FROM material_reservation_ledger WHERE order_id = :order_id AND event = 'reserve')
+			     + (SELECT COUNT(*) FROM order_packaging_settled WHERE order_id = :order_id) AS v`,
+			map[string]any{"order_id": orderID})
+		if err != nil {
+			return fmt.Errorf("read order %d packaging claims: %w", orderID, err)
+		}
+		if placed.V.IsPositive() {
+			return nil
+		}
+		resolved, _, err := resolvePackagingRequirement(ctx, db, orderID)
 		if err != nil {
 			return err
 		}
-		for materialID, qty := range req {
-			if qty.LessThanOrEqual(decimal.Zero) {
-				continue
-			}
-			if _, err := insertReservationEvent(ctx, db, materialID, orderOwner(orderID), qty,
+		req, err := settleFractions(ctx, db, resolved)
+		if err != nil {
+			return err
+		}
+		for _, materialID := range sortedMaterialIDs(req) {
+			if _, err := insertReservationEvent(ctx, db, materialID, orderOwner(orderID), req[materialID],
 				entity.MaterialReservationReserve, entity.PackagingClaimKey(orderID, materialID), username); err != nil {
 				return err
+			}
+		}
+		// Everything went into the carry, so no claim says this order was resolved; without a mark the
+		// ship would resolve it again and carry its share twice.
+		if len(resolved) > 0 && len(req) == 0 {
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT IGNORE INTO order_packaging_settled (order_id) VALUES (:order_id)`,
+				map[string]any{"order_id": orderID}); err != nil {
+				return fmt.Errorf("mark order %d packaging settled: %w", orderID, err)
 			}
 		}
 		return nil
@@ -359,34 +457,11 @@ func (s *Store) MaterialAvailable(ctx context.Context, materialID int) (entity.M
 	}, nil
 }
 
-// scopePredicate returns the WHERE fragment + params identifying one scope target for a full-replace.
-func scopePredicate(scope entity.PackagingRecipeScope, techCardID, productID sql.NullInt32) (string, map[string]any, error) {
-	switch scope {
-	case entity.PackagingScopeGlobal:
-		if techCardID.Valid || productID.Valid {
-			return "", nil, fmt.Errorf("%w: global scope takes no target", entity.ErrPackagingRecipeInvalid)
-		}
-		return "scope = 'global'", map[string]any{}, nil
-	case entity.PackagingScopeStyle:
-		if !techCardID.Valid || productID.Valid {
-			return "", nil, fmt.Errorf("%w: style scope needs exactly a tech_card_id", entity.ErrPackagingRecipeInvalid)
-		}
-		return "scope = 'style' AND tech_card_id = :tc", map[string]any{"tc": techCardID.Int32}, nil
-	case entity.PackagingScopeProduct:
-		if !productID.Valid || techCardID.Valid {
-			return "", nil, fmt.Errorf("%w: product scope needs exactly a product_id", entity.ErrPackagingRecipeInvalid)
-		}
-		return "scope = 'product' AND product_id = :pid", map[string]any{"pid": productID.Int32}, nil
-	default:
-		return "", nil, fmt.Errorf("%w: unknown scope %q", entity.ErrPackagingRecipeInvalid, scope)
-	}
-}
-
 // ResolveOrderPackaging returns, for the packer/QC packing spec (WS7 scope 3), the packaging materials an
 // order needs, joined with material name/unit and ordered by material id. It follows the SAME precedence
 // as the ship-time consume (resolveConsumeRequirement): the order's OPEN reservation claims win, and only
-// an order with no claim left is resolved fresh (product → style → global). Otherwise an order reserved
-// under recipe v1 whose recipe then changed would tell the packer to put in the new box while the ledger
+// an order with no claim left is resolved fresh from its card's packaging items. Otherwise an order
+// reserved under one card whose items then changed would tell the packer to put in the new box while the ledger
 // consumes the old one — physical and accounting reality diverging with no error anywhere.
 // READ-ONLY: it neither reserves nor consumes anything (WS2 owns the reservation ledger), so it can never
 // move on_hand or cross the sales/warehouse streams.
@@ -396,7 +471,7 @@ func (s *Store) ResolveOrderPackaging(ctx context.Context, orderID int) ([]entit
 		return nil, err
 	}
 	if len(req) == 0 {
-		if req, err = resolvePackagingRequirement(ctx, s.DB, orderID); err != nil {
+		if req, _, err = resolvePackagingRequirement(ctx, s.DB, orderID); err != nil {
 			return nil, err
 		}
 	}
@@ -433,7 +508,7 @@ func (s *Store) ResolveOrderPackaging(ctx context.Context, orderID int) ([]entit
 			MaterialId:   id,
 			MaterialName: info.name,
 			MaterialUnit: info.unit,
-			Qty:          req[id],
+			Qty:          req[id].Round(qtyScale),
 		})
 	}
 	return out, nil
@@ -839,50 +914,8 @@ func (s *Store) ListPackagingRecipe(ctx context.Context) ([]entity.PackagingReci
 	return rows, nil
 }
 
-// UpsertPackagingRecipe full-replaces the recipe lines of ONE scope target (the whole global set, or
-// one style's set, or one product's set) in a single transaction — editing product A's recipe never
-// touches global or product B (mirrors UpsertPackagingBom's full-replace, but scoped). An empty items
-// slice clears that target's recipe.
+// UpsertPackagingRecipe is refused: the card's packaging items are the one source of what an order
+// takes, and a recipe row would be saved and then do nothing.
 func (s *Store) UpsertPackagingRecipe(ctx context.Context, scope entity.PackagingRecipeScope, techCardID, productID sql.NullInt32, items []entity.PackagingRecipeInsert, username string) error {
-	pred, params, err := scopePredicate(scope, techCardID, productID)
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		if it.MaterialId <= 0 {
-			return fmt.Errorf("%w: a recipe line needs a material_id", entity.ErrPackagingRecipeInvalid)
-		}
-		if it.QtyPerOrder.IsNegative() || it.QtyPerItem.IsNegative() {
-			return fmt.Errorf("%w: recipe quantities must be >= 0", entity.ErrPackagingRecipeInvalid)
-		}
-	}
-	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		db := rep.DB()
-		if err := storeutil.ExecNamed(ctx, db,
-			fmt.Sprintf(`DELETE FROM packaging_recipe WHERE %s`, pred), params); err != nil {
-			return fmt.Errorf("clear packaging recipe: %w", err)
-		}
-		for _, it := range items {
-			row := map[string]any{
-				"scope":         string(scope),
-				"tech_card_id":  techCardID,
-				"product_id":    productID,
-				"material_id":   it.MaterialId,
-				"qty_per_order": it.QtyPerOrder,
-				"qty_per_item":  it.QtyPerItem,
-				"active":        it.Active,
-				"created_by":    username,
-				"updated_by":    username,
-			}
-			if err := storeutil.ExecNamed(ctx, db, `
-				INSERT INTO packaging_recipe
-					(scope, tech_card_id, product_id, material_id, qty_per_order, qty_per_item, active, created_by, updated_by)
-				VALUES
-					(:scope, :tech_card_id, :product_id, :material_id, :qty_per_order, :qty_per_item, :active, :created_by, :updated_by)`,
-				row); err != nil {
-				return fmt.Errorf("insert packaging recipe material %d: %w", it.MaterialId, err)
-			}
-		}
-		return nil
-	})
+	return fmt.Errorf("%w: packaging lives on the tech card", entity.ErrPackagingRecipeInvalid)
 }

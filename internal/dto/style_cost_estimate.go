@@ -116,7 +116,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			// cut-piece and carries no norm: no estimate line, no total contribution and no
 			// caveat — an empty piece row is not a «line with no norm», and a legacy number on
 			// one is not part of the garment's plan cost.
-			if u.IsPieceMaterialAssignment() {
+			if u.IsPieceMaterialAssignment() || usageIsPackagingLine(tc.BomItems, u) {
 				continue
 			}
 			bom := resolveUsageBom(tc.BomItems, u)
@@ -288,6 +288,31 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				materialsBase = materialsBase.Add(base)
 			} else {
 				hasUnconvertibleMat = true
+			}
+			out.Materials = append(out.Materials, line)
+		}
+	}
+	// The packaging items, one line each: the same figures the cost takes (colorwayPackagingLines).
+	if cw != nil {
+		for _, pk := range colorwayPackagingLines(tc, cw, tc.LinkedMaterials, currencyOfCosting(tc), fx.Base) {
+			line := &pb_admin.StyleCostMaterialLine{
+				MaterialName: pk.name,
+				Section:      string(entity.BomSectionPackaging),
+				Unit:         pk.unit,
+				Consumption:  pbDecimalFromDecimal(pk.perPiece),
+				Currency:     pk.currency,
+			}
+			if !pk.priced {
+				hasUnpricedLine = true
+			} else {
+				line.UnitPrice = pbDecimalFromDecimal(pk.unitPrice)
+				if base, conv := fx.toBase(pk.perPiece.Mul(pk.unitPrice), pk.currency); conv {
+					line.HasBase = true
+					line.LineTotalBase = money2(base)
+					materialsBase = materialsBase.Add(base)
+				} else {
+					hasUnconvertibleMat = true
+				}
 			}
 			out.Materials = append(out.Materials, line)
 		}

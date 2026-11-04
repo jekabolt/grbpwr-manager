@@ -70,6 +70,7 @@ const (
 	ColorwayCascadeSizeConsumption = "size_consumption" // каскад ВТОРОГО уровня: через строку рецепта
 	ColorwayCascadePieceMaterial   = "piece_material"
 	ColorwayCascadePackagingRecipe = "packaging_recipe"
+	ColorwayCascadePackagingItem   = "packaging_item"
 	ColorwayCascadeLabDipRound     = "lab_dip_round"
 	ColorwayCascadeCostEvent       = "cost_event"
 	ColorwayCascadeWaitlist        = "waitlist"
@@ -140,6 +141,7 @@ type ColorwayCascadeCounts struct {
 	SizeConsumptions    int // tech_card_colorway_usage_consumption — ЧЕРЕЗ строку рецепта (каскад второго уровня)
 	PieceMaterials      int // tech_card_piece_material
 	PackagingRecipes    int // packaging_recipe
+	PackagingItems      int // tech_card_packaging_item_colorway
 	LabDipRounds        int // product_lab_dip_round
 	CostEvents          int // product_cost_event
 	Waitlist            int // product_waitlist
@@ -309,6 +311,8 @@ func ClassifyColorwayDeletion(f ColorwayDeletionFacts) ColorwayDeletionVerdict {
 		"%d fabric link to a cut piece", "%d fabric links to cut pieces")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadePackagingRecipe, c.PackagingRecipes,
 		"%d packaging line", "%d packaging lines")
+	v.Cascade = appendEntry(v.Cascade, ColorwayCascadePackagingItem, c.PackagingItems,
+		"%d packaging item choice", "%d packaging item choices")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeLabDipRound, c.LabDipRounds,
 		"%d lab dip round", "%d lab dip rounds")
 	v.Cascade = appendEntry(v.Cascade, ColorwayCascadeCostEvent, c.CostEvents,
