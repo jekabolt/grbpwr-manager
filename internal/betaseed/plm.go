@@ -213,6 +213,7 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	tc.OperationLayerOrderAware = true
 	tc.OperationSeamToleranceAware = true
 	tc.PackagingPicksAware = true
+	tc.CutStripsAware = true
 	tc.OperationSeamKindAware = true
 	// Осведомлённость о 32 колонках волны видов операций (0324): та же природа read-modify-write —
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
@@ -884,6 +885,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.OperationLayerOrderAware = true
 	neg.OperationSeamToleranceAware = true
 	neg.PackagingPicksAware = true
+	neg.CutStripsAware = true
 	neg.OperationSeamKindAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
@@ -1543,6 +1545,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.OperationLayerOrderAware = true
 	tc2.OperationSeamToleranceAware = true
 	tc2.PackagingPicksAware = true
+	tc2.CutStripsAware = true
 	tc2.OperationSeamKindAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
@@ -1603,11 +1606,18 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 		common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
 	}
 	names := []string{"Brand Label", "Care Label", "Size Label", "Hangtag"}
+	labelTypes := []common.MaterialLabelType{
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_BRAND,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_COMPOSITION,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_SIZE,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_HANGTAG,
+	}
 	var items []*admin.StyleAssemblyItem
 	for i, sub := range subtypes {
 		code := s.key(fmt.Sprintf("AUX%d", i))
 		matID, err := s.createMaterial(ctx, &common.Material{
 			Name: names[i] + " material", Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL,
+			LabelType: labelTypes[i],
 			MaterialClass: common.MaterialClass_MATERIAL_CLASS_OTHER, Code: code, Unit: "pcs", MinStock: decv("200"), OtherAttrs: "{}",
 		})
 		if err != nil {
@@ -1664,34 +1674,37 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := s.C.UpsertPackagingRecipe(ctx, &admin.UpsertPackagingRecipeRequest{
-		Scope: "product", ProductId: st.res.Colorway1ID,
-		Items: []*admin.PackagingRecipeItem{
-			{MaterialId: int32(m.DustBag), QtyPerOrder: decv("0"), QtyPerItem: decv("1"), Active: true},
-			{MaterialId: int32(m.Packaging), QtyPerOrder: decv("1"), QtyPerItem: decv("0"), Active: true},
-			{MaterialId: int32(m.Insert), QtyPerOrder: decv("0"), QtyPerItem: decv("1"), Active: true},
-		},
-	}); err != nil {
-		return fmt.Errorf("UpsertPackagingRecipe: %w", err)
+	body, err := s.tcFetch(ctx, sid)
+	if err != nil {
+		return err
 	}
-	s.pass(st, "G.20 packaging recipe: dust_bag=%d(1/item) box=%d(1/order) insert=%d(1/item)", m.DustBag, m.Packaging, m.Insert)
+	onlyFirst := []int32{st.res.Colorway1ID}
+	body.PackagingItems = append(body.PackagingItems,
+		&common.TechCardPackagingItem{Key: "dust_bag", QtyPerGarment: 1, MaterialId: int32(m.DustBag), ColorwayIds: onlyFirst},
+		&common.TechCardPackagingItem{Key: "box", QtyPerGarment: 1, MaterialId: int32(m.Packaging), PerOrder: true, ColorwayIds: onlyFirst},
+		&common.TechCardPackagingItem{Key: "insert_card", QtyPerGarment: 1, MaterialId: int32(m.Insert), ColorwayIds: onlyFirst},
+	)
+	if err := s.tcSave(ctx, sid, body, "packaging items"); err != nil {
+		return fmt.Errorf("save packaging items: %w", err)
+	}
+	s.pass(st, "G.20 packaging items: dust_bag=%d(1/item) box=%d(1/order) insert=%d(1/item)", m.DustBag, m.Packaging, m.Insert)
 
 	// G.21 kit readable.
-	s.step(st, "G.21 ListPackagingRecipe shows product-scoped rows")
-	pr, err := s.C.ListPackagingRecipe(ctx, &admin.ListPackagingRecipeRequest{})
+	s.step(st, "G.21 the card shows its packaging items with their picks")
+	saved, err := s.tcFetch(ctx, sid)
 	if err != nil {
-		return fmt.Errorf("ListPackagingRecipe: %w", err)
+		return err
 	}
 	rows := 0
-	for _, it := range pr.GetItems() {
-		if it.GetScope() == "product" && it.GetProductId() == st.res.Colorway1ID {
+	for _, it := range saved.GetPackagingItems() {
+		if it.GetMaterialId() != 0 {
 			rows++
 		}
 	}
 	if rows < 3 {
-		return fmt.Errorf("expected >=3 product-scoped packaging rows, got %d", rows)
+		return fmt.Errorf("expected >=3 picked packaging items, got %d", rows)
 	}
-	s.pass(st, "G.21 ListPackagingRecipe -> %d product-scoped rows", rows)
+	s.pass(st, "G.21 tech card -> %d picked packaging items", rows)
 	return nil
 }
 
@@ -2292,6 +2305,8 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.OperationLayerOrderAware = true
 			body.OperationSeamToleranceAware = true
 			body.PackagingPicksAware = true
+			// Not cut_strips_aware: this body is a read's insert half, which has no strips, so saying it knows
+			// them would delete the card's strips. Absent leaves them alone.
 			body.OperationSeamKindAware = true
 			body.MediaAware = true
 			body.OperationKindsAware = true

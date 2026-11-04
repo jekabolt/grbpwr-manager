@@ -553,20 +553,27 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, langua
 		recipe := make([]techcardarchive.RecipeLine, 0, len(cw.Usages))
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A row the resolver made up has nothing else on it and is no row of this colourway at all. The
+			// number a strip line reads with is computed on every read, so it does not travel: a stored row
+			// goes as the table holds it, and its numbers wait under the strip on the new card too.
+			if u.IsCutLengthNorm() && u.Id == 0 {
+				continue
+			}
+			stored := u.StoredRow()
 			line := techcardarchive.RecipeLine{
 				BomLineKey:        bomKeys[u.BomItemId.Int64],
 				PieceLineKey:      pieceKeys[u.PieceId.Int64],
 				Placement:         u.Placement.String,
 				Color:             u.Color.String,
 				Pantone:           u.Pantone.String,
-				Consumption:       decimalOrEmpty(u.Consumption),
-				Quantity:          decimalOrEmpty(u.Quantity),
+				Consumption:       decimalOrEmpty(stored.Consumption),
+				Quantity:          decimalOrEmpty(stored.Quantity),
 				MaterialRef:       u.MaterialId.Int64,
-				ConsumptionSource: u.ConsumptionSource.String,
-				WasteSelvedgePct:  decimalOrEmpty(u.WasteSelvedgePct),
-				WasteCutPct:       decimalOrEmpty(u.WasteCutPct),
+				ConsumptionSource: stored.ConsumptionSource.String,
+				WasteSelvedgePct:  decimalOrEmpty(stored.WasteSelvedgePct),
+				WasteCutPct:       decimalOrEmpty(stored.WasteCutPct),
 			}
-			for _, cons := range u.SizeConsumptions {
+			for _, cons := range stored.SizeConsumptions {
 				name, ok := sizes[cons.SizeId]
 				if !ok {
 					holes = append(holes, archiveHole(techcardarchive.EntityColorway, ref,
@@ -577,7 +584,7 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, langua
 				}
 				sc.rememberSize(cons.SizeId, name)
 				if line.SizeConsumptions == nil {
-					line.SizeConsumptions = make(map[string]string, len(u.SizeConsumptions))
+					line.SizeConsumptions = make(map[string]string, len(stored.SizeConsumptions))
 				}
 				line.SizeConsumptions[name] = cons.Consumption.String()
 			}

@@ -68,6 +68,9 @@ func (s *Store) DeleteColorway(ctx context.Context, colorwayID int) (*entity.Col
 		if err != nil {
 			return fmt.Errorf("load owning style of colourway %d before delete: %w", colorwayID, err)
 		}
+		if err := DeleteColorwayOnlyPackagingItems(ctx, db, colorwayID); err != nil {
+			return err
+		}
 		rows, err := storeutil.ExecNamedRows(ctx, db,
 			`DELETE FROM product WHERE id = :id`, map[string]any{"id": colorwayID})
 		if err != nil {
@@ -153,6 +156,7 @@ type colorwayDeletionFactsRow struct {
 	SizeConsumptions    int `db:"size_consumptions"`
 	PieceMaterials      int `db:"piece_materials"`
 	PackagingRecipes    int `db:"packaging_recipes"`
+	PackagingItems      int `db:"packaging_items"`
 	LabDipRounds        int `db:"lab_dip_rounds"`
 	CostEvents          int `db:"cost_events"`
 	Waitlist            int `db:"waitlist"`
@@ -224,6 +228,7 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 				JOIN tech_card_colorway_usage u ON u.id = sc.usage_id WHERE u.colorway_id = p.id) AS size_consumptions,
 			(SELECT COUNT(*) FROM tech_card_piece_material pm WHERE pm.colorway_id = p.id) AS piece_materials,
 			(SELECT COUNT(*) FROM packaging_recipe pr WHERE pr.product_id = p.id) AS packaging_recipes,
+			(SELECT COUNT(*) FROM tech_card_packaging_item_colorway pic WHERE pic.colorway_id = p.id) AS packaging_items,
 			(SELECT COUNT(*) FROM product_lab_dip_round r WHERE r.product_id = p.id) AS lab_dip_rounds,
 			(SELECT COUNT(*) FROM product_cost_event e WHERE e.product_id = p.id) AS cost_events,
 			(SELECT COUNT(*) FROM product_waitlist w WHERE w.product_id = p.id) AS waitlist,
@@ -298,6 +303,7 @@ func readColorwayDeletionFacts(ctx context.Context, db dependency.DB, colorwayID
 			SizeConsumptions:    row.SizeConsumptions,
 			PieceMaterials:      row.PieceMaterials,
 			PackagingRecipes:    row.PackagingRecipes,
+			PackagingItems:      row.PackagingItems,
 			LabDipRounds:        row.LabDipRounds,
 			CostEvents:          row.CostEvents,
 			Waitlist:            row.Waitlist,

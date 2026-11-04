@@ -599,7 +599,7 @@ func newCutPlanGroup(
 		// никто.
 		g.specLabel = "the card BOM"
 		for i := range card.BomItems {
-			if b := &card.BomItems[i]; cutPlanRollSections[b.Section] {
+			if b := &card.BomItems[i]; cutPlanRollSections[b.Section] && !b.CutToLength {
 				g.rollSlots = append(g.rollSlots, cutPlanSlot{bom: b})
 			}
 		}
@@ -619,7 +619,9 @@ func newCutPlanGroup(
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		bom := planBomLine(u, card.BomItems)
-		if bom == nil || !cutPlanRollSections[bom.Section] || seenSlot[bom] {
+		// A line cut to length is not what a piece is cut from, and its made-up norm row must not turn
+		// the one roll slot that rule (b) infers from into two.
+		if bom == nil || !cutPlanRollSections[bom.Section] || bom.CutToLength || seenSlot[bom] {
 			continue
 		}
 		seenSlot[bom] = true
@@ -726,12 +728,18 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 	for _, id := range ins.GetSizeIds() {
 		card.SizeIds = append(card.SizeIds, int(id))
 	}
+	// The frozen strips say which lines are cut to length. The recipe rows read below carry no norm source.
+	stripLines := make(map[string]bool, len(snap.GetCutStrips()))
+	for _, s := range snap.GetCutStrips() {
+		stripLines[entity.CutStripLineKey(s.GetBomLineKey())] = true
+	}
 	for _, b := range ins.GetBomItems() {
 		item := entity.TechCardBomItem{
-			Id:      int(b.GetId()),
-			LineKey: b.GetLineKey(),
-			Name:    b.GetName(),
-			Section: techCardBomSectionPbToEntity[b.GetSection()],
+			Id:          int(b.GetId()),
+			LineKey:     b.GetLineKey(),
+			Name:        b.GetName(),
+			Section:     techCardBomSectionPbToEntity[b.GetSection()],
+			CutToLength: stripLines[entity.CutStripLineKey(b.GetLineKey())],
 		}
 		if mid := b.GetMaterialId(); mid > 0 {
 			item.MaterialId = sql.NullInt64{Int64: mid, Valid: true}

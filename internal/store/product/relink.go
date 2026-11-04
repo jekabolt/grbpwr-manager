@@ -43,6 +43,9 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 	}
 	// A packaging item names colourways of its own card: left in place, the row would make the source
 	// card's next save refuse with not_in_tech_card over a colourway it no longer has.
+	if err := DeleteColorwayOnlyPackagingItems(ctx, db, colorwayID); err != nil {
+		return err
+	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		DELETE FROM tech_card_packaging_item_colorway WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
 		return fmt.Errorf("delete source packaging item scope for colourway %d: %w", colorwayID, err)
@@ -272,6 +275,9 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		if err := MintProductSKUs(ctx, rep.DB(), colorwayID); err != nil {
 			return fmt.Errorf("re-mint colourway %d after relink: %w", colorwayID, err)
 		}
+		if err := SyncPickedBomRecipe(ctx, rep.DB(), targetStyleID); err != nil {
+			return err
+		}
 		if err := bumpRelinkStyleVersions(ctx, rep.DB(), cw.StyleID, targetStyleID); err != nil {
 			return err
 		}
@@ -333,6 +339,20 @@ func bumpRelinkStyleVersions(ctx context.Context, db dependency.DB, sourceStyleI
 	}
 	if rows != 2 {
 		return fmt.Errorf("bump source and target style versions after relink: %w", entity.ErrTechCardConflict)
+	}
+	return nil
+}
+
+// DeleteColorwayOnlyPackagingItems removes the items that name only this colourway: with its row gone
+// such an item would read as "all colourways" and start writing off on every other colour.
+func DeleteColorwayOnlyPackagingItems(ctx context.Context, db dependency.DB, colorwayID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE i FROM tech_card_packaging_item i
+		WHERE EXISTS (SELECT 1 FROM tech_card_packaging_item_colorway c
+		              WHERE c.item_id = i.id AND c.colorway_id = :id)
+		  AND NOT EXISTS (SELECT 1 FROM tech_card_packaging_item_colorway o
+		                  WHERE o.item_id = i.id AND o.colorway_id <> :id)`, map[string]any{"id": colorwayID}); err != nil {
+		return fmt.Errorf("delete packaging items of colourway %d: %w", colorwayID, err)
 	}
 	return nil
 }

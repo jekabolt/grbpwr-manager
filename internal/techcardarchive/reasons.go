@@ -175,6 +175,11 @@ const (
 	// dropped; every fold card.json carries imported.
 	ReasonFoldStepConflict Reason = "fold_step_conflict"
 
+	// ReasonCutStripLineUnusable: a strip (card.json cutStrips) is cut from a BOM line the imported card
+	// does not have, from a line whose article here is not bought by the metre, or from the main fabric.
+	// The strip and the steps' inputs naming it are dropped; every other strip imports.
+	ReasonCutStripLineUnusable Reason = "cut_strip_line_unusable"
+
 	// ReasonStyleNumberTaken — the style number already exists in the target base.
 	ReasonStyleNumberTaken Reason = "style_number_taken"
 	// ReasonUnknownEntry — the archive holds a file this server does not know (a newer MINOR).

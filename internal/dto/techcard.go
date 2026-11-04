@@ -1109,6 +1109,11 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		// но НИ В ОДИН дайджест не входит (закрыто TestBomQtyAwareIsNotHashed).
 		BomQtyAware: pb.BomQtyAware,
 	}
+	cutStrips, err := parseTechCardCutStrips(pb, insert)
+	if err != nil {
+		return nil, err
+	}
+	insert.CutStrips, insert.CutStripsAware = cutStrips, pb.GetCutStripsAware()
 	if prepare != nil {
 		prepare(insert)
 	}
@@ -1121,7 +1126,7 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 	// производителя. The optional prepare hook is earlier so server-owned references absent from the
 	// new piece set can be removed before the graph judges them. Release gates read the normalized
 	// form, and the stamp hashes that final form.
-	if verr := canonicalizeAssembly(insert.Operations, insert.Pieces, insert.AssemblyAware); verr != nil {
+	if verr := canonicalizeAssembly(insert.Operations, insert.Pieces, entity.CutStripKeySet(insert.CutStrips), insert.AssemblyAware); verr != nil {
 		return nil, verr
 	}
 
@@ -1643,6 +1648,10 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		// never on TechCardInsert, so outside every section digest.
 		Seams:      TechCardSeamsToPb(tc.Seams),
 		PieceFolds: TechCardPieceFoldsToPb(tc.PieceFolds),
+		// Strips and their norms. The norm sits here too, because the recipe rows that carry it exist
+		// only under a colourway, and a card with no colourways still shows it on the BOM line.
+		CutStrips:     TechCardCutStripsToPb(tc.CutStrips, tc.SizeIds),
+		CutStripNorms: TechCardCutStripNormsToPb(tc.BomItems, tc.CutStrips, tc.SizeIds),
 	}
 }
 
@@ -2860,7 +2869,9 @@ func parseUsageProvenance(u *pb_common.TechCardColorwayUsage, i int) (sql.NullSt
 	if v == "" {
 		v = entity.ConsumptionSourceManual
 	}
-	if !entity.ValidConsumptionSources[v] {
+	// cut_length is echoed by a client that read it. It is not a stored value (the CHECK of 0294 does not
+	// know it) and the store turns such a row back into what the colourway owns: sanitizeCutStripRecipe.
+	if !entity.ValidConsumptionSources[v] && v != entity.ConsumptionSourceCutLength {
 		return src, selvedge, cut, entity.NewFieldViolation(
 			fmt.Sprintf("usages[%d].consumption_source", i), "invalid", v, "manual, marker or dxf")
 	}

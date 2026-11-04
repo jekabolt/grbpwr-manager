@@ -36,7 +36,7 @@ func TestAssemblyCanonicalizeLeavesUnmarkedCardUntouched(t *testing.T) {
 	before := make([]entity.TechCardOperation, len(ops))
 	copy(before, ops)
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, true); verr != nil {
 		t.Fatalf("карточка без узлов обязана проходить вакуумно, получено: %v", verr)
 	}
 	if !reflect.DeepEqual(ops, before) {
@@ -60,7 +60,7 @@ func TestAssemblyCanonicalizeProjection(t *testing.T) {
 	ops[0].PieceLineKeys = []string{"МУСОР"}
 	ops[1].PieceLineKeys = nil
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), true); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), nil, true); verr != nil {
 		t.Fatalf("валидная разметка отвергнута: %v", verr)
 	}
 	if got, want := ops[0].PieceLineKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
@@ -87,7 +87,7 @@ func TestAssemblyCanonicalizeEmptyInputsStayNil(t *testing.T) {
 		asmOp([]string{"FR", "BK"}, "SHELL"),
 		asmOp(nil, ""), // обработка без входов — законна
 	}
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if ops[1].InputKeys != nil {
@@ -107,7 +107,7 @@ func TestAssemblyCanonicalizeUnitNameOnFirstProducer(t *testing.T) {
 	}
 	ops[1].OutputUnitName = nullStringFromPb("корпус")
 
-	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), true); verr != nil {
+	if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK", "SL"), nil, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if got := ops[0].OutputUnitName.String; got != "корпус" {
@@ -136,7 +136,7 @@ func TestAssemblyCanonicalizeSourceFollowsTheFlag(t *testing.T) {
 			{PieceLineKeys: []string{"FR", "BK"}, InputKeys: nil},
 			asmOp([]string{"FR", "BK"}, "SHELL"),
 		}
-		verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true)
+		verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, true)
 		if verr == nil {
 			t.Fatal("шаг с одной легаси-проекцией в осведомлённой записи обязан быть отвергнут")
 		}
@@ -151,7 +151,7 @@ func TestAssemblyCanonicalizeSourceFollowsTheFlag(t *testing.T) {
 			{PieceLineKeys: nil, InputKeys: nil},
 			asmOp([]string{"FR", "BK"}, "SHELL"),
 		}
-		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, true); verr != nil {
 			t.Fatalf("очистка входов шага отвергнута: %v", verr)
 		}
 		if ops[0].InputKeys != nil || ops[0].PieceLineKeys != nil {
@@ -165,7 +165,7 @@ func TestAssemblyCanonicalizeSourceFollowsTheFlag(t *testing.T) {
 			// игнорировать — источником остаётся 21.
 			{PieceLineKeys: []string{"FR", "BK"}, InputKeys: []string{"МУСОР"}},
 		}
-		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), false); verr != nil {
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, false); verr != nil {
 			t.Fatalf("легаси-путь отвергнут: %v", verr)
 		}
 		if got, want := ops[0].PieceLineKeys, []string{"FR", "BK"}; !reflect.DeepEqual(got, want) {
@@ -268,7 +268,7 @@ func TestAssemblyCanonicalizeViolations(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			verr := canonicalizeAssembly(c.ops, asmPieces(c.pieces...), true)
+			verr := canonicalizeAssembly(c.ops, asmPieces(c.pieces...), nil, true)
 			if verr == nil {
 				t.Fatal("ожидался отказ, получено принятие")
 			}
@@ -307,7 +307,7 @@ func TestAssemblyReleaseCheckTwoTerminals(t *testing.T) {
 		asmOp([]string{"HD", "LN"}, "HOOD"),
 	}
 	pieces := asmPieces("FR", "BK", "HD", "LN")
-	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, nil, true); verr != nil {
 		t.Fatalf("разметка сама по себе законна, отвергнута: %v", verr)
 	}
 	verr := assemblyReleaseCheck(ops, pieces)
@@ -326,7 +326,7 @@ func TestAssemblyReleaseCheckTwoTerminals(t *testing.T) {
 func TestAssemblyReleaseCheckOrphanPiece(t *testing.T) {
 	ops := []entity.TechCardOperation{asmOp([]string{"FR", "BK"}, "SHELL")}
 	pieces := asmPieces("FR", "BK", "FLAP")
-	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, nil, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	verr := assemblyReleaseCheck(ops, pieces)
@@ -347,7 +347,7 @@ func TestAssemblyReleaseCheckUnmarkedCardPasses(t *testing.T) {
 		{PieceLineKeys: []string{"FLAP"}},
 	}
 	pieces := asmPieces("FR", "BK", "FLAP")
-	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, nil, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
@@ -362,7 +362,7 @@ func TestAssemblyReleaseCheckConverged(t *testing.T) {
 		asmOp([]string{"SHELL", "HD"}, "GARMENT"),
 	}
 	pieces := asmPieces("FR", "BK", "HD")
-	if verr := canonicalizeAssembly(ops, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(ops, pieces, nil, true); verr != nil {
 		t.Fatalf("отвергнуто: %v", verr)
 	}
 	if verr := assemblyReleaseCheck(ops, pieces); verr != nil {
@@ -429,7 +429,7 @@ func TestAssemblyClonePathKeepsUnits(t *testing.T) {
 			OutputUnitName: nullStringFromPb(w.GetOutputUnitName()),
 		})
 	}
-	if verr := canonicalizeAssembly(back, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(back, pieces, nil, true); verr != nil {
 		t.Fatalf("клонический round-trip отвергнут: %v", verr)
 	}
 	if back[0].OutputUnitKey.String != "SHELL" || back[1].OutputUnitKey.String != "GARMENT" {
@@ -479,7 +479,7 @@ func TestDetachedAssemblyBlockOperationRulesAndRoundTrip(t *testing.T) {
 			asmOp([]string{"FR", "BK"}, "SHELL"),
 			{InputKeys: []string{"FR"}, AssemblyBlockDetached: true},
 		}
-		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), true); verr != nil {
+		if verr := canonicalizeAssembly(ops, asmPieces("FR", "BK"), nil, true); verr != nil {
 			t.Fatalf("valid detached processing rejected: %v", verr)
 		}
 		if len(ops[1].AssemblyInputs) != 1 || ops[1].AssemblyInputs[0].Kind != entity.AssemblyInputPiece {
@@ -516,7 +516,7 @@ func TestDetachedAssemblyBlockOperationRulesAndRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			verr := canonicalizeAssembly(tc.ops, asmPieces("FR", "BK"), true)
+			verr := canonicalizeAssembly(tc.ops, asmPieces("FR", "BK"), nil, true)
 			if verr == nil || verr.Reason != tc.reason {
 				t.Fatalf("got validation error %v, want reason %q", verr, tc.reason)
 			}
@@ -562,7 +562,7 @@ func TestAssemblyCloneRequiresAwareFlag(t *testing.T) {
 		}
 	}
 	withFlag := mk()
-	if verr := canonicalizeAssembly(withFlag, pieces, true); verr != nil {
+	if verr := canonicalizeAssembly(withFlag, pieces, nil, true); verr != nil {
 		t.Fatalf("клон с флагом обязан проходить: %v", verr)
 	}
 	if len(withFlag[1].AssemblyInputs) != 2 {
@@ -570,7 +570,7 @@ func TestAssemblyCloneRequiresAwareFlag(t *testing.T) {
 	}
 
 	withoutFlag := mk()
-	if verr := canonicalizeAssembly(withoutFlag, pieces, false); verr == nil {
+	if verr := canonicalizeAssembly(withoutFlag, pieces, nil, false); verr == nil {
 		t.Error("без флага объединение берётся из легаси-проекции и джойн теряет вход-узел — " +
 			"это обязано быть отказом, а не тихой потерей")
 	}

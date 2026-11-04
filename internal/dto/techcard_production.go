@@ -1364,6 +1364,12 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 		})
 		if ci == 0 {
 			root = cc
+		} else if !colorwayHasOwnRecipe(tc, &tc.Colorways[ci]) {
+			// Set only when complete: a release must not freeze a figure short of a material.
+			if inherited := colorwayCostWithInheritance(tc, &tc.Colorways[ci], costingCcy, fx); !inherited.hasUnpriced && !inherited.hasUnconverted && !inherited.hasEstimate {
+				unit, _ := unitAndOrder(inherited.materialsPerUnit)
+				colorwayCosts[ci].InheritedUnitCost = pbDecimalFromDecimal(roundMoney(unit))
+			}
 		}
 	}
 	rootMaterialsPerUnit := root.materialsPerUnit
@@ -1509,25 +1515,12 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	if cw == nil {
 		return decimal.NullDecimal{}, ""
 	}
-	// A colourway with NO recipe at all inherits the STYLE figure (the primary colourway's),
-	// exactly as before per-colourway seeding: computing it "own materials" would mean manual
-	// articles only — a silent price DROP by the whole material component on every legacy
-	// multi-colourway style whose recipes were never authored. An authored recipe, however
-	// sparse, stands on its own.
-	//
-	// Piece-bound rows do not count as a recipe here: they assign materials to pieces and carry
-	// no norms (entity.IsPieceMaterialAssignment), so a colourway whose usages are ALL piece
-	// assignments would otherwise be costed as manual articles only — the exact silent drop this
-	// guard exists to prevent.
-	//
-	// SINCE Ф1 THERE IS A SECOND WAY TO HAVE A RECIPE: piece assignments on a slot whose areas are
-	// MEASURED are costable. Such a colourway must be priced from ITSELF — inheriting the primary's
-	// figure would hand a colourway pinned to a different article its neighbour's price while its
-	// own, correct one sat computed and unused. See colorwayHasOwnRecipe for why the measured guard
-	// is what keeps every existing (unmeasured) card on the old inheritance path.
-	if !colorwayHasOwnRecipe(tc, cw) {
-		return ComputeTechCardUnitCost(tc, fx)
-	}
+	// A colourway with NO recipe at all inherits the materials of the STYLE (the primary colourway),
+	// exactly as before per-colourway seeding: computing it "own materials" would mean manual articles
+	// only — a silent price DROP by the whole material component on every legacy multi-colourway style
+	// whose recipes were never authored. An authored recipe, however sparse, stands on its own, and
+	// colorwayHasOwnRecipe is what says which is which. Packaging is never inherited: it is chosen per
+	// colourway (colorwayCostWithInheritance).
 	c := tc.Costing
 	costingCcy := ""
 	if c.Currency.Valid {
@@ -1543,7 +1536,7 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	if c.DefectPercent.Valid {
 		defectMul = defectMul.Add(c.DefectPercent.Decimal.Div(decimal.NewFromInt(100)))
 	}
-	cc := colorwayCost(tc, cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+	cc := colorwayCostWithInheritance(tc, cw, costingCcy, fx)
 	if cc.hasUnpriced {
 		return decimal.NullDecimal{}, ""
 	}
@@ -1567,6 +1560,38 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	return decimal.NullDecimal{}, ""
 }
 
+// usageIsRecipeRow is the own-recipe test of one row, shared by the live card and the frozen snapshot.
+// A piece row carries no norm. A bare row on a picked line is the server's (product.SyncPickedBomRecipe):
+// a colourway with nothing else would be costed as a label and its manual articles, the same silent drop
+// the inheritance exists to prevent, so it inherits and the style figure carries the label. A number or a
+// pin on that row is a person's, and makes it a recipe like any other.
+func usageIsRecipeRow(u *entity.TechCardColorwayUsage, held map[int64]bool) bool {
+	// A strip's norm is the same on every colourway and is the line's, not this colourway's. Counting
+	// it as a recipe would price a colourway that inherits the style figure at the strip alone.
+	if u.IsPieceMaterialAssignment() || u.IsCutLengthNorm() {
+		return false
+	}
+	return !(u.BomItemId.Valid && held[u.BomItemId.Int64] && u.IsBareLineRow())
+}
+
+// pickedLabelLines are the BOM lines held by a garment label with a source.
+func pickedLabelLines(tc *entity.TechCard) map[int64]bool {
+	if tc == nil {
+		return nil
+	}
+	var out map[int64]bool
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		if l.Source != "" && l.BomItemId.Valid {
+			if out == nil {
+				out = map[int64]bool{}
+			}
+			out[int64(l.BomItemId.Int32)] = true
+		}
+	}
+	return out
+}
+
 // colorwayHasOwnRecipe reports whether the colourway can be costed FROM ITSELF. A colourway that
 // cannot inherits the style figure, and the breakdown must inherit the same projection
 // (ComputeColorwayCostBreakdownBase), or the pair (cost_price, cost_breakdown) contradicts itself.
@@ -1588,10 +1613,17 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 // for them and seed CMT-only as the whole cost — silently cheaper than the inheritance they get
 // today. Unmeasured stays empty, exactly as before.
 func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool {
+	held := pickedLabelLines(tc)
 	for i := range cw.Usages {
-		if !cw.Usages[i].IsPieceMaterialAssignment() {
-			return true
+		if !usageIsRecipeRow(&cw.Usages[i], held) {
+			continue
 		}
+		// Packaging is not a recipe: a colourway holding only that must keep inheriting the style's
+		// price, not drop to its packaging plus the manual articles.
+		if tc != nil && usageIsPackagingLine(tc.BomItems, &cw.Usages[i]) {
+			continue
+		}
+		return true
 	}
 	if tc == nil || len(tc.PieceAreaScopes) == 0 {
 		return false
@@ -1641,6 +1673,64 @@ func colorwayHasPieceAssignmentForBom(tc *entity.TechCard, cw *entity.TechCardCo
 	return false
 }
 
+// usageIsPackagingLine says a usage sits on a BOM line of section packaging.
+func usageIsPackagingLine(bomItems []entity.TechCardBomItem, u *entity.TechCardColorwayUsage) bool {
+	bom := resolveUsageBom(bomItems, u)
+	return bom != nil && bom.Section == entity.BomSectionPackaging
+}
+
+// packagingCostLine is one packaging item in the cost of one piece of a colourway.
+type packagingCostLine struct {
+	name      string
+	unit      string
+	perPiece  decimal.Decimal
+	unitPrice decimal.Decimal
+	currency  string
+	priced    bool
+}
+
+// colorwayPackagingLines prices the card's packaging items for one colourway: the items that name a
+// pick, cover the colourway and ship with the piece. An item with no price, or an auxiliary pick with no
+// warehouse output, comes back not priced so the cost is refused rather than quietly short.
+func colorwayPackagingLines(tc *entity.TechCard, cw *entity.TechCardColorway, linked map[int]entity.MaterialWithPrice, costingCcy, baseCcy string) []packagingCostLine {
+	if tc == nil || cw == nil {
+		return nil
+	}
+	var folding sql.NullString
+	var unitsPerBox sql.NullInt32
+	if tc.Packaging != nil {
+		folding, unitsPerBox = tc.Packaging.FoldingMethod, tc.Packaging.UnitsPerBox
+	}
+	var out []packagingCostLine
+	for i := range tc.PackagingItems {
+		it := &tc.PackagingItems[i]
+		if !it.HasPick() || !entity.PackagingItemShips(it.Key, folding) {
+			continue
+		}
+		if cw.ProductId.Valid && !it.AppliesToColorway(int(cw.ProductId.Int32)) {
+			continue
+		}
+		line := packagingCostLine{name: it.PickedName, perPiece: entity.PackagingItemQtyPerPiece(it.Key, it.QtyPerGarment, unitsPerBox)}
+		materialID := int(it.MaterialId.Int32)
+		if it.AuxTechCardId.Valid {
+			o := tc.PackagingAuxOutputs[int(it.AuxTechCardId.Int32)]
+			res := entity.ResolveAssemblyOutput(cw.ColorCode, o.Variants, o.Legacy)
+			materialID = res.ResolvedMaterialId
+			if res.Unresolved {
+				materialID = 0
+			}
+		}
+		if m, ok := linked[materialID]; ok {
+			line.unit = m.Unit.String
+			if price := m.LatestPriceForCurrencies(costingCcy, baseCcy); price != nil {
+				line.unitPrice, line.currency, line.priced = price.Price, price.Currency, true
+			}
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // colorwayForProduct returns the card's colourway bound to productID, or nil.
 func colorwayForProduct(tc *entity.TechCard, productID int) *entity.TechCardColorway {
 	for i := range tc.Colorways {
@@ -1660,14 +1750,11 @@ func ComputeColorwayCostBreakdownBase(tc *entity.TechCard, colorwayProductID int
 		return entity.CostBreakdown{}, false
 	}
 	if cw := colorwayForProduct(tc, colorwayProductID); cw != nil {
-		// A colourway with an EMPTY recipe (none, or piece assignments only) inherits the STYLE
-		// unit cost in ComputeColorwayUnitCost — and the breakdown must decompose the SAME figure.
-		// Decomposing the colourway's own empty recipe instead pairs an inherited cost_price
-		// (fabric included) with materials = 0, and the COGS-structure metrics
-		// (internal/store/metrics/style.go) then spread a real figure over wrong shares.
-		if !colorwayHasOwnRecipe(tc, cw) {
-			return ComputeTechCardCostBreakdownBase(tc, fx)
-		}
+		// A colourway with an EMPTY recipe (none, or piece assignments only) inherits the STYLE's
+		// materials in ComputeColorwayUnitCost — and the breakdown must decompose the SAME figure.
+		// Decomposing the colourway's own empty recipe instead pairs an inherited cost_price (fabric
+		// included) with materials = 0, and the COGS-structure metrics (internal/store/metrics/style.go)
+		// then spread a real figure over wrong shares. techCardCostBreakdownBase takes the one figure.
 		return techCardCostBreakdownBase(tc, cw, fx)
 	}
 	return entity.CostBreakdown{}, false
@@ -1776,7 +1863,7 @@ func techCardCostBreakdownBase(tc *entity.TechCard, cw *entity.TechCardColorway,
 	// The chosen colourway's materials, folded to base — the rollup's basis. An uncostable line
 	// blocks the decomposition for the same reason it blocks the unit cost: the Materials component
 	// would be short by that material while the report presents it as the whole recipe.
-	cc := colorwayCost(tc, cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+	cc := colorwayCostWithInheritance(tc, cw, costingCcy, fx)
 	// hasEstimate здесь по тем же основаниям, что и в цене: разбивка едет в product.cost_breakdown
 	// рядом с cost_price, и разрешить ей оценку значило бы опубликовать заниженную структуру
 	// себестоимости под ценой, которую мы только что отказались сеять.
@@ -1941,6 +2028,26 @@ func withArticleCuttingCoefficient(bom *entity.TechCardBomItem, materialID int, 
 // prices). Buckets are per-currency (no FX conversion); currency-less lines fold into the costing
 // currency, and a line in another currency is flagged (and left out of materialsPerUnit).
 func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
+	return colorwayCostOf(tc, cw, cw, bomItems, linked, costingCcy, basis, fx)
+}
+
+// colorwayCostWithInheritance is what one colourway costs: its own recipe, or with none the primary's
+// materials. Either way its OWN packaging, which is chosen per colourway and has nothing to do with the
+// recipe. The one figure behind the seeded price, its breakdown and the frozen release price.
+func colorwayCostWithInheritance(tc *entity.TechCard, cw *entity.TechCardColorway, costingCcy string, fx CostingFx) colorwayCostResult {
+	return colorwayCostOf(tc, colorwayMaterialsSource(tc, cw), cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+}
+
+// colorwayMaterialsSource is whose recipe a colourway's materials come from: its own, or with none the primary's.
+func colorwayMaterialsSource(tc *entity.TechCard, cw *entity.TechCardColorway) *entity.TechCardColorway {
+	if !colorwayHasOwnRecipe(tc, cw) && len(tc.Colorways) > 0 {
+		return &tc.Colorways[0]
+	}
+	return cw
+}
+
+// colorwayCostOf is colorwayCost with the materials of cw and the packaging of packagingOf.
+func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
@@ -1951,6 +2058,11 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		// and carries no norm: no contribution — a legacy number typed on such a row must not add
 		// to the garment's cost — and no hasUnpriced — an empty piece row must not veto the seed.
 		if u.IsPieceMaterialAssignment() {
+			continue
+		}
+		// Packaging is priced from the card's packaging items below and written off at shipment; a
+		// usage on a packaging line would charge it twice.
+		if usageIsPackagingLine(bomItems, u) {
 			continue
 		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
@@ -2014,6 +2126,20 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 		}
 		byCcy[ccy] = byCcy[ccy].Add(amount)
 		if ccy != "" && ccy != costingCcy {
+			hasUnconverted = true
+		}
+	}
+
+	for _, line := range colorwayPackagingLines(tc, packagingOf, linked, costingCcy, fx.Base) {
+		if !line.priced {
+			hasUnpriced = true
+			continue
+		}
+		if _, seen := byCcy[line.currency]; !seen {
+			order = append(order, line.currency)
+		}
+		byCcy[line.currency] = byCcy[line.currency].Add(line.perPiece.Mul(line.unitPrice))
+		if line.currency != "" && line.currency != costingCcy {
 			hasUnconverted = true
 		}
 	}

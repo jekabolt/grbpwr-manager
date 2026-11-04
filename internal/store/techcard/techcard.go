@@ -19,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
 	"github.com/jekabolt/grbpwr-manager/internal/store/product"
+	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -760,6 +761,10 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// it knows them (labels_aware): an older bundle's payload cannot tell «none» from «never heard of
 	// them», so without the flag both stored lists are kept and nothing of them is inserted.
 	preserveLabelLists := !tc.LabelsAware
+	// Read from the labels stored now, so before they are cleared below.
+	if err := product.ReleasePickedLines(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
 	preserveAbsentSection := map[string]bool{
 		"tech_card_construction":      tc.Construction == nil,
 		"tech_card_packaging":         tc.Packaging == nil,
@@ -1123,6 +1128,31 @@ func (s *Store) GetTechCardById(ctx context.Context, id int) (*entity.TechCard, 
 			addID(cards[0].Colorways[i].Usages[j].MaterialId)
 		}
 	}
+	// Packaging items are priced from their own pick: the material itself, or what an auxiliary card's
+	// output resolves to in each colour.
+	var auxIDs []int
+	for i := range cards[0].PackagingItems {
+		it := &cards[0].PackagingItems[i]
+		if it.MaterialId.Valid {
+			addID(sql.NullInt64{Int64: int64(it.MaterialId.Int32), Valid: true})
+		}
+		if it.AuxTechCardId.Valid {
+			auxIDs = append(auxIDs, int(it.AuxTechCardId.Int32))
+		}
+	}
+	auxOutputs, err := inventory.LoadPackagingAuxOutputs(ctx, s.DB, auxIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range auxOutputs {
+		if o.Legacy.MaterialId.Valid {
+			addID(sql.NullInt64{Int64: int64(o.Legacy.MaterialId.Int32), Valid: true})
+		}
+		for i := range o.Variants {
+			addID(sql.NullInt64{Int64: int64(o.Variants[i].MaterialId), Valid: true})
+		}
+	}
+	cards[0].PackagingAuxOutputs = auxOutputs
 	linked, err := s.getMaterialsByIDs(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -1672,6 +1702,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	// Materials (WS3 / S2-S3): the BOM article catalog is reconciled by line_key (keyed upsert-diff),
 	// not full-replaced, so each line's id is stable — which is what lets pieces/operations/colourway
 	// recipes hold a real bom_item_id FK. The resolver turns a line's key/position into that id.
+	if err := refuseCutStripsInUseBySeams(ctx, db, id, tc); err != nil {
+		return err
+	}
 	bomRes, err := upsertTechCardBom(ctx, db, id, tc.BomItems)
 	if err != nil {
 		return err
@@ -1697,6 +1730,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	// a step names a profile by KEY, and that reference is resolved where it is consumed, not by an
 	// FK — which is the whole reason the park can be full-replaced on every save.
 	if err := insertTechCardEquipmentProfiles(ctx, db, id, tc.Construction); err != nil {
+		return err
+	}
+	// Cut-to-length strips (0449): after the BOM they hang off, before the operations whose inputs name
+	// them. The operation rows and their inputs were cleared before the BOM upsert.
+	if err := upsertTechCardCutStrips(ctx, db, id, tc, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
@@ -1725,6 +1763,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardPackagingItems(ctx, db, id, tc.PackagingItems, bomRes); err != nil {
+		return err
+	}
+	if err := product.SyncPickedBomRecipe(ctx, db, id); err != nil {
 		return err
 	}
 	if err := insertTechCardCosting(ctx, db, id, tc.Costing); err != nil {
@@ -2437,6 +2478,9 @@ func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs 
 func pruneSizeScopedDataOutsideRange(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
 	if len(sizeIDs) == 0 {
 		return nil
+	}
+	if err := pruneCutStripSizesOutsideRange(ctx, db, id, sizeIDs); err != nil {
+		return err
 	}
 	params := map[string]any{"id": id, "sizes": sizeIDs}
 	if err := storeutil.ExecNamed(ctx, db, `

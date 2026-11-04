@@ -788,7 +788,10 @@ message TechCardColorwayUsage {
   // cannot contain because it is measured on a clean lay of nominal width. `optional` is
   // load-bearing like material_id: a stale client omits the field on the full-replace recipe
   // write and the store PRESERVES the stored provenance triple; a present value is written as
-  // sent ("" normalises to manual and clears the pcts).
+  // sent ("" normalises to manual and clears the pcts). "cut_length" — OUTPUT ONLY: the line has cut
+  // strips (TechCard.cut_strips) and this number is computed from them on every read. It is never
+  // stored, the slot's wastage_percent grosses it up like a manual norm, and a number sent on such a
+  // row is ignored, because the norm of a strip line is not typed.
   optional string consumption_source = 16;
   // Display decomposition of a marker-sourced norm's waste (кромка / межлекальные выпады), in
   // percent of the piece area. NEVER multiplied into any cost — the marker length already pays
@@ -1066,6 +1069,21 @@ enum MaterialClass {
 // MaterialPurpose (#40) marks whether a catalog material is used for samples, production, or both,
 // so the admin can mark and filter materials. Mirrors entity.ValidMaterialPurposes and the DB CHECK
 // chk_material_purpose. UNKNOWN defaults to BOTH on write.
+// MaterialLabelType is the type of a label in stock (0451), stored on the material and never derived
+// from its name. UNKNOWN means no type on create and keep the stored one on update.
+enum MaterialLabelType {
+  MATERIAL_LABEL_TYPE_UNKNOWN = 0;
+  MATERIAL_LABEL_TYPE_BRAND = 1;
+  MATERIAL_LABEL_TYPE_SIZE = 2;
+  MATERIAL_LABEL_TYPE_FLAG = 3;
+  MATERIAL_LABEL_TYPE_PATCH = 4;
+  MATERIAL_LABEL_TYPE_TAPE = 5;
+  MATERIAL_LABEL_TYPE_LOOP = 6;
+  MATERIAL_LABEL_TYPE_HANGTAG = 7;
+  MATERIAL_LABEL_TYPE_BARCODE = 8;
+  MATERIAL_LABEL_TYPE_COMPOSITION = 9;
+}
+
 enum MaterialPurpose {
   MATERIAL_PURPOSE_UNKNOWN = 0; // defaults to BOTH on write
   MATERIAL_PURPOSE_SAMPLE = 1;
@@ -1282,6 +1300,8 @@ message Material {
   //   * field PRESENT, value ""    → CLEAR it (store NULL).
   //   * field PRESENT with a value → set it.
   google.type.Decimal fabric_thickness_mm = 33;
+  // The type of a label in stock, section LABEL only (0451). The label picker filters on it.
+  MaterialLabelType label_type = 34;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -3090,6 +3110,15 @@ message TechCardGarmentLabel {
   // Artwork per colourway (true) or one for all colourways (false). Independent of artwork_per_size;
   // both off = one file for the whole style. Carried with artwork_per_size when that is absent.
   bool artwork_per_colorway = 14;
+  // How the label was chosen: stock or make; "" = an older row. PRESENCE BIT: absent means an older
+  // client, whose save keeps the stored source, kind, made_by, print_method and length_cm. A row with
+  // a source owns its BOM line: the save writes the line's per-garment count and its recipe rows.
+  optional string source = 15;
+  string kind = 16; // the label's type when key does not say it; "" = key is the type
+  string made_by = 17; // woven / printed / embroidered / heat transfer; only with source make
+  string print_method = 18; // screen / digital / flexo / foil; only with source make
+  // Per garment length in cm, for goods sold by the metre; unset or 0 = counted in qty_per_garment.
+  google.type.Decimal length_cm = 19;
 }
 
 // TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.
@@ -3165,6 +3194,10 @@ message TechCardColorwayCost {
   // заполненной спецификации), но подписывать им каталожную себестоимость — нельзя: сервер сам не
   // сеет cost_price с этим флагом, и клиент обязан показывать цифру как ОЦЕНКУ, а не как цену.
   bool has_estimate = 12;
+  // OUTPUT-ONLY: a colourway with no recipe of its own: the primary's materials, THIS colourway's
+  // packaging, the shared manual articles. unit_cost beside it stays the colourway's own recipe; a frozen
+  // release reads this one for such a colourway. Unset on the primary and on a release frozen before it.
+  google.type.Decimal inherited_unit_cost = 13;
   reserved 3, 4; // was materials_cost, size_run_total (superseded by the per-unit / per-order model)
 }
 
@@ -3973,6 +4006,12 @@ message TechCardInsert {
   // wiping them. Transport, not content.
   bool packaging_picks_aware = 133;
 
+  // Cut-to-length strips of this card's BOM lines (0449). Read back on TechCard.cut_strips. Only
+  // meaningful with cut_strips_aware: without the flag the stored strips stay exactly as they are,
+  // so a client that has never heard of strips loses nothing.
+  repeated TechCardCutStrip cut_strips = 134;
+  bool cut_strips_aware = 135;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -4101,6 +4140,69 @@ message TechCard {
   // full card save cannot erase them; those RPCs never bump lock_version and the rows enter no
   // section digest (the seams doctrine, seams = 32). Ignored on write.
   repeated TechCardPieceFold piece_folds = 34;
+  // The cut-to-length strips of the card (0449), with the computed lengths resolved on this read.
+  // Written through TechCardInsert.cut_strips.
+  repeated TechCardCutStrip cut_strips = 35;
+  // OUTPUT-ONLY: the norm each strip line gets from its strips, one row per BOM line. Present even on
+  // a card with no colourways, which has no recipe row to read a norm from. Ignored on write.
+  repeated TechCardCutStripNorm cut_strip_norms = 36;
+}
+
+// One size of a cut-to-length strip.
+message TechCardCutStripSize {
+  int32 size_id = 1;
+  // Seam length at this size in mm. Geometry is parsed on the client, which sends the number here.
+  google.type.Decimal seam_mm = 2;
+  // Cut length typed by hand in whole mm. Wins over the formula and survives pattern and fit changes.
+  // Absent returns the size to the formula.
+  optional int32 manual_cut_mm = 3;
+  // OUTPUT-ONLY: the cut length in whole mm, overlap included, from the one length function of the
+  // server. Absent means unknown, never 0.
+  optional int32 cut_mm = 20;
+  // OUTPUT-ONLY: cut_mm minus overlap_mm. Absent when cut_mm is.
+  google.type.Decimal sewn_mm = 21;
+}
+
+// A strip: how long the piece of a metre-bought BOM line is, cut for one garment. It is not a pattern
+// piece, never a row of TechCardInsert.pieces. Its line_key shares the key space of the pieces, so it
+// fits TechCardOperation.input_keys and TechCardSeamAnchor.piece_line_key as they are.
+message TechCardCutStrip {
+  // 26-character ULID, minted by the client like a BOM line key so that a step in the same save can
+  // name the strip. Unique per card. An empty key is minted by the server.
+  string line_key = 1;
+  // The BOM line the strip is cut from. Required.
+  string bom_line_key = 2;
+  // from_seam: cut = round(seam_mm * fit_pct / 100 + overlap_mm), half-up, whole mm.
+  // per_size: every size typed by hand in manual_cut_mm.
+  // one_length: one_length_mm for every size, one norm.
+  string length_mode = 3;
+  // The seam the length was taken from. A soft reference, used only by the client.
+  string seam_key = 4;
+  // Absent reads as 100.
+  google.type.Decimal fit_pct = 5;
+  // Absent reads as 0.
+  google.type.Decimal overlap_mm = 6;
+  // Required, above zero.
+  google.type.Decimal width_mm = 7;
+  // Required when length_mode is one_length.
+  optional int32 one_length_mm = 8;
+  // Strips of this length per garment. 0 reads as 1.
+  int32 qty = 9;
+  // On read, one row per size of the card range, with the computed fields. On write, a row with
+  // neither seam_mm nor manual_cut_mm is dropped.
+  repeated TechCardCutStripSize sizes = 10;
+}
+
+// The norm of one strip line in metres per garment: the sum over its strips of cut * qty / 1000,
+// wastage not included. consumption_source cut_length on the recipe row carries the same numbers.
+message TechCardCutStripNorm {
+  string bom_line_key = 1;
+  // Set when every strip of the line is one_length: one norm for all sizes.
+  google.type.Decimal norm = 2;
+  // Otherwise one row per size whose length is known on every strip of the line.
+  repeated TechCardBomSizeConsumption size_norms = 3;
+  // False when a size has no known length, or the line is not bought in metres. Unknown is not zero.
+  bool complete = 4;
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.
@@ -4313,6 +4415,12 @@ enum TechCardPieceFoldKind {
   TECH_CARD_PIECE_FOLD_KIND_INWARD = 1;
   // The flap lands on the piece's outside face.
   TECH_CARD_PIECE_FOLD_KIND_OUTWARD = 2;
+  // Three rows close a wedge, halves stay face up, fabric stays inside.
+  TECH_CARD_PIECE_FOLD_KIND_PLEAT = 3;
+  // Pleat with all hidden fabric pressed so the fold edge faces left.
+  TECH_CARD_PIECE_FOLD_KIND_PLEAT_LEFT = 4;
+  // Pleat with all hidden fabric pressed so the fold edge faces right.
+  TECH_CARD_PIECE_FOLD_KIND_PLEAT_RIGHT = 5;
 }
 
 // TechCardPieceFoldSource is where the fold line came from.

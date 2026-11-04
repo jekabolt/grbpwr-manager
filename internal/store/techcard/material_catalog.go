@@ -128,6 +128,9 @@ func (s *Store) CreateMaterial(ctx context.Context, m *entity.MaterialInsert) (i
 // Everything here is deterministic, so a deadlock retry of the enclosing transaction recomputes the
 // same code and composition it computed the first time.
 func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.MaterialInsert) (int, error) {
+	if err := checkMaterialLabelType(m); err != nil {
+		return 0, err
+	}
 	composition, err := entity.NormalizeMaterialComposition(m.CompositionEntries)
 	if err != nil {
 		return 0, err
@@ -152,12 +155,12 @@ func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.Materia
 			composition, spec, unit,
 			fabric_width, fabric_weight_gsm, cutting_coefficient, fabric_thickness_mm,
 			code, color, pantone, min_stock, notes,
-			image_id, purpose, material_class, other_attrs, created_by, updated_by)
+			image_id, purpose, label_type, material_class, other_attrs, created_by, updated_by)
 		VALUES (:name, :section, :supplier, :supplier_ref, :supplier_id, :lead_time_days,
 			:composition, :spec, :unit,
 			:fabric_width, :fabric_weight_gsm, :cutting_coefficient, :fabric_thickness_mm,
 			:code, :color, :pantone, :min_stock, :notes,
-			:image_id, :purpose, :material_class, :other_attrs, :created_by, :updated_by)`,
+			:image_id, :purpose, :label_type, :material_class, :other_attrs, :created_by, :updated_by)`,
 		materialParams(m))
 	if err != nil {
 		return 0, fmt.Errorf("create material: %w", err)
@@ -183,6 +186,9 @@ func createMaterialInTx(ctx context.Context, db dependency.DB, m *entity.Materia
 // internal code unique among non-archived materials. The lock load, both guards and the update run
 // in one transaction so a concurrent movement/create/update cannot slip past the checks.
 func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialInsert, expectedLockVersion int) error {
+	if err := checkMaterialLabelType(m); err != nil {
+		return err
+	}
 	var composition []entity.CompositionEntry
 	if len(m.CompositionEntries) > 0 {
 		var err error
@@ -235,6 +241,7 @@ func (s *Store) UpdateMaterial(ctx context.Context, id int, m *entity.MaterialIn
 				fabric_thickness_mm=IF(:fabric_thickness_omitted, fabric_thickness_mm, :fabric_thickness_mm),
 				code=:code, color=:color, pantone=:pantone, min_stock=:min_stock, notes=:notes,
 				image_id=:image_id, purpose=:purpose,
+				label_type=CASE WHEN :section <> :label_section THEN '' WHEN :label_type = '' THEN label_type ELSE :label_type END,
 				material_class=CASE WHEN :material_class = '' THEN material_class ELSE :material_class END,
 				other_attrs=CASE WHEN :material_class = '' THEN other_attrs ELSE :other_attrs END,
 				updated_by=:updated_by
@@ -489,11 +496,25 @@ func materialParams(m *entity.MaterialInsert) map[string]any {
 		"notes":                       m.Notes,
 		"image_id":                    m.ImageId,
 		"purpose":                     normalizeMaterialPurpose(m.Purpose),
+		"label_type":                  m.LabelType,
+		"label_section":               materialLabelSection,
 		"material_class":              normalizeMaterialClass(m.MaterialClass),
 		"other_attrs":                 nullJSONParam(m.OtherAttrs),
 		"created_by":                  m.CreatedBy,
 		"updated_by":                  m.UpdatedBy,
 	}
+}
+
+// materialLabelSection is the one section a material may carry a label type in.
+const materialLabelSection = "label"
+
+// checkMaterialLabelType refuses a type outside the label section in words, before the DB CHECK does.
+// On update a type absent from the request is fine in any section: the UPDATE clears it on a move out.
+func checkMaterialLabelType(m *entity.MaterialInsert) error {
+	if m.LabelType != "" && m.Section != materialLabelSection {
+		return entity.NewFieldViolation("label_type", "label_section_only", "", "only a material in the label section has a label type")
+	}
+	return nil
 }
 
 // normalizeMaterialPurpose lower-cases/trims the purpose and defaults an empty one to 'both' (#40) —

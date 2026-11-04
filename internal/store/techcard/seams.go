@@ -110,6 +110,9 @@ type seamSources struct {
 	sheets map[string][]entity.PatternSheetRef
 	blocks map[string][]entity.PieceAreaBlockRef
 	memo   map[string]string
+	// strips are the cut strips of the card. No fabric sheet draws a strip, so a strip end has no scope
+	// of its own: left in, it would read as an unlinked piece and any re-upload would stale the seam.
+	strips map[string]bool
 }
 
 func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*seamSources, error) {
@@ -128,7 +131,16 @@ func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*se
 	if err != nil {
 		return nil, err
 	}
-	return &seamSources{sheets: sheets, blocks: blocks, memo: map[string]string{}}, nil
+	stripKeys, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id`, map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load strip keys of tech card %d: %w", techCardID, err)
+	}
+	strips := make(map[string]bool, len(stripKeys))
+	for _, k := range stripKeys {
+		strips[entity.CutStripLineKey(k)] = true
+	}
+	return &seamSources{sheets: sheets, blocks: blocks, memo: map[string]string{}, strips: strips}, nil
 }
 
 func (s *seamSources) fingerprint(pieceKeys []string) string {
@@ -136,7 +148,13 @@ func (s *seamSources) fingerprint(pieceKeys []string) string {
 	if fp, ok := s.memo[k]; ok {
 		return fp
 	}
-	fp := entity.TechCardSeamSourceFingerprint(pieceKeys, s.sheets, s.blocks)
+	fabric := make([]string, 0, len(pieceKeys))
+	for _, p := range pieceKeys {
+		if !s.strips[entity.CutStripLineKey(p)] {
+			fabric = append(fabric, p)
+		}
+	}
+	fp := entity.TechCardSeamSourceFingerprint(fabric, s.sheets, s.blocks)
 	s.memo[k] = fp
 	return fp
 }
@@ -212,6 +230,15 @@ func writeTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int,
 		mine := make(map[string]bool, len(pieces))
 		for _, p := range pieces {
 			mine[strings.ToUpper(strings.TrimSpace(p))] = true
+		}
+		// A cut strip of the same card is a legitimate end of a seam (0449). Same key space as a piece.
+		strips, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id`, map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load strip keys of tech card %d: %w", techCardID, err)
+		}
+		for _, k := range strips {
+			mine[strings.ToUpper(strings.TrimSpace(k))] = true
 		}
 		for i, seam := range seams {
 			for _, side := range []struct {

@@ -333,3 +333,26 @@ func TestLabelTypeEnumNoDrift(t *testing.T) {
 		}
 	}
 }
+
+// TestMaterialLabelTypeEnumNoDrift: every non-UNKNOWN proto label type maps to a valid stored word and
+// the sets match in size (0451).
+func TestMaterialLabelTypeEnumNoDrift(t *testing.T) {
+	protoValues := 0
+	for v, name := range pb_common.MaterialLabelType_name {
+		if pb_common.MaterialLabelType(v) == pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_UNKNOWN {
+			continue
+		}
+		protoValues++
+		lt, ok := materialLabelTypePbToEntity[pb_common.MaterialLabelType(v)]
+		if !ok {
+			t.Errorf("proto MaterialLabelType %s has no entity mapping", name)
+			continue
+		}
+		if !entity.ValidMaterialLabelTypes[lt] {
+			t.Errorf("proto MaterialLabelType %s maps to invalid entity type %q", name, lt)
+		}
+	}
+	if protoValues != len(entity.ValidMaterialLabelTypes) {
+		t.Errorf("proto has %d label types, entity has %d", protoValues, len(entity.ValidMaterialLabelTypes))
+	}
+}

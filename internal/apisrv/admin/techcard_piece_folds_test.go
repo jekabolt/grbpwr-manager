@@ -7,6 +7,7 @@ import (
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
@@ -150,5 +151,72 @@ func TestTechCardPieceFoldsRBAC(t *testing.T) {
 		require.False(t, allowlisted, m)
 		require.Equal(t, want, got, m)
 		require.Equal(t, entity.AccessWrite, got.Access, m)
+	}
+}
+
+func TestPieceFoldPleatRoundTripsThroughTheDTO(t *testing.T) {
+	req := foldHandlerReq()
+	req.Folds[0].Kind = pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT
+
+	in, err := dto.TechCardPieceFoldsWriteFromPb(7, req.GetFolds(), "ann")
+	require.NoError(t, err)
+	require.Equal(t, entity.TechCardPieceFoldPleat, in.Folds[0].Kind)
+	require.Equal(t, "pleat", string(in.Folds[0].Kind))
+
+	back := dto.TechCardPieceFoldsToPb([]entity.TechCardPieceFold{{TechCardPieceFoldInput: in.Folds[0]}})
+	require.Equal(t, pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT, back[0].GetKind())
+}
+
+func TestPieceFoldPleatPassesTheHandlerValidationAndUnknownStaysRefused(t *testing.T) {
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().UpsertTechCardPieceFolds(mock.Anything, mock.MatchedBy(func(in entity.TechCardPieceFoldsWrite) bool {
+		return in.Folds[0].Kind == entity.TechCardPieceFoldPleat
+	})).Return([]entity.TechCardPieceFold{}, 1, nil)
+	req := foldHandlerReq()
+	req.Folds[0].Kind = pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT
+	_, err := (&Server{repo: repo}).UpsertTechCardPieceFolds(fullAccessCtx(), req)
+	require.NoError(t, err)
+
+	// an enum value this build does not know is refused like UNKNOWN
+	req = foldHandlerReq()
+	req.Folds[0].Kind = pb_common.TechCardPieceFoldKind(99)
+	_, err = (&Server{repo: mocks.NewMockRepository(t)}).UpsertTechCardPieceFolds(fullAccessCtx(), req)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "folds[0].kind")
+
+	// the entity validator refuses a kind string outside the dictionary
+	in, err := dto.TechCardPieceFoldsWriteFromPb(7, foldHandlerReq().GetFolds(), "ann")
+	require.NoError(t, err)
+	in.Folds[0].Kind = "sideways"
+	require.Error(t, entity.ValidateTechCardPieceFoldsWrite(&in))
+	in.Folds[0].Kind = entity.TechCardPieceFoldPleat
+	require.NoError(t, entity.ValidateTechCardPieceFoldsWrite(&in))
+}
+
+func TestPieceFoldPleatSidesRoundTripAndValidate(t *testing.T) {
+	cases := []struct {
+		pb  pb_common.TechCardPieceFoldKind
+		ent entity.TechCardPieceFoldKind
+		str string
+	}{
+		{pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_LEFT, entity.TechCardPieceFoldPleatLeft, "pleat_l"},
+		{pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_RIGHT, entity.TechCardPieceFoldPleatRight, "pleat_r"},
+	}
+	for _, c := range cases {
+		t.Run(c.str, func(t *testing.T) {
+			req := foldHandlerReq()
+			req.Folds[0].Kind = c.pb
+
+			in, err := dto.TechCardPieceFoldsWriteFromPb(7, req.GetFolds(), "ann")
+			require.NoError(t, err)
+			require.Equal(t, c.ent, in.Folds[0].Kind)
+			require.Equal(t, c.str, string(in.Folds[0].Kind))
+			require.NoError(t, entity.ValidateTechCardPieceFoldsWrite(&in))
+
+			back := dto.TechCardPieceFoldsToPb([]entity.TechCardPieceFold{{TechCardPieceFoldInput: in.Folds[0]}})
+			require.Equal(t, c.pb, back[0].GetKind())
+		})
 	}
 }

@@ -1299,6 +1299,11 @@ const (
 	// decomposition and no norm stamp (a раскладка id would be a claim about a layout that never
 	// happened) — normalized() in the store clears both for every non-marker source.
 	ConsumptionSourceDxf = "dxf"
+	// ConsumptionSourceCutLength is a norm computed on read from a BOM line's cut-to-length strips
+	// (ApplyCutStripNorms). It is never written to the database, so it is deliberately not a member of
+	// ValidConsumptionSources, which mirrors chk_tccu_consumption_source. It grosses up like a manual
+	// norm: a cut length is one garment's piece, and roll-end loss is what wastage is for.
+	ConsumptionSourceCutLength = "cut_length"
 )
 
 // ValidConsumptionSources is the set of accepted consumption provenance values.
@@ -1459,6 +1464,12 @@ type TechCardColorwayUsage struct {
 	// saving a recipe); true = NormMarkerId is authoritative, an explicit 0 clearing the stamp.
 	// Not persisted.
 	NormMarkerIdSet bool `db:"-"`
+	// StoredNorm is what the table holds on a row whose numbers the strip resolver replaced on read; nil
+	// on any other row. It stays in memory and never reaches the wire. See StoredRow.
+	StoredNorm *CutStripStoredNorm `db:"-" json:"-"`
+	// ArchivedNorm marks a row of an archive being applied: its numbers are a stored norm moving to a new
+	// colourway, not a number typed on a strip line. Only the archive apply sets it, the wire cannot.
+	ArchivedNorm bool `db:"-" json:"-"`
 }
 
 // EffectiveMaterialId resolves the article this usage actually consumes: the colourway's pin
@@ -1507,6 +1518,22 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 	return (u.PieceId.Valid && u.PieceId.Int64 > 0) ||
 		u.PieceLineKey != "" ||
 		u.PieceIndex.Valid
+}
+
+// IsBareLineRow reports a garment-level row that says only «this colourway uses the line»: no number,
+// no pin, no placement, no colour, no provenance. It is the shape product.SyncPickedBomRecipe writes, and
+// anything a person adds to it makes it an authored row. Read off the row, so it holds on a live card
+// and on a frozen snapshot alike, and survives the recipe's full replace.
+func (u *TechCardColorwayUsage) IsBareLineRow() bool {
+	if u.IsPieceMaterialAssignment() || u.Consumption.Valid || u.Quantity.Valid ||
+		len(u.SizeConsumptions) > 0 || u.MaterialId.Valid || u.NormMarkerId.Valid {
+		return false
+	}
+	if u.ConsumptionSource.Valid && u.ConsumptionSource.String != "" && u.ConsumptionSource.String != ConsumptionSourceManual {
+		return false
+	}
+	return strings.TrimSpace(u.Placement.String) == "" && strings.TrimSpace(u.Color.String) == "" &&
+		strings.TrimSpace(u.Pantone.String) == ""
 }
 
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
@@ -1829,6 +1856,10 @@ func (u *TechCardColorwayUsage) NormGrossUp(bom *TechCardBomItem, wastageOverrid
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
 	Id int `db:"id"`
+	// CutToLength is the in-memory mark of a line with strips, set by the read-time resolver
+	// (ApplyCutStripNorms). The line's norm then comes only from its strips, so the countable path of
+	// a hardware line stays silent. Never stored and outside every digest.
+	CutToLength bool `db:"-"`
 	// LineKey is the BOM line's stable wire identity (S2/S3): a client-generated ULID assigned when
 	// the line is first created in the UI (before the first save), immutable thereafter. The server
 	// keyed-reconciles by line_key so the row's id survives edits — that stable id is what lets
@@ -3901,6 +3932,35 @@ type TechCardGarmentLabel struct {
 	// ArtworkOmitted is the presence bit of artwork_per_size: the payload came from a client that
 	// knows nothing of the pin, the mode and the files, and the stored ones are carried. Parse only.
 	ArtworkOmitted bool
+	// Source says how the label was chosen (0451). Non-empty = the label owns its BOM line:
+	// product.SyncPickedBomRecipe writes the line's count and its recipe rows.
+	Source GarmentLabelSource
+	// Kind is the label's type when Key does not say it: a stock row's key is the material's name.
+	Kind string
+	// MadeBy / PrintMethod: how a made label is produced.
+	MadeBy      string
+	PrintMethod string
+	// LengthCm is the per garment length of goods sold by the metre; 0 = counted in QtyPerGarment.
+	LengthCm decimal.Decimal
+	// PickOmitted is the presence bit of source: the payload came from a client that knows nothing of
+	// the fields above, and the stored ones are carried. Parse only.
+	PickOmitted bool
+}
+
+// GarmentLabelSource says how a garment label was chosen.
+type GarmentLabelSource string
+
+const (
+	// GarmentLabelSourceStock is a material from stock used as it is: no artwork is asked of it.
+	GarmentLabelSourceStock GarmentLabelSource = "stock"
+	// GarmentLabelSourceMake is made for this style.
+	GarmentLabelSourceMake GarmentLabelSource = "make"
+)
+
+// NeedsArtwork reports whether the shop needs a picture of this label. The composition row is drawn by
+// the engine and a stock label is bought as it is.
+func (l *TechCardGarmentLabel) NeedsArtwork() bool {
+	return !l.IsComposition() && l.Source != GarmentLabelSourceStock
 }
 
 // GarmentLabelKeyComposition is the row holding the composition label's location, material and files.
@@ -4604,6 +4664,12 @@ type TechCardInsert struct {
 	// admit instead of refusing it, on the order the FUSING reconciliation leaves. A restore must not
 	// fail on what happened to the folds since the snapshot.
 	RestoreFolds bool `db:"-"`
+
+	// CutStrips is the card's cut-to-length strips (0449). On a write they are stored only with
+	// CutStripsAware. Without the flag the RPC layer fills them from the stored card, so that a step's
+	// strip input classifies as a strip and the write hashes like the read, and the store leaves them.
+	CutStrips      []TechCardCutStrip `db:"-"`
+	CutStripsAware bool               `db:"-"`
 	// DisplacedFoldKeys is write-command metadata from fusingops.ReconcileTechCard: the fold links of
 	// the steps it removed or split, which insertTechCardOperationFolds places on their new steps.
 	DisplacedFoldKeys []TechCardDisplacedFoldKey `db:"-"`
@@ -5157,6 +5223,8 @@ type TechCard struct {
 	// lists/writes), exactly like PieceAreaScopes above — and INVALID is honest there: a list row
 	// derives no norms.
 	WorkshopSeamAllowanceMm decimal.NullDecimal `db:"-"`
+	// PackagingAuxOutputs is what each auxiliary pick of a packaging item resolves from, keyed by card id.
+	PackagingAuxOutputs map[int]PackagingAuxOutput `db:"-"`
 	// LinkedMaterials resolves every catalog article the card references — BOM slot defaults
 	// (bom_item.material_id) AND colourway pins (usage.material_id) — to its identity and latest
 	// price, keyed by material id. Populated on the single-card read; the costing prices a pinned

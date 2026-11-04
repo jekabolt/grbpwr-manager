@@ -36,7 +36,7 @@ import (
 // МУТИРУЕТ ops: заполняет AssemblyInputs, переписывает InputKeys и PieceLineKeys, нормализует
 // имя узла. Это делает конвертер нормализатором, а не только переводчиком, поэтому порядок
 // хвоста конвертера (канонизация → релизный гейт → штамп) обязателен и записан там же.
-func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCardPiece, aware bool) *entity.ValidationError {
+func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCardPiece, stripKeys map[string]bool, aware bool) *entity.ValidationError {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -122,7 +122,7 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 		} else {
 			raw = ops[i].PieceLineKeys
 		}
-		ops[i].AssemblyInputs = entity.ClassifyAssemblyInputs(pieceKeys, raw)
+		ops[i].AssemblyInputs = entity.ClassifyAssemblyInputs(pieceKeys, stripKeys, raw)
 		if ops[i].AssemblyBlockDetached {
 			if ops[i].OutputUnitKey.String != "" || ops[i].OutputUnitName.String != "" {
 				return entity.NewFieldViolation(stepPath(i)+".assembly_block_detached",
@@ -135,7 +135,7 @@ func canonicalizeAssembly(ops []entity.TechCardOperation, pieces []entity.TechCa
 					"a detached assembly-block step needs at least one cut-piece input")
 			}
 			for j, in := range ops[i].AssemblyInputs {
-				if in.Kind == entity.AssemblyInputPiece {
+				if in.Kind == entity.AssemblyInputPiece || in.Kind == entity.AssemblyInputStrip {
 					continue
 				}
 				return entity.NewFieldViolation(inputPath(i, j), "detached_step_has_unit_input", in.Key,
@@ -228,7 +228,7 @@ func RevalidateTechCardAssembly(tc *entity.TechCardInsert) *entity.ValidationErr
 	if tc == nil {
 		return nil
 	}
-	if verr := canonicalizeAssembly(tc.Operations, tc.Pieces, tc.AssemblyAware); verr != nil {
+	if verr := canonicalizeAssembly(tc.Operations, tc.Pieces, entity.CutStripKeySet(tc.CutStrips), tc.AssemblyAware); verr != nil {
 		return verr
 	}
 	if tc.ApprovalState == entity.TechCardApprovalReleased {
@@ -327,7 +327,7 @@ func TechCardAssemblyBlocker(tc *entity.TechCard) string {
 		op := tc.Operations[idx]
 		inputs := op.AssemblyInputs
 		if inputs == nil {
-			inputs = entity.ClassifyAssemblyInputs(pieceKeys, op.InputKeys)
+			inputs = entity.ClassifyAssemblyInputs(pieceKeys, entity.CutStripKeySet(tc.CutStrips), op.InputKeys)
 		}
 		steps = append(steps, entity.AssemblyStep{
 			Inputs:         inputs,

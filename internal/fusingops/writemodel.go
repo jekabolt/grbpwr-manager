@@ -70,7 +70,7 @@ func (m *writeModel) inputsOf(op *entity.TechCardOperation) []entity.OperationIn
 	case len(op.AssemblyInputs) > 0:
 		return op.AssemblyInputs
 	case len(op.InputKeys) > 0:
-		return entity.ClassifyAssemblyInputs(m.pieceKeys, op.InputKeys)
+		return entity.ClassifyAssemblyInputs(m.pieceKeys, entity.CutStripKeySet(m.tc.CutStrips), op.InputKeys)
 	}
 	inputs := make([]entity.OperationInput, 0, len(op.PieceLineKeys))
 	for _, key := range op.PieceLineKeys {
@@ -210,7 +210,8 @@ func keepQuantities(quantities []entity.OperationBomQty, keys []string) []entity
 func (m *writeModel) materialize(op *entity.TechCardOperation, planned Operation) {
 	var inputs []entity.OperationInput
 	for _, input := range m.inputsOf(op) {
-		if input.Kind == entity.AssemblyInputUnit {
+		// A strip input is the author's, like a unit: only piece inputs are planned automatically.
+		if input.Kind != entity.AssemblyInputPiece {
 			inputs = append(inputs, input)
 		}
 	}

@@ -176,6 +176,9 @@ one repeated field inside `card.json`, which has carried `pieceFolds` all along,
 exactly as before, the reader checks MINOR in neither direction, and an archive of a card with no
 fold steps reads byte for byte the same, so a bump would say nothing a reader could act on.
 
+The cut strips (`TechCard.cut_strips`, 04.11, §5.3d) are in `1.3` without a bump for the same reasons:
+one repeated field inside `card.json`, omitted when empty, and no file and no `contents.*` claim.
+
 The steps' layer order (`TechCardOperation.layer_order`, 03.11) is in `1.3` without a bump for the
 same reasons: one repeated field inside `card.json`, omitted when empty, naming the step's own input
 keys, so nothing is remapped.
@@ -282,6 +285,8 @@ Four verdicts, and they are not synonyms:
 | 32 | `seams` | **cleared in card.json — the seams travel in `seams.json` (1.3, §5.3b).** The read-model list carries the source's people and its `stale` verdict next to output-only stamps; the sidecar carries exactly what a seam decision is, and the steps' `seam_keys` (inside `operations`) point at it by `seam_key`. Before 1.3 seams did not travel at all and the steps' keys were cut. |
 | 33 | `removed_pattern_history` | travels as source history and is **ignored**. Its source row and snapshot ids are never resolved or written; the receiving card starts its own pattern history. |
 | 34 | `piece_folds` | travels and is **written** — see §5.3c. Nothing in a fold is a foreign id; the people, the stamps and `source_fingerprint` on the row are source provenance and are **ignored** (the importer is the author, the server computes the fingerprint), and a fold the source read as `stale` lands stale. |
+| 35 | `cut_strips` | travels and is **written** — see §5.3d. Nothing in a strip is a foreign id except the size rows' `size_id`, which is remapped by name. `cut_mm` and `sewn_mm` on a size row are output-only and **ignored**. |
+| 36 | `cut_strip_norms` | **cleared in card.json.** The norm of a strip line is computed from the strips on every read, so a copy in the file would be a second truth. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
@@ -305,7 +310,7 @@ and an operator sent to the dictionary would find nothing to fix there.
 cuts each garment label's `files` and the `bom_line_key` of labels and packaging items, and the import
 forces both empty on whatever a file claims: a library id is a fact about the SOURCE's library, and a
 `public_url` would print the source's QR on the receiving base. `callout_number`, `artwork_per_size`
-and `artwork_per_colorway` travel, the callouts travel with them, and a number the card's callouts do
+and `artwork_per_colorway` travel, so do `source`, `kind`, `made_by`, `print_method` and `length_cm`, the callouts travel with them, and a number the card's callouts do
 not hold is cleared on arrival. The receiving card shows empty tiles: rebuild the composition row and
 upload the rest there.
 
@@ -606,6 +611,28 @@ the FUSING reconciliation leaves: a link that breaks it, or whose key no row of 
 dropped (`fold_step_conflict`), the fold imports. A link follows its OWN step's row, as a seam's does: a link whose step did not survive is
 dropped with `fold_step_missing`, never attached to another step. The import never fails for a fold.
 
+### 5.3d Cut-to-length strips in `card.json`
+
+No sidecar: `cutStrips` (§4.1, field 35) rides the outer message of `card.json`, and a step's use of a
+strip is a key in `TechCardOperation.input_keys`. `line_key` is the strip's own ULID and `bom_line_key`
+is the line's stable key, so neither is remapped; a size row's `size_id` is remapped by name like any
+other size, and a row whose size this base lacks is dropped with the `size_unknown` line that size
+already has. `contents` claims nothing about strips; the `cut_strip` counter appears in the report only
+when the archive carries strips. An archive with no `cutStrips` makes a card with no strips.
+
+The norm computed from the strips never travels. `cut_strip_norms` is cleared, a recipe row of such a
+line goes into `colorways.json` as the table holds it (numbers, provenance, waste and per-size values
+next to its pin, colour, Pantone and placement), and a row the resolver made up for a colourway with no
+row of the line is not exported. The receiving card computes the norm from the strips on read, as the
+source does. The row's own numbers land as stored and no reader gets them while a strip exists; removing
+the strip gives them back, without the `norm_marker_id` stamp no recipe row carries (`norm_marker_lost`).
+
+On import every strip is validated by the rules of a live save; a strip that does not validate or
+repeats a key is dropped (`archive_row_invalid` on `cut_strip`), a strip on a line the card does not
+have, on a line this base does not buy by the metre, or on the main fabric is dropped
+(`cut_strip_line_unusable`), and in each case the steps' input keys for it go too. A seam joining a
+dropped strip is dropped with `seam_piece_missing`. The import never fails for a strip row.
+
 ### 5.4 `materials/index.json`
 
 Passports of exactly the catalogue articles the card references — BOM lines' `material_id`, recipe
@@ -830,6 +857,7 @@ explanation and the report action text.
 | `fold_piece_missing` | a piece fold (`card.json` `pieceFolds`) is on a cut piece the imported card does not have — the fold and the steps' links to it are dropped, every other fold imports |
 | `fold_step_missing` | a step that closed a fold did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the fold imports |
 | `fold_step_conflict` | the archive's steps break the rule of fold steps (one fold on two steps, a piece's folds in reverse order, or a key no row of `pieceFolds` names) — that link is dropped; every fold `card.json` carries imports |
+| `cut_strip_line_unusable` | a strip (`card.json` `cutStrips`) is cut from a line the imported card does not have, a line this base does not buy by the metre, or the main fabric — the strip and the steps' inputs naming it are dropped, every other strip imports |
 | `style_number_taken` | the style number already exists in the target base |
 | `unknown_entry` | the archive holds a file this server does not know (newer MINOR) |
 | `archive_row_invalid` | the archive's own row is not a usable row — it names nothing, or carries a value that is not one; the row is dropped and the rest imports |
@@ -883,7 +911,7 @@ which is the only question a reason code exists to answer:
 
 `entity` on a hole is the human word for what it happened to — `media`, `material`, `bom_line`,
 `pattern`, `piece_area`, `marker`, `size`, `measurement`, `operation`, `assembly`, `colorway`,
-`seam`, `fold`, `card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
+`seam`, `fold`, `cut_strip`, `card`, `archive` — and `ref` is whatever names the row inside its own file (`bom_line_key=…`,
 `media_id=…`, `size_name=…`). `measurement` is the size chart's SECOND named axis and is
 deliberately not `size`: a measurement problem reported as a size problem sends the operator to the
 wrong dictionary. `piece_area` is the measured contour of one cut piece and is deliberately not

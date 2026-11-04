@@ -80,6 +80,14 @@ func assemblyCapabilityWireGate(pb *pb_common.TechCardInsert) error {
 // сидер или скрипт. Все они шлют assembly_aware=true и ноль узлов, и без бекстопа самый дорогой
 // ручной ввод карточки исчезал бы молча.
 func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.TechCard) error {
+	// A step input of the strip kind is not markup, so it stays out of storedHasAssemblyFacts: counting it
+	// would make the backstop below refuse an aware save with no units. A bundle that knows nothing about
+	// assembly inputs would still erase it, and that is what the shield is for.
+	if !pb.GetAssemblyAware() && storedHasCutStripInputs(stored) {
+		slog.Default().Warn("assembly gate refused an outdated bundle against a card with strip inputs",
+			slog.String("gate", "stored"), slog.Int("tech_card_id", storedCardID(stored)))
+		return outdatedAssemblyClient("the steps of this tech card take cut-to-length strips")
+	}
 	if !storedHasAssemblyFacts(stored) {
 		// Намерение без предмета. Клиент, у которого cleared протекает в каждое сохранение, иначе
 		// оставался бы невидимым до первой размеченной карточки — а там уже стирал бы её законно.
@@ -98,7 +106,7 @@ func assemblyCapabilityStoredGate(pb *pb_common.TechCardInsert, stored *entity.T
 			slog.Int("tech_card_id", storedCardID(stored)))
 		return outdatedAssemblyClient("this tech card is marked up with assembly units (what each step produces and takes)")
 	}
-	if payloadCarriesAssemblyUnits(pb) {
+	if payloadCarriesAssemblyUnitsBeside(pb, entity.CutStripKeySet(stored.CutStrips)) {
 		return nil
 	}
 	if pb.GetAssemblyCleared() {
@@ -165,10 +173,16 @@ func payloadSpeaksAssembly(pb *pb_common.TechCardInsert) bool {
 // деталей ЭТОГО ЖЕ payload'а. Сравнение по своему же payload'у, а не по сохранённой карточке:
 // детали приходят в той же записи, и спрашивать базу здесь незачем.
 func payloadCarriesAssemblyUnits(pb *pb_common.TechCardInsert) bool {
+	return payloadCarriesAssemblyUnitsBeside(pb, nil)
+}
+
+// payloadCarriesAssemblyUnitsBeside also knows the strip keys the stored card has. A strip is not a unit,
+// whether the payload lists it or, from a client that does not know about strips, only echoes its key.
+func payloadCarriesAssemblyUnitsBeside(pb *pb_common.TechCardInsert, storedStrips map[string]bool) bool {
 	if pb == nil {
 		return false
 	}
-	pieceKeys := make(map[string]bool, len(pb.GetPieces()))
+	pieceKeys := make(map[string]bool, len(pb.GetPieces())+len(pb.GetCutStrips())+len(storedStrips))
 	for _, p := range pb.GetPieces() {
 		if p == nil {
 			continue
@@ -176,6 +190,14 @@ func payloadCarriesAssemblyUnits(pb *pb_common.TechCardInsert) bool {
 		if k := strings.TrimSpace(p.GetLineKey()); k != "" {
 			pieceKeys[k] = true
 		}
+	}
+	for _, s := range pb.GetCutStrips() {
+		if k := strings.TrimSpace(s.GetLineKey()); k != "" {
+			pieceKeys[k] = true
+		}
+	}
+	for k := range storedStrips {
+		pieceKeys[k] = true
 	}
 	for _, o := range pb.GetOperations() {
 		if o == nil {

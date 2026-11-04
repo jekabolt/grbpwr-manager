@@ -347,11 +347,14 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 }
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
-	normalizedPlacement := ""
-	if placement.Valid {
-		normalizedPlacement = strings.ToLower(strings.TrimSpace(placement.String))
+	return recipeUsagePinSlot{recipeUsageSlot: slot, Placement: normalizedRecipePlacement(placement)}
+}
+
+func normalizedRecipePlacement(placement sql.NullString) string {
+	if !placement.Valid {
+		return ""
 	}
-	return recipeUsagePinSlot{recipeUsageSlot: slot, Placement: normalizedPlacement}
+	return strings.ToLower(strings.TrimSpace(placement.String))
 }
 
 type materialPinStateRow struct {
@@ -393,6 +396,14 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			return entity.ErrTechCardConflict
 		}
 
+		// The norm of a strip line is not typed. Before the range check: a number that is thrown away
+		// has no size range to fit, and neither has one the table already holds.
+		var keptNorms map[int]usageProvenance
+		usages, keptNorms, err = sanitizeCutStripRecipe(ctx, rep.DB(), cur.StyleID, colorwayID, usages)
+		if err != nil {
+			return err
+		}
+
 		// Per-size consumption may only be stated for sizes the STYLE makes. The parser cannot check
 		// this (it never sees the style) and the FK is on size(id), so an off-range norm used to
 		// persist as a rule no production run can ever apply.
@@ -401,6 +412,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			return err
 		}
 		for i := range usages {
+			if _, kept := keptNorms[i]; kept {
+				continue
+			}
 			for j, sc := range usages[i].SizeConsumptions {
 				if err := rng.Require(fmt.Sprintf("usages[%d].size_consumptions[%d].size_id", i, j), sc.SizeId); err != nil {
 					return err
@@ -640,6 +654,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			// above) must clear the marker id before the pair is compared, or a row that just lost
 			// its 'marker' source would still be measured against the stored раскладка.
 			prov = stampAppliedAt(prov.normalized(), priorProvenanceBySlot[pinSlot], now)
+			if kept, ok := keptNorms[i]; ok {
+				prov = kept // the row of a strip line keeps its provenance as stored, clock included
+			}
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
 				provenance: prov,
@@ -830,6 +847,11 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			}
 		}
 
+		// The full replace above may come from a form loaded before a label was picked.
+		if err := product.SyncPickedBomRecipe(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
+		}
+
 		// P4-flyover M1 (04-MAZE-FLYOVER.md): a recipe write is a mutation of the style aggregate
 		// (Ф5 plan), so re-derive the structural composition (S17) the same way UpdateStyle does — a
 		// manual override already on file is preserved (entity.ReconcileStyleComposition).
@@ -879,7 +901,7 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 		return nil, fmt.Errorf("load colourway %d recipe: %w", colorwayID, err)
 	}
 	if len(usages) == 0 {
-		return usages, nil
+		return s.resolveCutStripRecipe(ctx, colorwayID, usages)
 	}
 	usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usages))
 	usageIDs := make([]int, 0, len(usages))
@@ -900,7 +922,7 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 			u.SizeConsumptions = append(u.SizeConsumptions, c.TechCardBomSizeConsumption)
 		}
 	}
-	return usages, nil
+	return s.resolveCutStripRecipe(ctx, colorwayID, usages)
 }
 
 // resolveUsageBom resolves a usage's BOM reference to a real bom_item id: by stable line_key

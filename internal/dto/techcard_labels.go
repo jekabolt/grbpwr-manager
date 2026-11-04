@@ -9,6 +9,8 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // Labels rework (0386): the composition label record, the garment labels and the packaging items.
@@ -259,6 +261,27 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		if err != nil {
 			return nil, err
 		}
+		source, err := parseGarmentLabelSource(f+".source", l.GetSource())
+		if err != nil {
+			return nil, err
+		}
+		kind, madeBy, printMethod := strings.TrimSpace(l.Kind), strings.TrimSpace(l.MadeBy), strings.TrimSpace(l.PrintMethod)
+		for _, c := range []struct {
+			name string
+			v    string
+			max  int
+		}{{"kind", kind, maxVarchar64}, {"made_by", madeBy, 32}, {"print_method", printMethod, 32}} {
+			if err := checkLabelText(f+"."+c.name, c.v, c.max); err != nil {
+				return nil, err
+			}
+		}
+		if source != entity.GarmentLabelSourceMake {
+			madeBy, printMethod = "", ""
+		}
+		lengthCm, err := parseGarmentLabelLength(f+".length_cm", l.LengthCm)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardGarmentLabel{
 			Key:           l.Key,
 			Placement:     nullStringFromPb(l.Placement),
@@ -276,6 +299,13 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			ArtworkPerColorway: l.GetArtworkPerColorway(),
 			Files:              files,
 			ArtworkOmitted:     l.ArtworkPerSize == nil,
+
+			Source:      source,
+			Kind:        kind,
+			MadeBy:      madeBy,
+			PrintMethod: printMethod,
+			LengthCm:    lengthCm,
+			PickOmitted: l.Source == nil,
 		})
 	}
 	return out, nil
@@ -283,6 +313,37 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 
 // parseLabelBomLineKey validates the address of a BOM line. Whether a line carries it is judged
 // later, against the payload's BOM: a stale key is cleared there and never breaks a save.
+func parseGarmentLabelSource(field, source string) (entity.GarmentLabelSource, error) {
+	switch s := entity.GarmentLabelSource(strings.TrimSpace(source)); s {
+	case "", entity.GarmentLabelSourceStock, entity.GarmentLabelSourceMake:
+		return s, nil
+	default:
+		return "", entity.NewFieldViolation(field, "unknown label source", source, "use stock or make")
+	}
+}
+
+// parseGarmentLabelLength reads the per garment length: DECIMAL(8,2), and unset is 0.
+func parseGarmentLabelLength(field string, d *pb_decimal.Decimal) (decimal.Decimal, error) {
+	if d == nil || strings.TrimSpace(d.Value) == "" {
+		return decimal.Zero, nil
+	}
+	v, err := decimal.NewFromString(strings.TrimSpace(d.Value))
+	if err != nil {
+		return decimal.Zero, entity.NewFieldViolation(field, "not a number", d.Value, "send centimetres, for example 6.5")
+	}
+	if v.IsNegative() || v.GreaterThanOrEqual(decimal.NewFromInt(1000000)) || v.Truncate(1).Cmp(v) != 0 {
+		return decimal.Zero, entity.NewFieldViolation(field, "out of range", d.Value, "from 0 to 999999.9, one decimal: the line counts metres to three")
+	}
+	return v, nil
+}
+
+func garmentLabelLengthToPb(v decimal.Decimal) *pb_decimal.Decimal {
+	if !v.IsPositive() {
+		return nil
+	}
+	return &pb_decimal.Decimal{Value: v.String()}
+}
+
 func parseLabelBomLineKey(field, key string) (string, error) {
 	key = strings.TrimSpace(key)
 	if len(key) > maxLabelBomLineKey {
@@ -498,6 +559,7 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 	out := make([]*pb_common.TechCardGarmentLabel, 0, len(labels))
 	for _, l := range labels {
 		perSize := l.ArtworkPerSize
+		source := string(l.Source)
 		out = append(out, &pb_common.TechCardGarmentLabel{
 			Key:           l.Key,
 			Placement:     pbStringFromNull(l.Placement),
@@ -514,6 +576,12 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 			ArtworkPerSize:     &perSize,
 			ArtworkPerColorway: l.ArtworkPerColorway,
 			Files:              garmentLabelFilesToPb(l.Files),
+
+			Source:      &source,
+			Kind:        l.Kind,
+			MadeBy:      l.MadeBy,
+			PrintMethod: l.PrintMethod,
+			LengthCm:    garmentLabelLengthToPb(l.LengthCm),
 		})
 	}
 	return out
@@ -578,7 +646,7 @@ func GarmentLabelsWithoutMockup(tc *entity.TechCardInsert) []string {
 	var out []string
 	for i := range tc.GarmentLabels {
 		l := &tc.GarmentLabels[i]
-		if l.IsComposition() {
+		if !l.NeedsArtwork() {
 			continue
 		}
 		if len(l.MediaIds) == 0 && len(l.Files) == 0 {
@@ -606,6 +674,9 @@ func CarryOmittedGarmentLabelArtwork(stored, tc *entity.TechCardInsert) {
 	}
 	for i := range tc.GarmentLabels {
 		l := &tc.GarmentLabels[i]
+		if prev, ok := byKey[l.Key]; ok && l.PickOmitted {
+			l.Source, l.Kind, l.MadeBy, l.PrintMethod, l.LengthCm = prev.Source, prev.Kind, prev.MadeBy, prev.PrintMethod, prev.LengthCm
+		}
 		if !l.ArtworkOmitted {
 			continue
 		}

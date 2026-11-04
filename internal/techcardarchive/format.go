@@ -42,6 +42,10 @@ const (
 	// added, the reader checks MINOR in neither direction, and a server without the feature drops the
 	// keys through DiscardUnknown and imports the card exactly as before.
 	//
+	// The cut strips (0449, §5.3d) stay in 1.3 as well: one repeated field inside card.json, omitted when
+	// empty, and no file and no contents.* claim. A server without the feature drops them through
+	// DiscardUnknown and imports the card with no strips, and a step's strip input reads there as a unit.
+	//
 	// The packaging picks (0448, §4.1a) stay in 1.3 as well: fields inside card.json, one optional map
 	// under id_maps, passports in the existing index, and no file and no contents.* claim.
 	FormatMajor = 1

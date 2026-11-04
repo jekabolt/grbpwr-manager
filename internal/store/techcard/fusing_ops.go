@@ -43,6 +43,7 @@ type fusingInputRow struct {
 	OperationID int            `db:"operation_id"`
 	PieceID     sql.NullInt64  `db:"piece_id"`
 	UnitKey     sql.NullString `db:"unit_key"`
+	CutStripID  sql.NullInt64  `db:"cut_strip_id"`
 }
 
 type fusingBomLinkRow struct {
@@ -257,7 +258,7 @@ func reconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int, s
 		return fmt.Errorf("load operations for fusing reconciliation: %w", err)
 	}
 	inputRows, err := storeutil.QueryListNamed[fusingInputRow](ctx, db, `
-		SELECT l.operation_id, l.piece_id, l.unit_key
+		SELECT l.operation_id, l.piece_id, l.unit_key, l.cut_strip_id
 		FROM tech_card_operation_input l
 		JOIN tech_card_operation o ON o.id = l.operation_id
 		WHERE o.tech_card_id = :tech_card_id
@@ -280,6 +281,10 @@ func reconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int, s
 	for _, row := range inputRows {
 		switch {
 		case row.UnitKey.Valid && row.UnitKey.String != "":
+			unitsOf[row.OperationID] = true
+		case row.CutStripID.Valid:
+			// Any input that is not a piece, as the write model's classify has it: a step taking a strip
+			// is a person's step, and adopting it would delete the strip's input with the fused flag.
 			unitsOf[row.OperationID] = true
 		case row.PieceID.Valid:
 			piecesOf[row.OperationID] = append(piecesOf[row.OperationID], int(row.PieceID.Int64))

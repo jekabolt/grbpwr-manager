@@ -197,7 +197,7 @@ func pieceInputKeys(op *entity.TechCardOperation, pieceKeys map[string]bool) []s
 		return keys
 	case len(op.InputKeys) > 0 && pieceKeys != nil:
 		keys := make([]string, 0, len(op.InputKeys))
-		for _, input := range entity.ClassifyAssemblyInputs(pieceKeys, op.InputKeys) {
+		for _, input := range entity.ClassifyAssemblyInputs(pieceKeys, nil, op.InputKeys) {
 			if input.Kind == entity.AssemblyInputPiece {
 				keys = append(keys, input.Key)
 			}

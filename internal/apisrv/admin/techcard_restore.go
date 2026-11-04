@@ -102,6 +102,10 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 
 	fx := s.costingFx(ctx)
 	current := dto.ConvertEntityTechCardToPb(stored, fx).GetTechCard()
+	// Before the payload is built: its assembly flags have to tell a strip input from a unit.
+	if err := restoreCutStripsFromSnapshot(snap.Snapshot, frozen); err != nil {
+		return nil, err
+	}
 	in, err := restoreTechCardPayload(frozen.GetTechCard(), stored, current)
 	if err != nil {
 		return nil, err
@@ -198,6 +202,22 @@ func restoreSeamsFromSnapshot(techCardID int, raw string, frozen *pb_common.Tech
 		}
 	}
 	return out, nil
+}
+
+// restoreCutStripsFromSnapshot moves the snapshot's strips onto its write payload. A snapshot older than
+// strips has no such key: the payload then stays unaware and the card's strips stay as they are. A key
+// with an empty list is a card that had none, and restoring it removes them.
+func restoreCutStripsFromSnapshot(raw string, frozen *pb_common.TechCard) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return status.Error(codes.FailedPrecondition, "this snapshot cannot be restored: "+err.Error())
+	}
+	if _, ok := top[snapshotCutStripsField]; !ok {
+		return nil
+	}
+	frozen.TechCard.CutStrips = frozen.GetCutStrips()
+	frozen.TechCard.CutStripsAware = true
+	return nil
 }
 
 // restoreTechCardPayload builds the UpdateTechCard payload that makes the card read like `frozen`.

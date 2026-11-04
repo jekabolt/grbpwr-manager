@@ -481,7 +481,21 @@ func buildColorway(card, old *entity.TechCard, cw *entity.TechCardColorway, idx 
 		if cw.Usages[i].IsPieceMaterialAssignment() {
 			continue
 		}
-		out.Usages = append(out.Usages, buildUsage(card, &cw.Usages[i], baseSize, sizeNames))
+		row := buildUsage(card, &cw.Usages[i], baseSize, sizeNames)
+		if row.Uncosted && !row.SizeGraded {
+			// A row with no number of its own reads the slot's count (entity/countable.go).
+			for j := range card.BomItems {
+				b := &card.BomItems[j]
+				if !cw.Usages[i].BomItemId.Valid || int64(b.Id) != cw.Usages[i].BomItemId.Int64 {
+					continue
+				}
+				if qty, _ := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b); qty.Valid {
+					s := qty.Decimal.String()
+					row.PerGarment, row.Uncosted = &s, false
+				}
+			}
+		}
+		out.Usages = append(out.Usages, row)
 	}
 	return out
 }

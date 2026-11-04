@@ -364,6 +364,10 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// Сгибы (0443) в клон тоже не копируются, как швы, значит и шаги не могут их называть (0444).
 	stripOperationFoldKeys(pbInsert)
 	pbInsert.LabelsAware = true
+	// Strips travel with the BOM and the step inputs, by the same keys. Seams are not copied, so a strip
+	// stops naming one and keeps the seam lengths it was given.
+	pbInsert.CutStrips = cloneCutStripsWithoutSeams(full.GetCutStrips())
+	pbInsert.CutStripsAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator
