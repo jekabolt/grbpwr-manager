@@ -1552,9 +1552,12 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 ) error {
 	kept := map[string]bool{}
 	if len(seams) > 0 {
+		// A seam may join a strip of the card as well as a piece of it.
 		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
 			SELECT line_key FROM tech_card_piece
-			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+			WHERE tech_card_id = :id AND line_key IS NOT NULL
+			UNION ALL
+			SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id`, map[string]any{"id": techCardID})
 		if err != nil {
 			return fmt.Errorf("load piece keys of imported tech card %d: %w", techCardID, err)
 		}

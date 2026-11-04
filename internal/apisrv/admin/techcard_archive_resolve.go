@@ -313,6 +313,8 @@ type tcimpResolver struct {
 	// two. Keyed by the payload's own pointer — see degradeBomLine.
 	bomDegraded map[*pb_common.TechCardBomItem]bool
 
+	// articleUnits is the unit of each article of this base, kept for the strips (resolveCutStrips).
+	articleUnits map[int64]string
 	// passports and packagingArticles are what resolveMaterials read, kept for the packaging picks: the
 	// archive's passports by source id, and which articles of this base are of class packaging.
 	passports         map[int64]techcardarchive.MaterialPassport
@@ -418,6 +420,11 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	insert.BomQtyAware = true
 	insert.LabelsAware = true
 	insert.PackagingPicksAware = true
+	// The strips ride the outer message of card.json and land through the insert half. Before
+	// resolveSizes, because their size rows are remapped with everything else. An older archive has no
+	// strips, and the card it makes has none either.
+	insert.CutStrips = r.out.Card.GetCutStrips()
+	insert.CutStripsAware = true
 
 	r.resolveCategory(di.Categories)
 	if err := r.resolveMedia(ctx); err != nil {
@@ -457,6 +464,8 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	if err := r.resolveDesignQuiz(); err != nil {
 		return nil, err
 	}
+	// BEFORE resolveSeams: a seam may join a strip, and only a strip that survives counts.
+	r.resolveCutStrips()
 	if err := r.resolveSeams(); err != nil {
 		return nil, err
 	}
@@ -818,7 +827,9 @@ func (r *tcimpResolver) resolveMaterials(ctx context.Context) error {
 			r.out.MaterialPlan[p.Ref] = tcimpMaterialMatch{TargetID: id, Verdict: verdict}
 		}
 		r.packagingArticles = make(map[int]bool, len(catalog))
+		r.articleUnits = make(map[int64]string, len(catalog))
 		for i := range catalog {
+			r.articleUnits[int64(catalog[i].Id)] = catalog[i].Unit.String
 			if string(catalog[i].MaterialClass) == string(entity.MaterialClassPackaging) {
 				r.packagingArticles[catalog[i].Id] = true
 			}

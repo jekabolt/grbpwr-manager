@@ -553,6 +553,12 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, langua
 		recipe := make([]techcardarchive.RecipeLine, 0, len(cw.Usages))
 		for j := range cw.Usages {
 			u := &cw.Usages[j]
+			// A strip line's numbers are computed from the strips on every read, so they do not travel.
+			// A row the resolver made up has nothing else on it and is no row of this colourway at all.
+			derived := u.IsCutLengthNorm()
+			if derived && u.Id == 0 {
+				continue
+			}
 			line := techcardarchive.RecipeLine{
 				BomLineKey:        bomKeys[u.BomItemId.Int64],
 				PieceLineKey:      pieceKeys[u.PieceId.Int64],
@@ -566,7 +572,14 @@ func collectArchiveColorways(card *entity.TechCard, sizes map[int]string, langua
 				WasteSelvedgePct:  decimalOrEmpty(u.WasteSelvedgePct),
 				WasteCutPct:       decimalOrEmpty(u.WasteCutPct),
 			}
+			if derived {
+				line.Consumption, line.Quantity, line.ConsumptionSource = "", "", ""
+				line.WasteSelvedgePct, line.WasteCutPct = "", ""
+			}
 			for _, cons := range u.SizeConsumptions {
+				if derived {
+					break
+				}
 				name, ok := sizes[cons.SizeId]
 				if !ok {
 					holes = append(holes, archiveHole(techcardarchive.EntityColorway, ref,

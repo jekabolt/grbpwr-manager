@@ -140,6 +140,10 @@ func (r *tcimpResolver) resolveSeams() error {
 			pieces[k] = true
 		}
 	}
+	// A seam may join a strip that landed (resolveCutStrips ran before this).
+	for _, s := range r.out.Insert.GetCutStrips() {
+		pieces[entity.CutStripLineKey(s.GetLineKey())] = true
+	}
 
 	kept := make(map[string]bool, len(rows))
 	seen := make(map[string]bool, len(rows))

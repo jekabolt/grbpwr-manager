@@ -75,9 +75,12 @@ const (
 	EntitySeam = "seam"
 	// EntityFold is one piece fold of card.json (pieceFolds) — a row of tech_card_piece_fold. Counted
 	// the seams' way: the counter appears only when the archive carries folds.
-	EntityFold    = "fold"
-	EntityCard    = "card"
-	EntityArchive = "archive"
+	EntityFold = "fold"
+	// EntityCutStrip is one cut-to-length strip of card.json (cutStrips), a row of tech_card_cut_strip.
+	// Counted the seams' way: the counter appears only when the archive carries strips.
+	EntityCutStrip = "cut_strip"
+	EntityCard     = "card"
+	EntityArchive  = "archive"
 )
 
 // CountedEntities is the fixed set of entities that carry a counter, in the order they appear in
@@ -531,6 +534,10 @@ var reasonGuide = map[Reason]reasonGuidance{
 			"folds in reverse order, or a fold the archive does not carry — so this link was dropped and " +
 			"the fold, if the archive has it, stays with no step or on its first. Pick the fold on the " +
 			"right step again if it is still wanted."},
+	ReasonCutStripLineUnusable: {StatusSkipped,
+		"This strip is cut from a material line the imported card does not have, one this base does not " +
+			"buy by the metre, or its main fabric, so the strip was dropped together with the steps' use " +
+			"of it. The line itself imported. Mark the line as cut to length again if it is still wanted."},
 	ReasonStyleNumberTaken: {StatusDegraded,
 		"The style number from the archive is already in use here, so the card landed under a " +
 			"different one. Rename the card if that is not what you want."},

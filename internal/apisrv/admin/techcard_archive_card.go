@@ -175,6 +175,12 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.PackagingPicksAware = true
 	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
+	// The strips sit on the outer read message, so the writable half has none of its own. Without them
+	// a step's strip input would read as a dangling unit, which is not what the import will see.
+	if card != nil {
+		probe.CutStrips = dto.TechCardCutStripsToPb(card.CutStrips, card.SizeIds)
+	}
+	probe.CutStripsAware = true
 
 	if _, err := dto.ConvertPbTechCardInsertToEntity(probe); err != nil {
 		return []techcardarchive.ExportHole{{
@@ -324,6 +330,10 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// Piece folds (0443) and the steps' fold_keys (0444) stay right here in card.json (FORMAT.md §5.3c):
 	// pieceFolds has travelled since the folds were born, and a fold_key is the card's own identity of
 	// a fold. The import writes the rows and links the steps; no sidecar and no contents.* claim.
+
+	// Cut strips (0449) ride here too (FORMAT.md §5.3d). The line's norm next to them is computed on
+	// every read from these very strips, so a copy of it in the file would be a second truth.
+	pb.CutStripNorms = nil
 
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.
