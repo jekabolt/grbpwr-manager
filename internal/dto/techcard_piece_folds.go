@@ -14,6 +14,7 @@ import (
 var pieceFoldKindFromPb = map[pb_common.TechCardPieceFoldKind]entity.TechCardPieceFoldKind{
 	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_INWARD:  entity.TechCardPieceFoldInward,
 	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_OUTWARD: entity.TechCardPieceFoldOutward,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT:   entity.TechCardPieceFoldPleat,
 }
 
 var pieceFoldSourceFromPb = map[pb_common.TechCardPieceFoldSource]entity.TechCardPieceFoldSource{
@@ -58,7 +59,7 @@ func TechCardPieceFoldsWriteFromPb(techCardID int, folds []*pb_common.TechCardPi
 		}
 		kind, ok := pieceFoldKindFromPb[f.GetKind()]
 		if !ok {
-			return in, entity.NewFieldViolation(at+".kind", "invalid", f.GetKind().String(), "INWARD or OUTWARD")
+			return in, entity.NewFieldViolation(at+".kind", "invalid", f.GetKind().String(), "INWARD, OUTWARD or PLEAT")
 		}
 		src, ok := pieceFoldSourceFromPb[f.GetSource()]
 		if !ok {

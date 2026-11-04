@@ -43,6 +43,8 @@ const (
 	TechCardPieceFoldInward TechCardPieceFoldKind = "inward"
 	// TechCardPieceFoldOutward: the flap lands on the piece's outside face.
 	TechCardPieceFoldOutward TechCardPieceFoldKind = "outward"
+	// TechCardPieceFoldPleat: three rows close a wedge, halves stay face up, fabric stays inside.
+	TechCardPieceFoldPleat TechCardPieceFoldKind = "pleat"
 )
 
 // TechCardPieceFoldSource is where the line came from.
@@ -101,7 +103,7 @@ type TechCardPieceFoldsWrite struct {
 }
 
 var techCardPieceFoldKinds = map[TechCardPieceFoldKind]bool{
-	TechCardPieceFoldInward: true, TechCardPieceFoldOutward: true,
+	TechCardPieceFoldInward: true, TechCardPieceFoldOutward: true, TechCardPieceFoldPleat: true,
 }
 
 var techCardPieceFoldSources = map[TechCardPieceFoldSource]bool{
@@ -155,7 +157,7 @@ func ValidateTechCardPieceFoldsWrite(in *TechCardPieceFoldsWrite) error {
 		}
 		seenSeq[seqKey] = i
 		if !techCardPieceFoldKinds[f.Kind] {
-			return NewFieldViolation(at+".kind", "invalid", string(f.Kind), "inward or outward")
+			return NewFieldViolation(at+".kind", "invalid", string(f.Kind), "inward, outward or pleat")
 		}
 		if !techCardPieceFoldSources[f.Source] {
 			return NewFieldViolation(at+".source", "invalid", string(f.Source), "dxf, owner or accepted_hint")
