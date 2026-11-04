@@ -178,6 +178,10 @@ func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID 
 // left. Twelve orders of 1/12 of a box book exactly one box, not 0.996; a share below the third place
 // books nothing now and is not lost. Materials go in id order so two orders cannot deadlock on the
 // carry rows. Whole needs do not touch the carry.
+//
+// A cancel releases the order's claim and leaves the carry as it is, on purpose: the remainder an order
+// moved stays, at most 0.0005 of a unit per order, and a share below the third place stays whole. Taking
+// it back would need the carry of every order kept apart, for less than the stock can show.
 func settleFractions(ctx context.Context, db dependency.DB, req map[int]decimal.Decimal) (map[int]decimal.Decimal, error) {
 	out := make(map[int]decimal.Decimal, len(req))
 	for _, materialID := range sortedMaterialIDs(req) {
