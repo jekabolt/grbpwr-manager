@@ -323,8 +323,8 @@ func checkC3bMockups(v *cardView) []Finding {
 	applicable := 0
 	for i := range v.card.GarmentLabels {
 		l := &v.card.GarmentLabels[i]
-		if l.IsComposition() {
-			continue // составник рисует движок, мокапа у него не бывает
+		if !l.NeedsArtwork() {
+			continue // составник рисует движок, лейбл со склада покупается как есть
 		}
 		applicable++
 		// Картинка для цеха — мокап или файл; то же условие, что у гейта подписи.

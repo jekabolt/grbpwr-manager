@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // Labels rework (0386): the composition (care) label record, the garment labels and the packaging
@@ -152,6 +153,16 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		if err != nil {
 			return err
 		}
+		// A source owns a countable BOM line: without one it would save, show, and cost nothing.
+		if l.Source != "" {
+			field := fmt.Sprintf("garment_labels[%d].source", i)
+			if !bom.Valid {
+				return entity.NewFieldViolation(field, "no_bom_line", l.Key, "pick a material for this label")
+			}
+			if !entity.IsCountableSection(bomRes.sectionByID[int(bom.Int32)]) {
+				return entity.NewFieldViolation(field, "measured_bom_line", l.Key, "use a BOM line counted in pieces")
+			}
+		}
 		qty := l.QtyPerGarment
 		if qty < 1 {
 			qty = 1
@@ -159,9 +170,11 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_garment_label
 				(tech_card_id, label_key, placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
-				 callout_number, artwork_per_size, artwork_per_colorway)
+				 callout_number, artwork_per_size, artwork_per_colorway,
+				 label_source, label_kind, made_by, print_method, length_cm)
 			VALUES (:tech_card_id, :label_key, :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
-				 :callout_number, :artwork_per_size, :artwork_per_colorway)`,
+				 :callout_number, :artwork_per_size, :artwork_per_colorway,
+				 :label_source, :label_kind, :made_by, :print_method, :length_cm)`,
 			map[string]any{
 				"tech_card_id":         tcID,
 				"label_key":            l.Key,
@@ -176,6 +189,11 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 				"callout_number":       l.CalloutNumber,
 				"artwork_per_size":     l.ArtworkPerSize,
 				"artwork_per_colorway": l.ArtworkPerColorway,
+				"label_source":         string(l.Source),
+				"label_kind":           l.Kind,
+				"made_by":              l.MadeBy,
+				"print_method":         l.PrintMethod,
+				"length_cm":            l.LengthCm,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card garment label: %w", err)
@@ -426,6 +444,12 @@ type garmentLabelRow struct {
 	CalloutNumber      int  `db:"callout_number"`
 	ArtworkPerSize     bool `db:"artwork_per_size"`
 	ArtworkPerColorway bool `db:"artwork_per_colorway"`
+
+	Source      string          `db:"label_source"`
+	Kind        string          `db:"label_kind"`
+	MadeBy      string          `db:"made_by"`
+	PrintMethod string          `db:"print_method"`
+	LengthCm    decimal.Decimal `db:"length_cm"`
 }
 
 // garmentLabelFileRow is one artwork file with the state of its public link. LinkEpoch is 0 unless
@@ -597,7 +621,8 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 
 	glRows, err := storeutil.QueryListNamed[garmentLabelRow](ctx, s.DB, `
 		SELECT l.id, l.tech_card_id, l.label_key, l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
-			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway
+			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway,
+			l.label_source, l.label_kind, l.made_by, l.print_method, l.length_cm
 		FROM tech_card_garment_label l
 		LEFT JOIN tech_card_bom_item b ON b.id = l.bom_item_id
 		WHERE l.tech_card_id IN (:ids)
@@ -624,7 +649,9 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, BomLineKey: r.BomLineKey.String,
 			Note: r.Note, MediaIds: glMedia[r.Id],
 			CalloutNumber: r.CalloutNumber, ArtworkPerSize: r.ArtworkPerSize, ArtworkPerColorway: r.ArtworkPerColorway,
-			Files: glFiles[r.Id],
+			Files:  glFiles[r.Id],
+			Source: entity.GarmentLabelSource(r.Source), Kind: r.Kind, MadeBy: r.MadeBy, PrintMethod: r.PrintMethod,
+			LengthCm: r.LengthCm,
 		})
 	}
 

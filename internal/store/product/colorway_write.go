@@ -112,6 +112,9 @@ func (s *Store) CreateColorway(ctx context.Context, styleID int, prd *entity.Col
 		if err := applyColorwayDevelopmentBlock(ctx, rep.DB(), colorwayID, dev); err != nil {
 			return err
 		}
+		if err := SyncPickedBomRecipe(ctx, rep.DB(), styleID); err != nil {
+			return err
+		}
 		return refreshColorwayDisplayName(ctx, rep.DB(), colorwayID)
 	})
 	if err != nil {

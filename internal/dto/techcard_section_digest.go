@@ -1378,12 +1378,36 @@ func labelsProjection(tc *entity.TechCardInsert) any {
 		if tail := garmentLabelArtworkTail(l); len(tail) > 0 {
 			row = append(row, []any{"artwork", tail})
 		}
+		if tail := garmentLabelPickTail(l); len(tail) > 0 {
+			row = append(row, []any{"pick", tail})
+		}
 		out = append(out, row)
 	}
 	if care := blankAsAbsent(tc.CareLabel, careLabelRow); care != nil {
 		out = append(out, []any{"care_label", care})
 	}
 	return out
+}
+
+// garmentLabelPickTail holds only set values, sorted by name, so an older row's signature does not move.
+func garmentLabelPickTail(l *entity.TechCardGarmentLabel) []any {
+	var tail []any
+	if l.Kind != "" {
+		tail = append(tail, []any{"kind", l.Kind})
+	}
+	if l.LengthCm.IsPositive() {
+		tail = append(tail, []any{"length_cm", l.LengthCm.StringFixed(2)})
+	}
+	if l.MadeBy != "" {
+		tail = append(tail, []any{"made_by", l.MadeBy})
+	}
+	if l.PrintMethod != "" {
+		tail = append(tail, []any{"print_method", l.PrintMethod})
+	}
+	if l.Source != "" {
+		tail = append(tail, []any{"source", string(l.Source)})
+	}
+	return tail
 }
 
 // garmentLabelArtworkTail — пары хвоста этикетки, отсортированные по имени колонки.

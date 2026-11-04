@@ -1520,6 +1520,22 @@ func (u *TechCardColorwayUsage) IsPieceMaterialAssignment() bool {
 		u.PieceIndex.Valid
 }
 
+// IsBareLineRow reports a garment-level row that says only «this colourway uses the line»: no number,
+// no pin, no placement, no colour, no provenance. It is the shape product.SyncPickedBomRecipe writes, and
+// anything a person adds to it makes it an authored row. Read off the row, so it holds on a live card
+// and on a frozen snapshot alike, and survives the recipe's full replace.
+func (u *TechCardColorwayUsage) IsBareLineRow() bool {
+	if u.IsPieceMaterialAssignment() || u.Consumption.Valid || u.Quantity.Valid ||
+		len(u.SizeConsumptions) > 0 || u.MaterialId.Valid || u.NormMarkerId.Valid {
+		return false
+	}
+	if u.ConsumptionSource.Valid && u.ConsumptionSource.String != "" && u.ConsumptionSource.String != ConsumptionSourceManual {
+		return false
+	}
+	return strings.TrimSpace(u.Placement.String) == "" && strings.TrimSpace(u.Color.String) == "" &&
+		strings.TrimSpace(u.Pantone.String) == ""
+}
+
 // LineTotal is the usage's per-garment material cost, resolved against its catalog
 // article (bom). It is INVALID (the cost moves to SizeRunTotal) when the usage has
 // per-size consumption. A countable trim (Quantity, no Consumption) is Quantity ×
@@ -3916,6 +3932,35 @@ type TechCardGarmentLabel struct {
 	// ArtworkOmitted is the presence bit of artwork_per_size: the payload came from a client that
 	// knows nothing of the pin, the mode and the files, and the stored ones are carried. Parse only.
 	ArtworkOmitted bool
+	// Source says how the label was chosen (0451). Non-empty = the label owns its BOM line:
+	// product.SyncPickedBomRecipe writes the line's count and its recipe rows.
+	Source GarmentLabelSource
+	// Kind is the label's type when Key does not say it: a stock row's key is the material's name.
+	Kind string
+	// MadeBy / PrintMethod: how a made label is produced.
+	MadeBy      string
+	PrintMethod string
+	// LengthCm is the per garment length of goods sold by the metre; 0 = counted in QtyPerGarment.
+	LengthCm decimal.Decimal
+	// PickOmitted is the presence bit of source: the payload came from a client that knows nothing of
+	// the fields above, and the stored ones are carried. Parse only.
+	PickOmitted bool
+}
+
+// GarmentLabelSource says how a garment label was chosen.
+type GarmentLabelSource string
+
+const (
+	// GarmentLabelSourceStock is a material from stock used as it is: no artwork is asked of it.
+	GarmentLabelSourceStock GarmentLabelSource = "stock"
+	// GarmentLabelSourceMake is made for this style.
+	GarmentLabelSourceMake GarmentLabelSource = "make"
+)
+
+// NeedsArtwork reports whether the shop needs a picture of this label. The composition row is drawn by
+// the engine and a stock label is bought as it is.
+func (l *TechCardGarmentLabel) NeedsArtwork() bool {
+	return !l.IsComposition() && l.Source != GarmentLabelSourceStock
 }
 
 // GarmentLabelKeyComposition is the row holding the composition label's location, material and files.

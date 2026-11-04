@@ -272,6 +272,9 @@ func (s *Store) RelinkDraftColorway(ctx context.Context, colorwayID, targetStyle
 		if err := MintProductSKUs(ctx, rep.DB(), colorwayID); err != nil {
 			return fmt.Errorf("re-mint colourway %d after relink: %w", colorwayID, err)
 		}
+		if err := SyncPickedBomRecipe(ctx, rep.DB(), targetStyleID); err != nil {
+			return err
+		}
 		if err := bumpRelinkStyleVersions(ctx, rep.DB(), cw.StyleID, targetStyleID); err != nil {
 			return err
 		}

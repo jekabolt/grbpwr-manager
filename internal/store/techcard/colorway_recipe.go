@@ -847,6 +847,11 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			}
 		}
 
+		// The full replace above may come from a form loaded before a label was picked.
+		if err := product.SyncPickedBomRecipe(ctx, rep.DB(), cur.StyleID); err != nil {
+			return err
+		}
+
 		// P4-flyover M1 (04-MAZE-FLYOVER.md): a recipe write is a mutation of the style aggregate
 		// (Ф5 plan), so re-derive the structural composition (S17) the same way UpdateStyle does — a
 		// manual override already on file is preserved (entity.ReconcileStyleComposition).

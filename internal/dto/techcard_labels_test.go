@@ -9,6 +9,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // Labels rework (0386): parse / convert / digest of the composition label record, the garment
@@ -136,6 +137,7 @@ func TestParseCareLabelNormalises(t *testing.T) {
 // Round trip pb → entity → pb keeps every field of the three sections.
 func TestLabelsReworkRoundTrip(t *testing.T) {
 	perSize := true
+	source := "make"
 	in := &pb_common.TechCardInsert{
 		CareLabel: &pb_common.TechCardCareLabel{
 			LogoMediaId: 44, CareProseLines: []string{"MACHINE WASH COLD"}, QrPreset: "fixed",
@@ -146,6 +148,7 @@ func TestLabelsReworkRoundTrip(t *testing.T) {
 		GarmentLabels: []*pb_common.TechCardGarmentLabel{{Key: "brand", Placement: "neck", Attachment: "sewn", Folding: "end fold",
 			Size: "15x60", QtyPerGarment: 1, BomItemId: 3, Note: "n", MediaIds: []int32{8, 2},
 			BomLineKey: "k1", CalloutNumber: 4, ArtworkPerSize: &perSize, ArtworkPerColorway: true,
+			Source: &source, Kind: "brand", MadeBy: "printed", PrintMethod: "screen", LengthCm: &pb_decimal.Decimal{Value: "6.5"},
 			Files: []*pb_common.TechCardGarmentLabelFile{{ColorwayId: 7, SizeId: 2, LibraryFileId: 9, SourceHash: "h"}}}},
 		PackagingItems: []*pb_common.TechCardPackagingItem{{Key: "polybag", Usage: "each", Packing: "folded", Size: "30x40",
 			QtyPerGarment: 2, BomItemId: 4, Note: "m", MediaIds: []int32{6}, BomLineKey: "k2"}},
