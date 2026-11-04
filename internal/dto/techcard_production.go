@@ -1365,8 +1365,11 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 		if ci == 0 {
 			root = cc
 		} else if !colorwayHasOwnRecipe(tc, &tc.Colorways[ci]) {
-			inherited, _ := unitAndOrder(colorwayCostWithInheritance(tc, &tc.Colorways[ci], costingCcy, fx).materialsPerUnit)
-			colorwayCosts[ci].InheritedUnitCost = pbDecimalFromDecimal(roundMoney(inherited))
+			// Set only when complete: a release must not freeze a figure short of a material.
+			if inherited := colorwayCostWithInheritance(tc, &tc.Colorways[ci], costingCcy, fx); !inherited.hasUnpriced && !inherited.hasUnconverted && !inherited.hasEstimate {
+				unit, _ := unitAndOrder(inherited.materialsPerUnit)
+				colorwayCosts[ci].InheritedUnitCost = pbDecimalFromDecimal(roundMoney(unit))
+			}
 		}
 	}
 	rootMaterialsPerUnit := root.materialsPerUnit
@@ -2032,11 +2035,15 @@ func colorwayCost(tc *entity.TechCard, cw *entity.TechCardColorway, bomItems []e
 // materials. Either way its OWN packaging, which is chosen per colourway and has nothing to do with the
 // recipe. The one figure behind the seeded price, its breakdown and the frozen release price.
 func colorwayCostWithInheritance(tc *entity.TechCard, cw *entity.TechCardColorway, costingCcy string, fx CostingFx) colorwayCostResult {
-	materials := cw
+	return colorwayCostOf(tc, colorwayMaterialsSource(tc, cw), cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+}
+
+// colorwayMaterialsSource is whose recipe a colourway's materials come from: its own, or with none the primary's.
+func colorwayMaterialsSource(tc *entity.TechCard, cw *entity.TechCardColorway) *entity.TechCardColorway {
 	if !colorwayHasOwnRecipe(tc, cw) && len(tc.Colorways) > 0 {
-		materials = &tc.Colorways[0]
+		return &tc.Colorways[0]
 	}
-	return colorwayCostOf(tc, materials, cw, tc.BomItems, tc.LinkedMaterials, costingCcy, tc.CostingBasis(), fx)
+	return cw
 }
 
 // colorwayCostOf is colorwayCost with the materials of cw and the packaging of packagingOf.

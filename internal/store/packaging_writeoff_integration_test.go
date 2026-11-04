@@ -331,7 +331,7 @@ func TestPackagingWriteoffShareOnTheStockBoundary(t *testing.T) {
 }
 
 // What placement claimed ships, whatever the card says by then; a second ship takes nothing.
-func TestPackagingWriteoffOpenClaimWinsAndReshipIsIdempotent(t *testing.T) {
+func TestPackagingWriteoffPlacedNeedWinsAndReshipIsIdempotent(t *testing.T) {
 	ctx := packagingTestCtx(t)
 	f := newPackagingFixture(ctx, t)
 	MS := f.s.MaterialStock()
@@ -349,7 +349,7 @@ func TestPackagingWriteoffOpenClaimWinsAndReshipIsIdempotent(t *testing.T) {
 	mvs, err := MS.ConsumePackagingForOrder(ctx, orderID, "tester")
 	require.NoError(t, err)
 	require.Len(t, mvs, 1)
-	f.requireOnHand(ctx, t, bag, "97", "the claim ships")
+	f.requireOnHand(ctx, t, bag, "97", "what placement recorded ships")
 	f.requireOnHand(ctx, t, other, "100", "the edit does not")
 	mvs, err = MS.ConsumePackagingForOrder(ctx, orderID, "tester")
 	require.NoError(t, err)
@@ -361,6 +361,50 @@ func TestPackagingWriteoffOpenClaimWinsAndReshipIsIdempotent(t *testing.T) {
 	_, err = MS.ConsumePackagingForOrder(ctx, fresh, "tester")
 	require.NoError(t, err)
 	f.requireOnHand(ctx, t, other, "98", "fresh path")
+}
+
+// An order placed before the switch holds a rounded claim and no exact need: it ships or cancels as claimed.
+func TestPackagingWriteoffOldClaimWithoutNeed(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	f := newPackagingFixture(ctx, t)
+	MS := f.s.MaterialStock()
+	bag := f.material(ctx, t, "Old claim bag", 100)
+	other := f.material(ctx, t, "New card bag", 100)
+	f.item(ctx, t, "dust_bag", 1, bag, false)
+
+	place := func() int {
+		t.Helper()
+		id := f.order(ctx, t, [2]int{f.black, 3})
+		require.NoError(t, MS.ReservePackagingForOrder(ctx, id, "tester"))
+		_, err := testDB.ExecContext(ctx, `DELETE FROM order_packaging_need WHERE order_id = ?`, id)
+		require.NoError(t, err)
+		return id
+	}
+	shipped, cancelled := place(), place()
+	_, err := testDB.ExecContext(ctx, `DELETE FROM tech_card_packaging_item WHERE tech_card_id = ?`, f.cardID)
+	require.NoError(t, err)
+	f.item(ctx, t, "dust_bag", 2, other, false)
+
+	require.NoError(t, MS.ReservePackagingForOrder(ctx, shipped, "tester"), "a repeat finds the claim")
+	var needs int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM order_packaging_need WHERE order_id = ?`, shipped).Scan(&needs))
+	require.Zero(t, needs)
+
+	mvs, err := MS.ConsumePackagingForOrder(ctx, shipped, "tester")
+	require.NoError(t, err)
+	require.Len(t, mvs, 1)
+	f.requireOnHand(ctx, t, bag, "97", "the claim ships")
+	f.requireOnHand(ctx, t, other, "100", "the edit does not")
+	mvs, err = MS.ConsumePackagingForOrder(ctx, shipped, "tester")
+	require.NoError(t, err)
+	require.Empty(t, mvs)
+	f.requireOnHand(ctx, t, bag, "97", "a re-ship takes nothing")
+
+	require.NoError(t, MS.ReleasePackagingForOrder(ctx, cancelled, "tester"))
+	got, err := MS.MaterialAvailable(ctx, bag)
+	require.NoError(t, err)
+	require.True(t, got.Reserved.IsZero(), "reserved %s", got.Reserved)
+	f.requireOnHand(ctx, t, bag, "97", "a cancel takes nothing")
 }
 
 // An auxiliary card's pick takes the colour's variant, or the plain output, or is counted as skipped.
@@ -514,16 +558,43 @@ func TestPackagingMigrationMovesRecipes(t *testing.T) {
 	require.Equal(t, []row{{"other", 3, false, 0}}, read(kept), "a card's own item stays as it is")
 	require.Empty(t, read(ignored), "the global recipe moves nowhere")
 
-	// A fractional quantity stops the file and moves nothing.
-	frac := f.material(ctx, t, "Migr fraction", 100)
-	recipe("product", f.black, frac, "0", "0.5")
-	require.Error(t, runPackagingMigrationUp(ctx, t))
-	require.Empty(t, read(frac))
-	_, err = testDB.ExecContext(ctx, `DELETE FROM packaging_recipe WHERE material_id = ?`, frac)
-	require.NoError(t, err)
 }
 
 // A product recipe replaced the style recipe whole for its colour, so the move must not add them up.
+// A fractional quantity stops the file on its first statement: nothing moves and no recipe goes dark,
+// and once it is gone the same file moves everything.
+func TestPackagingMigrationFractionStopsBeforeAnythingMoves(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	f := newPackagingFixture(ctx, t)
+	_, err := testDB.ExecContext(ctx, `DELETE FROM packaging_recipe`)
+	require.NoError(t, err)
+	whole := f.material(ctx, t, "Migr whole", 100)
+	frac := f.material(ctx, t, "Migr fraction", 100)
+	recipe := func(mat int, perItem string) {
+		t.Helper()
+		_, err := testDB.ExecContext(ctx, `INSERT INTO packaging_recipe (scope, product_id, material_id, qty_per_order, qty_per_item, active)
+			VALUES ('product', ?, ?, 0, ?, TRUE)`, f.black, mat, perItem)
+		require.NoError(t, err)
+	}
+	recipe(whole, "1")
+	recipe(frac, "0.5")
+	count := func(q string, args ...any) int {
+		t.Helper()
+		var n int
+		require.NoError(t, testDB.QueryRowContext(ctx, q, args...).Scan(&n))
+		return n
+	}
+
+	require.ErrorContains(t, runPackagingMigrationUp(ctx, t), "chk_tc_packaging_item_qty")
+	require.Zero(t, count(`SELECT COUNT(*) FROM tech_card_packaging_item WHERE tech_card_id = ?`, f.cardID), "nothing moved")
+	require.Equal(t, 2, count(`SELECT COUNT(*) FROM packaging_recipe WHERE active = TRUE`), "no recipe went dark")
+
+	_, err = testDB.ExecContext(ctx, `DELETE FROM packaging_recipe WHERE material_id = ?`, frac)
+	require.NoError(t, err)
+	require.NoError(t, runPackagingMigrationUp(ctx, t))
+	require.Equal(t, 1, count(`SELECT COUNT(*) FROM tech_card_packaging_item WHERE tech_card_id = ? AND material_id = ?`, f.cardID, whole))
+}
+
 func TestPackagingMigrationProductRecipeReplacesStyle(t *testing.T) {
 	ctx := packagingTestCtx(t)
 	f := newPackagingFixture(ctx, t)
@@ -665,11 +736,22 @@ func TestPackagingCancelKeepsSharesExact(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, got.Reserved.IsZero(), "a booking above the hold leaves nothing held, reserved %s", got.Reserved)
 
-	// A re-ship of a settled order takes nothing again.
-	mvs, err := MS.ConsumePackagingForOrder(ctx, orders[4], "tester")
+	// Shipping a cancelled order is a real shipment of one more share, resolved fresh: its closed need does
+	// not come back and its cancel took nothing out of the carry.
+	mvs, err := MS.ConsumePackagingForOrder(ctx, orders[0], "tester")
 	require.NoError(t, err)
 	require.Empty(t, mvs)
-	requireShipped(7, "9.999")
+	requireShipped(8, "9.999")
+	mvs, err = MS.ConsumePackagingForOrder(ctx, orders[0], "tester")
+	require.NoError(t, err)
+	require.Empty(t, mvs)
+	requireShipped(8, "9.999")
+
+	// A re-ship of a settled order takes nothing again.
+	mvs, err = MS.ConsumePackagingForOrder(ctx, orders[4], "tester")
+	require.NoError(t, err)
+	require.Empty(t, mvs)
+	requireShipped(8, "9.999")
 }
 
 // A share holds its rounded figure while the order is open and gives it back on a cancel.

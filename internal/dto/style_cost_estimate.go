@@ -100,18 +100,24 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 		hasNoNormLine bool
 	)
 	materialsBase := decimal.Zero
+	// The materials of the live price: a colourway with no recipe takes the primary's. Packaging below
+	// stays the requested colourway's.
+	materialsCw := cw
+	if cw != nil {
+		materialsCw = colorwayMaterialsSource(tc, cw)
+	}
 	// Слоты, у которых норма ЗАЯВЛЕНА: оценка к ним не применяется — введённое сильнее выведенного.
 	// ТЕМ ЖЕ предикатом, что у костинга (colorwayAuthoredSlots), а не своей копией внутри цикла ниже:
 	// смета и заголовок обязаны считать «заявленным» одно и то же множество слотов, иначе один экран
 	// покажет оценку там, где другой уже показал норму.
 	authoredSlots := map[int]bool{}
-	if cw != nil {
-		authoredSlots = colorwayAuthoredSlots(cw, tc.BomItems)
+	if materialsCw != nil {
+		authoredSlots = colorwayAuthoredSlots(materialsCw, tc.BomItems)
 	}
 	hasAreaEstimate := false
-	if cw != nil {
-		for i := range cw.Usages {
-			u := &cw.Usages[i]
+	if materialsCw != nil {
+		for i := range materialsCw.Usages {
+			u := &materialsCw.Usages[i]
 			// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a
 			// cut-piece and carries no norm: no estimate line, no total contribution and no
 			// caveat — an empty piece row is not a «line with no norm», and a legacy number on
@@ -151,9 +157,9 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 				}
 			}
 
-			// Пара — из ТОГО ЖЕ среза cw.Usages, по которому идёт цикл (носитель итога опознаётся
+			// Пара — из ТОГО ЖЕ среза materialsCw.Usages, по которому идёт цикл (носитель итога опознаётся
 			// по указателю, см. entity/countable.go).
-			qty, applyWaste, ok := usagePerGarmentQty(u, basis, entity.CountablePairUsages(cw.Usages, bom), bom)
+			qty, applyWaste, ok := usagePerGarmentQty(u, basis, entity.CountablePairUsages(materialsCw.Usages, bom), bom)
 			if ok {
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
@@ -252,7 +258,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	// Цена берётся ТЕМ ЖЕ путём, что у заголовка (пин → слот → снапшот), а не лестницей сметы с
 	// каталожным фолбэком: расхождение в цене между экранами было бы вторым источником той же
 	// болезни, и лечить его надо один раз, а не двумя приближениями.
-	if cw != nil {
+	if materialsCw != nil {
 		for i := range tc.BomItems {
 			b := &tc.BomItems[i]
 			if authoredSlots[b.Id] {
@@ -269,7 +275,7 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 			// Карта здесь всегда та же: смету грузит тот же GetTechCardById, что и карточное чтение,
 			// и LinkedMaterials он заполняет по тем же id (слоты BOM + пины рецептов), причём с
 			// ценами — то есть содержит всё, ради чего одалживался catalog.
-			est := slotAreaEstimate(tc, cw, b, tc.LinkedMaterials, basis, fx.Base)
+			est := slotAreaEstimate(tc, materialsCw, b, tc.LinkedMaterials, basis, fx.Base)
 			if !est.ok {
 				continue
 			}

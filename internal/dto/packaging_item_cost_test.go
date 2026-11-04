@@ -116,13 +116,14 @@ func TestPackagingIsNotInherited(t *testing.T) {
 }
 
 func TestPackagingIsNotInheritedInTheFrozenPrice(t *testing.T) {
-	frozen := func(items ...entity.TechCardPackagingItem) *ReleaseFrozenCosts {
-		t.Helper()
+	card := func(items ...entity.TechCardPackagingItem) *entity.TechCard {
 		tc := packagingCostCard(items...)
 		tc.Colorways[0].Id, tc.Colorways[1].Id = 7, 8
-		// A colour priced at zero on its own recipe is left out, so both carry a manual article.
-		tc.Costing.CmtCost = decimal.NullDecimal{Decimal: decimal.NewFromInt(1), Valid: true}
-		costs := ReleaseFrozenColorwayCosts(releaseBlob(t, tc))
+		return tc
+	}
+	frozen := func(items ...entity.TechCardPackagingItem) *ReleaseFrozenCosts {
+		t.Helper()
+		costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card(items...)))
 		require.NotNil(t, costs)
 		return costs
 	}
@@ -130,24 +131,51 @@ func TestPackagingIsNotInheritedInTheFrozenPrice(t *testing.T) {
 		t.Helper()
 		require.True(t, costs.UnitCostByColorway[id].Equal(decimal.RequireFromString(want)), "colour %d: %s, want %s", id, costs.UnitCostByColorway[id], want)
 	}
+	lines := []entity.ProductionRunLine{relLine(7, 4, 1), relLine(8, 4, 1)}
+
+	// No manual article anywhere: what the colour costs on its own empty recipe says nothing.
 	own := frozen(packagingPick("insert_card", 1, 2, false, 8))
-	requireUnit(own, 7, "11")
-	requireUnit(own, 8, "14")
+	requireUnit(own, 7, "10")
+	requireUnit(own, 8, "13")
+	mixed, _ := ComputeReleaseRunPlannedUnitCost(own, lines)
+	require.Equal(t, "11.5", mixed.Decimal.String(), "a mixed run prices each colour, not the release scalar")
+
 	primary := frozen(packagingPick("insert_card", 1, 2, false, 7))
-	requireUnit(primary, 7, "14")
-	requireUnit(primary, 8, "11")
+	requireUnit(primary, 7, "13")
+	requireUnit(primary, 8, "10")
+	mixed, _ = ComputeReleaseRunPlannedUnitCost(primary, lines)
+	require.Equal(t, "11.5", mixed.Decimal.String())
 
 	// A release frozen before the figure existed had no packaging in its cost: the style's figure it is.
-	snap := releaseBlob(t, func() *entity.TechCard {
-		tc := packagingCostCard()
-		tc.Colorways[0].Id, tc.Colorways[1].Id = 7, 8
-		tc.Costing.CmtCost = decimal.NullDecimal{Decimal: decimal.NewFromInt(1), Valid: true}
-		return tc
-	}())
+	snap := releaseBlob(t, card())
 	for _, cc := range snap.GetTechCard().GetCosting().GetColorwayCosts() {
 		cc.InheritedUnitCost = nil
 	}
-	requireUnit(ReleaseFrozenColorwayCosts(snap), 8, "11")
+	requireUnit(ReleaseFrozenColorwayCosts(snap), 8, "10")
+
+	// A primary with an unpriced material freezes nothing for the colour inheriting it.
+	short := card(packagingPick("insert_card", 1, 2, false, 8))
+	short.LinkedMaterials[1] = entity.MaterialWithPrice{Material: short.LinkedMaterials[1].Material}
+	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, short))
+	if costs != nil {
+		_, ok := costs.UnitCostByColorway[8]
+		require.False(t, ok, "the colour inherits a material with no price")
+	}
+}
+
+// The estimate adds up to the price it explains: the primary's materials, the colour's packaging.
+func TestPackagingIsNotInheritedInTheEstimate(t *testing.T) {
+	fx := CostingFx{Base: "EUR", ToBase: map[string]decimal.Decimal{"EUR": decimal.NewFromInt(1)}}
+	tc := packagingCostCard(packagingPick("insert_card", 1, 2, false, 8))
+	catalog := map[int64]*entity.MaterialPrice{1: tc.LinkedMaterials[1].LatestPrice, 100: tc.LinkedMaterials[1].LatestPrice}
+	requirePackagingUnitCost(t, tc, 8, "13")
+	est := ComputeStyleCostEstimate(tc, 8, catalog, fx)
+	require.Equal(t, "13.00", est.MaterialsPerUnitBase.Value)
+	require.Len(t, est.Materials, 2)
+	requirePackagingUnitCost(t, tc, 7, "10")
+	est = ComputeStyleCostEstimate(tc, 7, catalog, fx)
+	require.Equal(t, "10.00", est.MaterialsPerUnitBase.Value)
+	require.Len(t, est.Materials, 1, "the colour's insert is not the primary's")
 }
 
 // An item with no price refuses the seed instead of leaving the figure quietly short.

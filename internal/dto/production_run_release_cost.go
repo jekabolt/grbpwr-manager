@@ -119,21 +119,23 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 		if id <= 0 || cc.GetHasUnpriced() || cc.GetHasUnconvertedCurrencies() || cc.GetHasEstimate() {
 			continue
 		}
-		unit, err := nullDecimalFromPb(cc.GetUnitCost())
-		if err != nil || !unit.Valid || !unit.Decimal.IsPositive() {
-			// Та же отсечка, что у ComputeTechCardUnitCost: неположительная цена — не цена.
-			continue
-		}
-		if !authored[id] {
-			if !styleOK {
+		var unit decimal.NullDecimal
+		if authored[id] {
+			if unit, err = nullDecimalFromPb(cc.GetUnitCost()); err != nil {
 				continue
 			}
-			// The style's materials with this colourway's own packaging, frozen as one figure. A release
-			// frozen before that figure carried no packaging in its cost: the style's is the same thing.
+		} else if inherited := frozenDecimal(cc.GetInheritedUnitCost()); inherited.Valid && inherited.Decimal.IsPositive() {
+			// The style's materials with this colourway's own packaging, frozen as one figure only when
+			// complete, so nothing here needs the style's flags.
+			unit = inherited
+		} else if styleOK {
+			// A release frozen before that figure carried no packaging in its cost: the style's is the same.
 			unit = style
-			if inherited := frozenDecimal(cc.GetInheritedUnitCost()); inherited.Valid && inherited.Decimal.IsPositive() {
-				unit = inherited
-			}
+		}
+		if !unit.Valid || !unit.Decimal.IsPositive() {
+			// Та же отсечка, что у ComputeTechCardUnitCost: неположительная цена — не цена. A colourway
+			// with no recipe of its own costs nothing on it, which says nothing about what it inherits.
+			continue
 		}
 		out.UnitCostByColorway[id] = unit.Decimal
 	}
