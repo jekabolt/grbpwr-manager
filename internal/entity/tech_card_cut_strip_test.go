@@ -342,6 +342,11 @@ func TestNormalizeCutStrip(t *testing.T) {
 		require.Equal(t, 1, s.Qty)
 		require.Equal(t, 1, s.Sizes[0].SizeId)
 	})
+	t.Run("a width nobody typed yet still saves", func(t *testing.T) {
+		s := valid()
+		s.WidthMm = decimal.Zero
+		require.NoError(t, NormalizeCutStrip(&s, "p"))
+	})
 	t.Run("an empty size row is no row", func(t *testing.T) {
 		s := valid()
 		s.Sizes = append(s.Sizes, TechCardCutStripSize{SizeId: 3})
@@ -354,7 +359,7 @@ func TestNormalizeCutStrip(t *testing.T) {
 		"fit over the cap": func(s *TechCardCutStrip) { s.FitPct = cutDec("201") },
 		"negative fit":     func(s *TechCardCutStrip) { s.FitPct = cutDec("-1") },
 		"negative overlap": func(s *TechCardCutStrip) { s.OverlapMm = cutDec("-1") },
-		"no width":         func(s *TechCardCutStrip) { s.WidthMm = decimal.Zero },
+		"negative width":   func(s *TechCardCutStrip) { s.WidthMm = cutDec("-1") },
 		"negative qty":     func(s *TechCardCutStrip) { s.Qty = -1 },
 		"qty over the cap": func(s *TechCardCutStrip) { s.Qty = CutStripMaxQty + 1 },
 		"long seam key": func(s *TechCardCutStrip) {

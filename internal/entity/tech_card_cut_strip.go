@@ -508,9 +508,10 @@ func NormalizeCutStrip(s *TechCardCutStrip, path string) error {
 			fmt.Sprintf("0 to %d mm", CutStripMaxMm))
 	}
 	s.WidthMm = s.WidthMm.Round(2)
-	if !s.WidthMm.IsPositive() || s.WidthMm.GreaterThan(decimal.NewFromInt(CutStripMaxMm)) {
+	// Zero is "not typed yet": ticking the mark makes the strip before anyone knows its width.
+	if s.WidthMm.IsNegative() || s.WidthMm.GreaterThan(decimal.NewFromInt(CutStripMaxMm)) {
 		return NewFieldViolation(field("width_mm"), "out_of_range", s.WidthMm.String(),
-			fmt.Sprintf("above 0 and up to %d mm", CutStripMaxMm))
+			fmt.Sprintf("0 to %d mm", CutStripMaxMm))
 	}
 	if s.OneLengthMm.Valid && (s.OneLengthMm.Int32 <= 0 || s.OneLengthMm.Int32 > CutStripMaxMm) {
 		return NewFieldViolation(field("one_length_mm"), "out_of_range", fmt.Sprint(s.OneLengthMm.Int32),
