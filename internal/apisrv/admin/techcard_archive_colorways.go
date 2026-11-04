@@ -841,6 +841,8 @@ func (r *tcacRun) buildUsages(ref string, lines []techcardarchive.RecipeLine) ([
 			// приглашение унаследовать чужой пин или чужой штамп.
 			MaterialIdSet:   true,
 			NormMarkerIdSet: true,
+			// This number is a stored norm on its way to a colourway that has no row yet to keep it in.
+			ArchivedNorm: true,
 		}
 		if lost := r.pin(rowRef, l, &u); lost {
 			degraded = true

@@ -347,11 +347,14 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 }
 
 func newRecipeUsagePinSlot(slot recipeUsageSlot, placement sql.NullString) recipeUsagePinSlot {
-	normalizedPlacement := ""
-	if placement.Valid {
-		normalizedPlacement = strings.ToLower(strings.TrimSpace(placement.String))
+	return recipeUsagePinSlot{recipeUsageSlot: slot, Placement: normalizedRecipePlacement(placement)}
+}
+
+func normalizedRecipePlacement(placement sql.NullString) string {
+	if !placement.Valid {
+		return ""
 	}
-	return recipeUsagePinSlot{recipeUsageSlot: slot, Placement: normalizedPlacement}
+	return strings.ToLower(strings.TrimSpace(placement.String))
 }
 
 type materialPinStateRow struct {
@@ -394,8 +397,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 		}
 
 		// The norm of a strip line is not typed. Before the range check: a number that is thrown away
-		// has no size range to fit.
-		usages, err = sanitizeCutStripRecipe(ctx, rep.DB(), cur.StyleID, usages)
+		// has no size range to fit, and neither has one the table already holds.
+		var keptNorms map[int]usageProvenance
+		usages, keptNorms, err = sanitizeCutStripRecipe(ctx, rep.DB(), cur.StyleID, colorwayID, usages)
 		if err != nil {
 			return err
 		}
@@ -408,6 +412,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			return err
 		}
 		for i := range usages {
+			if _, kept := keptNorms[i]; kept {
+				continue
+			}
 			for j, sc := range usages[i].SizeConsumptions {
 				if err := rng.Require(fmt.Sprintf("usages[%d].size_consumptions[%d].size_id", i, j), sc.SizeId); err != nil {
 					return err
@@ -647,6 +654,9 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			// above) must clear the marker id before the pair is compared, or a row that just lost
 			// its 'marker' source would still be measured against the stored раскладка.
 			prov = stampAppliedAt(prov.normalized(), priorProvenanceBySlot[pinSlot], now)
+			if kept, ok := keptNorms[i]; ok {
+				prov = kept // the row of a strip line keeps its provenance as stored, clock included
+			}
 			resolved = append(resolved, resolvedRecipeUsage{
 				usage: u, bomItemID: bomItemID, pieceID: pieceID, materialID: materialID,
 				provenance: prov,

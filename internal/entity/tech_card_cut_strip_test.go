@@ -273,6 +273,47 @@ func TestClearCutStripRecipeRow(t *testing.T) {
 	require.False(t, stale.Consumption.Valid)
 }
 
+// StoredRow is the row as the table holds it: a resolved row gives back what the resolver replaced, the
+// second row of a line included, and a row the resolver made up has nothing to give.
+func TestCutStripStoredRow(t *testing.T) {
+	bom := cutBomLine("m")
+	flat := CutStripLineNorms(bom, []TechCardCutStrip{cutOneLength(500)}, nil)
+	line := sql.NullInt64{Int64: 502, Valid: true}
+	usages := []TechCardColorwayUsage{
+		{
+			Id: 7, BomItemId: line,
+			Consumption: decimal.NewNullDecimal(cutDec("0.75")), Quantity: decimal.NewNullDecimal(cutDec("2")),
+			ConsumptionSource: sql.NullString{String: ConsumptionSourceMarker, Valid: true},
+			WasteSelvedgePct:  decimal.NewNullDecimal(cutDec("1.65")), WasteCutPct: decimal.NewNullDecimal(cutDec("21.95")),
+			NormMarkerId:     sql.NullInt64{Int64: 3, Valid: true},
+			SizeConsumptions: []TechCardBomSizeConsumption{{SizeId: 1, Consumption: cutDec("0.7")}},
+		},
+		{Id: 8, BomItemId: line, Consumption: decimal.NewNullDecimal(cutDec("1.1"))},
+	}
+	plain := TechCardColorwayUsage{Id: 9, Consumption: decimal.NewNullDecimal(cutDec("4"))}
+	require.Equal(t, plain, plain.StoredRow(), "a row the resolver did not touch")
+
+	resolved := ResolveCutStripUsages(usages, bom, flat)
+	resolved = ResolveCutStripUsages(resolved, bom, flat) // a second pass does not lose them
+	require.True(t, resolved[0].Consumption.Decimal.Equal(cutDec("0.5")))
+	require.True(t, resolved[1].Consumption.Decimal.IsZero())
+
+	first := resolved[0].StoredRow()
+	require.True(t, first.Consumption.Decimal.Equal(cutDec("0.75")))
+	require.True(t, first.Quantity.Decimal.Equal(cutDec("2")))
+	require.Equal(t, ConsumptionSourceMarker, first.ConsumptionSource.String)
+	require.True(t, first.WasteCutPct.Decimal.Equal(cutDec("21.95")))
+	require.Equal(t, int64(3), first.NormMarkerId.Int64)
+	require.Len(t, first.SizeConsumptions, 1)
+	require.True(t, resolved[1].StoredRow().Consumption.Decimal.Equal(cutDec("1.1")))
+
+	madeUp := ResolveCutStripUsages(nil, bom, flat)
+	require.Len(t, madeUp, 1)
+	blank := madeUp[0].StoredRow()
+	require.False(t, blank.Consumption.Valid)
+	require.False(t, blank.ConsumptionSource.Valid)
+}
+
 func TestCarryStoredCutStrips(t *testing.T) {
 	strip := cutFromSeam("100", "0", cutSeam(1, "700"), cutSeam(2, "800"))
 	gone := cutOneLength(500)

@@ -2,6 +2,7 @@ package techcard
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // CUT-TO-LENGTH STRIPS (0449). See entity/tech_card_cut_strip.go for what they are and why the norm is
@@ -333,22 +335,90 @@ func (s *Store) resolveCutStripRecipe(ctx context.Context, colorwayID int, usage
 	return entity.ResolveCutStripUsages(usages, bom, entity.CutStripLineNorms(bom, strips, sizes)), nil
 }
 
+// cutStripStoredRow is a garment-level recipe row as the table holds it, on the way to being written back.
+type cutStripStoredRow struct {
+	Id                int                 `db:"id"`
+	BomItemID         sql.NullInt64       `db:"bom_item_id"`
+	BomItemIndex      sql.NullInt32       `db:"bom_item_index"`
+	Placement         sql.NullString      `db:"placement"`
+	Consumption       decimal.NullDecimal `db:"consumption"`
+	Quantity          decimal.NullDecimal `db:"quantity"`
+	ConsumptionSource string              `db:"consumption_source"`
+	WasteSelvedgePct  decimal.NullDecimal `db:"waste_selvedge_pct"`
+	WasteCutPct       decimal.NullDecimal `db:"waste_cut_pct"`
+	NormMarkerID      sql.NullInt64       `db:"norm_marker_id"`
+	NormAppliedAt     sql.NullTime        `db:"norm_applied_at"`
+	sizes             []entity.TechCardBomSizeConsumption
+	taken             bool
+}
+
+// cutStripStoredRows is a colourway's garment-level rows of its strip lines by line key, in stored order.
+func cutStripStoredRows(ctx context.Context, db dependency.DB, colorwayID int, lineKeyOf func(*cutStripStoredRow) string, stripLine map[string]bool) (map[string][]*cutStripStoredRow, error) {
+	rows, err := storeutil.QueryListNamed[cutStripStoredRow](ctx, db, `
+		SELECT id, bom_item_id, bom_item_index, placement, consumption, quantity, consumption_source,
+		       waste_selvedge_pct, waste_cut_pct, norm_marker_id, norm_applied_at
+		FROM tech_card_colorway_usage
+		WHERE colorway_id = :id AND piece_id IS NULL AND piece_index IS NULL
+		ORDER BY display_order, id`, map[string]any{"id": colorwayID})
+	if err != nil {
+		return nil, fmt.Errorf("load colourway %d stored recipe of strip lines: %w", colorwayID, err)
+	}
+	out := make(map[string][]*cutStripStoredRow, len(stripLine))
+	byID := make(map[int]*cutStripStoredRow, len(rows))
+	ids := make([]int, 0, len(rows))
+	for i := range rows {
+		key := lineKeyOf(&rows[i])
+		if !stripLine[key] {
+			continue
+		}
+		out[key] = append(out[key], &rows[i])
+		byID[rows[i].Id] = &rows[i]
+		ids = append(ids, rows[i].Id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	sizes, err := storeutil.QueryListNamed[struct {
+		UsageID     int             `db:"usage_id"`
+		SizeID      int             `db:"size_id"`
+		Consumption decimal.Decimal `db:"consumption"`
+	}](ctx, db, `
+		SELECT usage_id, size_id, consumption FROM tech_card_colorway_usage_consumption
+		WHERE usage_id IN (:ids) ORDER BY usage_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("load colourway %d stored per-size norms of strip lines: %w", colorwayID, err)
+	}
+	for _, row := range sizes {
+		byID[row.UsageID].sizes = append(byID[row.UsageID].sizes, entity.TechCardBomSizeConsumption{SizeId: row.SizeID, Consumption: row.Consumption})
+	}
+	return out, nil
+}
+
 // sanitizeCutStripRecipe applies one rule of the recipe to its full-replace write: the norm of a strip
-// line is not typed. A row of such a line keeps what is really the colourway's (the pinned article, the
-// colour, the placement) and loses its numbers, and a row with nothing else on it is the echo of a row
-// the resolver made up, which is not stored at all. A claim of cut_length on a line without a strip has
-// no number behind it, so it is refused.
-func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID int, usages []entity.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, error) {
+// line is not typed. What a client sends for a garment-level row of such a line is what really is the
+// colourway's (the pinned article, the colour, the placement); the numbers of the row come from the table.
+//
+// The wire row has no id, so a stored row is found by its line and placement, and a row left over then
+// takes a stored row left over on its line: a renamed placement is the same row. Whatever a stored row
+// holds is written back as it is, so that removing the strip gives the norm back; the second result says
+// which rows of the first have their provenance decided here, by position. A stored row nobody sent is
+// deleted, as in any full replace.
+//
+// A row with no stored row behind it has no numbers to keep. With nothing else on it, it is the echo of a
+// row the resolver made up, which is not stored at all. A row of an archive being applied brings its
+// stored numbers along. A claim of cut_length on a line without a strip has no number behind it, so it is
+// refused.
+func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID, colorwayID int, usages []entity.TechCardColorwayUsage) ([]entity.TechCardColorwayUsage, map[int]usageProvenance, error) {
 	strips, err := cutStripRows(ctx, db, []int{styleID})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	claims := false
 	for i := range usages {
 		claims = claims || usages[i].IsCutLengthNorm()
 	}
 	if len(strips) == 0 && !claims {
-		return usages, nil
+		return usages, nil, nil
 	}
 	lines, err := storeutil.QueryListNamed[struct {
 		Id      int    `db:"id"`
@@ -356,36 +426,88 @@ func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID int, 
 	}](ctx, db, `SELECT id, line_key FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
 		map[string]any{"id": styleID})
 	if err != nil {
-		return nil, fmt.Errorf("load style bom for cut strips: %w", err)
+		return nil, nil, fmt.Errorf("load style bom for cut strips: %w", err)
 	}
 	stripLine := make(map[string]bool, len(strips))
 	for i := range strips {
 		stripLine[strips[i].BomLineKey] = true
 	}
+	keyAt := func(index sql.NullInt32) string {
+		if index.Valid {
+			if idx := int(index.Int32); idx >= 0 && idx < len(lines) {
+				return lines[idx].LineKey
+			}
+		}
+		return ""
+	}
+	keyByID := make(map[int64]string, len(lines))
+	for i := range lines {
+		keyByID[int64(lines[i].Id)] = lines[i].LineKey
+	}
+	stored, err := cutStripStoredRows(ctx, db, colorwayID, func(row *cutStripStoredRow) string {
+		if row.BomItemID.Valid {
+			return keyByID[row.BomItemID.Int64]
+		}
+		return keyAt(row.BomItemIndex)
+	}, stripLine)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	keys := make([]string, len(usages))
+	findsStored := make([]bool, len(usages))
+	for i := range usages {
+		u := &usages[i]
+		keys[i] = strings.TrimSpace(u.BomLineKey)
+		if keys[i] == "" {
+			keys[i] = keyAt(u.BomItemIndex)
+		}
+		if !stripLine[keys[i]] && u.IsCutLengthNorm() {
+			return nil, nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
+				"cut_length_without_strip", "", "this line has no strip, so its norm is not a cut length")
+		}
+		pieceBound := strings.TrimSpace(u.PieceLineKey) != "" || u.PieceIndex.Valid // says which fabric, not how much
+		findsStored[i] = stripLine[keys[i]] && !pieceBound && !u.ArchivedNorm
+	}
+	matched := make([]*cutStripStoredRow, len(usages))
+	for _, samePlacement := range []bool{true, false} {
+		for i := range usages {
+			if !findsStored[i] || matched[i] != nil {
+				continue
+			}
+			for _, row := range stored[keys[i]] {
+				if row.taken || samePlacement && normalizedRecipePlacement(row.Placement) != normalizedRecipePlacement(usages[i].Placement) {
+					continue
+				}
+				row.taken = true
+				matched[i] = row
+				break
+			}
+		}
+	}
+
 	out := make([]entity.TechCardColorwayUsage, 0, len(usages))
+	kept := make(map[int]usageProvenance, len(usages))
 	for i := range usages {
 		u := usages[i]
-		key := strings.TrimSpace(u.BomLineKey)
-		if key == "" && u.BomItemIndex.Valid {
-			if idx := int(u.BomItemIndex.Int32); idx >= 0 && idx < len(lines) {
-				key = lines[idx].LineKey
+		switch row := matched[i]; {
+		case row != nil:
+			kept[len(out)] = usageProvenance{
+				source: row.ConsumptionSource, selvedge: row.WasteSelvedgePct, cut: row.WasteCutPct,
+				markerID: row.NormMarkerID, appliedAt: row.NormAppliedAt,
 			}
-		}
-		if !stripLine[key] {
-			if u.IsCutLengthNorm() {
-				return nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
-					"cut_length_without_strip", "", "this line has no strip, so its norm is not a cut length")
-			}
+			u.Consumption, u.Quantity, u.SizeConsumptions = row.Consumption, row.Quantity, row.sizes
+			// Presence-less, so nothing the client said about provenance is checked: none of it is written.
+			u.ConsumptionSource, u.WasteSelvedgePct, u.WasteCutPct = sql.NullString{}, decimal.NullDecimal{}, decimal.NullDecimal{}
+			u.NormMarkerId, u.NormMarkerIdSet = sql.NullInt64{}, false
 			out = append(out, u)
-			continue
-		}
-		if strings.TrimSpace(u.PieceLineKey) != "" || u.PieceIndex.Valid {
-			out = append(out, u) // a piece-bound row says which fabric, not how much
-			continue
-		}
-		if entity.ClearCutStripRecipeRow(&u) {
+		case findsStored[i]:
+			if entity.ClearCutStripRecipeRow(&u) {
+				out = append(out, u)
+			}
+		default:
 			out = append(out, u)
 		}
 	}
-	return out, nil
+	return out, kept, nil
 }

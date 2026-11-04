@@ -1464,6 +1464,12 @@ type TechCardColorwayUsage struct {
 	// saving a recipe); true = NormMarkerId is authoritative, an explicit 0 clearing the stamp.
 	// Not persisted.
 	NormMarkerIdSet bool `db:"-"`
+	// StoredNorm is what the table holds on a row whose numbers the strip resolver replaced on read; nil
+	// on any other row. It stays in memory and never reaches the wire. See StoredRow.
+	StoredNorm *CutStripStoredNorm `db:"-" json:"-"`
+	// ArchivedNorm marks a row of an archive being applied: its numbers are a stored norm moving to a new
+	// colourway, not a number typed on a strip line. Only the archive apply sets it, the wire cannot.
+	ArchivedNorm bool `db:"-" json:"-"`
 }
 
 // EffectiveMaterialId resolves the article this usage actually consumes: the colourway's pin

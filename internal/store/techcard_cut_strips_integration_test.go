@@ -30,10 +30,12 @@ const (
 	cutsLineRubber = "01JCVT000000000000000000A2"
 	cutsLineTape   = "01JCVT000000000000000000A3"
 	cutsLineButton = "01JCVT000000000000000000A4"
+	cutsLineLining = "01JCVT000000000000000000A5"
 	cutsPieceFront = "01JCVT000000000000000000B1"
 	cutsStripSeam  = "01JCVT000000000000000000C1"
 	cutsStripOne   = "01JCVT000000000000000000C2"
 	cutsStripSize  = "01JCVT000000000000000000C3"
+	cutsStripRoll  = "01JCVT000000000000000000C4"
 	cutsSeamKey    = "01JCVT000000000000000000D1"
 )
 
@@ -82,6 +84,7 @@ func newCutRig(t *testing.T, ctx context.Context) *cutRig {
 			{LineKey: cutsLineRubber, Section: entity.BomSectionHardware, Name: "rubber", Unit: ns("m")},
 			{LineKey: cutsLineTape, Section: entity.BomSectionTrim, Name: "tape", Unit: ns("m")},
 			{LineKey: cutsLineButton, Section: entity.BomSectionHardware, Name: "button", Unit: ns("pcs")},
+			{LineKey: cutsLineLining, Section: entity.BomSectionLining, Name: "lining", Unit: ns("m")},
 		},
 		Pieces:     []entity.TechCardPiece{{LineKey: cutsPieceFront, Name: "front", PiecesPerGarment: 1, Grainline: "lengthwise"}},
 		Operations: []entity.TechCardOperation{step("a"), step("b")},
@@ -1117,4 +1120,332 @@ func TestTechCardArchiveStriplessCardIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got.CutStrips)
 	require.Zero(t, cutsCount(t, ctx, "SELECT COUNT(*) FROM tech_card_cut_strip WHERE tech_card_id = ?", newID))
+}
+
+// onRoll is a strip of 0.50 m on the lining: a roll line, so its recipe row can have a marker norm.
+func (r *cutRig) onRoll() *pb_common.TechCardCutStrip {
+	return &pb_common.TechCardCutStrip{
+		LineKey: cutsStripRoll, BomLineKey: cutsLineLining, LengthMode: entity.CutStripModeOneLength,
+		FitPct: cutsDec("100"), OverlapMm: cutsDec("0"), WidthMm: cutsDec("10"), Qty: 1, OneLengthMm: cutsMm(500),
+	}
+}
+
+// echoRecipe is a client that saves what it read: the wire rows of the one colourway, through the server.
+func (r *cutRig) echoRecipe(edit func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage) error {
+	r.t.Helper()
+	wire := r.wire()
+	require.Len(r.t, wire.GetColorways(), 1)
+	rows := wire.GetColorways()[0].GetUsages()
+	if edit != nil {
+		rows = edit(rows)
+	}
+	_, err := r.rt.srv.UpdateColorwayRecipe(r.rt.adminCtx("cut.owner@example.com"), &pb_admin.UpdateColorwayRecipeRequest{
+		ColorwayId: int32(r.cwID), ExpectedColorwayVersion: int32(r.read().LockVersion), Usages: rows,
+	})
+	return err
+}
+
+// cutsRawRows is what the table holds on one line of a colourway: every column a strip must leave alone,
+// the per-size rows included. The row id is not one of them, a recipe save is a full replace.
+func cutsRawRows(t *testing.T, ctx context.Context, colorwayID int, line string) []string {
+	t.Helper()
+	rows, err := testDB.QueryContext(ctx, `
+		SELECT CONCAT_WS('|', COALESCE(u.placement, '-'), COALESCE(CAST(u.consumption AS CHAR), '-'),
+			COALESCE(CAST(u.quantity AS CHAR), '-'), u.consumption_source,
+			COALESCE(CAST(u.waste_selvedge_pct AS CHAR), '-'), COALESCE(CAST(u.waste_cut_pct AS CHAR), '-'),
+			COALESCE(CAST(u.norm_marker_id AS CHAR), '-'), COALESCE(CAST(u.norm_applied_at AS CHAR), '-'),
+			COALESCE((SELECT GROUP_CONCAT(CONCAT(c.size_id, '=', c.consumption) ORDER BY c.display_order, c.size_id)
+				FROM tech_card_colorway_usage_consumption c WHERE c.usage_id = u.id), '-'))
+		FROM tech_card_colorway_usage u
+		JOIN tech_card_bom_item b ON b.id = u.bom_item_id
+		WHERE u.colorway_id = ? AND b.line_key = ?
+		ORDER BY u.display_order, u.id`, colorwayID, line)
+	require.NoError(t, err)
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var row string
+		require.NoError(t, rows.Scan(&row))
+		out = append(out, row)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// cutsMarkerRow is a real recipe row of the lining: a norm applied from a marker.
+func (r *cutRig) cutsMarkerRow(marker int64) entity.TechCardColorwayUsage {
+	dec := func(v string) decimal.NullDecimal { return decimal.NewNullDecimal(decimal.RequireFromString(v)) }
+	return entity.TechCardColorwayUsage{
+		BomLineKey: cutsLineLining, Consumption: dec("0.75"), Quantity: dec("2"),
+		ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
+		WasteSelvedgePct:  dec("1.65"), WasteCutPct: dec("21.95"),
+		NormMarkerId: sql.NullInt64{Int64: marker, Valid: true}, NormMarkerIdSet: true,
+		SizeConsumptions: []entity.TechCardBomSizeConsumption{
+			{SizeId: r.sizeA, Consumption: decimal.RequireFromString("0.7")},
+			{SizeId: r.sizeB, Consumption: decimal.RequireFromString("0.8")},
+		},
+	}
+}
+
+// TestTechCardCutStripLeavesTheStoredNormAlone is the round trip of a real norm under a strip: the read
+// gives the strip's number, a recipe save of that read leaves the table's numbers as they were, and
+// removing the strip brings them back exactly. This row has no colour, no placement and no pin, so its
+// echo looks like the row the resolver makes up for a colourway with none: only the table tells them apart.
+func TestTechCardCutStripLeavesTheStoredNormAlone(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	r.addColourway()
+	marker, _ := seedRecipeStampMarkers(ctx, t, testDB, r.cardID)
+	_, err := r.T.UpdateColorwayRecipe(ctx, r.cwID, r.read().LockVersion, []entity.TechCardColorwayUsage{r.cutsMarkerRow(marker)})
+	require.NoError(t, err)
+
+	liningOf := func(rows []entity.TechCardColorwayUsage) *entity.TechCardColorwayUsage {
+		t.Helper()
+		var lineID int64
+		for _, line := range r.read().BomItems {
+			if line.LineKey == cutsLineLining {
+				lineID = int64(line.Id)
+			}
+		}
+		for i := range rows {
+			if rows[i].BomItemId.Int64 == lineID {
+				return &rows[i]
+			}
+		}
+		t.Fatal("no row of the lining")
+		return nil
+	}
+	recipe, err := r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	applied := liningOf(recipe).NormAppliedAt
+	require.True(t, applied.Valid)
+	before := cutsRawRows(t, ctx, r.cwID, cutsLineLining)
+	require.Len(t, before, 1)
+
+	// ── the strip arrives: the read gives its number, the table does not move ──
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		in.CutStrips = []*pb_common.TechCardCutStrip{r.onRoll(), r.oneLength()}
+	}))
+	recipe, err = r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	resolved := liningOf(recipe)
+	require.True(t, resolved.Consumption.Decimal.Equal(decimal.RequireFromString("0.5")))
+	require.Equal(t, entity.ConsumptionSourceCutLength, resolved.ConsumptionSource.String)
+	require.False(t, resolved.WasteCutPct.Valid)
+	require.False(t, resolved.NormMarkerId.Valid)
+	require.Empty(t, resolved.SizeConsumptions)
+	require.Equal(t, before, cutsRawRows(t, ctx, r.cwID, cutsLineLining))
+
+	// ── the read saved back: the stored numbers stay, the made-up row of the rubber is not written ──
+	require.NoError(t, r.echoRecipe(nil))
+	require.Equal(t, before, cutsRawRows(t, ctx, r.cwID, cutsLineLining), "the echo of a resolved row")
+	require.Empty(t, cutsRawRows(t, ctx, r.cwID, cutsLineRubber), "the echo of a made-up row")
+
+	// ── what really is the colourway's still saves on that row; a number typed there does not ──
+	require.NoError(t, r.echoRecipe(func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+		for _, row := range rows {
+			if row.GetBomLineKey() == cutsLineLining {
+				row.Color = "navy"
+				row.Consumption = cutsDec("99")
+				row.SizeConsumptions = nil
+			}
+		}
+		return rows
+	}))
+	require.Equal(t, before, cutsRawRows(t, ctx, r.cwID, cutsLineLining), "a typed number on a strip line")
+	recipe, err = r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	require.Equal(t, "navy", liningOf(recipe).Color.String)
+
+	// ── a renamed placement is a new slot with no prior row to carry from, and still the same row ──
+	placeLining := func(placement string) func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+		return func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+			for _, row := range rows {
+				if row.GetBomLineKey() == cutsLineLining {
+					row.Placement = placement
+				}
+			}
+			return rows
+		}
+	}
+	require.NoError(t, r.echoRecipe(placeLining("hem")))
+	require.Equal(t, []string{"hem" + strings.TrimPrefix(before[0], "-")}, cutsRawRows(t, ctx, r.cwID, cutsLineLining))
+	require.NoError(t, r.echoRecipe(placeLining("")))
+	require.Equal(t, before, cutsRawRows(t, ctx, r.cwID, cutsLineLining))
+
+	// ── the strip leaves: the norm is what it was ──
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) { in.CutStrips = nil }))
+	require.Equal(t, before, cutsRawRows(t, ctx, r.cwID, cutsLineLining))
+	recipe, err = r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	back := liningOf(recipe)
+	require.True(t, back.Consumption.Decimal.Equal(decimal.RequireFromString("0.75")))
+	require.True(t, back.Quantity.Decimal.Equal(decimal.RequireFromString("2")))
+	require.Equal(t, entity.ConsumptionSourceMarker, back.ConsumptionSource.String)
+	require.True(t, back.WasteSelvedgePct.Decimal.Equal(decimal.RequireFromString("1.65")))
+	require.True(t, back.WasteCutPct.Decimal.Equal(decimal.RequireFromString("21.95")))
+	require.Equal(t, marker, back.NormMarkerId.Int64)
+	require.True(t, applied.Time.Equal(back.NormAppliedAt.Time), "the stamp's clock did not move")
+	bySize := map[int]string{}
+	for _, row := range back.SizeConsumptions {
+		bySize[row.SizeId] = row.Consumption.String()
+	}
+	require.Equal(t, map[int]string{r.sizeA: "0.7", r.sizeB: "0.8"}, bySize)
+}
+
+// TestTechCardCutStripEchoFindsEachRowItsNumbers: the wire row has no id, so a stored row is found by its
+// line and placement. Order does not swap numbers, a renamed placement is the same row, a row left out is
+// deleted as in any full replace, and a stored per-size row the range no longer holds blocks nothing.
+func TestTechCardCutStripEchoFindsEachRowItsNumbers(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	r.addColourway()
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+	dec := func(v string) decimal.NullDecimal { return decimal.NewNullDecimal(decimal.RequireFromString(v)) }
+	_, err := r.T.UpdateColorwayRecipe(ctx, r.cwID, r.read().LockVersion, []entity.TechCardColorwayUsage{
+		{BomLineKey: cutsLineTape, Placement: ns("cuff"), Consumption: dec("1.1")},
+		{BomLineKey: cutsLineTape, Placement: ns("hem"), Consumption: dec("2.2")},
+	})
+	require.NoError(t, err)
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		in.CutStrips = []*pb_common.TechCardCutStrip{r.perSize()}
+	}))
+	consumptionByPlacement := func() map[string]string {
+		t.Helper()
+		out := map[string]string{}
+		for _, row := range cutsRawRows(t, ctx, r.cwID, cutsLineTape) {
+			parts := strings.Split(row, "|")
+			out[parts[0]] = parts[1]
+		}
+		return out
+	}
+	both := map[string]string{"cuff": "1.100", "hem": "2.200"}
+	require.Equal(t, both, consumptionByPlacement())
+
+	tapeRows := func(rows []*pb_common.TechCardColorwayUsage) (tape, rest []*pb_common.TechCardColorwayUsage) {
+		for _, row := range rows {
+			if row.GetBomLineKey() == cutsLineTape {
+				tape = append(tape, row)
+			} else {
+				rest = append(rest, row)
+			}
+		}
+		return tape, rest
+	}
+
+	// The read puts the norm on one row and a zero on the other. Sent back in reverse, each keeps its own.
+	require.NoError(t, r.echoRecipe(func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+		tape, rest := tapeRows(rows)
+		require.Len(t, tape, 2)
+		return append(rest, tape[1], tape[0])
+	}))
+	require.Equal(t, both, consumptionByPlacement())
+
+	// A stored per-size row out of the range now.
+	var sizeC, hemID int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size WHERE id > ?", r.sizeB).Scan(&sizeC))
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT id FROM tech_card_colorway_usage WHERE colorway_id = ? AND placement = 'hem'`, r.cwID).Scan(&hemID))
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_colorway_usage_consumption (usage_id, size_id, consumption, display_order) VALUES (?, ?, 3.3, 0)`, hemID, sizeC)
+	require.NoError(t, err)
+	require.NoError(t, r.echoRecipe(nil), "a number the client never sent has no range to fit")
+	var kept int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tech_card_colorway_usage_consumption c
+		JOIN tech_card_colorway_usage u ON u.id = c.usage_id WHERE u.colorway_id = ? AND u.placement = 'hem' AND c.size_id = ?`, r.cwID, sizeC).Scan(&kept))
+	require.Equal(t, 1, kept)
+
+	// A renamed placement is the same row.
+	require.NoError(t, r.echoRecipe(func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+		tape, _ := tapeRows(rows)
+		for _, row := range tape {
+			if row.GetPlacement() == "cuff" {
+				row.Placement = "waist"
+			}
+		}
+		return rows
+	}))
+	require.Equal(t, map[string]string{"waist": "1.100", "hem": "2.200"}, consumptionByPlacement())
+
+	// A row left out is gone, and the second echo of the one left keeps its number.
+	require.NoError(t, r.echoRecipe(func(rows []*pb_common.TechCardColorwayUsage) []*pb_common.TechCardColorwayUsage {
+		tape, rest := tapeRows(rows)
+		for _, row := range tape {
+			if row.GetPlacement() == "hem" {
+				rest = append(rest, row)
+			}
+		}
+		return rest
+	}))
+	require.Equal(t, map[string]string{"hem": "2.200"}, consumptionByPlacement())
+}
+
+// TestTechCardArchiveCarriesTheStoredNormOfAStripLine: an archive holds a row as the table holds it, and a
+// row the resolver made up is no row. On the new card the strip decides the number, and removing it gives
+// the norm back, without its stamp: a marker of another base does not travel.
+func TestTechCardArchiveCarriesTheStoredNormOfAStripLine(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	r.addColourway()
+	marker, _ := seedRecipeStampMarkers(ctx, t, testDB, r.cardID)
+	_, err := r.T.UpdateColorwayRecipe(ctx, r.cwID, r.read().LockVersion, []entity.TechCardColorwayUsage{r.cutsMarkerRow(marker)})
+	require.NoError(t, err)
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		in.CutStrips = []*pb_common.TechCardCutStrip{r.onRoll(), r.oneLength()}
+	}))
+	// The seeded markers have an empty layout, which an archive refuses. The stamp has no FK by design.
+	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card_marker WHERE tech_card_id = ?", r.cardID)
+	require.NoError(t, err)
+
+	archive, _ := r.rt.export(t, r.cardID)
+	arch, err := techcardarchive.OpenArchive(bytes.NewReader(archive), int64(len(archive)))
+	require.NoError(t, err)
+	raw, err := arch.ReadFile(techcardarchive.FileColorways)
+	require.NoError(t, err)
+	var payloads []techcardarchive.ColorwayPayload
+	require.NoError(t, json.Unmarshal(raw, &payloads))
+	require.Len(t, payloads, 1)
+	require.Len(t, payloads[0].Recipe, 1, "the made-up row of the rubber is no row of this colourway")
+	line := payloads[0].Recipe[0]
+	require.Equal(t, cutsLineLining, line.BomLineKey)
+	require.True(t, decimal.RequireFromString(line.Consumption).Equal(decimal.RequireFromString("0.75")))
+	require.True(t, decimal.RequireFromString(line.Quantity).Equal(decimal.RequireFromString("2")))
+	require.Equal(t, entity.ConsumptionSourceMarker, line.ConsumptionSource)
+	require.True(t, decimal.RequireFromString(line.WasteCutPct).Equal(decimal.RequireFromString("21.95")))
+	require.Len(t, line.SizeConsumptions, 2)
+
+	// ── the new card, with the colourway made from that file ──
+	newID, _ := r.rt.importArchive(t, archive)
+	_, err = r.rt.srv.ApplyTechCardImportColorways(r.rt.adminCtx(rtImporter), &pb_admin.ApplyTechCardImportColorwaysRequest{TechCardId: int32(newID)})
+	require.NoError(t, err)
+	got := *r
+	got.cardID = newID
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM product WHERE style_id = ?", newID).Scan(&got.cwID))
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", got.cwID) })
+
+	stored := cutsRawRows(t, ctx, got.cwID, cutsLineLining)
+	require.Len(t, stored, 1)
+	require.True(t, strings.HasPrefix(stored[0], "-|0.750|2.000|marker|1.65|21.95|-|-|"), stored[0])
+	require.Empty(t, cutsRawRows(t, ctx, got.cwID, cutsLineRubber))
+
+	recipe, err := r.T.GetColorwayRecipe(ctx, got.cwID)
+	require.NoError(t, err)
+	require.Len(t, recipe, 2)
+	for _, row := range recipe {
+		require.Equal(t, entity.ConsumptionSourceCutLength, row.ConsumptionSource.String, "the strip decides the number here too")
+	}
+
+	require.NoError(t, got.save(func(in *pb_common.TechCardInsert) { in.CutStrips = nil }))
+	recipe, err = r.T.GetColorwayRecipe(ctx, got.cwID)
+	require.NoError(t, err)
+	require.Len(t, recipe, 1)
+	require.True(t, recipe[0].Consumption.Decimal.Equal(decimal.RequireFromString("0.75")))
+	require.Equal(t, entity.ConsumptionSourceMarker, recipe[0].ConsumptionSource.String)
+	require.True(t, recipe[0].WasteCutPct.Decimal.Equal(decimal.RequireFromString("21.95")))
+	require.False(t, recipe[0].NormMarkerId.Valid)
+	require.Len(t, recipe[0].SizeConsumptions, 2)
 }

@@ -278,7 +278,8 @@ func MarkCutStripLines(bomItems []TechCardBomItem, norms []CutStripLineNorm) {
 //
 //   - The first garment-level row of a line carries the norm. A further row of the same line, a second
 //     placement, gets a valid zero so that it cannot multiply the norm.
-//   - A stored number on such a row is replaced in memory: the norm of a strip line is not typed.
+//   - A stored number on such a row is replaced in memory: the norm of a strip line is not typed. The
+//     table keeps it, and StoredNorm holds it for the one reader that moves a row as stored.
 //   - A colourway with no row for the line gets one with Id 0. It is never written.
 //   - A piece-bound row states which fabric a piece is cut from and carries no norm, so it stays.
 //   - A legacy positional row, resolved by bom_item_index, is part of the slot and is resolved too.
@@ -310,6 +311,14 @@ func ResolveCutStripUsages(usages []TechCardColorwayUsage, bomItems []TechCardBo
 		norm := normOf(u)
 		if norm == nil {
 			continue
+		}
+		if u.StoredNorm == nil {
+			u.StoredNorm = &CutStripStoredNorm{
+				Consumption: u.Consumption, Quantity: u.Quantity, SizeConsumptions: u.SizeConsumptions,
+				ConsumptionSource: u.ConsumptionSource,
+				WasteSelvedgePct:  u.WasteSelvedgePct, WasteCutPct: u.WasteCutPct,
+				NormMarkerId: u.NormMarkerId, NormAppliedAt: u.NormAppliedAt,
+			}
 		}
 		u.Consumption, u.Quantity, u.SizeConsumptions = decimal.NullDecimal{}, decimal.NullDecimal{}, nil
 		u.WasteSelvedgePct, u.WasteCutPct = decimal.NullDecimal{}, decimal.NullDecimal{}
@@ -344,9 +353,41 @@ func (n *CutStripLineNorm) putOn(u *TechCardColorwayUsage) {
 	}
 }
 
-// ClearCutStripRecipeRow strips a recipe row of a strip line down to what really is the colourway's, and
-// reports whether anything is left to store. The source goes to manual explicitly, so a stored
-// provenance is not carried across this row: the store's carry applies only to a presence-less source.
+// CutStripStoredNorm is what a recipe row of a strip line holds in the table. While a strip exists no
+// reader gets these numbers, and they wait there: removing the strip brings them back.
+type CutStripStoredNorm struct {
+	Consumption       decimal.NullDecimal
+	Quantity          decimal.NullDecimal
+	SizeConsumptions  []TechCardBomSizeConsumption
+	ConsumptionSource sql.NullString
+	WasteSelvedgePct  decimal.NullDecimal
+	WasteCutPct       decimal.NullDecimal
+	NormMarkerId      sql.NullInt64
+	NormAppliedAt     sql.NullTime
+}
+
+// StoredRow returns the row with the numbers the table holds: a row the resolver did not touch as it is,
+// a resolved one with what it replaced, and a made-up one with no numbers.
+func (u *TechCardColorwayUsage) StoredRow() TechCardColorwayUsage {
+	out := *u
+	if !u.IsCutLengthNorm() {
+		return out
+	}
+	stored := CutStripStoredNorm{}
+	if u.StoredNorm != nil {
+		stored = *u.StoredNorm
+	}
+	out.Consumption, out.Quantity, out.SizeConsumptions = stored.Consumption, stored.Quantity, stored.SizeConsumptions
+	out.ConsumptionSource = stored.ConsumptionSource
+	out.WasteSelvedgePct, out.WasteCutPct = stored.WasteSelvedgePct, stored.WasteCutPct
+	out.NormMarkerId, out.NormAppliedAt = stored.NormMarkerId, stored.NormAppliedAt
+	return out
+}
+
+// ClearCutStripRecipeRow strips a recipe row of a strip line with no stored row behind it down to what
+// really is the colourway's, and reports whether anything is left to store. The source goes to manual
+// explicitly, so a stored provenance is not carried across this row: the store's carry applies only to a
+// presence-less source.
 func ClearCutStripRecipeRow(u *TechCardColorwayUsage) bool {
 	claimed := u.IsCutLengthNorm()
 	u.Consumption, u.Quantity, u.SizeConsumptions = decimal.NullDecimal{}, decimal.NullDecimal{}, nil

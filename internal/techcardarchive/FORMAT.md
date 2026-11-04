@@ -620,10 +620,12 @@ other size, and a row whose size this base lacks is dropped with the `size_unkno
 already has. `contents` claims nothing about strips; the `cut_strip` counter appears in the report only
 when the archive carries strips. An archive with no `cutStrips` makes a card with no strips.
 
-The norm of a strip line never travels. `cut_strip_norms` is cleared and a recipe row of such a line
-carries its pin, colour, Pantone and placement in `colorways.json` with no numbers: the receiving card
-computes the norm from the strips on read. A number on such a row in a hand-made file is dropped on
-arrival by the recipe's own write.
+The norm computed from the strips never travels. `cut_strip_norms` is cleared, a recipe row of such a
+line goes into `colorways.json` as the table holds it (numbers, provenance, waste and per-size values
+next to its pin, colour, Pantone and placement), and a row the resolver made up for a colourway with no
+row of the line is not exported. The receiving card computes the norm from the strips on read, as the
+source does. The row's own numbers land as stored and no reader gets them while a strip exists; removing
+the strip gives them back, without the `norm_marker_id` stamp no recipe row carries (`norm_marker_lost`).
 
 On import every strip is validated by the rules of a live save; a strip that does not validate or
 repeats a key is dropped (`archive_row_invalid` on `cut_strip`), a strip on a line the card does not
