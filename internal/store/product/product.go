@@ -1226,6 +1226,7 @@ type productQueryResult struct {
 	SkuColorToken      string              `db:"sku_color_token"` // COALESCE(sku_color_token, color_code) (T45)
 	ColorHexOverride   sql.NullString      `db:"color_hex"`
 	CountryOfOrigin    string              `db:"country_of_origin"`
+	CountryCode        sql.NullString      `db:"country_code"` // detail read only (getProductDetails)
 	SalePercentage     decimal.NullDecimal `db:"sale_percentage"`
 	TopCategoryId      int                 `db:"top_category_id"`
 	SubCategoryId      sql.NullInt32       `db:"sub_category_id"`
@@ -1344,6 +1345,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					SkuColorToken:         pqr.SkuColorToken,
 					ColorHexOverride:      pqr.ColorHexOverride,
 					CountryOfOrigin:       pqr.CountryOfOrigin,
+					CountryCode:           pqr.CountryCode,
 					SalePercentage:        pqr.SalePercentage,
 					TopCategoryId:         pqr.TopCategoryId,
 					SubCategoryId:         pqr.SubCategoryId,

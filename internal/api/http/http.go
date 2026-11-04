@@ -771,8 +771,19 @@ func forwardRequestID(key string) (string, bool) {
 	return runtime.DefaultHeaderMatcher(key)
 }
 
+// adminGatewayServiceConfig lifts the gateway's own receive cap for the methods that return file
+// bytes. The gateway is a gRPC client of this server, and a client receives 4 MiB by default whatever
+// grpcMaxSendMsgSize says, so a sheet between 4 and 10 MiB answered 429 on the way back to the panel.
+// It is per method on purpose: every other admin route keeps the limit it had.
+var adminGatewayServiceConfig = fmt.Sprintf(
+	`{"methodConfig":[{"name":[{"service":%[1]q,"method":"GetTaskFileContent"},{"service":%[1]q,"method":"GetLibraryFileContent"}],"maxResponseMessageBytes":%[2]d}]}`,
+	pb_admin.AdminService_ServiceDesc.ServiceName, grpcMaxSendMsgSize)
+
 func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
-	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	grpcDialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(adminGatewayServiceConfig),
+	}
 
 	apiEndpoint := fmt.Sprintf("%s:%s", s.c.Address, s.c.Port)
 

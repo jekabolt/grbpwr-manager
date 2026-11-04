@@ -489,6 +489,7 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 			DictionaryColor:    dictionaryColorToPb(bi.ColorCode),
 			ColorHexOverride:   optionalStringFromNull(bi.ColorHexOverride),
 			CountryOfOrigin:    bi.CountryOfOrigin,
+			CountryCode:        bi.CountryCode.String,
 			SalePercentage:     &pb_decimal.Decimal{Value: bi.SalePercentage.Decimal.String()},
 			TopCategoryId:      int32(bi.TopCategoryId),
 			SubCategoryId:      int32(bi.SubCategoryId.Int32),

@@ -954,6 +954,11 @@ type (
 		// (PreviousObjectKey) — порядок «строка раньше байтов» тот же, что в DeleteFile: упавшая
 		// заливка не трогает строку вообще, а осиротевший объект стоит дешевле потерянного текста.
 		SaveNoteContent(ctx context.Context, in entity.LibraryNoteSave) (*entity.LibraryNoteSaveResult, error)
+		// SaveFileContent is the same compare-and-set write for a file that is not a note (a sheet
+		// edited inside a task): no excerpt, and the preview is cleared because it would show the old
+		// bytes. The caller uploads first and removes PreviousObjectKey and PreviousPreviewKey after a
+		// successful return. A conflict is data; sql.ErrNoRows when the file is gone or invisible.
+		SaveFileContent(ctx context.Context, in entity.LibraryFileContentSave) (*entity.LibraryFileContentSaveResult, error)
 	}
 
 	// Fulfillment is the orders-fulfillment board's storage: the board-owned
@@ -1038,7 +1043,14 @@ type (
 		// returns only those no other card/fitting references after the transaction.
 		DeleteTechCardAndListOrphanedPatternURLs(ctx context.Context, id int) ([]string, error)
 		GetTechCardById(ctx context.Context, id int) (*entity.TechCard, error)
+		// PackagingPickTargets says which of these ids a packaging item of this card may name: materials
+		// of class packaging, auxiliary cards, the card's colourways. The save refuses the others; the
+		// snapshot restore drops them first.
+		PackagingPickTargets(ctx context.Context, cardID int, materialIDs, auxIDs []int) (entity.PackagingPickTargets, error)
 		GetTechCardByIdConsistent(ctx context.Context, id int) (*entity.TechCard, error)
+		// ExistingLibraryFileIds says which ids are still library files, with no viewer. It answers a
+		// server-built write (the snapshot restore), not a person looking at the library.
+		ExistingLibraryFileIds(ctx context.Context, ids []int) (map[int]bool, error)
 		// GetTechCardSnapshot loads one tech_card_snapshot row OF THIS CARD; a missing id or one owned by
 		// another card is sql.ErrNoRows.
 		GetTechCardSnapshot(ctx context.Context, techCardID int, snapshotID int64) (*entity.TechCardSnapshot, error)

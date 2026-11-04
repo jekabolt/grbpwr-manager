@@ -215,6 +215,14 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	// лечась переутверждением. Хранимой карточки нет вовсе, поэтому счётчик начинается с нуля и
 	// поднимается до MAX(номеров payload'а).
 	dto.MintCalloutNumbers(nil, tc)
+	// The pin, the material link and the artwork files of the labels: the same normalization as on
+	// save. A new card has no stored BOM and no colourway yet.
+	dto.ClearDanglingGarmentLabelPins(tc)
+	dto.NormalizeLabelBomLinks(nil, tc)
+	dto.DropForeignGarmentLabelColorwayFiles(nil, tc)
+	if err := s.garmentLabelFilesVisibleGate(ctx, nil, tc); err != nil {
+		return nil, err
+	}
 	// Materialise the derived FUSING steps before any approval digest is stamped. The store repeats
 	// this transition inside its transaction; doing it here keeps the signed write model identical to
 	// the eventual read model (including operation and issue renumbering).
@@ -358,6 +366,7 @@ func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountry
 	if tc != nil {
 		fusingops.DropDanglingFusingRefs(&tc.TechCardInsert)
 	}
+	s.fillGarmentLabelFileLinks(tc)
 	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, vatCountryCode))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
@@ -526,6 +535,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := operationSeamToleranceStoredGate(in, stored); err != nil {
 		return nil, err
 	}
+	if err := packagingPicksStoredGate(in, stored); err != nil {
+		return nil, err
+	}
 	if err := operationFoldsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
@@ -680,10 +692,30 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// это не скажет. С минтом выше не спорит по построению: минт — `number == 0`, перенос —
 	// `number != 0`.
 	dto.CarryOmittedCalloutClientRef(stored, tc)
+	// ПИН, МАТЕРИАЛ И ФАЙЛЫ ЭТИКЕТКИ (0447) — после минта, потому что номера выносок уже окончательны,
+	// и раньше подписи, потому что всё это хешируется в секции LABELS. Вкладка со старым бандлом шлёт
+	// этикетку без них: перенос. Пин на снятую выноску и ключ снятой линии сохранение не ломают: они
+	// гаснут здесь. Цвет файла адресован product.id: сохранение карточки продукты не пересоздаёт.
+	dto.CarryOmittedGarmentLabelArtwork(&stored.TechCardInsert, tc)
+	dto.ClearDanglingGarmentLabelPins(tc)
+	dto.NormalizeLabelBomLinks(&stored.TechCardInsert, tc)
+	dto.DropForeignGarmentLabelColorwayFiles(stored.Colorways, tc)
+	if src.readdress == nil {
+		// Новый файл должен быть виден автору правки: иначе id чужого файла открыл бы его секретную
+		// ссылку через ответ техкарты. Откат снимка пишет то, что на этой карточке уже было.
+		if err := s.garmentLabelFilesVisibleGate(ctx, &stored.TechCardInsert, tc); err != nil {
+			return nil, err
+		}
+	} else if err := s.dropMissingGarmentLabelFiles(ctx, tc); err != nil {
+		return nil, err
+	}
 	if err := validateFreshSignoffSectionPresence(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
 	if err := validateFreshLabelsSectionsCarried(tc, &stored.TechCardInsert, freshSignoffs); err != nil {
+		return nil, apierr.Invalid(err)
+	}
+	if err := validateLabelsBornLinesSignGate(tc, freshSignoffs); err != nil {
 		return nil, apierr.Invalid(err)
 	}
 	// The two sign-off belts, both between the presence check and the restamp — the last point where

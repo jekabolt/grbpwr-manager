@@ -1491,45 +1491,57 @@ func applyListMedia(card *entity.TechCard, media []entity.TechCardMediaFull) {
 // may not exist yet); otherwise the flat PREVIEW sketch is preferred. Falls back down a chain so any
 // media beats none, and returns "" when the card has no media.
 func pickTechCardPreviewURL(stage entity.TechCardStage, media []entity.TechCardMediaFull) string {
-	if len(media) == 0 {
+	m := pickTechCardPreview(stage, media)
+	if m == nil {
 		return ""
 	}
-	var firstMoodboard, firstTechnical, previewKind string
+	return techCardMediaThumbURL(m)
+}
+
+// techCardMediaThumbURL is the URL a list thumbnail takes from one media, "" when it has neither size.
+func techCardMediaThumbURL(m *entity.TechCardMediaFull) string {
+	if m.Media.ThumbnailMediaURL != "" {
+		return m.Media.ThumbnailMediaURL
+	}
+	return m.Media.CompressedMediaURL
+}
+
+// pickTechCardPreview is the rule behind pickTechCardPreviewURL, returning the media itself for a
+// caller that needs the whole record (a packaging item's picked thumbnail). nil = nothing to show.
+func pickTechCardPreview(stage entity.TechCardStage, media []entity.TechCardMediaFull) *entity.TechCardMediaFull {
+	var firstMoodboard, firstTechnical, previewKind *entity.TechCardMediaFull
 	for i := range media {
-		url := media[i].Media.ThumbnailMediaURL
-		if url == "" {
-			url = media[i].Media.CompressedMediaURL
-		}
-		if url == "" {
+		m := &media[i]
+		if techCardMediaThumbURL(m) == "" {
 			continue
 		}
-		switch media[i].Category {
+		switch m.Category {
 		case entity.TechCardMediaCategoryMoodboard:
-			if firstMoodboard == "" {
-				firstMoodboard = url
+			if firstMoodboard == nil {
+				firstMoodboard = m
 			}
 		case entity.TechCardMediaCategoryTechnical:
-			if firstTechnical == "" {
-				firstTechnical = url
+			if firstTechnical == nil {
+				firstTechnical = m
 			}
-			if previewKind == "" && media[i].Kind == entity.TechCardMediaPreview {
-				previewKind = url
+			if previewKind == nil && m.Kind == entity.TechCardMediaPreview {
+				previewKind = m
 			}
 		}
 	}
 	if stage == entity.TechCardStageIdea {
-		if firstMoodboard != "" {
+		if firstMoodboard != nil {
 			return firstMoodboard
 		}
-		if previewKind != "" {
+		if previewKind != nil {
 			return previewKind
 		}
 		return firstTechnical
 	}
-	if previewKind != "" {
+	if previewKind != nil {
 		return previewKind
 	}
-	if firstTechnical != "" {
+	if firstTechnical != nil {
 		return firstTechnical
 	}
 	return firstMoodboard

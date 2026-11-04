@@ -291,6 +291,9 @@ func planArchive(in ArchiveInput) (Manifest, []archiveEntry, error) {
 	if m.IDMaps.Colorways == nil {
 		m.IDMaps.Colorways = map[string]string{}
 	}
+	if m.IDMaps.AuxTechCards == nil {
+		m.IDMaps.AuxTechCards = map[string]string{}
+	}
 	if m.IDMaps.CategoryPath == nil {
 		m.IDMaps.CategoryPath = []string{}
 	}

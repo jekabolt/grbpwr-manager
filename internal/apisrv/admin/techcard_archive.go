@@ -270,6 +270,11 @@ func (s *Server) buildArchiveInput(ctx context.Context, card *entity.TechCard, c
 		}
 		colorways[strconv.Itoa(cw.Id)] = cw.ColorCode
 	}
+	auxTechCards, auxHoles, err := s.collectArchiveAuxPicks(ctx, card)
+	if err != nil {
+		return techcardarchive.ArchiveInput{}, err
+	}
+	holes = append(holes, auxHoles...)
 
 	return techcardarchive.ArchiveInput{
 		ExportedAt: time.Now().UTC(),
@@ -289,6 +294,7 @@ func (s *Server) buildArchiveInput(ctx context.Context, card *entity.TechCard, c
 			Sizes:        sizes,
 			CategoryPath: archiveCategoryPath(di.Categories, card),
 			Colorways:    colorways,
+			AuxTechCards: auxTechCards,
 		},
 		Holes:       holes,
 		CardJSON:    cardJSON,
@@ -891,6 +897,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		operationFoldsStoredGate,
 		operationLayerOrderStoredGate,
 		operationSeamToleranceStoredGate,
+		packagingPicksStoredGate,
 		operationSeamKindStoredGate,
 		operationWorkRetiredGate,
 	} {

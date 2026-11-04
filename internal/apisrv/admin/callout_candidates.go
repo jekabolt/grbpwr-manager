@@ -486,7 +486,16 @@ func (b *calloutBuilder) garmentLabels() {
 		}
 	}
 	covered := make([]bool, len(b.card.GarmentLabels))
+	for i := range b.card.GarmentLabels {
+		// A pinned row is placed, and the composition row is the composition block's own business.
+		if l := &b.card.GarmentLabels[i]; l.CalloutNumber != 0 || l.IsComposition() {
+			covered[i] = true
+		}
+	}
 	for i, l := range b.card.GarmentLabels {
+		if covered[i] {
+			continue
+		}
 		key := strings.ToLower(calloutWords(l.Key))
 		placement := strings.ToLower(strings.TrimSpace(l.Placement.String))
 		for j, e := range b.existing {

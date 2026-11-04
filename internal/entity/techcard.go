@@ -3826,6 +3826,9 @@ type TechCardPackaging struct {
 	WeightNetGrams   sql.NullInt32  `db:"weight_net_grams"`
 	WeightGrossGrams sql.NullInt32  `db:"weight_gross_grams"`
 	Notes            sql.NullString `db:"notes"`
+	// PackedSize / PackedMediaId are the finished pack: its size in free text and its photo (0448).
+	PackedSize    sql.NullString `db:"packed_size"`
+	PackedMediaId sql.NullInt32  `db:"packed_media_id"`
 }
 
 // --- labels rework (0386) --------------------------------------------------------------------------
@@ -3880,12 +3883,48 @@ type TechCardGarmentLabel struct {
 	Size          sql.NullString
 	QtyPerGarment int           // ≥ 1
 	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
-	// BomLineKey is WRITE-SIDE TRANSPORT for server-built payloads (the season clone): the source
-	// card's BOM ids mean nothing on the new card, so the link travels as the line's stable key and
-	// the store resolves it against the ids it just minted. Never read back, never hashed.
+	// BomLineKey names the BOM line by its stable key: a client links a line born in the same save
+	// this way, and a server-built payload (the season clone) moves a link across cards. A non-empty
+	// key wins over BomItemId in the store. Read back through the link, never hashed: BomItemId is
+	// the content, this is its address.
 	BomLineKey string
 	Note       sql.NullString
 	MediaIds   []int // mockups, in display order
+	// CalloutNumber is the pin: Number of a TechCardCallout of this card; 0 = no pin.
+	CalloutNumber int
+	// ArtworkPerSize / ArtworkPerColorway: one artwork file per size / per colourway. Independent;
+	// both off = one file for the whole style.
+	ArtworkPerSize     bool
+	ArtworkPerColorway bool
+	// Files are the artwork files, unique by (ColorwayId, SizeId), sorted by them on parse and read.
+	Files []TechCardGarmentLabelFile
+	// ArtworkOmitted is the presence bit of artwork_per_size: the payload came from a client that
+	// knows nothing of the pin, the mode and the files, and the stored ones are carried. Parse only.
+	ArtworkOmitted bool
+}
+
+// GarmentLabelKeyComposition is the row holding the composition label's location, material and files.
+// It is shown in the composition block, not among the labels, and it is not asked for a mockup: the
+// engine draws its picture.
+const GarmentLabelKeyComposition = "composition"
+
+// IsComposition reports whether this is the composition label's own row.
+func (l *TechCardGarmentLabel) IsComposition() bool {
+	return strings.EqualFold(strings.TrimSpace(l.Key), GarmentLabelKeyComposition)
+}
+
+// TechCardGarmentLabelFile is one artwork file of a garment label (tech_card_garment_label_file).
+type TechCardGarmentLabelFile struct {
+	ColorwayId    int    // product.id of this style; 0 = any colourway
+	SizeId        int    // size.id; 0 = all sizes
+	LibraryFileId int    // library_file.id; deleting the file is refused while a row holds it
+	SourceHash    string // hash of the inputs of a generated file; "" = uploaded by hand
+	// LinkEpoch is READ-SIDE: the generation of the file's live public link, 0 = no live link
+	// (access is not `link`, revoked, or expired). Never written, never hashed.
+	LinkEpoch int
+	// PublicURL is RESPONSE-ONLY, set where a card is read for a response. Snapshots and archives
+	// stay token-free. Never hashed.
+	PublicURL string
 }
 
 // TechCardPackagingItem is one packaging item (tech_card_packaging_item) — the garment label with
@@ -3900,11 +3939,37 @@ type TechCardPackagingItem struct {
 	BomLineKey    string // see TechCardGarmentLabel.BomLineKey
 	Note          sql.NullString
 	MediaIds      []int
+	// MaterialId / AuxTechCardId are the thing this item IS, picked from the catalog (0448): a material
+	// of class packaging or an auxiliary tech card, at most one. Checked in the save transaction.
+	MaterialId    sql.NullInt32
+	AuxTechCardId sql.NullInt32
+	// PerOrder: QtyPerGarment counts per order instead of per garment.
+	PerOrder bool
+	// PickedName / PickedThumbnail are READ-SIDE: resolved from the pick on every read, never written
+	// and never hashed. The pick is the ids above, and what it is called today can move.
+	PickedName      string
+	PickedThumbnail *MediaFull
+	// ColorwayIds are the colourways of this card the item applies to, ascending; empty = all of them.
+	ColorwayIds []int
+}
+
+// PackagingPickTargets says, of a set of ids, which ones a packaging item may pick: Materials are the
+// ones of class packaging, AuxCards the ones of purpose auxiliary, Colorways the colourways of the card
+// being asked about.
+type PackagingPickTargets struct {
+	Materials map[int]bool
+	AuxCards  map[int]bool
+	Colorways map[int]bool
+}
+
+// HasPick reports whether the item names a catalog material or an auxiliary tech card.
+func (it *TechCardPackagingItem) HasPick() bool {
+	return it.MaterialId.Valid || it.AuxTechCardId.Valid
 }
 
 // LabelMediaIds is every media id the labels rework references on this card — the composition
-// label's logo override, then each garment label's mockups, then each packaging item's mockups —
-// deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
+// label's logo override, then each garment label's mockups, then each packaging item's mockups, then
+// the photo of the finished pack — deduplicated, first occurrence wins. It is what the read resolves into TechCard.ResolvedLabelMedia
 // (M-02): the client must not depend on its media-library page to turn these ids into pictures.
 func (tc *TechCardInsert) LabelMediaIds() []int {
 	var out []int
@@ -3928,6 +3993,9 @@ func (tc *TechCardInsert) LabelMediaIds() []int {
 		for _, id := range it.MediaIds {
 			add(id)
 		}
+	}
+	if tc.Packaging != nil && tc.Packaging.PackedMediaId.Valid {
+		add(int(tc.Packaging.PackedMediaId.Int32))
 	}
 	return out
 }

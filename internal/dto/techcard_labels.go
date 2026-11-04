@@ -23,6 +23,9 @@ const (
 	maxLabelLineRunes     = 255 // characters per printed line
 	maxLabelMediaPerEntry = 20
 	maxLabelEntries       = 100 // garment labels / packaging items per card
+	maxLabelFilesPerEntry = 400 // artwork files per label: colourways x sizes
+	maxLabelBomLineKey    = 64  // bytes, a line key is a ULID
+	maxLabelSourceHash    = 64  // characters, tech_card_garment_label_file.source_hash
 )
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
@@ -245,6 +248,17 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		if err != nil {
 			return nil, err
 		}
+		lineKey, err := parseLabelBomLineKey(f+".bom_line_key", l.BomLineKey)
+		if err != nil {
+			return nil, err
+		}
+		if l.CalloutNumber < 0 {
+			return nil, entity.NewFieldViolation(f+".callout_number", "must not be negative", fmt.Sprint(l.CalloutNumber), "send 0 for no pin")
+		}
+		files, err := parseGarmentLabelFiles(f+".files", l.Files)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardGarmentLabel{
 			Key:           l.Key,
 			Placement:     nullStringFromPb(l.Placement),
@@ -255,8 +269,76 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			BomItemId:     bom,
 			Note:          nullStringFromPb(l.Note),
 			MediaIds:      media,
+			BomLineKey:    lineKey,
+
+			CalloutNumber:      int(l.CalloutNumber),
+			ArtworkPerSize:     l.GetArtworkPerSize(),
+			ArtworkPerColorway: l.GetArtworkPerColorway(),
+			Files:              files,
+			ArtworkOmitted:     l.ArtworkPerSize == nil,
 		})
 	}
+	return out, nil
+}
+
+// parseLabelBomLineKey validates the address of a BOM line. Whether a line carries it is judged
+// later, against the payload's BOM: a stale key is cleared there and never breaks a save.
+func parseLabelBomLineKey(field, key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if len(key) > maxLabelBomLineKey {
+		return "", entity.NewFieldViolation(field, "too_long", key, fmt.Sprintf("at most %d characters", maxLabelBomLineKey))
+	}
+	return key, nil
+}
+
+// parseGarmentLabelFiles validates the artwork files of one label and puts them in (colourway, size)
+// order, the order the read returns. A second file for one (colourway, size) is refused in words: the
+// unique index would otherwise answer with a raw constraint error.
+func parseGarmentLabelFiles(field string, pbs []*pb_common.TechCardGarmentLabelFile) ([]entity.TechCardGarmentLabelFile, error) {
+	if len(pbs) == 0 {
+		return nil, nil
+	}
+	if len(pbs) > maxLabelFilesPerEntry {
+		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(pbs)), fmt.Sprintf("at most %d files", maxLabelFilesPerEntry))
+	}
+	type slot struct{ colorway, size int32 }
+	seen := make(map[slot]bool, len(pbs))
+	out := make([]entity.TechCardGarmentLabelFile, 0, len(pbs))
+	for i, f := range pbs {
+		if f == nil {
+			continue
+		}
+		ff := fmt.Sprintf("%s[%d]", field, i)
+		if f.ColorwayId < 0 {
+			return nil, entity.NewFieldViolation(ff+".colorway_id", "must not be negative", fmt.Sprint(f.ColorwayId), "send 0 for any colourway")
+		}
+		if f.SizeId < 0 {
+			return nil, entity.NewFieldViolation(ff+".size_id", "must not be negative", fmt.Sprint(f.SizeId), "send 0 for all sizes")
+		}
+		if f.LibraryFileId <= 0 {
+			return nil, entity.NewFieldViolation(ff+".library_file_id", "required", fmt.Sprint(f.LibraryFileId), "upload the file")
+		}
+		if err := checkLabelText(ff+".source_hash", f.SourceHash, maxLabelSourceHash); err != nil {
+			return nil, err
+		}
+		s := slot{f.ColorwayId, f.SizeId}
+		if seen[s] {
+			return nil, entity.NewFieldViolation(ff, "duplicate file for this colourway and size", fmt.Sprint(f.LibraryFileId), "keep one file per slot")
+		}
+		seen[s] = true
+		out = append(out, entity.TechCardGarmentLabelFile{
+			ColorwayId:    int(f.ColorwayId),
+			SizeId:        int(f.SizeId),
+			LibraryFileId: int(f.LibraryFileId),
+			SourceHash:    f.SourceHash,
+		})
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].ColorwayId != out[b].ColorwayId {
+			return out[a].ColorwayId < out[b].ColorwayId
+		}
+		return out[a].SizeId < out[b].SizeId
+	})
 	return out, nil
 }
 
@@ -297,6 +379,18 @@ func parseTechCardPackagingItems(pbs []*pb_common.TechCardPackagingItem) ([]enti
 		if err != nil {
 			return nil, err
 		}
+		lineKey, err := parseLabelBomLineKey(f+".bom_line_key", it.BomLineKey)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkPackagingItemPick(f, it); err != nil {
+			return nil, err
+		}
+		colorways, err := parsePackagingItemColorways(f+".colorway_ids", it.ColorwayIds)
+		if err != nil {
+			return nil, err
+		}
+		// picked_name / picked_thumbnail are output-only and are not read here.
 		out = append(out, entity.TechCardPackagingItem{
 			Key:           it.Key,
 			Usage:         nullStringFromPb(it.Usage),
@@ -306,9 +400,56 @@ func parseTechCardPackagingItems(pbs []*pb_common.TechCardPackagingItem) ([]enti
 			BomItemId:     bom,
 			Note:          nullStringFromPb(it.Note),
 			MediaIds:      media,
+			BomLineKey:    lineKey,
+			MaterialId:    nullInt32FromPb(it.MaterialId),
+			AuxTechCardId: nullInt32FromPb(it.AuxTechCardId),
+			PerOrder:      it.PerOrder,
+			ColorwayIds:   colorways,
 		})
 	}
 	return out, nil
+}
+
+// parsePackagingItemColorways returns the ids ascending, the order a read gives them, because the list
+// means a set. That each one is a colourway of this card is the store's check, inside the save.
+func parsePackagingItemColorways(field string, ids []int32) ([]int, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if len(ids) > maxLabelEntries {
+		return nil, entity.NewFieldViolation(field, "too_many", fmt.Sprint(len(ids)), fmt.Sprintf("at most %d colourways", maxLabelEntries))
+	}
+	out := make([]int, 0, len(ids))
+	seen := make(map[int32]bool, len(ids))
+	for j, id := range ids {
+		f := fmt.Sprintf("%s[%d]", field, j)
+		if id <= 0 {
+			return nil, entity.NewFieldViolation(f, "must be positive", fmt.Sprint(id), "a colourway id")
+		}
+		if seen[id] {
+			return nil, entity.NewFieldViolation(f, "duplicate colourway", fmt.Sprint(id), "name a colourway once")
+		}
+		seen[id] = true
+		out = append(out, int(id))
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// checkPackagingItemPick checks the shape of a pick: no negative id, at most one of the two. That the
+// picked row exists and is of the right kind is the store's check, inside the save transaction.
+func checkPackagingItemPick(f string, it *pb_common.TechCardPackagingItem) error {
+	if it.MaterialId < 0 {
+		return entity.NewFieldViolation(f+".material_id", "must not be negative", fmt.Sprint(it.MaterialId), "send 0 for no material")
+	}
+	if it.AuxTechCardId < 0 {
+		return entity.NewFieldViolation(f+".aux_tech_card_id", "must not be negative", fmt.Sprint(it.AuxTechCardId), "send 0 for no card")
+	}
+	if it.MaterialId > 0 && it.AuxTechCardId > 0 {
+		return entity.NewFieldViolation(f+".aux_tech_card_id", "at most one pick", fmt.Sprint(it.AuxTechCardId),
+			"pick a material or an auxiliary card, not both")
+	}
+	return nil
 }
 
 // --- entity → pb -------------------------------------------------------------------------------
@@ -356,6 +497,7 @@ func labelMediaIdsToPb(ids []int) []int32 {
 func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_common.TechCardGarmentLabel {
 	out := make([]*pb_common.TechCardGarmentLabel, 0, len(labels))
 	for _, l := range labels {
+		perSize := l.ArtworkPerSize
 		out = append(out, &pb_common.TechCardGarmentLabel{
 			Key:           l.Key,
 			Placement:     pbStringFromNull(l.Placement),
@@ -366,6 +508,29 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 			BomItemId:     l.BomItemId.Int32,
 			Note:          pbStringFromNull(l.Note),
 			MediaIds:      labelMediaIdsToPb(l.MediaIds),
+			BomLineKey:    l.BomLineKey,
+
+			CalloutNumber:      int32(l.CalloutNumber),
+			ArtworkPerSize:     &perSize,
+			ArtworkPerColorway: l.ArtworkPerColorway,
+			Files:              garmentLabelFilesToPb(l.Files),
+		})
+	}
+	return out
+}
+
+func garmentLabelFilesToPb(files []entity.TechCardGarmentLabelFile) []*pb_common.TechCardGarmentLabelFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]*pb_common.TechCardGarmentLabelFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, &pb_common.TechCardGarmentLabelFile{
+			ColorwayId:    int32(f.ColorwayId),
+			SizeId:        int32(f.SizeId),
+			LibraryFileId: int32(f.LibraryFileId),
+			SourceHash:    f.SourceHash,
+			PublicUrl:     f.PublicURL,
 		})
 	}
 	return out
@@ -374,7 +539,7 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 func techCardPackagingItemsToPb(items []entity.TechCardPackagingItem) []*pb_common.TechCardPackagingItem {
 	out := make([]*pb_common.TechCardPackagingItem, 0, len(items))
 	for _, it := range items {
-		out = append(out, &pb_common.TechCardPackagingItem{
+		row := &pb_common.TechCardPackagingItem{
 			Key:           it.Key,
 			Usage:         pbStringFromNull(it.Usage),
 			Packing:       pbStringFromNull(it.Packing),
@@ -383,24 +548,181 @@ func techCardPackagingItemsToPb(items []entity.TechCardPackagingItem) []*pb_comm
 			BomItemId:     it.BomItemId.Int32,
 			Note:          pbStringFromNull(it.Note),
 			MediaIds:      labelMediaIdsToPb(it.MediaIds),
-		})
+			BomLineKey:    it.BomLineKey,
+			MaterialId:    it.MaterialId.Int32,
+			AuxTechCardId: it.AuxTechCardId.Int32,
+			PerOrder:      it.PerOrder,
+			PickedName:    it.PickedName,
+		}
+		for _, colorwayID := range it.ColorwayIds {
+			row.ColorwayIds = append(row.ColorwayIds, int32(colorwayID))
+		}
+		if it.PickedThumbnail != nil {
+			row.PickedThumbnail = ConvertEntityToCommonMedia(it.PickedThumbnail)
+		}
+		out = append(out, row)
 	}
 	return out
 }
 
 // --- sign-off gate (D-04) ----------------------------------------------------------------------
 
-// GarmentLabelsWithoutMockup names the garment labels that carry no mockup, in payload order — the
-// labels that keep the LABELS sign-off from being APPROVED (owner decision D-04). A save is never
-// refused over them; only the approval is.
+// GarmentLabelsWithoutMockup names the garment labels with no artwork, in payload order: the labels
+// that keep the LABELS sign-off from being APPROVED (owner decision D-04). Artwork is a mockup or a
+// file. The composition row is not asked: the engine draws its picture. A save is never refused over
+// them; only the approval is.
 func GarmentLabelsWithoutMockup(tc *entity.TechCardInsert) []string {
 	if tc == nil {
 		return nil
 	}
 	var out []string
-	for i, l := range tc.GarmentLabels {
-		if len(l.MediaIds) == 0 {
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		if l.IsComposition() {
+			continue
+		}
+		if len(l.MediaIds) == 0 && len(l.Files) == 0 {
 			out = append(out, fmt.Sprintf("%s (#%d)", l.Key, i+1))
+		}
+	}
+	return out
+}
+
+// --- pin, material link, artwork on the write path --------------------------------------------------
+
+// CarryOmittedGarmentLabelArtwork keeps the stored pin, artwork modes and files of a row a client sent
+// without artwork_per_size: that client knows nothing of them, and the delete-insert save would erase
+// them with no signature to say so. It runs before the restamp, so the digest hashes what stays.
+func CarryOmittedGarmentLabelArtwork(stored, tc *entity.TechCardInsert) {
+	if stored == nil || tc == nil {
+		return
+	}
+	byKey := make(map[string]*entity.TechCardGarmentLabel, len(stored.GarmentLabels))
+	for i := range stored.GarmentLabels {
+		l := &stored.GarmentLabels[i]
+		if _, ok := byKey[l.Key]; !ok {
+			byKey[l.Key] = l
+		}
+	}
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		if !l.ArtworkOmitted {
+			continue
+		}
+		if prev, ok := byKey[l.Key]; ok {
+			l.CalloutNumber = prev.CalloutNumber
+			l.ArtworkPerSize = prev.ArtworkPerSize
+			l.ArtworkPerColorway = prev.ArtworkPerColorway
+			l.Files = prev.Files
+		}
+	}
+}
+
+// ClearDanglingGarmentLabelPins clears a pin no callout of this payload carries. The callout is what
+// the label points at and it is removed elsewhere, so a stale number must not break a save.
+func ClearDanglingGarmentLabelPins(tc *entity.TechCardInsert) {
+	if tc == nil {
+		return
+	}
+	numbers := make(map[int]bool, len(tc.Callouts))
+	for i := range tc.Callouts {
+		if tc.Callouts[i].Number > 0 {
+			numbers[tc.Callouts[i].Number] = true
+		}
+	}
+	for i := range tc.GarmentLabels {
+		if l := &tc.GarmentLabels[i]; l.CalloutNumber != 0 && !numbers[l.CalloutNumber] {
+			l.CalloutNumber = 0
+		}
+	}
+}
+
+// NormalizeLabelBomLinks makes the BOM link of every garment label and packaging item say what the
+// read will say, before the digest is taken:
+//   - a key no line of this payload carries is a removed line: both the key and the id are cleared, a
+//     stale link never breaks a save;
+//   - a key of a line already stored gets that line's id, because the projection hashes the id and the
+//     read reports it. Without this an approval made from a key-only row is born stale;
+//   - a key of a line born in this save has no id yet and stays key-only.
+func NormalizeLabelBomLinks(stored, tc *entity.TechCardInsert) {
+	if tc == nil {
+		return
+	}
+	keys := make(map[string]bool, len(tc.BomItems))
+	for i := range tc.BomItems {
+		if k := strings.TrimSpace(tc.BomItems[i].LineKey); k != "" {
+			keys[k] = true
+		}
+	}
+	idByKey := map[string]int{}
+	if stored != nil {
+		for i := range stored.BomItems {
+			if k := strings.TrimSpace(stored.BomItems[i].LineKey); k != "" && stored.BomItems[i].Id > 0 {
+				idByKey[k] = stored.BomItems[i].Id
+			}
+		}
+	}
+	normalize := func(key *string, id *sql.NullInt32) {
+		k := strings.TrimSpace(*key)
+		if k == "" {
+			return
+		}
+		*key = k
+		if !keys[k] {
+			*key, *id = "", sql.NullInt32{}
+			return
+		}
+		if resolved, ok := idByKey[k]; ok {
+			*id = sql.NullInt32{Int32: int32(resolved), Valid: true}
+			return
+		}
+		*id = sql.NullInt32{}
+	}
+	for i := range tc.GarmentLabels {
+		normalize(&tc.GarmentLabels[i].BomLineKey, &tc.GarmentLabels[i].BomItemId)
+	}
+	for i := range tc.PackagingItems {
+		normalize(&tc.PackagingItems[i].BomLineKey, &tc.PackagingItems[i].BomItemId)
+	}
+}
+
+// DropForeignGarmentLabelColorwayFiles drops files of a colourway that is not a colourway of this
+// style: the colourway was deleted, or a copy brought the row with it.
+func DropForeignGarmentLabelColorwayFiles(colorways []entity.TechCardColorway, tc *entity.TechCardInsert) {
+	if tc == nil {
+		return
+	}
+	mine := make(map[int]bool, len(colorways))
+	for i := range colorways {
+		mine[colorways[i].Id] = true
+	}
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		kept := l.Files[:0:0]
+		for _, f := range l.Files {
+			if f.ColorwayId == 0 || mine[f.ColorwayId] {
+				kept = append(kept, f)
+			}
+		}
+		l.Files = kept
+		if len(l.Files) == 0 {
+			l.Files = nil
+		}
+	}
+}
+
+// LabelsLinkedToBornBomLines names the rows whose only link is the key of a line this save creates.
+// The read will report an id the write cannot know yet, so a LABELS approval taken now would be born
+// stale; the row saves fine and the approval goes on the next save.
+func LabelsLinkedToBornBomLines(tc *entity.TechCardInsert) []string {
+	if tc == nil {
+		return nil
+	}
+	var out []string
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		if l.BomLineKey != "" && !l.BomItemId.Valid {
+			out = append(out, l.Key)
 		}
 	}
 	return out

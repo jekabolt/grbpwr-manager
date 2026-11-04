@@ -172,6 +172,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 	probe.OperationFoldsAware = true
 	probe.OperationLayerOrderAware = true
 	probe.OperationSeamToleranceAware = true
+	probe.PackagingPicksAware = true
 	probe.OperationSeamKindAware = true
 	probe.BomQtyAware = true
 
@@ -213,6 +214,20 @@ func archiveCardRef(card *entity.TechCard) string {
 // operator who ran the import, and the archive's journal never becomes the target's (FORMAT.md
 // §4.2 — free-text change notes are the last channel by which somebody else's prices could enter
 // our permanent records as prose, and neither money layer can read prose).
+func sanitizeGarmentLabelsForArchive(ins *pb_common.TechCardInsert) {
+	for _, l := range ins.GetGarmentLabels() {
+		if l != nil {
+			l.Files = nil
+			l.BomLineKey = ""
+		}
+	}
+	for _, it := range ins.GetPackagingItems() {
+		if it != nil {
+			it.BomLineKey = ""
+		}
+	}
+}
+
 func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	if pb == nil {
 		return
@@ -246,6 +261,21 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	for _, sc := range pb.PieceAreaScopes {
 		if sc != nil {
 			sc.Stale = false
+		}
+	}
+
+	// Garment label files are ids in THIS instance's library and their public links are secrets, so
+	// they do not travel; the copy rebuilds them (FORMAT.md §5.3). The line key is an address the
+	// receiving side derives again from bom_item_id. The pin and the artwork mode travel: the callouts
+	// travel with their numbers.
+	sanitizeGarmentLabelsForArchive(pb.GetTechCard())
+
+	// A packaging pick's name and thumbnail are a READ of the pick against THIS base, and the thumbnail
+	// carries this base's URLs. The ids stay: the far side matches them (§5.4, id_maps.aux_tech_cards)
+	// and reads its own name and picture.
+	for _, it := range pb.GetTechCard().GetPackagingItems() {
+		if it != nil {
+			it.PickedName, it.PickedThumbnail = "", nil
 		}
 	}
 

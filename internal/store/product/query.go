@@ -506,7 +506,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	query := fmt.Sprintf(`
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
-		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
+		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.country_code, p.sale_percentage,
 		sty.top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, `+styleCompositionSelect+` AS composition, `+styleCompositionEntriesSelect+` AS composition_entries,

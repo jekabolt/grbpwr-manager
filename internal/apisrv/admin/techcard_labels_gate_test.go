@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -116,3 +117,62 @@ func TestCarryCloneLabels(t *testing.T) {
 }
 
 func ni32t(v int32) sql.NullInt32 { return sql.NullInt32{Int32: v, Valid: true} }
+
+// A season clone keeps the pin, the modes and files of any colourway, and drops files of the source's
+// colourways: the clone has no colourway yet, the composition row is rebuilt on it.
+func TestCarryCloneLabelsArtwork(t *testing.T) {
+	source := &entity.TechCard{TechCardInsert: entity.TechCardInsert{}}
+	insert := &entity.TechCardInsert{
+		Callouts: []entity.TechCardCallout{{Number: 4}},
+		GarmentLabels: []entity.TechCardGarmentLabel{
+			{Key: "composition", CalloutNumber: 4, ArtworkPerSize: true, ArtworkPerColorway: true,
+				Files: []entity.TechCardGarmentLabelFile{{ColorwayId: 9, SizeId: 1, LibraryFileId: 1}}},
+			{Key: "brand", CalloutNumber: 8, Files: []entity.TechCardGarmentLabelFile{{LibraryFileId: 2}}},
+		},
+	}
+	carryCloneLabels(source, insert)
+	require.Equal(t, 4, insert.GarmentLabels[0].CalloutNumber)
+	require.True(t, insert.GarmentLabels[0].ArtworkPerColorway)
+	require.Empty(t, insert.GarmentLabels[0].Files)
+	require.Zero(t, insert.GarmentLabels[1].CalloutNumber, "the callout is not on the copy")
+	require.Len(t, insert.GarmentLabels[1].Files, 1)
+}
+
+// A key alone proves no line yet; the approval waits for one save, in words. The save itself is free.
+func TestValidateLabelsBornLinesSignGate(t *testing.T) {
+	fresh := map[entity.TechCardSignoffSection]bool{entity.SignoffLabels: true}
+	approved := []entity.TechCardSignoff{{Section: entity.SignoffLabels, State: entity.SignoffStateApproved}}
+	born := entity.TechCardGarmentLabel{Key: "brand", BomLineKey: "k"}
+	known := entity.TechCardGarmentLabel{Key: "brand", BomLineKey: "k", BomItemId: ni32t(3)}
+
+	v := validateLabelsBornLinesSignGate(&entity.TechCardInsert{
+		Signoffs: approved, GarmentLabels: []entity.TechCardGarmentLabel{born}}, fresh)
+	require.NotNil(t, v)
+	require.Contains(t, v.Error(), "material added in this save")
+	require.Nil(t, validateLabelsBornLinesSignGate(&entity.TechCardInsert{
+		Signoffs: approved, GarmentLabels: []entity.TechCardGarmentLabel{known}}, fresh))
+	require.Nil(t, validateLabelsBornLinesSignGate(&entity.TechCardInsert{
+		GarmentLabels: []entity.TechCardGarmentLabel{born}}, fresh), "no approval, no refusal")
+	require.Nil(t, validateLabelsBornLinesSignGate(&entity.TechCardInsert{
+		Signoffs: approved, GarmentLabels: []entity.TechCardGarmentLabel{born}}, nil), "a carried approval is not re-judged")
+}
+
+// A library id means nothing on another contour: the export cuts files and line keys, the pin and the
+// modes travel.
+func TestSanitizeGarmentLabelsForArchive(t *testing.T) {
+	perSize := true
+	ins := &pb_common.TechCardInsert{
+		GarmentLabels: []*pb_common.TechCardGarmentLabel{{Key: "size", BomLineKey: "k", CalloutNumber: 3,
+			ArtworkPerSize: &perSize, ArtworkPerColorway: true,
+			Files: []*pb_common.TechCardGarmentLabelFile{{LibraryFileId: 1, PublicUrl: "https://x/api/f/a"}}}},
+		PackagingItems: []*pb_common.TechCardPackagingItem{{Key: "polybag", BomLineKey: "k"}},
+	}
+	sanitizeGarmentLabelsForArchive(ins)
+	l := ins.GetGarmentLabels()[0]
+	require.Empty(t, l.GetFiles())
+	require.Empty(t, l.GetBomLineKey())
+	require.EqualValues(t, 3, l.GetCalloutNumber())
+	require.True(t, l.GetArtworkPerSize())
+	require.True(t, l.GetArtworkPerColorway())
+	require.Empty(t, ins.GetPackagingItems()[0].GetBomLineKey())
+}

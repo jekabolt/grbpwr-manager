@@ -287,6 +287,21 @@ func TestC3bAggregatesAndCoversPackagingItems(t *testing.T) {
 	rtOne(t, fs, "The polybag packaging item has no mockup")
 }
 
+// A pick already says what the item looks like, so only the item without one is asked for a mockup.
+func TestC3bAcceptsAPickInsteadOfAMockup(t *testing.T) {
+	picked := sql.NullInt32{Int32: 5, Valid: true}
+	c := card8()
+	c.PackagingItems = []entity.TechCardPackagingItem{
+		{Key: "polybag", MaterialId: picked},
+		{Key: "swing tag", AuxTechCardId: picked},
+		{Key: "tissue", MediaIds: []int{1}},
+	}
+	rtNone(t, ctExpanded(c), "packaging item")
+
+	c.PackagingItems = append(c.PackagingItems, entity.TechCardPackagingItem{Key: "sticker"})
+	rtOne(t, ctExpanded(c), "The sticker packaging item has no mockup")
+}
+
 // ── C4 ──────────────────────────────────────────────────────────────────────────────────────────
 
 func TestC4FiresOnCard8WithNoParkAtAll(t *testing.T) {
@@ -808,4 +823,20 @@ func TestC7C8C9CollapseOnTheDraftOfCard8(t *testing.T) {
 	if n := ctCountCategory(ctFindings(card8()), CategoryReadiness); n != 1 {
 		t.Errorf("на черновике readiness — ровно одна находка, got %d", n)
 	}
+}
+
+// The composition row holds location, material and files of the composition label block: it is no
+// sewn-in of its own, and asks neither for a mockup nor for a line of its own.
+func TestC3bAndBridgeSkipTheCompositionRow(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: entity.GarmentLabelKeyComposition, QtyPerGarment: 1}}
+	rtNone(t, ctExpanded(c), "mockup")
+}
+
+// A row whose files carry the artwork has a mockup, whichever way the file came.
+func TestC3bSeesFilesAsArtwork(t *testing.T) {
+	c := card8()
+	c.GarmentLabels = []entity.TechCardGarmentLabel{{Key: "brand", QtyPerGarment: 1,
+		Files: []entity.TechCardGarmentLabelFile{{LibraryFileId: 1}}}}
+	rtNone(t, ctExpanded(c), "mockup")
 }

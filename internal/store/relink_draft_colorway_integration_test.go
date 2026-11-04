@@ -98,8 +98,35 @@ func TestRelinkDraftColorway(t *testing.T) {
 	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, tgtStyleID, srcLV+99, tgtLV), entity.ErrTechCardConflict)
 	require.ErrorIs(t, s.Products().RelinkDraftColorway(ctx, prodID, tgtStyleID, srcLV, tgtLV+99), entity.ErrTechCardConflict)
 
+	// A packaging item of the source card scoped to this colourway: the relink must take the row, or the
+	// source card's next save refuses with not_in_tech_card over a colourway it no longer has.
+	itemRes, err := testDB.ExecContext(ctx, `
+		INSERT INTO tech_card_packaging_item (tech_card_id, item_key, qty_per_garment, display_order) VALUES (?, 'polybag', 1, 0)`, srcStyleID)
+	require.NoError(t, err)
+	itemID, err := itemRes.LastInsertId()
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, `DELETE FROM tech_card_packaging_item WHERE id = ?`, itemID) }()
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_packaging_item_colorway (item_id, colorway_id) VALUES (?, ?)`, itemID, prodID)
+	require.NoError(t, err)
+
+	// The same for the composition label's colourway row: a source card with one stored cannot save
+	// after the colourway leaves.
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_care_label (tech_card_id) VALUES (?)`, srcStyleID)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, `DELETE FROM tech_card_care_label WHERE tech_card_id = ?`, srcStyleID) }()
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_care_label_colorway (tech_card_id, colorway_id) VALUES (?, ?)`, srcStyleID, prodID)
+	require.NoError(t, err)
+
 	// Happy path: style_id moves and the base SKU is re-minted from the target style.
 	require.NoError(t, s.Products().RelinkDraftColorway(ctx, prodID, tgtStyleID, srcLV, tgtLV))
+	var scopedRows int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_packaging_item_colorway WHERE item_id = ?`, itemID).Scan(&scopedRows))
+	require.Zero(t, scopedRows)
+	var careRows int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_care_label_colorway WHERE colorway_id = ?`, prodID).Scan(&careRows))
+	require.Zero(t, careRows)
 	var newStyleID int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&newStyleID))
 	require.Equal(t, tgtStyleID, newStyleID)

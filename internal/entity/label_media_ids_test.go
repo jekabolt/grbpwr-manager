@@ -29,4 +29,14 @@ func TestLabelMediaIds(t *testing.T) {
 	if got := (&TechCardInsert{}).LabelMediaIds(); len(got) != 0 {
 		t.Fatalf("empty card LabelMediaIds = %v, want none", got)
 	}
+
+	// The photo of the finished pack comes last and is not repeated when an item already shows it.
+	tc.Packaging = &TechCardPackaging{PackedMediaId: sql.NullInt32{Int32: 11, Valid: true}}
+	if got, want := tc.LabelMediaIds(), []int{3, 7, 4, 9, 11}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("LabelMediaIds with packed photo = %v, want %v", got, want)
+	}
+	tc.Packaging.PackedMediaId.Int32 = 9
+	if got, want := tc.LabelMediaIds(), []int{3, 7, 4, 9}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("LabelMediaIds with a repeated packed photo = %v, want %v", got, want)
+	}
 }

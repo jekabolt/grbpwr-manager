@@ -173,7 +173,7 @@ func checkC2PrintPacketDryRun(v *cardView) []Finding {
 func isEmptyPackaging(p *entity.TechCardPackaging) bool {
 	return nsEmpty(p.FoldingMethod) && niEmpty(p.UnitsPerBox) && nsEmpty(p.BoxMarking) &&
 		nsEmpty(p.BoxDimensions) && niEmpty(p.WeightNetGrams) && niEmpty(p.WeightGrossGrams) &&
-		nsEmpty(p.Notes)
+		nsEmpty(p.Notes) && nsEmpty(p.PackedSize) && niEmpty(p.PackedMediaId)
 }
 
 // ── C3. МОСТ ЛЕЙБЛЫ ↔ BOM ───────────────────────────────────────────────────────────────────────
@@ -216,6 +216,11 @@ func checkC3LabelBridge(v *cardView) []Finding {
 		applicable, missing := 0, []CoverageMiss(nil)
 		for i := range specs {
 			s := &specs[i]
+			// Строка составника держит его материал, но составник — не бирка из этого списка: он был
+			// и остаётся вне этой проверки. Её связь считается ниже, куплена — значит описана.
+			if s.IsComposition() {
+				continue
+			}
 			applicable++
 			if s.BomItemId.Valid && v.bomByID[int(s.BomItemId.Int32)] != nil {
 				continue
@@ -315,8 +320,15 @@ func checkC3bMockups(v *cardView) []Finding {
 	var out []Finding
 
 	var labels []string
-	for _, l := range v.card.GarmentLabels {
-		if len(l.MediaIds) == 0 {
+	applicable := 0
+	for i := range v.card.GarmentLabels {
+		l := &v.card.GarmentLabels[i]
+		if l.IsComposition() {
+			continue // составник рисует движок, мокапа у него не бывает
+		}
+		applicable++
+		// Картинка для цеха — мокап или файл; то же условие, что у гейта подписи.
+		if len(l.MediaIds) == 0 && len(l.Files) == 0 {
 			labels = append(labels, garmentLabelName(l.Key))
 		}
 	}
@@ -324,7 +336,7 @@ func checkC3bMockups(v *cardView) []Finding {
 		title := fmt.Sprintf("The %s label has no mockup", labels[0])
 		clause := labels[0] + " label without mockup"
 		if len(labels) > 1 {
-			title = fmt.Sprintf("%d of %d garment labels have no mockup", len(labels), len(v.card.GarmentLabels))
+			title = fmt.Sprintf("%d of %d garment labels have no mockup", len(labels), applicable)
 			clause = fmt.Sprintf("%d labels without mockup", len(labels))
 		}
 		out = append(out, Finding{
@@ -342,8 +354,10 @@ func checkC3bMockups(v *cardView) []Finding {
 	}
 
 	var items []string
-	for _, p := range v.card.PackagingItems {
-		if len(p.MediaIds) == 0 {
+	for i := range v.card.PackagingItems {
+		p := &v.card.PackagingItems[i]
+		// A pick already says what the item looks like: the material's or the card's own picture.
+		if len(p.MediaIds) == 0 && !p.HasPick() {
 			items = append(items, garmentLabelName(p.Key))
 		}
 	}

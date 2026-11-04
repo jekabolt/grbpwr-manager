@@ -15,6 +15,8 @@ import (
 var (
 	ErrLibraryFileInUse = errors.New("library file is attached to a task")
 	ErrFileTopicInUse   = errors.New("topic still has files")
+	// ErrLibraryFileOnTechCard: a garment label of a tech card holds the file; a printed QR opens it.
+	ErrLibraryFileOnTechCard = errors.New("library file is label artwork on a tech card")
 	// ErrLibraryBatchTooLarge is a bound the STORE checks, and it exists as a
 	// named error for exactly one reason: without it the handler cannot tell a
 	// bound from a broken query. Both arrive as a bare error, both get logged and
@@ -38,6 +40,16 @@ func NewErrLibraryFileInUse(taskIDs []int) error {
 		ids = append(ids, fmt.Sprintf("#%d", id))
 	}
 	return fmt.Errorf("%w: %s", ErrLibraryFileInUse, strings.Join(ids, ", "))
+}
+
+// NewErrLibraryFileOnTechCard wraps ErrLibraryFileOnTechCard with the tech cards whose garment labels
+// hold the file: a QR printed on a tech pack opens it, so it stays until the row lets go of it.
+func NewErrLibraryFileOnTechCard(cardIDs []int) error {
+	ids := make([]string, 0, len(cardIDs))
+	for _, id := range cardIDs {
+		ids = append(ids, fmt.Sprintf("#%d", id))
+	}
+	return fmt.Errorf("%w: %s", ErrLibraryFileOnTechCard, strings.Join(ids, ", "))
 }
 
 // NewErrFileTopicInUse wraps ErrFileTopicInUse with how many files still carry

@@ -3029,6 +3029,8 @@ message TechCardPackaging {
   int32 weight_net_grams = 8; // вес нетто, граммы (0 = unset)
   int32 weight_gross_grams = 9; // вес брутто, граммы (0 = unset)
   string notes = 10;
+  string packed_size = 11; // size of the finished pack, free text
+  int32 packed_media_id = 12; // FK media(id): photo of the finished pack; 0 = none
 }
 
 // TechCardCareLabelFiber is one fibre row of a colourway's composition OVERRIDE on the composition
@@ -3072,6 +3074,33 @@ message TechCardGarmentLabel {
   int32 bom_item_id = 7; // FK to a BOM line of THIS card; 0 = none
   string note = 8;
   repeated int32 media_ids = 9; // FK media(id): the mockups, in display order
+  // The BOM line this label is bought as, by its stable line key: lets a row link a line born in the
+  // same save (no id yet). Non-empty wins over bom_item_id on write; the read path returns it too.
+  // A key that names no line of the payload BOM is cleared, it never breaks a save.
+  string bom_line_key = 10;
+  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. The label holds no
+  // geometry. A number no callout carries any more is cleared on write, it never breaks a save.
+  int32 callout_number = 11;
+  // Artwork per size (true) or one for all sizes (false). PRESENCE BIT: a client that knows this block
+  // always sends it; absent means an older client, whose save keeps the stored pin, modes and files.
+  optional bool artwork_per_size = 12;
+  // Artwork files of this label, one per (colorway, size). The key `composition` holds the
+  // composition label's own row: one file per colourway x size.
+  repeated TechCardGarmentLabelFile files = 13;
+  // Artwork per colourway (true) or one for all colourways (false). Independent of artwork_per_size;
+  // both off = one file for the whole style. Carried with artwork_per_size when that is absent.
+  bool artwork_per_colorway = 14;
+}
+
+// TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.
+message TechCardGarmentLabelFile {
+  int32 colorway_id = 1; // colourway = product.id of this style; 0 = any colourway
+  int32 size_id = 2; // size(id); 0 = all sizes
+  int32 library_file_id = 3; // FK library_file(id)
+  string source_hash = 4; // hash of the inputs a generated file was built from; "" = uploaded by hand
+  // OUTPUT-ONLY: the public link of the library file, filled when the card is read for a response.
+  // Empty when the file has no live link (revoked, expired, access changed): no QR may be printed.
+  string public_url = 5;
 }
 
 // TechCardPackagingItem is one packaging item (labels rework, 0386): the label card with two words
@@ -3085,6 +3114,22 @@ message TechCardPackagingItem {
   int32 bom_item_id = 6; // FK to a BOM line of THIS card; 0 = none
   string note = 7;
   repeated int32 media_ids = 8; // FK media(id): the mockups, in display order
+  // The BOM line this item is bought as, by its stable line key (see TechCardGarmentLabel.bom_line_key).
+  string bom_line_key = 14;
+  // The thing this item IS, picked from the catalog: a packaging material or an auxiliary tech card.
+  // At most one of the two; both set is a field violation. A pick needs no mockup of its own.
+  int32 material_id = 9; // FK material(id), material_class = packaging; 0 = none
+  int32 aux_tech_card_id = 10; // FK tech_card(id), purpose = auxiliary; 0 = none
+  bool per_order = 11; // false = qty_per_garment per garment; true = that qty per order
+  string picked_name = 12; // OUTPUT-ONLY, ignored on write: the picked thing's current name
+  // OUTPUT-ONLY, ignored on write: the material's image, or the auxiliary card's list thumbnail
+  // (the same media TechCardListItem.preview_url resolves from). Absent when it has none.
+  MediaFull picked_thumbnail = 13;
+  // 15-19 stay reserved for the lane that took 14 (bom_line_key).
+  // The colourways of this card the item applies to, ascending; empty = all colourways. An id that is
+  // not a colourway of this card is a field violation. The same pick may appear on two items with
+  // different colourways and quantities.
+  repeated int32 colorway_ids = 20;
 }
 
 // TechCardCostLine is one currency bucket of the materials rollup.
@@ -3922,6 +3967,11 @@ message TechCardInsert {
   // write that carries the field, or that would replace a card whose steps state it, is refused
   // (FailedPrecondition) instead of silently returning them to the default. Transport, not content.
   bool operation_seam_tolerance_aware = 132;
+  // Declares support for the packaging picks (TechCardPackagingItem.material_id, aux_tech_card_id,
+  // per_order; TechCardPackaging.packed_size, packed_media_id). Without it a write that carries none of
+  // them, but would replace a card that has them, is refused (FailedPrecondition) instead of silently
+  // wiping them. Transport, not content.
+  bool packaging_picks_aware = 133;
 
   reserved 108;
   reserved "required_seam_allowance_cm";

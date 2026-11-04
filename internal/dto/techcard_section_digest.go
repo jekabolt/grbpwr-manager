@@ -1285,20 +1285,60 @@ func colourProjection(tc *entity.TechCardInsert) any {
 // рождает.
 //
 // Кортеж этикетки: ключ, размещение, крепление, складывание, размер, штук на изделие, строка BOM,
-// заметка, макеты (порядок макетов — содержание: первый показывается в слоте). BomLineKey — транспорт
-// клона, не содержание, в проекцию не входит.
+// заметка, макеты (порядок макетов — содержание: первый показывается в слоте). BomLineKey — адрес
+// линии, а не содержание, в проекцию не входит: содержание — BomItemId.
+//
+// Хвост этикетки — сортированные пары [колонка, значение], и только непустые: этикетка без пина, без
+// режимов и без файлов хешируется ровно как до 0447, ни одна старая подпись не протухает. Файлы входят
+// в подпись: смена файла — это «изменено после подписи». LinkEpoch и PublicURL — свойство ответа, не
+// содержание, отзыв ссылки подпись не трогает.
 func labelsProjection(tc *entity.TechCardInsert) any {
 	out := make([]any, 0, len(tc.GarmentLabels)+1)
-	for _, l := range tc.GarmentLabels {
-		out = append(out, []any{
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		row := []any{
 			l.Key, l.Placement.String, l.Attachment.String, l.Folding.String, l.Size.String,
 			l.QtyPerGarment, l.BomItemId.Int32, l.Note.String, digestList(l.MediaIds),
-		})
+		}
+		if tail := garmentLabelArtworkTail(l); len(tail) > 0 {
+			row = append(row, []any{"artwork", tail})
+		}
+		out = append(out, row)
 	}
 	if care := blankAsAbsent(tc.CareLabel, careLabelRow); care != nil {
 		out = append(out, []any{"care_label", care})
 	}
 	return out
+}
+
+// garmentLabelArtworkTail — пары хвоста этикетки, отсортированные по имени колонки.
+func garmentLabelArtworkTail(l *entity.TechCardGarmentLabel) []any {
+	var tail []any
+	if l.ArtworkPerColorway {
+		tail = append(tail, []any{"artwork_per_colorway", true})
+	}
+	if l.ArtworkPerSize {
+		tail = append(tail, []any{"artwork_per_size", true})
+	}
+	if l.CalloutNumber != 0 {
+		tail = append(tail, []any{"callout_number", l.CalloutNumber})
+	}
+	if len(l.Files) > 0 {
+		files := make([]entity.TechCardGarmentLabelFile, len(l.Files))
+		copy(files, l.Files)
+		sort.SliceStable(files, func(i, j int) bool {
+			if files[i].ColorwayId != files[j].ColorwayId {
+				return files[i].ColorwayId < files[j].ColorwayId
+			}
+			return files[i].SizeId < files[j].SizeId
+		})
+		rows := make([]any, 0, len(files))
+		for _, f := range files {
+			rows = append(rows, []any{f.ColorwayId, f.SizeId, f.LibraryFileId, f.SourceHash})
+		}
+		tail = append(tail, []any{"files", rows})
+	}
+	return tail
 }
 
 // careLabelRow — строка составника для blankAsAbsent: нулевая запись и запись из дефолтов
@@ -1369,19 +1409,39 @@ func packagingProjection(tc *entity.TechCardInsert) any {
 }
 
 // packagingItemsTail — ["items", [ключ, применение, упаковка, размер, штук на изделие, строка BOM,
-// заметка, макеты]…] или nil, когда вещей нет.
+// заметка, макеты, [хвост "pick"]]…] или nil, когда вещей нет. Хвост "pick" (0448) — та же парная
+// форма, что у шага: пара только у заполненного поля, и вещь без выбора хешируется теми же байтами,
+// что до него. Вывод для чтения (picked_name, picked_thumbnail) сюда не входит: подпись отвечает за
+// выбор, а не за то, как выбранное называется сегодня.
 func packagingItemsTail(items []entity.TechCardPackagingItem) []any {
 	if len(items) == 0 {
 		return nil
 	}
 	rows := make([]any, 0, len(items))
 	for _, it := range items {
-		rows = append(rows, []any{
+		row := []any{
 			it.Key, it.Usage.String, it.Packing.String, it.Size.String,
 			it.QtyPerGarment, it.BomItemId.Int32, it.Note.String, digestList(it.MediaIds),
-		})
+		}
+		if pick := operationKindTail("pick",
+			opKindInt("aux_tech_card_id", it.AuxTechCardId),
+			opKindInt("material_id", it.MaterialId),
+			opKindBool("per_order", sql.NullBool{Bool: it.PerOrder, Valid: it.PerOrder}),
+			packagingColorwaysPair(it.ColorwayIds),
+		); pick != nil {
+			row = append(row, pick)
+		}
+		rows = append(rows, row)
 	}
 	return []any{"items", rows}
+}
+
+// packagingColorwaysPair signs the colourways an item applies to as a set: ascending, so the read form
+// and a write form in any order hash alike. An empty list (all colourways) adds no pair.
+func packagingColorwaysPair(ids []int) operationKindPair {
+	sorted := append([]int(nil), ids...)
+	sort.Ints(sorted)
+	return operationKindPair{key: "colorway_ids", value: sorted, valid: len(sorted) > 0}
 }
 
 // packagingRow — голова плюс хвосты одним строителем: он же прогоняется на НУЛЕВОМ листе, чтобы
@@ -1404,13 +1464,14 @@ func packagingRow(p *entity.TechCardPackaging) []any {
 // разъехавшийся отпечаток. Имя operationKindTail историческое; читать его следует как «хвост
 // парной формы».
 //
-// СЕГОДНЯ СПИСОК ПУСТ, и это не заготовка впрок, а порядок работ, предписанный планом: T8a заводит
-// упаковке МЕХАНИЗМ хвоста, T8b — поля. Пустой список означает ровно то, что нужно: байты
-// сегодняшнего листа не двигаются, а первое же поле T8b ляжет в хвост "fold" и сдвинет отпечаток
-// только тех листов, где его реально заполнили.
+// Хвост "packed" (0448) — размер и фото готовой упаковки. Незаполненный лист хвоста не рождает, так
+// что байты сегодняшнего листа не двигаются, а отпечаток сдвигается только там, где поле заполнили.
 func packagingTails(p *entity.TechCardPackaging) []any {
 	tails := [][]any{
-		// T8b: operationKindTail("fold", opKindStr("fold_scheme", p.FoldScheme), …)
+		operationKindTail("packed",
+			opKindInt("packed_media_id", p.PackedMediaId),
+			opKindStr("packed_size", p.PackedSize),
+		),
 	}
 	out := make([]any, 0, len(tails))
 	for _, t := range tails {
