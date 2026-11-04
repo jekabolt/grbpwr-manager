@@ -1685,7 +1685,7 @@ func (s *Server) seedProductCostsFromTechCard(ctx context.Context, techCardID, e
 		unit, currency := dto.ComputeColorwayUnitCost(card, pid, fx)
 		if !unit.Valid && !dto.HasColorwayForProduct(card, pid) {
 			// Defensive only: a linked product the card's colourway list misses. A colourway
-			// with an EMPTY recipe already inherits the style figure inside
+			// with an EMPTY recipe already inherits the style's materials inside
 			// ComputeColorwayUnitCost, so this fallback is not the per-colourway erasure it
 			// looks like. A colourway that EXISTS but cannot be costed completely (an unpriced
 			// or unconvertible line) must NOT borrow the style number — that would publish the

@@ -21,6 +21,9 @@ import (
 // writeoff (reason=packaging); the ledger only tracks whether a claim is still open, giving a soft
 //   available(material) = on_hand − Σ qty of OPEN claims.
 
+// needScale is the places of order_packaging_need.qty and packaging_fraction_carry.carry.
+const needScale = 12
+
 // decRow scans a single decimal aggregate.
 type decRow struct {
 	V decimal.Decimal `db:"v"`
@@ -43,34 +46,55 @@ type packagingItemRow struct {
 
 // aggregatePackagingItems is the pure resolution math: per material, what the rows need. A per-order
 // item counts once however many of its colourways the order holds, keyed by item id: every row comes
-// from one statement, so a save recreating the items cannot split one item into two ids here. The rows
-// arrive sorted by colourway, so an auxiliary per-order item takes the colour of the lowest colourway
-// whatever order the lines were placed in. It also returns how many rows name a pick with no output.
+// from one statement, so a save recreating the items cannot split one item into two ids here.
+//
+// An auxiliary per-order item can resolve to another output on each colour, and one thing leaves with
+// the order: it takes the output of the colour the order holds most pieces of, the lowest colourway on a
+// tie (the rows arrive sorted by colourway), and a colour without an output only drops out of the choice.
+// The item counts as unresolved only when no colour has one. The second figure is how many rows, per-order
+// items counted once, name a pick with no output.
 func aggregatePackagingItems(rows []packagingItemRow, auxMaterial func(packagingItemRow) (int, bool)) (map[int]decimal.Decimal, int) {
+	type onceItem struct {
+		need     decimal.Decimal
+		material int
+		pieces   decimal.Decimal
+		resolved bool
+	}
 	req := map[int]decimal.Decimal{}
-	counted := map[int]struct{}{}
+	onceItems := map[int]*onceItem{}
 	unresolved := 0
 	for _, r := range rows {
 		if !entity.PackagingItemShips(r.ItemKey, r.FoldingMethod) {
 			continue
 		}
 		need, once := entity.PackagingItemOrderQty(r.ItemKey, r.QtyPerGarment, r.PerOrder.Bool, r.UnitsPerBox, r.Pieces)
-		if once {
-			if _, done := counted[r.ItemId]; done {
-				continue
-			}
-			counted[r.ItemId] = struct{}{}
+		materialID, ok := int(r.MaterialId.Int32), r.MaterialId.Valid
+		if !ok {
+			materialID, ok = auxMaterial(r)
 		}
-		materialID := int(r.MaterialId.Int32)
-		if !r.MaterialId.Valid {
-			id, ok := auxMaterial(r)
-			if !ok {
-				unresolved++
-				continue
+		if once {
+			item := onceItems[r.ItemId]
+			if item == nil {
+				item = &onceItem{need: need}
+				onceItems[r.ItemId] = item
 			}
-			materialID = id
+			if ok && (!item.resolved || r.Pieces.GreaterThan(item.pieces)) {
+				item.material, item.pieces, item.resolved = materialID, r.Pieces, true
+			}
+			continue
+		}
+		if !ok {
+			unresolved++
+			continue
 		}
 		req[materialID] = req[materialID].Add(need)
+	}
+	for _, item := range onceItems {
+		if !item.resolved {
+			unresolved++
+			continue
+		}
+		req[item.material] = req[item.material].Add(item.need)
 	}
 	for m, q := range req {
 		if q.LessThanOrEqual(decimal.Zero) {
@@ -173,15 +197,14 @@ func resolvePackagingRequirement(ctx context.Context, db dependency.DB, orderID 
 	return req, unresolved, nil
 }
 
-// settleFractions rounds a requirement to the stock's three places without losing the remainder: a
-// fractional need takes the material's carried remainder, books the rounded figure and carries what is
-// left. Twelve orders of 1/12 of a box book exactly one box, not 0.996; a share below the third place
-// books nothing now and is not lost. Materials go in id order so two orders cannot deadlock on the
-// carry rows. Whole needs do not touch the carry.
+// settleFractions rounds what a shipment takes to the stock's three places without losing the remainder:
+// a fractional need takes the material's carried remainder, books the rounded figure and carries what is
+// left. Twelve shipments of 1/12 of a box book exactly one box, not 0.996; a share below the third place
+// books nothing now and is not lost. Materials go in id order so two orders cannot deadlock on the carry
+// rows. Whole needs do not touch the carry.
 //
-// A cancel releases the order's claim and leaves the carry as it is, on purpose: the remainder an order
-// moved stays, at most 0.0005 of a unit per order, and a share below the third place stays whole. Taking
-// it back would need the carry of every order kept apart, for less than the stock can show.
+// Only a shipment comes here, in its own transaction: the carry holds shares that really left, so a cancel
+// has nothing in it to take back (order_packaging_need keeps an open order's share apart until then).
 func settleFractions(ctx context.Context, db dependency.DB, req map[int]decimal.Decimal) (map[int]decimal.Decimal, error) {
 	out := make(map[int]decimal.Decimal, len(req))
 	for _, materialID := range sortedMaterialIDs(req) {
@@ -224,36 +247,59 @@ func sortedMaterialIDs(req map[int]decimal.Decimal) []int {
 	return ids
 }
 
-// resolveConsumeRequirement determines what a ship should consume: the order's OPEN reservation claims
-// (consume exactly what placement reserved, so a card edit after placement can't change what this
-// order is billed), else a fresh resolution from its lines, for an order that was never reserved. The
-// second figure counts picks with no warehouse output on the fresh path.
+// resolveConsumeRequirement determines what a ship should consume, so a card edit after placement can't
+// change what this order is billed: the exact needs placement recorded, settled here; else the OPEN
+// claims of an order placed before those were recorded, already rounded; else a fresh resolution from its
+// lines, for an order that was never reserved or was released. The second figure counts picks with no
+// warehouse output on the fresh path.
 func resolveConsumeRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, int, error) {
-	req, err := claimedRequirement(ctx, db, orderID)
+	needs, err := openNeedRequirement(ctx, db, orderID)
 	if err != nil {
 		return nil, 0, err
 	}
-	if len(req) > 0 {
-		return req, 0, nil
+	if len(needs) > 0 {
+		req, err := settleFractions(ctx, db, needs)
+		return req, 0, err
 	}
-	settled, err := storeutil.QueryNamedOne[decRow](ctx, db, `
-		SELECT COUNT(*) AS v FROM order_packaging_settled WHERE order_id = :order_id`,
-		map[string]any{"order_id": orderID})
-	if err != nil {
-		return nil, 0, fmt.Errorf("read order %d packaging settled: %w", orderID, err)
-	}
-	if settled.V.IsPositive() {
-		return map[int]decimal.Decimal{}, 0, nil
-	}
-	req, unresolved, err := resolvePackagingRequirement(ctx, db, orderID)
+	claimed, err := claimedRequirement(ctx, db, orderID)
 	if err != nil {
 		return nil, 0, err
 	}
-	req, err = settleFractions(ctx, db, req)
+	if len(claimed) > 0 {
+		return claimed, 0, nil
+	}
+	fresh, unresolved, err := resolvePackagingRequirement(ctx, db, orderID)
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := settleFractions(ctx, db, fresh)
 	if err != nil {
 		return nil, 0, err
 	}
 	return req, unresolved, nil
+}
+
+// openNeedRequirement reads what an order still needs, exactly as placement resolved it. nil when nothing
+// is open: never recorded, shipped or cancelled.
+func openNeedRequirement(ctx context.Context, db dependency.DB, orderID int) (map[int]decimal.Decimal, error) {
+	rows, err := storeutil.QueryListNamed[struct {
+		MaterialId int             `db:"material_id"`
+		Qty        decimal.Decimal `db:"qty"`
+	}](ctx, db, `
+		SELECT material_id, qty FROM order_packaging_need
+		WHERE order_id = :order_id AND closed = FALSE
+		ORDER BY material_id FOR UPDATE`, map[string]any{"order_id": orderID})
+	if err != nil {
+		return nil, fmt.Errorf("read order %d packaging needs: %w", orderID, err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	req := make(map[int]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		req[r.MaterialId] = r.Qty
+	}
+	return req, nil
 }
 
 // claimedRequirement folds an order's OPEN reservation claims into a per-material requirement — what
@@ -366,7 +412,7 @@ func openClaimsForOrder(ctx context.Context, db dependency.DB, orderID int) ([]e
 }
 
 // ReleaseOpenClaimsInTx closes every still-open claim of an order with a 'release' row (no physical
-// writeoff). Shared by ReleasePackagingForOrder (cancel/refund) and by the consume tail, which
+// writeoff) and its open exact needs, so a cancelled order's share never reaches the carry. Shared by ReleasePackagingForOrder (cancel/refund) and by the consume tail, which
 // releases any claim the ship-time recipe no longer covers so a recipe change can't leak an open
 // claim that would depress available forever. Exported (L2 fix, review 04-MAZE-FLYOVER/review-plm-
 // backend.md): store/order's cancelOrder choke point calls this directly instead of duplicating the
@@ -382,20 +428,26 @@ func ReleaseOpenClaimsInTx(ctx context.Context, db dependency.DB, orderID int, u
 			return err
 		}
 	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE order_packaging_need SET closed = TRUE WHERE order_id = :order_id AND closed = FALSE`,
+		map[string]any{"order_id": orderID}); err != nil {
+		return fmt.Errorf("close packaging needs of order %d: %w", orderID, err)
+	}
 	return nil
 }
 
 // ReservePackagingForOrder soft-reserves the packaging an order needs at placement time (S22): it
-// resolves the per-material requirement from the card's packaging items and appends a 'reserve' claim
-// per material, idempotently: a repeat finds the order's claims and leaves them and the fraction carry
-// alone. It never blocks — a sale must not fail on packaging; an oversell is surfaced later via
-// available, not refused here.
+// resolves the per-material requirement from the card's packaging items, records it exactly and appends
+// a 'reserve' claim per material, idempotently: a repeat finds what the order holds and leaves it alone.
+// The claim is the need rounded to the stock's places, so a share below the third place holds nothing;
+// the need stays exact until the ship. It never blocks — a sale must not fail on packaging; an oversell
+// is surfaced later via available, not refused here.
 func (s *Store) ReservePackagingForOrder(ctx context.Context, orderID int, username string) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		placed, err := storeutil.QueryNamedOne[decRow](ctx, db, `
 			SELECT (SELECT COUNT(*) FROM material_reservation_ledger WHERE order_id = :order_id AND event = 'reserve')
-			     + (SELECT COUNT(*) FROM order_packaging_settled WHERE order_id = :order_id) AS v`,
+			     + (SELECT COUNT(*) FROM order_packaging_need WHERE order_id = :order_id) AS v`,
 			map[string]any{"order_id": orderID})
 		if err != nil {
 			return fmt.Errorf("read order %d packaging claims: %w", orderID, err)
@@ -403,27 +455,23 @@ func (s *Store) ReservePackagingForOrder(ctx context.Context, orderID int, usern
 		if placed.V.IsPositive() {
 			return nil
 		}
-		resolved, _, err := resolvePackagingRequirement(ctx, db, orderID)
-		if err != nil {
-			return err
-		}
-		req, err := settleFractions(ctx, db, resolved)
+		req, _, err := resolvePackagingRequirement(ctx, db, orderID)
 		if err != nil {
 			return err
 		}
 		for _, materialID := range sortedMaterialIDs(req) {
-			if _, err := insertReservationEvent(ctx, db, materialID, orderOwner(orderID), req[materialID],
+			if err := storeutil.ExecNamed(ctx, db, `
+				INSERT IGNORE INTO order_packaging_need (order_id, material_id, qty) VALUES (:order_id, :material_id, :qty)`,
+				map[string]any{"order_id": orderID, "material_id": materialID, "qty": req[materialID].Round(needScale)}); err != nil {
+				return fmt.Errorf("record order %d packaging need: %w", orderID, err)
+			}
+			hold := req[materialID].Round(qtyScale)
+			if !hold.IsPositive() {
+				continue
+			}
+			if _, err := insertReservationEvent(ctx, db, materialID, orderOwner(orderID), hold,
 				entity.MaterialReservationReserve, entity.PackagingClaimKey(orderID, materialID), username); err != nil {
 				return err
-			}
-		}
-		// Everything went into the carry, so no claim says this order was resolved; without a mark the
-		// ship would resolve it again and carry its share twice.
-		if len(resolved) > 0 && len(req) == 0 {
-			if err := storeutil.ExecNamed(ctx, db, `
-				INSERT IGNORE INTO order_packaging_settled (order_id) VALUES (:order_id)`,
-				map[string]any{"order_id": orderID}); err != nil {
-				return fmt.Errorf("mark order %d packaging settled: %w", orderID, err)
 			}
 		}
 		return nil
@@ -463,16 +511,21 @@ func (s *Store) MaterialAvailable(ctx context.Context, materialID int) (entity.M
 
 // ResolveOrderPackaging returns, for the packer/QC packing spec (WS7 scope 3), the packaging materials an
 // order needs, joined with material name/unit and ordered by material id. It follows the SAME precedence
-// as the ship-time consume (resolveConsumeRequirement): the order's OPEN reservation claims win, and only
-// an order with no claim left is resolved fresh from its card's packaging items. Otherwise an order
+// as the ship-time consume (resolveConsumeRequirement): the order's open needs win, then its OPEN
+// reservation claims, and only an order with neither left is resolved fresh from its card's packaging items. Otherwise an order
 // reserved under one card whose items then changed would tell the packer to put in the new box while the ledger
 // consumes the old one — physical and accounting reality diverging with no error anywhere.
 // READ-ONLY: it neither reserves nor consumes anything (WS2 owns the reservation ledger), so it can never
 // move on_hand or cross the sales/warehouse streams.
 func (s *Store) ResolveOrderPackaging(ctx context.Context, orderID int) ([]entity.OrderPackingSpecPackaging, error) {
-	req, err := claimedRequirement(ctx, s.DB, orderID)
+	req, err := openNeedRequirement(ctx, s.DB, orderID)
 	if err != nil {
 		return nil, err
+	}
+	if len(req) == 0 {
+		if req, err = claimedRequirement(ctx, s.DB, orderID); err != nil {
+			return nil, err
+		}
 	}
 	if len(req) == 0 {
 		if req, _, err = resolvePackagingRequirement(ctx, s.DB, orderID); err != nil {

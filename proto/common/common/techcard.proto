@@ -3194,6 +3194,10 @@ message TechCardColorwayCost {
   // заполненной спецификации), но подписывать им каталожную себестоимость — нельзя: сервер сам не
   // сеет cost_price с этим флагом, и клиент обязан показывать цифру как ОЦЕНКУ, а не как цену.
   bool has_estimate = 12;
+  // OUTPUT-ONLY: a colourway with no recipe of its own: the primary's materials, THIS colourway's
+  // packaging, the shared manual articles. unit_cost beside it stays the colourway's own recipe; a frozen
+  // release reads this one for such a colourway. Unset on the primary and on a release frozen before it.
+  google.type.Decimal inherited_unit_cost = 13;
   reserved 3, 4; // was materials_cost, size_run_total (superseded by the per-unit / per-order model)
 }
 

@@ -36,7 +36,8 @@ func (s *Store) ListPackagingBom(ctx context.Context) ([]entity.PackagingBomItem
 // ConsumePackagingForOrder writes off the packaging materials for a shipped order and closes their
 // reservation claims (PLM rework §2.8, S22), idempotently and atomically. It:
 //   - claims the order once (order_packaging_consumed PK) so a re-ship never double-writes-off;
-//   - takes the per-material requirement from the open claims, else from the card's packaging items;
+//   - takes the per-material requirement from the order's exact needs rounded through the carry, else
+//     from its open claims, else from the card's packaging items;
 //   - for each material, closes the reservation claim with a 'consume' row (the claim is being
 //     fulfilled, regardless of physical stock) AND books the physical decrement as a material_stock_
 //     movement writeoff (reason='packaging') — the ledger tracks the claim, the movement is the single

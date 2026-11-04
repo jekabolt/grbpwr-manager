@@ -80,6 +80,43 @@ func TestAggregatePackagingItems_AuxResolvesOrCounts(t *testing.T) {
 	}
 }
 
+func TestAggregatePackagingItems_PerOrderAuxTakesTheColourTheOrderHoldsMost(t *testing.T) {
+	item := func(product int, color string, pieces int64) packagingItemRow {
+		return packagingItemRow{ItemId: 1, ProductId: product, ColorCode: color, Pieces: d(pieces), ItemKey: "hangtag",
+			AuxTechCardId: matPick(7), QtyPerGarment: 1, PerOrder: perOrder()}
+	}
+	outputs := func(byColor map[string]int) func(packagingItemRow) (int, bool) {
+		return func(r packagingItemRow) (int, bool) {
+			id, ok := byColor[r.ColorCode]
+			return id, ok
+		}
+	}
+	both := outputs(map[string]int{"BLK": 70, "WHT": 80})
+
+	// Most pieces wins, whichever colourway is lower; a tie goes to the lowest.
+	got, unresolved := aggregatePackagingItems([]packagingItemRow{item(1, "BLK", 1), item(2, "WHT", 3)}, both)
+	assertReq(t, got, map[int]decimal.Decimal{80: d(1)})
+	if unresolved != 0 {
+		t.Fatalf("unresolved %d", unresolved)
+	}
+	got, _ = aggregatePackagingItems([]packagingItemRow{item(1, "BLK", 2), item(2, "WHT", 2)}, both)
+	assertReq(t, got, map[int]decimal.Decimal{70: d(1)})
+
+	// A colour with no output only drops out of the choice, also when it is the lowest.
+	got, unresolved = aggregatePackagingItems([]packagingItemRow{item(1, "BLK", 5), item(2, "WHT", 1)}, outputs(map[string]int{"WHT": 80}))
+	assertReq(t, got, map[int]decimal.Decimal{80: d(1)})
+	if unresolved != 0 {
+		t.Fatalf("unresolved %d, a colour has an output", unresolved)
+	}
+
+	// Unresolved only when no colour has one, and once.
+	got, unresolved = aggregatePackagingItems([]packagingItemRow{item(1, "BLK", 5), item(2, "WHT", 1)}, noAux)
+	assertReq(t, got, map[int]decimal.Decimal{})
+	if unresolved != 1 {
+		t.Fatalf("unresolved %d, want 1", unresolved)
+	}
+}
+
 func assertReq(t *testing.T, got, want map[int]decimal.Decimal) {
 	t.Helper()
 	if len(got) != len(want) {

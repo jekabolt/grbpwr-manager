@@ -87,6 +87,69 @@ func TestPackagingOldUsageIsNotPaidNorARecipe(t *testing.T) {
 	requirePackagingUnitCost(t, tc, 8, "13")
 }
 
+// A colour with no recipe takes the primary's materials and keeps its own packaging: in the live price, in
+// the breakdown and in the frozen release price, one figure.
+func TestPackagingIsNotInherited(t *testing.T) {
+	fx := CostingFx{Base: "EUR", ToBase: map[string]decimal.Decimal{"EUR": decimal.NewFromInt(1)}}
+	requireAll := func(tc *entity.TechCard, productID int, want string) {
+		t.Helper()
+		requirePackagingUnitCost(t, tc, productID, want)
+		bd, ok := ComputeColorwayCostBreakdownBase(tc, productID, fx)
+		require.True(t, ok)
+		require.True(t, bd.Materials.Equal(decimal.RequireFromString(want)), "breakdown materials %s, want %s", bd.Materials, want)
+	}
+	// Its own insert on top of the inherited fabric, the primary pays for neither.
+	own := packagingCostCard(packagingPick("insert_card", 1, 2, false, 8))
+	requireAll(own, 8, "13")
+	requireAll(own, 7, "10")
+
+	// The primary's own insert stays the primary's.
+	primary := packagingCostCard(packagingPick("insert_card", 1, 2, false, 7))
+	requireAll(primary, 7, "13")
+	requireAll(primary, 8, "10")
+
+	// An item with no price on this colour refuses this colour alone.
+	unpriced := packagingCostCard(packagingPick("insert_card", 1, 3, false, 8))
+	got, _ := ComputeColorwayUnitCost(unpriced, 8, fx)
+	require.False(t, got.Valid)
+	requireAll(unpriced, 7, "10")
+}
+
+func TestPackagingIsNotInheritedInTheFrozenPrice(t *testing.T) {
+	frozen := func(items ...entity.TechCardPackagingItem) *ReleaseFrozenCosts {
+		t.Helper()
+		tc := packagingCostCard(items...)
+		tc.Colorways[0].Id, tc.Colorways[1].Id = 7, 8
+		// A colour priced at zero on its own recipe is left out, so both carry a manual article.
+		tc.Costing.CmtCost = decimal.NullDecimal{Decimal: decimal.NewFromInt(1), Valid: true}
+		costs := ReleaseFrozenColorwayCosts(releaseBlob(t, tc))
+		require.NotNil(t, costs)
+		return costs
+	}
+	requireUnit := func(costs *ReleaseFrozenCosts, id int, want string) {
+		t.Helper()
+		require.True(t, costs.UnitCostByColorway[id].Equal(decimal.RequireFromString(want)), "colour %d: %s, want %s", id, costs.UnitCostByColorway[id], want)
+	}
+	own := frozen(packagingPick("insert_card", 1, 2, false, 8))
+	requireUnit(own, 7, "11")
+	requireUnit(own, 8, "14")
+	primary := frozen(packagingPick("insert_card", 1, 2, false, 7))
+	requireUnit(primary, 7, "14")
+	requireUnit(primary, 8, "11")
+
+	// A release frozen before the figure existed had no packaging in its cost: the style's figure it is.
+	snap := releaseBlob(t, func() *entity.TechCard {
+		tc := packagingCostCard()
+		tc.Colorways[0].Id, tc.Colorways[1].Id = 7, 8
+		tc.Costing.CmtCost = decimal.NullDecimal{Decimal: decimal.NewFromInt(1), Valid: true}
+		return tc
+	}())
+	for _, cc := range snap.GetTechCard().GetCosting().GetColorwayCosts() {
+		cc.InheritedUnitCost = nil
+	}
+	requireUnit(ReleaseFrozenColorwayCosts(snap), 8, "11")
+}
+
 // An item with no price refuses the seed instead of leaving the figure quietly short.
 func TestPackagingUnpricedItemRefusesTheSeed(t *testing.T) {
 	tc := packagingCostCard(packagingPick("dust_bag", 1, 3, false))

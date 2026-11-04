@@ -128,7 +128,12 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 			if !styleOK {
 				continue
 			}
+			// The style's materials with this colourway's own packaging, frozen as one figure. A release
+			// frozen before that figure carried no packaging in its cost: the style's is the same thing.
 			unit = style
+			if inherited := frozenDecimal(cc.GetInheritedUnitCost()); inherited.Valid && inherited.Decimal.IsPositive() {
+				unit = inherited
+			}
 		}
 		out.UnitCostByColorway[id] = unit.Decimal
 	}

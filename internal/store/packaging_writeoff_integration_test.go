@@ -523,6 +523,182 @@ func TestPackagingMigrationMovesRecipes(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// A product recipe replaced the style recipe whole for its colour, so the move must not add them up.
+func TestPackagingMigrationProductRecipeReplacesStyle(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	f := newPackagingFixture(ctx, t)
+	_, err := testDB.ExecContext(ctx, `DELETE FROM packaging_recipe`)
+	require.NoError(t, err)
+
+	bag := f.material(ctx, t, "Cross dust bag", 100)
+	box := f.material(ctx, t, "Cross box", 100)
+	everyone := f.material(ctx, t, "Cross thing", 100)
+	style := func(card, mat int) {
+		t.Helper()
+		_, err := testDB.ExecContext(ctx, `INSERT INTO packaging_recipe (scope, tech_card_id, material_id, qty_per_order, qty_per_item, active)
+			VALUES ('style', ?, ?, 0, 1, TRUE)`, card, mat)
+		require.NoError(t, err)
+	}
+	style(f.cardID, bag)
+	_, err = testDB.ExecContext(ctx, `INSERT INTO packaging_recipe (scope, product_id, material_id, qty_per_order, qty_per_item, active)
+		VALUES ('product', ?, ?, 0, 1, TRUE)`, f.black, box)
+	require.NoError(t, err)
+
+	// A style recipe on a card with no colours yet moves unlimited.
+	res, err := testDB.ExecContext(ctx, `INSERT INTO tech_card (style_number, name) VALUES (CONCAT('PKG-', UUID_SHORT()), 'no colours')`)
+	require.NoError(t, err)
+	bare, err := res.LastInsertId()
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), `DELETE FROM tech_card WHERE id = ?`, bare) })
+	style(int(bare), everyone)
+
+	require.NoError(t, runPackagingMigrationUp(ctx, t))
+
+	colours := func(mat int) []int {
+		t.Helper()
+		q, err := testDB.QueryContext(ctx, `SELECT c.colorway_id FROM tech_card_packaging_item i
+			JOIN tech_card_packaging_item_colorway c ON c.item_id = i.id WHERE i.material_id = ?`, mat)
+		require.NoError(t, err)
+		defer q.Close()
+		out := []int{}
+		for q.Next() {
+			var id int
+			require.NoError(t, q.Scan(&id))
+			out = append(out, id)
+		}
+		require.NoError(t, q.Err())
+		return out
+	}
+	require.Equal(t, []int{f.white}, colours(bag), "only the colour left on the style recipe takes it")
+	require.Equal(t, []int{f.black}, colours(box))
+	require.Empty(t, colours(everyone))
+	var n int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tech_card_packaging_item WHERE tech_card_id = ? AND material_id = ?`, bare, everyone).Scan(&n))
+	require.Equal(t, 1, n)
+
+	f.ship(ctx, t, [2]int{f.black, 1})
+	f.requireOnHand(ctx, t, box, "99", "black takes its box")
+	f.requireOnHand(ctx, t, bag, "100", "and not the bag it never took")
+	f.ship(ctx, t, [2]int{f.white, 1})
+	f.requireOnHand(ctx, t, bag, "99", "white takes the bag")
+	f.requireOnHand(ctx, t, box, "99", "and not the black box")
+}
+
+// The way back refuses and touches nothing.
+func TestPackagingMigrationHasNoDown(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	raw, err := os.ReadFile("sql/0450_tech_card_packaging_one_source.sql")
+	require.NoError(t, err)
+	_, down, ok := strings.Cut(string(raw), "-- +migrate Down")
+	require.True(t, ok)
+	var kept []string
+	for _, line := range strings.Split(down, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--") {
+			kept = append(kept, line)
+		}
+	}
+	_, err = testDB.ExecContext(ctx, strings.TrimSpace(strings.Join(kept, "\n")))
+	require.ErrorContains(t, err, "has_no_down")
+}
+
+// A cancelled order's share never reaches the carry and a shipped one's never leaves it, in any order:
+// what was booked plus what is carried is exactly the shares that shipped.
+func TestPackagingCancelKeepsSharesExact(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	f := newPackagingFixture(ctx, t)
+	MS := f.s.MaterialStock()
+	box := f.material(ctx, t, "Exact share box", 10)
+	f.item(ctx, t, entity.PackagingItemKeyBox, 1, box, true)
+	f.packed(ctx, t, "", 7000)
+	share := decimal.NewFromInt(1).Div(decimal.NewFromInt(7000))
+
+	requireShipped := func(shipped int64, onHand string) {
+		t.Helper()
+		f.requireOnHand(ctx, t, box, onHand, "booked")
+		var carry decimal.Decimal
+		err := testDB.QueryRowContext(ctx, `SELECT carry FROM packaging_fraction_carry WHERE material_id = ?`, box).Scan(&carry)
+		if err == sql.ErrNoRows {
+			carry = decimal.Zero
+		} else {
+			require.NoError(t, err)
+		}
+		booked := decimal.NewFromInt(10).Sub(decimal.RequireFromString(onHand))
+		diff := booked.Add(carry).Sub(share.Mul(decimal.NewFromInt(shipped))).Abs()
+		require.True(t, diff.LessThan(decimal.RequireFromString("0.000000001")), "booked %s + carry %s is not %d shares", booked, carry, shipped)
+	}
+	place := func() int {
+		t.Helper()
+		id := f.order(ctx, t, [2]int{f.black, 1})
+		require.NoError(t, MS.ReservePackagingForOrder(ctx, id, "tester"))
+		return id
+	}
+	orders := make([]int, 7)
+	for i := range orders {
+		orders[i] = place()
+	}
+
+	// Cancelling before any shipment moves nothing, whichever order it was.
+	for _, id := range orders[:3] {
+		require.NoError(t, MS.ReleasePackagingForOrder(ctx, id, "tester"))
+	}
+	requireShipped(0, "10")
+
+	// Four shares ship and round up to a thousandth, the rest stays owed the other way.
+	for _, id := range orders[3:] {
+		_, err := MS.ConsumePackagingForOrder(ctx, id, "tester")
+		require.NoError(t, err)
+	}
+	requireShipped(4, "9.999")
+
+	// A refund after the shipment changes nothing, what left has left.
+	require.NoError(t, MS.ReleasePackagingForOrder(ctx, orders[3], "tester"))
+	requireShipped(4, "9.999")
+
+	// Three more bring it to exactly seven shares: one thousandth, nothing carried.
+	for i := 0; i < 3; i++ {
+		id := place()
+		_, err := MS.ConsumePackagingForOrder(ctx, id, "tester")
+		require.NoError(t, err)
+	}
+	requireShipped(7, "9.999")
+	got, err := MS.MaterialAvailable(ctx, box)
+	require.NoError(t, err)
+	require.True(t, got.Reserved.IsZero(), "a booking above the hold leaves nothing held, reserved %s", got.Reserved)
+
+	// A re-ship of a settled order takes nothing again.
+	mvs, err := MS.ConsumePackagingForOrder(ctx, orders[4], "tester")
+	require.NoError(t, err)
+	require.Empty(t, mvs)
+	requireShipped(7, "9.999")
+}
+
+// A share holds its rounded figure while the order is open and gives it back on a cancel.
+func TestPackagingShareHoldsAndCancelReturnsIt(t *testing.T) {
+	ctx := packagingTestCtx(t)
+	f := newPackagingFixture(ctx, t)
+	MS := f.s.MaterialStock()
+	box := f.material(ctx, t, "Held box", 10)
+	f.item(ctx, t, entity.PackagingItemKeyBox, 1, box, true)
+	f.packed(ctx, t, "", 3)
+
+	id := f.order(ctx, t, [2]int{f.black, 1})
+	require.NoError(t, MS.ReservePackagingForOrder(ctx, id, "tester"))
+	got, err := MS.MaterialAvailable(ctx, box)
+	require.NoError(t, err)
+	require.True(t, got.Reserved.Equal(decimal.RequireFromString("0.333")), "reserved %s", got.Reserved)
+
+	spec, err := MS.ResolveOrderPackaging(ctx, id)
+	require.NoError(t, err)
+	require.Len(t, spec, 1)
+	require.True(t, spec[0].Qty.Equal(decimal.RequireFromString("0.333")))
+
+	require.NoError(t, MS.ReleasePackagingForOrder(ctx, id, "tester"))
+	got, err = MS.MaterialAvailable(ctx, box)
+	require.NoError(t, err)
+	require.True(t, got.Reserved.IsZero(), "reserved %s", got.Reserved)
+	f.requireOnHand(ctx, t, box, "10", "a cancel takes nothing")
+}
+
 // Deleting a colourway named alone by an item takes the item: left without colours it would mean «all».
 func TestPackagingDeleteColorwayTakesItsOwnItems(t *testing.T) {
 	ctx := packagingTestCtx(t)
