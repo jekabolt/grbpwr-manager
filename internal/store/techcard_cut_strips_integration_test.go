@@ -1449,3 +1449,48 @@ func TestTechCardArchiveCarriesTheStoredNormOfAStripLine(t *testing.T) {
 	require.False(t, recipe[0].NormMarkerId.Valid)
 	require.Len(t, recipe[0].SizeConsumptions, 2)
 }
+
+// TestTechCardArchiveFusingStepWithAStripStaysAPersonsStep: a draft FUSING step of a fused piece and a strip,
+// imported. The import reconciles FUSING directly on the tables, and a step with a strip input is not the
+// shape it may adopt: unchecking the piece's fused flag later would delete the step and the strip's input
+// with it. The save's write model reads the same step the same way.
+func TestTechCardArchiveFusingStepWithAStripStaysAPersonsStep(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	const pressNote = "press with strip"
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		in.CutStrips = []*pb_common.TechCardCutStrip{r.oneLength()}
+		in.Operations = append(in.Operations, &pb_common.TechCardOperation{
+			OperationType:  pb_common.TechCardOperationType_TECH_CARD_OPERATION_TYPE_FUSING,
+			Zone:           pb_common.TechCardGarmentZone_TECH_CARD_GARMENT_ZONE_INTERLINING,
+			PressEquipment: pb_common.TechCardPressEquipment_TECH_CARD_PRESS_EQUIPMENT_FUSING_PRESS,
+			Draft:          true, Note: pressNote, InputKeys: []string{cutsPieceFront, cutsStripOne},
+		})
+	}))
+	require.Equal(t, []string{cutsPieceFront, cutsStripOne}, cutsOpByNote(t, r.wire().GetTechCard(), pressNote).GetInputKeys())
+
+	archive, _ := r.rt.export(t, r.cardID)
+	fused := foldArchEditCard(t, archive, func(card map[string]any) {
+		pieces, ok := card["techCard"].(map[string]any)["pieces"].([]any)
+		require.True(t, ok)
+		pieces[0].(map[string]any)["fused"] = true
+	})
+	newID, _ := r.rt.importArchive(t, fused)
+	got := *r
+	got.cardID = newID
+
+	stepsWithStrip := func(where string) int {
+		t.Helper()
+		return cutsCount(t, ctx, `SELECT COUNT(*) FROM tech_card_operation o
+			JOIN tech_card_operation_input i ON i.operation_id = o.id
+			WHERE o.tech_card_id = ? AND o.operation_type = 'fusing' AND i.cut_strip_id IS NOT NULL`+where, newID)
+	}
+	require.Equal(t, 1, stepsWithStrip(""), "the strip came with its step")
+	require.Zero(t, stepsWithStrip(" AND o.auto_fusing_piece_key IS NOT NULL"), "a step with a strip input is a person's step")
+
+	// The fused flag goes, and with it the automatic step of the piece. The person's step and its strip stay.
+	require.NoError(t, got.save(func(in *pb_common.TechCardInsert) { in.Pieces[0].Fused = false }))
+	require.Equal(t, 1, stepsWithStrip(""))
+}
