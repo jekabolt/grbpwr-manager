@@ -47,6 +47,12 @@ func detachRelinkedColorwayReferences(ctx context.Context, db dependency.DB, col
 		DELETE FROM tech_card_packaging_item_colorway WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
 		return fmt.Errorf("delete source packaging item scope for colourway %d: %w", colorwayID, err)
 	}
+	// The composition label's colourway row is the same trap: the client sends it back on every save.
+	// Its colour name and fibres are facts of the source card, so they stay behind (fibres CASCADE).
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE FROM tech_card_care_label_colorway WHERE colorway_id = :id`, map[string]any{"id": colorwayID}); err != nil {
+		return fmt.Errorf("delete source care label row for colourway %d: %w", colorwayID, err)
+	}
 	return nil
 }
 
