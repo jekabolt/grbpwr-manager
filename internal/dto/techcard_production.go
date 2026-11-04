@@ -1567,6 +1567,38 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 	return decimal.NullDecimal{}, ""
 }
 
+// usageIsRecipeRow is the own-recipe test of one row, shared by the live card and the frozen snapshot.
+// A piece row carries no norm. A bare row on a picked line is the server's (product.SyncPickedBomRecipe):
+// a colourway with nothing else would be costed as a label and its manual articles, the same silent drop
+// the inheritance exists to prevent, so it inherits and the style figure carries the label. A number or a
+// pin on that row is a person's, and makes it a recipe like any other.
+func usageIsRecipeRow(u *entity.TechCardColorwayUsage, held map[int64]bool) bool {
+	// A strip's norm is the same on every colourway and is the line's, not this colourway's. Counting
+	// it as a recipe would price a colourway that inherits the style figure at the strip alone.
+	if u.IsPieceMaterialAssignment() || u.IsCutLengthNorm() {
+		return false
+	}
+	return !(u.BomItemId.Valid && held[u.BomItemId.Int64] && u.IsBareLineRow())
+}
+
+// pickedLabelLines are the BOM lines held by a garment label with a source.
+func pickedLabelLines(tc *entity.TechCard) map[int64]bool {
+	if tc == nil {
+		return nil
+	}
+	var out map[int64]bool
+	for i := range tc.GarmentLabels {
+		l := &tc.GarmentLabels[i]
+		if l.Source != "" && l.BomItemId.Valid {
+			if out == nil {
+				out = map[int64]bool{}
+			}
+			out[int64(l.BomItemId.Int32)] = true
+		}
+	}
+	return out
+}
+
 // colorwayHasOwnRecipe reports whether the colourway can be costed FROM ITSELF. A colourway that
 // cannot inherits the style figure, and the breakdown must inherit the same projection
 // (ComputeColorwayCostBreakdownBase), or the pair (cost_price, cost_breakdown) contradicts itself.
@@ -1588,10 +1620,9 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 // for them and seed CMT-only as the whole cost — silently cheaper than the inheritance they get
 // today. Unmeasured stays empty, exactly as before.
 func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool {
+	held := pickedLabelLines(tc)
 	for i := range cw.Usages {
-		// A strip's norm is the same on every colourway and is the line's, not this colourway's. Counting
-		// it as a recipe would price a colourway that inherits the style figure at the strip alone.
-		if !cw.Usages[i].IsPieceMaterialAssignment() && !cw.Usages[i].IsCutLengthNorm() {
+		if usageIsRecipeRow(&cw.Usages[i], held) {
 			return true
 		}
 	}

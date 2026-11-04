@@ -310,7 +310,7 @@ and an operator sent to the dictionary would find nothing to fix there.
 cuts each garment label's `files` and the `bom_line_key` of labels and packaging items, and the import
 forces both empty on whatever a file claims: a library id is a fact about the SOURCE's library, and a
 `public_url` would print the source's QR on the receiving base. `callout_number`, `artwork_per_size`
-and `artwork_per_colorway` travel, the callouts travel with them, and a number the card's callouts do
+and `artwork_per_colorway` travel, so do `source`, `kind`, `made_by`, `print_method` and `length_cm`, the callouts travel with them, and a number the card's callouts do
 not hold is cleared on arrival. The receiving card shows empty tiles: rebuild the composition row and
 upload the rest there.
 

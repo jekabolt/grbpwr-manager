@@ -53,6 +53,29 @@ func pbMaterialPurpose(p entity.MaterialPurpose) pb_common.MaterialPurpose {
 	return pb_common.MaterialPurpose_MATERIAL_PURPOSE_UNKNOWN
 }
 
+// materialLabelTypePbToEntity maps the proto label type to the stored word (0451). UNKNOWN is absent:
+// it yields the empty string, no type on create and keep the stored one on update.
+var materialLabelTypePbToEntity = map[pb_common.MaterialLabelType]entity.MaterialLabelType{
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_BRAND:       entity.MaterialLabelTypeBrand,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_SIZE:        entity.MaterialLabelTypeSize,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_FLAG:        entity.MaterialLabelTypeFlag,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_PATCH:       entity.MaterialLabelTypePatch,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_TAPE:        entity.MaterialLabelTypeTape,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_LOOP:        entity.MaterialLabelTypeLoop,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_HANGTAG:     entity.MaterialLabelTypeHangtag,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_BARCODE:     entity.MaterialLabelTypeBarcode,
+	pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_COMPOSITION: entity.MaterialLabelTypeComposition,
+}
+
+func pbMaterialLabelType(t entity.MaterialLabelType) pb_common.MaterialLabelType {
+	for k, v := range materialLabelTypePbToEntity {
+		if v == t {
+			return k
+		}
+	}
+	return pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_UNKNOWN
+}
+
 // materialUnitToPb maps the entity vocabulary onto the proto enum (Ф5а.3). The entity table is the
 // source of truth; this map only carries it across the wire.
 var materialUnitToPb = map[entity.MaterialUnit]pb_common.MaterialUnit{
@@ -288,6 +311,13 @@ func pbCompositionEntriesToEntity(pbEntries []*pb_common.CompositionEntry) ([]en
 // escape-hatch) onto the entity insert. An UNKNOWN class leaves MaterialClass empty: create defaults
 // it to 'other', while update treats it as absent and preserves the stored class.
 func applyPbMaterialAttrs(pb *pb_common.Material, ins *entity.MaterialInsert) error {
+	if pb.LabelType != pb_common.MaterialLabelType_MATERIAL_LABEL_TYPE_UNKNOWN {
+		lt, ok := materialLabelTypePbToEntity[pb.LabelType]
+		if !ok {
+			return entity.NewFieldViolation("label_type", "unknown_label_type", "", "pick one of the listed types")
+		}
+		ins.LabelType = string(lt)
+	}
 	if mc, ok := materialClassPbToEntity[pb.MaterialClass]; ok {
 		ins.MaterialClass = string(mc)
 	}
@@ -451,6 +481,7 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		LockVersion:       int32(m.LockVersion),
 		ImageId:           pbInt32FromNull(m.ImageId),
 		Purpose:           pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
+		LabelType:         pbMaterialLabelType(entity.MaterialLabelType(m.LabelType)),
 	}
 	if m.Image != nil {
 		out.Image = ConvertEntityToCommonMedia(m.Image)

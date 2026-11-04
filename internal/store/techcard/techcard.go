@@ -760,6 +760,10 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// it knows them (labels_aware): an older bundle's payload cannot tell «none» from «never heard of
 	// them», so without the flag both stored lists are kept and nothing of them is inserted.
 	preserveLabelLists := !tc.LabelsAware
+	// Read from the labels stored now, so before they are cleared below.
+	if err := product.ReleasePickedLines(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
 	preserveAbsentSection := map[string]bool{
 		"tech_card_construction":      tc.Construction == nil,
 		"tech_card_packaging":         tc.Packaging == nil,
@@ -1733,6 +1737,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardPackagingItems(ctx, db, id, tc.PackagingItems, bomRes); err != nil {
+		return err
+	}
+	if err := product.SyncPickedBomRecipe(ctx, db, id); err != nil {
 		return err
 	}
 	if err := insertTechCardCosting(ctx, db, id, tc.Costing); err != nil {

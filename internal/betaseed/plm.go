@@ -1606,11 +1606,18 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 		common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_HANGTAG,
 	}
 	names := []string{"Brand Label", "Care Label", "Size Label", "Hangtag"}
+	labelTypes := []common.MaterialLabelType{
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_BRAND,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_COMPOSITION,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_SIZE,
+		common.MaterialLabelType_MATERIAL_LABEL_TYPE_HANGTAG,
+	}
 	var items []*admin.StyleAssemblyItem
 	for i, sub := range subtypes {
 		code := s.key(fmt.Sprintf("AUX%d", i))
 		matID, err := s.createMaterial(ctx, &common.Material{
 			Name: names[i] + " material", Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL,
+			LabelType: labelTypes[i],
 			MaterialClass: common.MaterialClass_MATERIAL_CLASS_OTHER, Code: code, Unit: "pcs", MinStock: decv("200"), OtherAttrs: "{}",
 		})
 		if err != nil {

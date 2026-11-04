@@ -392,13 +392,15 @@ func createOutputVariantMaterial(
 
 	section, class, unit, purpose := outputVariantDefaultSection, outputVariantDefaultClass,
 		outputVariantDefaultUnit, outputVariantDefaultPurposeM
+	labelType := ""
 	if templateID > 0 {
 		tmpl, err := storeutil.QueryNamedOne[struct {
 			Section       sql.NullString `db:"section"`
 			MaterialClass sql.NullString `db:"material_class"`
 			Unit          sql.NullString `db:"unit"`
 			Purpose       sql.NullString `db:"purpose"`
-		}](ctx, db, `SELECT section, material_class, unit, purpose FROM material WHERE id = :id`,
+			LabelType     string         `db:"label_type"`
+		}](ctx, db, `SELECT section, material_class, unit, purpose, label_type FROM material WHERE id = :id`,
 			map[string]any{"id": templateID})
 		// A template that vanished is not a reason to refuse the colour — fall back to the defaults.
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -417,6 +419,7 @@ func createOutputVariantMaterial(
 			if v := strings.TrimSpace(tmpl.Purpose.String); v != "" {
 				purpose = v
 			}
+			labelType = tmpl.LabelType
 		}
 	}
 	// The unit answers to the card's existing colours, not to the template, whenever the two could
@@ -438,6 +441,7 @@ func createOutputVariantMaterial(
 		MaterialClass: class,
 		Unit:          sql.NullString{String: unit, Valid: true},
 		Purpose:       purpose,
+		LabelType:     labelType,
 		Color:         sql.NullString{String: colorName, Valid: colorName != ""},
 		CreatedBy:     username,
 		UpdatedBy:     username,

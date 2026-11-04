@@ -91,10 +91,11 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 	// бы «авторским» и брал бы свою замороженную проекцию без ткани — ровно то тихое занижение,
 	// от которого этот блок защищает.
 	authored := make(map[int]bool, len(snap.GetColorways()))
+	held := pickedLabelLinesFromSnapshot(snap)
 	for _, cw := range snap.GetColorways() {
 		for _, u := range cw.GetUsages() {
-			// A strip's norm is the line's, not this colourway's: same rule as colorwayHasOwnRecipe.
-			if pbUsageIsPieceAssignment(u) || u.GetConsumptionSource() == entity.ConsumptionSourceCutLength {
+			use := frozenUsage(u)
+			if !usageIsRecipeRow(&use, held) {
 				continue
 			}
 			authored[int(cw.GetColorwayId())] = true
@@ -240,6 +241,14 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			DefectPercent: frozenDecimal(c.GetDefectPercent()),
 		}
 	}
+	// The labels that hold a line go with the card: colorwayHasOwnRecipe reads them, and without them a
+	// recipe-less colourway would be costed here as one label.
+	for id := range pickedLabelLinesFromSnapshot(snap) {
+		card.GarmentLabels = append(card.GarmentLabels, entity.TechCardGarmentLabel{
+			Source:    entity.GarmentLabelSourceStock,
+			BomItemId: sql.NullInt32{Int32: int32(id), Valid: true},
+		})
+	}
 	for _, cw := range snap.GetColorways() {
 		out := entity.TechCardColorway{Id: int(cw.GetColorwayId())}
 		if id := cw.GetColorwayId(); id > 0 {
@@ -248,41 +257,7 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			out.ProductId = sql.NullInt32{Int32: id, Valid: true}
 		}
 		for _, u := range cw.GetUsages() {
-			use := entity.TechCardColorwayUsage{
-				PieceLineKey: u.GetPieceLineKey(),
-				Consumption:  frozenDecimal(u.GetConsumption()),
-				Quantity:     frozenDecimal(u.GetQuantity()),
-			}
-			if id := u.GetBomItemId(); id > 0 {
-				use.BomItemId = sql.NullInt64{Int64: id, Valid: true}
-			}
-			if u.BomItemIndex != nil {
-				use.BomItemIndex = sql.NullInt32{Int32: *u.BomItemIndex, Valid: true}
-			}
-			if id := u.GetPieceId(); id > 0 {
-				use.PieceId = sql.NullInt64{Int64: id, Valid: true}
-			}
-			if u.PieceIndex != nil {
-				// present = привязка, включая индекс 0 — см. pbUsageIsPieceAssignment.
-				use.PieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
-			}
-			if u.MaterialId != nil && *u.MaterialId > 0 {
-				use.MaterialId = sql.NullInt64{Int64: *u.MaterialId, Valid: true}
-			}
-			if src := u.GetConsumptionSource(); src != "" {
-				// marker-строки не гроссируются повторно (wastageApplies) — источник обязан пережить
-				// заморозку, иначе замороженная клетка вышла бы дороже живой на процент кроя.
-				use.ConsumptionSource = sql.NullString{String: src, Valid: true}
-			}
-			for _, sc := range u.GetSizeConsumptions() {
-				n := frozenDecimal(sc.GetConsumption())
-				if !n.Valid {
-					continue // нечитаемая норма = нормы нет; клетка этого размера уйдёт в фолбэк
-				}
-				use.SizeConsumptions = append(use.SizeConsumptions, entity.TechCardBomSizeConsumption{
-					SizeId: int(sc.GetSizeId()), Consumption: n.Decimal,
-				})
-			}
+			use := frozenUsage(u)
 			out.Usages = append(out.Usages, use)
 			// The frozen BOM has no strips to resolve from, and the row's source is what says the line is
 			// cut to length: a frozen hardware line would otherwise read its number as a countable slot.
@@ -300,21 +275,76 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 // frozenDecimal читает decimal из замороженного блоба ТЕРПИМО: нечитаемое значение — отсутствующее
 // (история не валидируется), и расчёт, которому оно было нужно, честно не считается, вместо того
 // чтобы уронить чтение прогона.
+// frozenUsage restores one recipe row from a release snapshot.
+func frozenUsage(u *pb_common.TechCardColorwayUsage) entity.TechCardColorwayUsage {
+	use := entity.TechCardColorwayUsage{
+		PieceLineKey: u.GetPieceLineKey(),
+		Consumption:  frozenDecimal(u.GetConsumption()),
+		Quantity:     frozenDecimal(u.GetQuantity()),
+	}
+	if id := u.GetBomItemId(); id > 0 {
+		use.BomItemId = sql.NullInt64{Int64: id, Valid: true}
+	}
+	if u.BomItemIndex != nil {
+		use.BomItemIndex = sql.NullInt32{Int32: *u.BomItemIndex, Valid: true}
+	}
+	if id := u.GetPieceId(); id > 0 {
+		use.PieceId = sql.NullInt64{Int64: id, Valid: true}
+	}
+	if u.PieceIndex != nil {
+		// present = привязка, включая индекс 0 — см. IsPieceMaterialAssignment.
+		use.PieceIndex = sql.NullInt32{Int32: *u.PieceIndex, Valid: true}
+	}
+	if u.MaterialId != nil && *u.MaterialId > 0 {
+		use.MaterialId = sql.NullInt64{Int64: *u.MaterialId, Valid: true}
+	}
+	if src := u.GetConsumptionSource(); src != "" {
+		// marker-строки не гроссируются повторно (wastageApplies) — источник обязан пережить
+		// заморозку, иначе замороженная клетка вышла бы дороже живой на процент кроя.
+		use.ConsumptionSource = sql.NullString{String: src, Valid: true}
+	}
+	for _, sc := range u.GetSizeConsumptions() {
+		n := frozenDecimal(sc.GetConsumption())
+		if !n.Valid {
+			continue // нечитаемая норма = нормы нет; клетка этого размера уйдёт в фолбэк
+		}
+		use.SizeConsumptions = append(use.SizeConsumptions, entity.TechCardBomSizeConsumption{
+			SizeId: int(sc.GetSizeId()), Consumption: n.Decimal,
+		})
+	}
+	if v := u.GetPlacement(); v != "" {
+		use.Placement = sql.NullString{String: v, Valid: true}
+	}
+	if v := u.GetColor(); v != "" {
+		use.Color = sql.NullString{String: v, Valid: true}
+	}
+	if v := u.GetPantone(); v != "" {
+		use.Pantone = sql.NullString{String: v, Valid: true}
+	}
+	return use
+}
+
+// pickedLabelLinesFromSnapshot is pickedLabelLines over the frozen blob. A snapshot older than 0451 has no
+// source on any label, and every row of it reads as a recipe, as it always did.
+func pickedLabelLinesFromSnapshot(snap *pb_common.TechCard) map[int64]bool {
+	var out map[int64]bool
+	for _, l := range snap.GetTechCard().GetGarmentLabels() {
+		if l.GetSource() != "" && l.GetBomItemId() > 0 {
+			if out == nil {
+				out = map[int64]bool{}
+			}
+			out[int64(l.GetBomItemId())] = true
+		}
+	}
+	return out
+}
+
 func frozenDecimal(d *pb_decimal.Decimal) decimal.NullDecimal {
 	v, err := nullDecimalFromPb(d)
 	if err != nil {
 		return decimal.NullDecimal{}
 	}
 	return v
-}
-
-// pbUsageIsPieceAssignment — зеркало entity.TechCardColorwayUsage.IsPieceMaterialAssignment для
-// проводной/снапшотной формы строки рецепта. Все три представления привязки, потому что снапшот
-// несёт не все: у замороженного релиза может выжить только piece_line_key (id детали в контракте
-// нет вовсе — см. CutSpecCardFromReleaseSnapshot), у легаси-строки — только позиционный
-// piece_index (present = привязка, включая индекс 0).
-func pbUsageIsPieceAssignment(u *pb_common.TechCardColorwayUsage) bool {
-	return u.GetPieceId() > 0 || u.GetPieceLineKey() != "" || u.PieceIndex != nil
 }
 
 // ComputeReleaseRunPlannedUnitCost — плановая цена изделия РЕЛИЗНОГО прогона: клетки
