@@ -215,3 +215,53 @@ func TestLabelStockPickReachesRecipe(t *testing.T) {
 		require.NotEqual(t, stockLine, b.LineKey)
 	}
 }
+
+// TestMaterialLabelTypeStored drives the stored label type (0451) through the real store: create
+// writes it, an update that does not send it keeps it, another value replaces it, a move out of the
+// label section clears it, and a type outside the section is refused.
+func TestMaterialLabelTypeStored(t *testing.T) {
+	if os.Getenv("CI") == "" &&
+		!strings.Contains(testCfg.DSN, "127.0.0.1") &&
+		!strings.Contains(testCfg.DSN, "localhost") {
+		t.Skip("skipping outside CI unless the DSN targets a local container (avoids the configured prod DB)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	cfg := *testCfg
+	cfg.Automigrate = true
+	st, err := NewForTest(ctx, cfg)
+	require.NoError(t, err)
+	defer st.Close()
+	T := st.TechCards()
+
+	base := func(section, labelType string) *entity.MaterialInsert {
+		return &entity.MaterialInsert{
+			Name: "label type probe", Section: section, LabelType: labelType,
+			Unit: sql.NullString{String: "pcs", Valid: true},
+		}
+	}
+	id, err := T.CreateMaterial(ctx, base("label", string(entity.MaterialLabelTypeHangtag)))
+	require.NoError(t, err)
+	read := func() (string, int) {
+		m, err := T.GetMaterial(ctx, id)
+		require.NoError(t, err)
+		return m.LabelType, m.LockVersion
+	}
+	got, lock := read()
+	require.Equal(t, "hangtag", got)
+
+	require.NoError(t, T.UpdateMaterial(ctx, id, base("label", ""), lock))
+	got, lock = read()
+	require.Equal(t, "hangtag", got, "an update that does not send the type keeps it")
+
+	require.NoError(t, T.UpdateMaterial(ctx, id, base("label", string(entity.MaterialLabelTypeBarcode)), lock))
+	got, lock = read()
+	require.Equal(t, "barcode", got)
+
+	require.NoError(t, T.UpdateMaterial(ctx, id, base("trim", ""), lock))
+	got, _ = read()
+	require.Equal(t, "", got, "a move out of the label section clears the type")
+
+	_, err = T.CreateMaterial(ctx, base("trim", string(entity.MaterialLabelTypeBrand)))
+	require.Error(t, err, "a type outside the label section is refused")
+}

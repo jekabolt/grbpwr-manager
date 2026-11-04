@@ -31,6 +31,36 @@ var ValidMaterialClasses = map[MaterialClass]bool{
 	MaterialClassOther:     true,
 }
 
+// MaterialLabelType is the type of a label in stock (0451), stored on the material and never derived
+// from its name. Empty means no type, and is the only value outside the label section.
+type MaterialLabelType string
+
+const (
+	MaterialLabelTypeBrand       MaterialLabelType = "brand"
+	MaterialLabelTypeSize        MaterialLabelType = "size"
+	MaterialLabelTypeFlag        MaterialLabelType = "flag"
+	MaterialLabelTypePatch       MaterialLabelType = "patch"
+	MaterialLabelTypeTape        MaterialLabelType = "tape"
+	MaterialLabelTypeLoop        MaterialLabelType = "loop"
+	MaterialLabelTypeHangtag     MaterialLabelType = "hangtag"
+	MaterialLabelTypeBarcode     MaterialLabelType = "barcode"
+	MaterialLabelTypeComposition MaterialLabelType = "composition"
+)
+
+// ValidMaterialLabelTypes is the storable set, mirrored by the DB CHECK (chk_material_label_type,
+// migration 0451) and the proto MaterialLabelType enum.
+var ValidMaterialLabelTypes = map[MaterialLabelType]bool{
+	MaterialLabelTypeBrand:       true,
+	MaterialLabelTypeSize:        true,
+	MaterialLabelTypeFlag:        true,
+	MaterialLabelTypePatch:       true,
+	MaterialLabelTypeTape:        true,
+	MaterialLabelTypeLoop:        true,
+	MaterialLabelTypeHangtag:     true,
+	MaterialLabelTypeBarcode:     true,
+	MaterialLabelTypeComposition: true,
+}
+
 // MaterialPurpose (#40) marks whether a catalog material is used for samples, production, or both —
 // so the admin can mark and filter. Kept as a distinct ~string type mirrored by the DB CHECK
 // (chk_material_purpose, migration 0184) and the proto MaterialPurpose enum.
@@ -174,6 +204,9 @@ type MaterialInsert struct {
 	// Purpose marks whether the material is used for samples, production, or both (#40). An empty
 	// value is normalised to 'both' on write (see normalizeMaterialPurpose).
 	Purpose string `db:"purpose" valid:"-"`
+	// LabelType is the type of a label in stock (0451). Empty on create means no type, empty on update
+	// means keep the stored one, so a client that does not send it cannot wipe it.
+	LabelType string `db:"label_type" valid:"-"`
 	// CTI typing (S15). MaterialClass is the discriminant; exactly the matching typed attribute
 	// pointer is populated (the rest nil); OtherAttrs is the JSON escape-hatch for class 'other'.
 	// The attribute pointers are not base columns (db:"-") — they are loaded from / written to the

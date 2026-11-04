@@ -1069,6 +1069,21 @@ enum MaterialClass {
 // MaterialPurpose (#40) marks whether a catalog material is used for samples, production, or both,
 // so the admin can mark and filter materials. Mirrors entity.ValidMaterialPurposes and the DB CHECK
 // chk_material_purpose. UNKNOWN defaults to BOTH on write.
+// MaterialLabelType is the type of a label in stock (0451), stored on the material and never derived
+// from its name. UNKNOWN means no type on create and keep the stored one on update.
+enum MaterialLabelType {
+  MATERIAL_LABEL_TYPE_UNKNOWN = 0;
+  MATERIAL_LABEL_TYPE_BRAND = 1;
+  MATERIAL_LABEL_TYPE_SIZE = 2;
+  MATERIAL_LABEL_TYPE_FLAG = 3;
+  MATERIAL_LABEL_TYPE_PATCH = 4;
+  MATERIAL_LABEL_TYPE_TAPE = 5;
+  MATERIAL_LABEL_TYPE_LOOP = 6;
+  MATERIAL_LABEL_TYPE_HANGTAG = 7;
+  MATERIAL_LABEL_TYPE_BARCODE = 8;
+  MATERIAL_LABEL_TYPE_COMPOSITION = 9;
+}
+
 enum MaterialPurpose {
   MATERIAL_PURPOSE_UNKNOWN = 0; // defaults to BOTH on write
   MATERIAL_PURPOSE_SAMPLE = 1;
@@ -1285,6 +1300,8 @@ message Material {
   //   * field PRESENT, value ""    → CLEAR it (store NULL).
   //   * field PRESENT with a value → set it.
   google.type.Decimal fabric_thickness_mm = 33;
+  // The type of a label in stock, section LABEL only (0451). The label picker filters on it.
+  MaterialLabelType label_type = 34;
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the

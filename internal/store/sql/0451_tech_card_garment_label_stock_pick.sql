@@ -77,7 +77,51 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+-- migrationlint:allow-retroactive the CHECK covers label_type, added just above with DEFAULT '', so no existing row can fail it
+-- A label in stock keeps its type on the material itself, read by the label picker's filter and never
+-- derived from the name. '' = no type, which is the only value outside the label section. Stock,
+-- reserves, price and the BOM key on material.id, so none of them changes. The CHECK is a separate
+-- ALTER: MySQL cannot add a CHECK instantly, and the table holds a few dozen rows.
+SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND COLUMN_NAME = 'label_type');
+SET @ddl := IF(@col = 0,
+    'ALTER TABLE material
+        ADD COLUMN label_type VARCHAR(16) NOT NULL DEFAULT '''' COMMENT ''type of a label in stock; empty outside the label section'',
+        ALGORITHM=INSTANT',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @chk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND CONSTRAINT_NAME = 'chk_material_label_type');
+SET @ddl := IF(@chk = 0,
+    'ALTER TABLE material
+        ADD CONSTRAINT chk_material_label_type CHECK (label_type = '''' OR (section = ''label'' AND label_type REGEXP ''^(brand|size|flag|patch|tape|loop|hangtag|barcode|composition)$''))',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 -- +migrate Down
+
+SET @chk := (SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND CONSTRAINT_NAME = 'chk_material_label_type');
+SET @ddl := IF(@chk = 1,
+    'ALTER TABLE material DROP CONSTRAINT chk_material_label_type',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'material' AND COLUMN_NAME = 'label_type');
+SET @ddl := IF(@col = 1,
+    'ALTER TABLE material DROP COLUMN label_type',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tech_card_garment_label' AND COLUMN_NAME = 'length_cm');
