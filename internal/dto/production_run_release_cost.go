@@ -93,7 +93,8 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 	authored := make(map[int]bool, len(snap.GetColorways()))
 	for _, cw := range snap.GetColorways() {
 		for _, u := range cw.GetUsages() {
-			if pbUsageIsPieceAssignment(u) {
+			// A strip's norm is the line's, not this colourway's: same rule as colorwayHasOwnRecipe.
+			if pbUsageIsPieceAssignment(u) || u.GetConsumptionSource() == entity.ConsumptionSourceCutLength {
 				continue
 			}
 			authored[int(cw.GetColorwayId())] = true
@@ -283,6 +284,13 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 				})
 			}
 			out.Usages = append(out.Usages, use)
+			// The frozen BOM has no strips to resolve from, and the row's source is what says the line is
+			// cut to length: a frozen hardware line would otherwise read its number as a countable slot.
+			if use.IsCutLengthNorm() {
+				if line := planBomLine(&use, card.BomItems); line != nil {
+					line.CutToLength = true
+				}
+			}
 		}
 		card.Colorways = append(card.Colorways, out)
 	}

@@ -499,8 +499,11 @@ func operationInputs(op *entity.TechCardOperation, pieceNameByKey map[string]str
 // inputLabel is one input's label. Деталь — ИМЕНЕМ, а не line_key: технолог не знает своих ULID'ов,
 // и якорь «piece:<name>» §7.1 п.5 построен на том же имени.
 func inputLabel(in entity.OperationInput, pieceNameByKey map[string]string) string {
-	if in.Kind == entity.AssemblyInputUnit {
+	switch in.Kind {
+	case entity.AssemblyInputUnit:
 		return "UNIT<" + in.Key + ">"
+	case entity.AssemblyInputStrip:
+		return "STRIP"
 	}
 	return pieceNameOr(pieceNameByKey, in.Key)
 }

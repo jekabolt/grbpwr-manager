@@ -92,6 +92,10 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
 	}
+	// Right after the recipe rows and the size range exist: everything below reads finished norms.
+	if err := s.enrichCutStrips(ctx, cards); err != nil {
+		return err
+	}
 	if err := s.enrichProduction(ctx, cards); err != nil {
 		return err
 	}

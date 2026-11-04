@@ -85,7 +85,7 @@ const (
 // впустую она молча превращает расход в штуки (0.5 → 6). Предикат и есть то, чем эти два случая
 // различаются.
 func SlotCarriesCountableNorm(bom *TechCardBomItem) bool {
-	return bom != nil && (bom.QtyPerGarment.Valid || bom.SpareQty.Valid)
+	return bom != nil && !bom.CutToLength && (bom.QtyPerGarment.Valid || bom.SpareQty.Valid)
 }
 
 // CountablePairUsages — строки рецепта, составляющие ПАРУ (этот колорвей × этот слот).
@@ -125,7 +125,7 @@ func CountablePairUsages(usages []TechCardColorwayUsage, bom *TechCardBomItem) [
 // мерный или когда пары нет вовсе (см. шапку файла — все четыре случая разные и ни один из них не
 // ноль).
 func CountablePairQty(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (decimal.NullDecimal, CountableBasis) {
-	if bom == nil || !IsCountableSection(bom.Section) || len(pair) == 0 {
+	if bom == nil || bom.CutToLength || !IsCountableSection(bom.Section) || len(pair) == 0 {
 		return decimal.NullDecimal{}, CountableBasisNone
 	}
 	sum := decimal.Zero

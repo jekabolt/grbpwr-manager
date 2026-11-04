@@ -206,6 +206,9 @@ func runAssemblyClear(cmd *cobra.Command, args []string) error {
 	// параллельной вкладки, стирающей её по недоразумению.
 	pbInsert.AssemblyAware = true
 	pbInsert.AssemblyCleared = true
+	// Strip inputs stay on the steps, so the strips travel with them.
+	pbInsert.CutStrips = full.GetCutStrips()
+	pbInsert.CutStripsAware = true
 	if released {
 		// DRAFT ставится В PB, до конверсии — зеркало клона сезона: релизные гейты живут в
 		// конвертере, и выпущенное состояние надо снять раньше, чем они его увидят.

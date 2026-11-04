@@ -1589,7 +1589,9 @@ func ComputeColorwayUnitCost(tc *entity.TechCard, colorwayProductID int, fx Cost
 // today. Unmeasured stays empty, exactly as before.
 func colorwayHasOwnRecipe(tc *entity.TechCard, cw *entity.TechCardColorway) bool {
 	for i := range cw.Usages {
-		if !cw.Usages[i].IsPieceMaterialAssignment() {
+		// A strip's norm is the same on every colourway and is the line's, not this colourway's. Counting
+		// it as a recipe would price a colourway that inherits the style figure at the strip alone.
+		if !cw.Usages[i].IsPieceMaterialAssignment() && !cw.Usages[i].IsCutLengthNorm() {
 			return true
 		}
 	}

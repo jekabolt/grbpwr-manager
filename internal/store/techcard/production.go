@@ -528,6 +528,10 @@ func insertTechCardOperationInputs(ctx context.Context, db dependency.DB, tcID i
 	for _, r := range pieceRows {
 		pieceByKey[r.LineKey] = r.Id
 	}
+	stripByKey, err := cutStripIDsByKey(ctx, db, tcID)
+	if err != nil {
+		return err
+	}
 
 	opRows, err := storeutil.QueryListNamed[struct {
 		Id           int `db:"id"`
@@ -568,6 +572,25 @@ func insertTechCardOperationInputs(ctx context.Context, db dependency.DB, tcID i
 					"operation_id":  opID,
 					"piece_id":      nil,
 					"unit_key":      in.Key,
+					"cut_strip_id":  nil,
+					"display_order": j,
+				})
+				continue
+			}
+			if in.Kind == entity.AssemblyInputStrip {
+				// A strip is no piece, so it stays out of the legacy mirror: the old reader would count it
+				// as cut cloth.
+				stripID, ok := stripByKey[in.Key]
+				if !ok {
+					return entity.NewFieldViolation(fmt.Sprintf("operations[%d].input_keys[%d]", i, j),
+						fmt.Sprintf("no strip %q in this style", in.Key), "",
+						"reference an existing strip by its line_key")
+				}
+				inputs = append(inputs, map[string]any{
+					"operation_id":  opID,
+					"piece_id":      nil,
+					"unit_key":      nil,
+					"cut_strip_id":  stripID,
 					"display_order": j,
 				})
 				continue
@@ -584,6 +607,7 @@ func insertTechCardOperationInputs(ctx context.Context, db dependency.DB, tcID i
 				"operation_id":  opID,
 				"piece_id":      pieceID,
 				"unit_key":      nil,
+				"cut_strip_id":  nil,
 				"display_order": j,
 			})
 			// Легаси-зеркало нумеруется по СВОЕЙ шкале (только детали, подряд): у 0199 порядок
@@ -967,11 +991,14 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		PieceID  sql.NullInt64  `db:"piece_id"`
 		PieceKey sql.NullString `db:"line_key"`
 		UnitKey  sql.NullString `db:"unit_key"`
+		StripKey sql.NullString `db:"strip_key"`
 	}](ctx, s.DB, `
-		SELECT o.id AS op_id, l.piece_id AS piece_id, p.line_key AS line_key, l.unit_key AS unit_key
+		SELECT o.id AS op_id, l.piece_id AS piece_id, p.line_key AS line_key, l.unit_key AS unit_key,
+		       cs.line_key AS strip_key
 		FROM tech_card_operation_input l
 		JOIN tech_card_operation o ON o.id = l.operation_id
 		LEFT JOIN tech_card_piece p ON p.id = l.piece_id
+		LEFT JOIN tech_card_cut_strip cs ON cs.id = l.cut_strip_id
 		WHERE o.tech_card_id IN (:ids)
 		ORDER BY o.tech_card_id, o.display_order, l.display_order, l.id`,
 		map[string]any{"ids": ids})
@@ -994,6 +1021,11 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 				Kind: entity.AssemblyInputUnit, Key: l.UnitKey.String,
 			})
 			op.InputKeys = append(op.InputKeys, l.UnitKey.String)
+		case l.StripKey.Valid:
+			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
+				Kind: entity.AssemblyInputStrip, Key: l.StripKey.String,
+			})
+			op.InputKeys = append(op.InputKeys, l.StripKey.String)
 		case l.PieceID.Valid && l.PieceKey.Valid:
 			op.AssemblyInputs = append(op.AssemblyInputs, entity.OperationInput{
 				Kind: entity.AssemblyInputPiece, Key: l.PieceKey.String,

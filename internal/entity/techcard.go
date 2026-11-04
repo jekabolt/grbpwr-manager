@@ -1299,6 +1299,11 @@ const (
 	// decomposition and no norm stamp (a раскладка id would be a claim about a layout that never
 	// happened) — normalized() in the store clears both for every non-marker source.
 	ConsumptionSourceDxf = "dxf"
+	// ConsumptionSourceCutLength is a norm computed on read from a BOM line's cut-to-length strips
+	// (ApplyCutStripNorms). It is never written to the database, so it is deliberately not a member of
+	// ValidConsumptionSources, which mirrors chk_tccu_consumption_source. It grosses up like a manual
+	// norm: a cut length is one garment's piece, and roll-end loss is what wastage is for.
+	ConsumptionSourceCutLength = "cut_length"
 )
 
 // ValidConsumptionSources is the set of accepted consumption provenance values.
@@ -1829,6 +1834,10 @@ func (u *TechCardColorwayUsage) NormGrossUp(bom *TechCardBomItem, wastageOverrid
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
 	Id int `db:"id"`
+	// CutToLength is the in-memory mark of a line with strips, set by the read-time resolver
+	// (ApplyCutStripNorms). The line's norm then comes only from its strips, so the countable path of
+	// a hardware line stays silent. Never stored and outside every digest.
+	CutToLength bool `db:"-"`
 	// LineKey is the BOM line's stable wire identity (S2/S3): a client-generated ULID assigned when
 	// the line is first created in the UI (before the first save), immutable thereafter. The server
 	// keyed-reconciles by line_key so the row's id survives edits — that stable id is what lets
@@ -4604,6 +4613,12 @@ type TechCardInsert struct {
 	// admit instead of refusing it, on the order the FUSING reconciliation leaves. A restore must not
 	// fail on what happened to the folds since the snapshot.
 	RestoreFolds bool `db:"-"`
+
+	// CutStrips is the card's cut-to-length strips (0449). On a write they are stored only with
+	// CutStripsAware. Without the flag the RPC layer fills them from the stored card, so that a step's
+	// strip input classifies as a strip and the write hashes like the read, and the store leaves them.
+	CutStrips      []TechCardCutStrip `db:"-"`
+	CutStripsAware bool               `db:"-"`
 	// DisplacedFoldKeys is write-command metadata from fusingops.ReconcileTechCard: the fold links of
 	// the steps it removed or split, which insertTechCardOperationFolds places on their new steps.
 	DisplacedFoldKeys []TechCardDisplacedFoldKey `db:"-"`

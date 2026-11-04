@@ -545,6 +545,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if t := operationKindTail("bom_qty", operationBomQtyPairs(o)...); t != nil {
 			row = append(row, t)
 		}
+		// Strip inputs (0449). Same rule as bom_qty: a step with no strip input gets no tail, so no
+		// existing card's bytes move.
+		if t := operationKindTail("cut_strip_inputs", operationCutStripInputPairs(o)...); t != nil {
+			row = append(row, t)
+		}
 		ops = append(ops, row)
 	}
 	pieces := make([]any, 0, len(tc.Pieces))
@@ -1064,6 +1069,11 @@ func assemblyInputTail(o *entity.TechCardOperation) []any {
 	}
 	out := make([]any, 0, len(o.AssemblyInputs))
 	for _, in := range o.AssemblyInputs {
+		// A strip has its own tagged tail. This frozen shape knows two kinds, and a third value in the
+		// pair would widen it for every reader of the signature.
+		if in.Kind == entity.AssemblyInputStrip {
+			continue
+		}
 		kind := "piece"
 		if in.Kind == entity.AssemblyInputUnit {
 			kind = "unit"
@@ -1071,6 +1081,19 @@ func assemblyInputTail(o *entity.TechCardOperation) []any {
 		out = append(out, []any{kind, in.Key})
 	}
 	return out
+}
+
+// operationCutStripInputPairs is the step's strip inputs, keyed by strip line_key, valued by the
+// position in the union. The position belongs in the signature because the author's order on the step
+// is what the workshop reads; the union itself is the assembly tail's job.
+func operationCutStripInputPairs(o *entity.TechCardOperation) []operationKindPair {
+	var pairs []operationKindPair
+	for i, in := range o.AssemblyInputs {
+		if in.Kind == entity.AssemblyInputStrip {
+			pairs = append(pairs, operationKindPair{key: in.Key, value: i, valid: true})
+		}
+	}
+	return pairs
 }
 
 // equipmentProfilesTail projects the card's equipment park, or nil when it holds nothing.
@@ -1162,9 +1185,61 @@ func equipmentProfilesTail(c *entity.TechCardConstruction) any {
 func materialsProjection(tc *entity.TechCardInsert) any {
 	items := make([]any, 0, len(tc.BomItems))
 	for i := range tc.BomItems {
-		items = append(items, materialsRow(&tc.BomItems[i]))
+		row := materialsRow(&tc.BomItems[i])
+		// Strip rules change what is bought, so they sign with the line. A line with no strip gets no
+		// tail and every existing card hashes as before.
+		row = append(row, cutStripTails(tc.BomItems[i].LineKey, tc.CutStrips)...)
+		items = append(items, row)
 	}
 	return items
+}
+
+// cutStripTails is one tagged tail per strip of the BOM line, ordered by the strip's key. display_order
+// stays out: reordering rows on screen buys nothing different. Derived numbers stay out too, because
+// the inputs already determine them and a formula fix must not move a signature.
+func cutStripTails(bomLineKey string, strips []entity.TechCardCutStrip) []any {
+	var onLine []*entity.TechCardCutStrip
+	for i := range strips {
+		if entity.CutStripLineKey(strips[i].BomLineKey) == entity.CutStripLineKey(bomLineKey) {
+			onLine = append(onLine, &strips[i])
+		}
+	}
+	if len(onLine) == 0 {
+		return nil
+	}
+	sort.SliceStable(onLine, func(a, b int) bool { return onLine[a].LineKey < onLine[b].LineKey })
+	out := make([]any, 0, len(onLine))
+	for _, s := range onLine {
+		out = append(out, operationKindTail("cut_strip",
+			operationKindPair{key: "line_key", value: s.LineKey, valid: true},
+			operationKindPair{key: "length_mode", value: s.LengthMode, valid: true},
+			opKindStr("seam_key", sql.NullString{String: s.SeamKey.String, Valid: s.SeamKey.Valid && s.SeamKey.String != ""}),
+			operationKindPair{key: "fit_pct", value: s.FitPct.String(), valid: true},
+			operationKindPair{key: "overlap_mm", value: s.OverlapMm.String(), valid: true},
+			operationKindPair{key: "width_mm", value: s.WidthMm.String(), valid: true},
+			opKindInt("one_length_mm", s.OneLengthMm),
+			operationKindPair{key: "qty", value: s.Qty, valid: true},
+			operationKindPair{key: "sizes", value: cutStripSizePairs(s.Sizes), valid: len(s.Sizes) > 0},
+		))
+	}
+	return out
+}
+
+func cutStripSizePairs(sizes []entity.TechCardCutStripSize) []any {
+	ordered := append([]entity.TechCardCutStripSize(nil), sizes...)
+	sort.SliceStable(ordered, func(a, b int) bool { return ordered[a].SizeId < ordered[b].SizeId })
+	out := make([]any, 0, len(ordered))
+	for _, row := range ordered {
+		var seam, manual any
+		if row.SeamMm.Valid {
+			seam = row.SeamMm.Decimal.String()
+		}
+		if row.ManualCutMm.Valid {
+			manual = row.ManualCutMm.Int32
+		}
+		out = append(out, []any{row.SizeId, seam, manual})
+	}
+	return out
 }
 
 // materialsRow — ГОЛОВА ИЗ СЕМНАДЦАТИ ЗАМОРОЖЕННЫХ ПОЗИЦИЙ плюс тегированные парные хвосты, одним

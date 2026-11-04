@@ -60,6 +60,10 @@ const (
 	// AssemblyInputUnit — вход есть узел, адресуемый по выходному ключу более раннего шага.
 	// Ссылка может быть висячей: существование проверяет правило 1, а не классификация.
 	AssemblyInputUnit
+	// AssemblyInputStrip — the input is a cut-to-length strip of a BOM line, addressed by its line_key
+	// (0449). It is on the table like a piece, but it is no pattern piece: it has no leaves in a unit's
+	// closure, no frontier entry and no place in the release check, which is about what was cut.
+	AssemblyInputStrip
 )
 
 // OperationInput — канонический вход шага. Единственная форма, в которой вход существует
@@ -194,15 +198,18 @@ type AssemblyResult struct {
 // Функция НИЧЕГО не проверяет: висячая ссылка классифицируется как узел и падает на правиле 1
 // с внятным сообщением. Классификация, которая заодно отказывает, прятала бы одну ошибку под
 // другой.
-func ClassifyAssemblyInputs(pieceKeys map[string]bool, rawKeys []string) []OperationInput {
+func ClassifyAssemblyInputs(pieceKeys, stripKeys map[string]bool, rawKeys []string) []OperationInput {
 	if len(rawKeys) == 0 {
 		return nil
 	}
 	out := make([]OperationInput, 0, len(rawKeys))
 	for _, k := range rawKeys {
 		kind := AssemblyInputUnit
-		if pieceKeys[k] {
+		switch {
+		case pieceKeys[k]:
 			kind = AssemblyInputPiece
+		case stripKeys[k]:
+			kind = AssemblyInputStrip
 		}
 		out = append(out, OperationInput{Kind: kind, Key: k})
 	}
@@ -283,6 +290,18 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 		live[p.LineKey] = true
 	}
 
+	// A strip is on the table from the start and leaves it the way a piece does. It stays out of
+	// `order`, so it never shows in a frontier and rule 4 never asks where it ended up.
+	isStrip := make(map[string]bool)
+	for _, s := range steps {
+		for _, in := range s.Inputs {
+			if in.Kind == AssemblyInputStrip && in.Key != "" && !isPiece[in.Key] {
+				isStrip[in.Key] = true
+				live[in.Key] = true
+			}
+		}
+	}
+
 	// leaves — замыкание по строкам деталей. У детали замыкание есть она сама: тогда правило 4
 	// не делает исключений для «узла, собранного прямо из деталей».
 	leaves := make(map[string][]string, len(pieces)+len(steps))
@@ -305,7 +324,7 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 	}
 
 	known := func(key string) bool {
-		if isPiece[key] {
+		if isPiece[key] || isStrip[key] {
 			return true
 		}
 		_, ok := res.Units[key]
@@ -413,6 +432,14 @@ func AssemblySweep(pieces []AssemblyPiece, steps []AssemblyStep) AssemblyResult 
 			res.Violations = append(res.Violations, AssemblyViolation{
 				Rule: AssemblyRuleNamespace, Detail: AssemblyDetailKeyIsPiece, Step: i, Input: -1, Key: out,
 				Message: "unit key “" + out + "” is taken by piece “" + shown + "”: pieces and units share one namespace",
+			})
+			continue
+		}
+
+		if isStrip[out] {
+			res.Violations = append(res.Violations, AssemblyViolation{
+				Rule: AssemblyRuleNamespace, Detail: AssemblyDetailKeyIsPiece, Step: i, Input: -1, Key: out,
+				Message: "unit key “" + out + "” is taken by a strip: strips and units share one namespace",
 			})
 			continue
 		}

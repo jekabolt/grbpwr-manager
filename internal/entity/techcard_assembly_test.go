@@ -78,7 +78,7 @@ func TestAssemblyCases(t *testing.T) {
 			steps := make([]AssemblyStep, 0, len(c.Steps))
 			for _, s := range c.Steps {
 				steps = append(steps, AssemblyStep{
-					Inputs:         ClassifyAssemblyInputs(pieceKeys, s.Inputs),
+					Inputs:         ClassifyAssemblyInputs(pieceKeys, nil, s.Inputs),
 					OutputUnitKey:  s.Output,
 					OutputUnitName: s.OutputName,
 				})
@@ -203,7 +203,7 @@ func TestAssemblyOperationOrder(t *testing.T) {
 // клиента и сервера: не совпал с деталью — значит ссылка на узел, и висячесть ловит правило 1.
 func TestAssemblyClassifyInputs(t *testing.T) {
 	keys := map[string]bool{"FR": true}
-	got := ClassifyAssemblyInputs(keys, []string{"FR", "SHELL"})
+	got := ClassifyAssemblyInputs(keys, nil, []string{"FR", "SHELL"})
 	want := []OperationInput{
 		{Kind: AssemblyInputPiece, Key: "FR"},
 		{Kind: AssemblyInputUnit, Key: "SHELL"},
@@ -211,7 +211,7 @@ func TestAssemblyClassifyInputs(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("классификация %+v, ожидалась %+v", got, want)
 	}
-	if ClassifyAssemblyInputs(keys, nil) != nil {
+	if ClassifyAssemblyInputs(keys, nil, nil) != nil {
 		t.Error("пустой список входов обязан оставаться пустым, а не превращаться в срез нулевой длины")
 	}
 }

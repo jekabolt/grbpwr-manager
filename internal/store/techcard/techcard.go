@@ -1672,6 +1672,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	// Materials (WS3 / S2-S3): the BOM article catalog is reconciled by line_key (keyed upsert-diff),
 	// not full-replaced, so each line's id is stable — which is what lets pieces/operations/colourway
 	// recipes hold a real bom_item_id FK. The resolver turns a line's key/position into that id.
+	if err := refuseCutStripsInUseBySeams(ctx, db, id, tc); err != nil {
+		return err
+	}
 	bomRes, err := upsertTechCardBom(ctx, db, id, tc.BomItems)
 	if err != nil {
 		return err
@@ -1697,6 +1700,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	// a step names a profile by KEY, and that reference is resolved where it is consumed, not by an
 	// FK — which is the whole reason the park can be full-replaced on every save.
 	if err := insertTechCardEquipmentProfiles(ctx, db, id, tc.Construction); err != nil {
+		return err
+	}
+	// Cut-to-length strips (0449): after the BOM they hang off, before the operations whose inputs name
+	// them. The operation rows and their inputs were cleared before the BOM upsert.
+	if err := upsertTechCardCutStrips(ctx, db, id, tc, bomRes); err != nil {
 		return err
 	}
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
@@ -2437,6 +2445,9 @@ func insertTechCardSizes(ctx context.Context, db dependency.DB, id int, sizeIDs 
 func pruneSizeScopedDataOutsideRange(ctx context.Context, db dependency.DB, id int, sizeIDs []int) error {
 	if len(sizeIDs) == 0 {
 		return nil
+	}
+	if err := pruneCutStripSizesOutsideRange(ctx, db, id, sizeIDs); err != nil {
+		return err
 	}
 	params := map[string]any{"id": id, "sizes": sizeIDs}
 	if err := storeutil.ExecNamed(ctx, db, `

@@ -393,6 +393,13 @@ func (s *Store) UpdateColorwayRecipe(ctx context.Context, colorwayID, expectedVe
 			return entity.ErrTechCardConflict
 		}
 
+		// The norm of a strip line is not typed. Before the range check: a number that is thrown away
+		// has no size range to fit.
+		usages, err = sanitizeCutStripRecipe(ctx, rep.DB(), cur.StyleID, usages)
+		if err != nil {
+			return err
+		}
+
 		// Per-size consumption may only be stated for sizes the STYLE makes. The parser cannot check
 		// this (it never sees the style) and the FK is on size(id), so an off-range norm used to
 		// persist as a rule no production run can ever apply.
@@ -879,7 +886,7 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 		return nil, fmt.Errorf("load colourway %d recipe: %w", colorwayID, err)
 	}
 	if len(usages) == 0 {
-		return usages, nil
+		return s.resolveCutStripRecipe(ctx, colorwayID, usages)
 	}
 	usageByID := make(map[int]*entity.TechCardColorwayUsage, len(usages))
 	usageIDs := make([]int, 0, len(usages))
@@ -900,7 +907,7 @@ func (s *Store) GetColorwayRecipe(ctx context.Context, colorwayID int) ([]entity
 			u.SizeConsumptions = append(u.SizeConsumptions, c.TechCardBomSizeConsumption)
 		}
 	}
-	return usages, nil
+	return s.resolveCutStripRecipe(ctx, colorwayID, usages)
 }
 
 // resolveUsageBom resolves a usage's BOM reference to a real bom_item id: by stable line_key

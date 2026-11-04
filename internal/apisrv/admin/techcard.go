@@ -493,12 +493,20 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 			slog.Int("tech_card_id", id))
 		return nil, status.Error(codes.Internal, "can't load tech card; try again")
 	}
+	// Before the conversion: once a strip is gone from the payload, a step still naming it reads as a
+	// dangling unit, and the person would hear about an assembly unit instead of about the strip.
+	if err := cutStripsStoredGate(in, stored); err != nil {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntityPrepared(in, func(tc *entity.TechCardInsert) {
 		// Private keys are absent from protobuf. Restore them before the converter's first assembly
 		// pass so a keyed FUSING echo cannot make deletion of its piece fail on a stale input.
 		fusingops.PrepareTechCardUpdateAssembly(&stored.TechCardInsert, tc)
 		// INTERLINING deletion is one command, not a graph state validation may observe halfway.
 		fusingops.CascadeRemovedInterlining(&stored.TechCardInsert, tc)
+		// A client that does not know about strips echoes their keys in the step inputs. The stored
+		// strips are what makes those keys strips and not dangling units.
+		entity.CarryStoredCutStrips(tc, &stored.TechCardInsert)
 	})
 	if err != nil {
 		return nil, techCardConvertErr(err)
@@ -744,6 +752,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	fx := s.costingFx(ctx)
 	tc.SnapshotChangedPaths = techCardChangedSections(
 		dto.ConvertEntityTechCardToPb(stored, fx).GetTechCard(), in)
+	if cutStripsChanged(stored.CutStrips, tc) {
+		tc.SnapshotChangedPaths = append(tc.SnapshotChangedPaths, "strips")
+	}
 	tc.SnapshotPinned = (tc.ApprovalState == entity.TechCardApprovalApproved ||
 		tc.ApprovalState == entity.TechCardApprovalReleased) && tc.ApprovalState != stored.ApprovalState
 	tc.BuildSnapshotFromLockedCard = func(locked *entity.TechCard) (string, error) {
@@ -864,18 +875,31 @@ func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, e
 			return "", err
 		}
 	}
+	if len(pb.GetCutStrips()) == 0 {
+		// The same for strips: only a list that is there may replace what the card has.
+		if blob, err = withEmptySnapshotList(blob, snapshotCutStripsField); err != nil {
+			return "", err
+		}
+	}
 	return string(blob), nil
 }
 
 // snapshotSeamsField is TechCard.seams' JSON name; protojson also accepts the proto name, the same here.
 const snapshotSeamsField = "seams"
 
+// snapshotCutStripsField is TechCard.cut_strips' JSON name, as protojson writes it.
+const snapshotCutStripsField = "cutStrips"
+
 func withEmptySnapshotSeams(blob []byte) ([]byte, error) {
+	return withEmptySnapshotList(blob, snapshotSeamsField)
+}
+
+func withEmptySnapshotList(blob []byte, field string) ([]byte, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &top); err != nil {
 		return nil, err
 	}
-	top[snapshotSeamsField] = json.RawMessage(`[]`)
+	top[field] = json.RawMessage(`[]`)
 	return json.Marshal(top)
 }
 

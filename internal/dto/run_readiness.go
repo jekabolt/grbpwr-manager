@@ -668,6 +668,22 @@ func (b *runReadinessBuilder) normProvenance(u *entity.TechCardColorwayUsage, bo
 	tgt entity.RunReadinessTarget, add func(entity.RunReadinessFinding)) *entity.TechCardMarkerSummary {
 	const label = "the consumption norm is taken from the norm marker"
 
+	// A strip's norm is computed from its length. There is no marker behind it, so the five shooting
+	// conditions have no subject, and calling it manual would send someone looking for a number nobody
+	// typed. An unknown length has no number at all, and the material plan already reports that.
+	if u.ConsumptionSource.String == entity.ConsumptionSourceCutLength {
+		if !u.Consumption.Valid && len(u.SizeConsumptions) == 0 {
+			return nil
+		}
+		add(entity.RunReadinessFinding{
+			Key: entity.RunReadinessKeyNormProvenance, Severity: entity.RunReadinessOK,
+			Label:  label,
+			Detail: fmt.Sprintf("consumption on slot %q is computed from the cut length of its strips", bom.Name),
+			Target: tgt,
+		})
+		return nil
+	}
+
 	// НОРМА С ВЫКРОЕК (0294) — свой ответ, а не «введена руками».
 	//
 	// Раскладки за ней нет и быть не может, поэтому пять условий съёмки ниже так же не имеют

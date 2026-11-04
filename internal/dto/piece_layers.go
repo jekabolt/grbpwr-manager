@@ -293,7 +293,7 @@ func NewStyleCutFabricIndex(card *entity.TechCard) *StyleCutFabricIndex {
 				continue
 			}
 			seen[bom] = true
-			if bom.Section == entity.BomSectionInterlining {
+			if bom.Section == entity.BomSectionInterlining && !bom.CutToLength {
 				sc.fusingSlots = append(sc.fusingSlots, cutPlanSlot{bom: bom, usage: u})
 			}
 		}
