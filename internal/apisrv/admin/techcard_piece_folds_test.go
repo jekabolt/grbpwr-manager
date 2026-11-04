@@ -194,3 +194,29 @@ func TestPieceFoldPleatPassesTheHandlerValidationAndUnknownStaysRefused(t *testi
 	in.Folds[0].Kind = entity.TechCardPieceFoldPleat
 	require.NoError(t, entity.ValidateTechCardPieceFoldsWrite(&in))
 }
+
+func TestPieceFoldPleatSidesRoundTripAndValidate(t *testing.T) {
+	cases := []struct {
+		pb  pb_common.TechCardPieceFoldKind
+		ent entity.TechCardPieceFoldKind
+		str string
+	}{
+		{pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_LEFT, entity.TechCardPieceFoldPleatLeft, "pleat_l"},
+		{pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_RIGHT, entity.TechCardPieceFoldPleatRight, "pleat_r"},
+	}
+	for _, c := range cases {
+		t.Run(c.str, func(t *testing.T) {
+			req := foldHandlerReq()
+			req.Folds[0].Kind = c.pb
+
+			in, err := dto.TechCardPieceFoldsWriteFromPb(7, req.GetFolds(), "ann")
+			require.NoError(t, err)
+			require.Equal(t, c.ent, in.Folds[0].Kind)
+			require.Equal(t, c.str, string(in.Folds[0].Kind))
+			require.NoError(t, entity.ValidateTechCardPieceFoldsWrite(&in))
+
+			back := dto.TechCardPieceFoldsToPb([]entity.TechCardPieceFold{{TechCardPieceFoldInput: in.Folds[0]}})
+			require.Equal(t, c.pb, back[0].GetKind())
+		})
+	}
+}

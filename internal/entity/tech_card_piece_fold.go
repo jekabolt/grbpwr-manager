@@ -45,6 +45,10 @@ const (
 	TechCardPieceFoldOutward TechCardPieceFoldKind = "outward"
 	// TechCardPieceFoldPleat: three rows close a wedge, halves stay face up, fabric stays inside.
 	TechCardPieceFoldPleat TechCardPieceFoldKind = "pleat"
+	// TechCardPieceFoldPleatLeft: pleat with all hidden fabric pressed so the fold edge faces left.
+	TechCardPieceFoldPleatLeft TechCardPieceFoldKind = "pleat_l"
+	// TechCardPieceFoldPleatRight: pleat with all hidden fabric pressed so the fold edge faces right.
+	TechCardPieceFoldPleatRight TechCardPieceFoldKind = "pleat_r"
 )
 
 // TechCardPieceFoldSource is where the line came from.
@@ -104,6 +108,7 @@ type TechCardPieceFoldsWrite struct {
 
 var techCardPieceFoldKinds = map[TechCardPieceFoldKind]bool{
 	TechCardPieceFoldInward: true, TechCardPieceFoldOutward: true, TechCardPieceFoldPleat: true,
+	TechCardPieceFoldPleatLeft: true, TechCardPieceFoldPleatRight: true,
 }
 
 var techCardPieceFoldSources = map[TechCardPieceFoldSource]bool{
@@ -157,7 +162,7 @@ func ValidateTechCardPieceFoldsWrite(in *TechCardPieceFoldsWrite) error {
 		}
 		seenSeq[seqKey] = i
 		if !techCardPieceFoldKinds[f.Kind] {
-			return NewFieldViolation(at+".kind", "invalid", string(f.Kind), "inward, outward or pleat")
+			return NewFieldViolation(at+".kind", "invalid", string(f.Kind), "inward, outward, pleat, pleat_l or pleat_r")
 		}
 		if !techCardPieceFoldSources[f.Source] {
 			return NewFieldViolation(at+".source", "invalid", string(f.Source), "dxf, owner or accepted_hint")

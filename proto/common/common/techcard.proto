@@ -4417,6 +4417,10 @@ enum TechCardPieceFoldKind {
   TECH_CARD_PIECE_FOLD_KIND_OUTWARD = 2;
   // Three rows close a wedge, halves stay face up, fabric stays inside.
   TECH_CARD_PIECE_FOLD_KIND_PLEAT = 3;
+  // Pleat with all hidden fabric pressed so the fold edge faces left.
+  TECH_CARD_PIECE_FOLD_KIND_PLEAT_LEFT = 4;
+  // Pleat with all hidden fabric pressed so the fold edge faces right.
+  TECH_CARD_PIECE_FOLD_KIND_PLEAT_RIGHT = 5;
 }
 
 // TechCardPieceFoldSource is where the fold line came from.

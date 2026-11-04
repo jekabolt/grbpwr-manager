@@ -12,9 +12,11 @@ import (
 // through their own RPCs only; nothing here touches TechCardInsert, so no section digest sees them.
 
 var pieceFoldKindFromPb = map[pb_common.TechCardPieceFoldKind]entity.TechCardPieceFoldKind{
-	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_INWARD:  entity.TechCardPieceFoldInward,
-	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_OUTWARD: entity.TechCardPieceFoldOutward,
-	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT:   entity.TechCardPieceFoldPleat,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_INWARD:      entity.TechCardPieceFoldInward,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_OUTWARD:     entity.TechCardPieceFoldOutward,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT:       entity.TechCardPieceFoldPleat,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_LEFT:  entity.TechCardPieceFoldPleatLeft,
+	pb_common.TechCardPieceFoldKind_TECH_CARD_PIECE_FOLD_KIND_PLEAT_RIGHT: entity.TechCardPieceFoldPleatRight,
 }
 
 var pieceFoldSourceFromPb = map[pb_common.TechCardPieceFoldSource]entity.TechCardPieceFoldSource{
@@ -59,7 +61,7 @@ func TechCardPieceFoldsWriteFromPb(techCardID int, folds []*pb_common.TechCardPi
 		}
 		kind, ok := pieceFoldKindFromPb[f.GetKind()]
 		if !ok {
-			return in, entity.NewFieldViolation(at+".kind", "invalid", f.GetKind().String(), "INWARD, OUTWARD or PLEAT")
+			return in, entity.NewFieldViolation(at+".kind", "invalid", f.GetKind().String(), "INWARD, OUTWARD, PLEAT, PLEAT_LEFT or PLEAT_RIGHT")
 		}
 		src, ok := pieceFoldSourceFromPb[f.GetSource()]
 		if !ok {
