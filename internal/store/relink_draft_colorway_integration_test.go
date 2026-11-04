@@ -109,12 +109,24 @@ func TestRelinkDraftColorway(t *testing.T) {
 	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_packaging_item_colorway (item_id, colorway_id) VALUES (?, ?)`, itemID, prodID)
 	require.NoError(t, err)
 
+	// The same for the composition label's colourway row: a source card with one stored cannot save
+	// after the colourway leaves.
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_care_label (tech_card_id) VALUES (?)`, srcStyleID)
+	require.NoError(t, err)
+	defer func() { _, _ = testDB.ExecContext(ctx, `DELETE FROM tech_card_care_label WHERE tech_card_id = ?`, srcStyleID) }()
+	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_care_label_colorway (tech_card_id, colorway_id) VALUES (?, ?)`, srcStyleID, prodID)
+	require.NoError(t, err)
+
 	// Happy path: style_id moves and the base SKU is re-minted from the target style.
 	require.NoError(t, s.Products().RelinkDraftColorway(ctx, prodID, tgtStyleID, srcLV, tgtLV))
 	var scopedRows int
 	require.NoError(t, testDB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM tech_card_packaging_item_colorway WHERE item_id = ?`, itemID).Scan(&scopedRows))
 	require.Zero(t, scopedRows)
+	var careRows int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_care_label_colorway WHERE colorway_id = ?`, prodID).Scan(&careRows))
+	require.Zero(t, careRows)
 	var newStyleID int
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT style_id FROM product WHERE id = ?`, prodID).Scan(&newStyleID))
 	require.Equal(t, tgtStyleID, newStyleID)
