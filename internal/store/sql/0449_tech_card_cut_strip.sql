@@ -14,9 +14,16 @@
 -- column is nullable and every existing row stays NULL, so the FK and the unique key have nothing to
 -- check on existing rows.
 --
--- THE OLD BINARY SURVIVES THIS SCHEMA. It reads the input table by explicit column list, and a row
--- with piece_id and unit_key both NULL matches neither branch of its reader. It deletes inputs by
--- operation, and its inserts leave the new column NULL. The new tables are invisible to it.
+-- WHAT A ROLLBACK OF THE BINARY DOES. The schema stays and the old binary starts: it names its columns
+-- when it reads or inserts input rows, and it never looks at the new tables. But it does not see a strip
+-- input. A row with piece_id and unit_key both NULL matches neither branch of its reader, so a step with
+-- inputs [piece P, strip S] reads as [P]; the 0199 fallback does not run, because the step has rows. A
+-- card save replaces the operations in full and the delete cascades to the inputs, so the first save
+-- under the old binary deletes S from that step, and rolling forward again does not bring it back. The
+-- rows of tech_card_cut_strip stay, unseen and from then on unreferenced. A join (a step with an output)
+-- left with fewer than two visible inputs, [P, S] as much as strips only, fails the old binary's join
+-- arity check, so that card cannot be saved at all until a person fixes the step. The old binary computes
+-- no strip norm: every reader gets the numbers stored on the recipe row of the line, if there is one.
 --
 -- No new value for chk_tccu_consumption_source. The source cut_length is computed on read and is never
 -- written to tech_card_colorway_usage.
