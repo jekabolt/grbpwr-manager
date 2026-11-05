@@ -134,6 +134,36 @@ func TestValidateTechCardSeamsWriteLegalShapes(t *testing.T) {
 	require.NoError(t, ValidateTechCardSeamsWrite(&in))
 }
 
+func TestValidateTechCardSeamsWriteOneEdgeTwiceOnASide(t *testing.T) {
+	span := func(from, to float64) TechCardSeamAnchor {
+		a := seamTestAnchor("PIECE-FRONT", "FP#4")
+		a.RangeFrom, a.RangeTo = from, to
+		return a
+	}
+	check := func(x, y TechCardSeamAnchor) error {
+		in := seamTestWrite()
+		in.Seams[0].Kind = TechCardSeamKindComposite
+		in.Seams[0].SideA = []TechCardSeamAnchor{x, y}
+		return ValidateTechCardSeamsWrite(&in)
+	}
+	// An edge broken by a pocket: the stretch above it and the stretch below it.
+	require.NoError(t, check(span(0, 0.3), span(0.6, 1)))
+	require.NoError(t, check(span(0, 0.5), span(0.5, 1)))
+	for name, pair := range map[string][2]TechCardSeamAnchor{
+		"same stretch":   {span(0.2, 0.4), span(0.2, 0.4)},
+		"overlap":        {span(0, 0.5), span(0.4, 1)},
+		"whole twice":    {span(0, 0), span(0, 0)},
+		"whole and part": {span(0, 0), span(0.6, 1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ve *ValidationError
+			require.ErrorAs(t, check(pair[0], pair[1]), &ve)
+			require.Equal(t, "seams[0].side_a.parts[1]", ve.Field)
+			require.Contains(t, ve.Error(), "same stretch")
+		})
+	}
+}
+
 func TestTechCardSeamPieceLineKeysAreDistinctSortedUpper(t *testing.T) {
 	in := TechCardSeamInput{
 		SideA: []TechCardSeamAnchor{{PieceLineKey: "b"}, {PieceLineKey: "A"}},
