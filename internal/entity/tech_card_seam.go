@@ -387,6 +387,19 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 	return nil
 }
 
+// seamAnchorRangesOverlap reports whether two anchors of one edge share a stretch; 0 / 0 is the whole run.
+func seamAnchorRangesOverlap(x, y TechCardSeamAnchor) bool {
+	span := func(a TechCardSeamAnchor) (float64, float64) {
+		if a.RangeFrom == 0 && a.RangeTo == 0 {
+			return 0, 1
+		}
+		return a.RangeFrom, a.RangeTo
+	}
+	xFrom, xTo := span(x)
+	yFrom, yTo := span(y)
+	return xFrom < yTo && yFrom < xTo
+}
+
 func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 	if len(side) == 0 {
 		return NewFieldViolation(f+".parts", "empty", "", "a seam side names at least one anchor")
@@ -395,7 +408,7 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 		return NewFieldViolation(f+".parts", "too_many", "",
 			fmt.Sprintf("at most %d anchors per side", TechCardSeamMaxAnchorsPerSide))
 	}
-	seen := map[string]int{}
+	seen := map[string][]int{}
 	for j := range side {
 		a := &side[j]
 		af := fmt.Sprintf("%s.parts[%d]", f, j)
@@ -415,11 +428,15 @@ func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
 			return NewFieldViolation(af+".contour_sig", "too_long", "", "")
 		}
 		pair := strings.ToUpper(a.PieceLineKey) + "\x00" + a.EdgeHint
-		if k, dup := seen[pair]; dup {
-			return NewFieldViolation(af, "duplicate_anchor", fmt.Sprintf("%s.parts[%d]", f, k),
-				"a side must not name the same piece edge twice")
+		// Two separate spans of one edge are two parts of the side (an edge broken by a pocket);
+		// the same stretch named twice is not.
+		for _, k := range seen[pair] {
+			if seamAnchorRangesOverlap(side[k], *a) {
+				return NewFieldViolation(af, "duplicate_anchor", fmt.Sprintf("%s.parts[%d]", f, k),
+					"a side must not name the same stretch of a piece edge twice")
+			}
 		}
-		seen[pair] = j
+		seen[pair] = append(seen[pair], j)
 		if len(a.Samples) != TechCardSeamSamplesPerAnchor {
 			return NewFieldViolation(af+".samples", "count", "",
 				fmt.Sprintf("exactly %d samples along the run", TechCardSeamSamplesPerAnchor))
