@@ -765,6 +765,10 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if err := product.ReleasePickedLines(ctx, rep.DB(), id, tc); err != nil {
 		return nil, err
 	}
+	// Before the packaging row (and its photos, by cascade) is replaced below.
+	if err := keepStoredPackedPhotos(ctx, rep.DB(), id, tc.Packaging); err != nil {
+		return nil, err
+	}
 	preserveAbsentSection := map[string]bool{
 		"tech_card_construction":      tc.Construction == nil,
 		"tech_card_packaging":         tc.Packaging == nil,

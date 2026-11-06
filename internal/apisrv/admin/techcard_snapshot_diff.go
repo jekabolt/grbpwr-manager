@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -86,6 +87,13 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	if after.CareLabel == nil {
 		after.CareLabel = cloneMessage(before.CareLabel)
 	}
+	// 0452: "" is vertical on the wire, and a bundle without packed_media_ids sends the cover alone.
+	for _, cl := range []*pb_common.TechCardCareLabel{before.GetCareLabel(), after.GetCareLabel()} {
+		if cl != nil && cl.Orientation == "" {
+			cl.Orientation = entity.CareLabelVertical
+		}
+	}
+	normalizePackedPhotosDiff(before.GetPackaging(), after.GetPackaging())
 	if after.PieceDxfAliases == nil {
 		after.PieceDxfAliases = cloneMessage(before.PieceDxfAliases)
 	}
@@ -138,6 +146,28 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	}
 	before.Costing = writableCosting(before.GetCosting())
 	after.Costing = writableCosting(after.GetCosting())
+}
+
+// normalizePackedPhotosDiff puts both pack sheets in the form the save writes and the read returns
+// (0452): the list wins and its first photo is the cover; a cover alone is a one-photo list, except
+// that a cover equal to the stored one keeps the stored photos (entity.CarryStoredPackedPhotos).
+func normalizePackedPhotosDiff(before, after *pb_common.TechCardPackaging) {
+	readForm := func(p *pb_common.TechCardPackaging) {
+		if p == nil {
+			return
+		}
+		if len(p.PackedMediaIds) > 0 {
+			p.PackedMediaId = p.PackedMediaIds[0]
+		} else if p.PackedMediaId > 0 {
+			p.PackedMediaIds = []int32{p.PackedMediaId}
+		}
+	}
+	readForm(before)
+	if after != nil && before != nil && len(after.PackedMediaIds) == 0 && after.PackedMediaId > 0 &&
+		len(before.PackedMediaIds) > 1 && before.PackedMediaIds[0] == after.PackedMediaId {
+		after.PackedMediaIds = slices.Clone(before.PackedMediaIds)
+	}
+	readForm(after)
 }
 
 func techCardFieldsEqual(before, after *pb_common.TechCardInsert, fields ...protoreflect.Name) bool {

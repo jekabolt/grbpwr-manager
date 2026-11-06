@@ -3860,6 +3860,39 @@ type TechCardPackaging struct {
 	// PackedSize / PackedMediaId are the finished pack: its size in free text and its photo (0448).
 	PackedSize    sql.NullString `db:"packed_size"`
 	PackedMediaId sql.NullInt32  `db:"packed_media_id"`
+	// PackedMediaIds are the pack photos in display order, the cover first (0452). After a parse and on
+	// read, a non-empty list starts with PackedMediaId; the cover lives in packed_media_id and the rest
+	// in tech_card_packaging_media. Empty with PackedMediaId set = an older client that sent the cover
+	// only: the store keeps the stored further photos when that cover is the stored one.
+	PackedMediaIds []int `db:"-"`
+}
+
+// PackedPhotoIds is every pack photo, the cover first, whichever of the two forms the sheet carries.
+func (p *TechCardPackaging) PackedPhotoIds() []int {
+	if p == nil {
+		return nil
+	}
+	if len(p.PackedMediaIds) > 0 {
+		return p.PackedMediaIds
+	}
+	if p.PackedMediaId.Valid && p.PackedMediaId.Int32 > 0 {
+		return []int{int(p.PackedMediaId.Int32)}
+	}
+	return nil
+}
+
+// CarryStoredPackedPhotos applies the older-client rule to a sheet about to be written: a sheet with
+// the cover alone (no list) over a stored list with the same cover keeps the stored photos, since that
+// client never saw the further ones. Any other sheet is left as it is. stored is PackedPhotoIds() of
+// the stored sheet.
+func (p *TechCardPackaging) CarryStoredPackedPhotos(stored []int) {
+	if p == nil || len(p.PackedMediaIds) > 0 || !p.PackedMediaId.Valid || p.PackedMediaId.Int32 <= 0 {
+		return
+	}
+	if len(stored) < 2 || stored[0] != int(p.PackedMediaId.Int32) {
+		return
+	}
+	p.PackedMediaIds = append([]int(nil), stored...)
 }
 
 // --- labels rework (0386) --------------------------------------------------------------------------
@@ -3876,6 +3909,16 @@ var ValidCareLabelQRPresets = map[string]bool{
 	CareLabelQRStorefront: true, CareLabelQRCustom: true, CareLabelQRFixed: true,
 }
 
+// Composition label orientation (tech_card_care_label.care_orientation, 0452): the ribbon printed
+// vertical or as a wide horizontal ribbon. The column stores "" for vertical.
+const (
+	CareLabelVertical   = "vertical"
+	CareLabelHorizontal = "horizontal"
+)
+
+// ValidCareLabelOrientations is the accepted orientation set ("" parses to vertical).
+var ValidCareLabelOrientations = map[string]bool{CareLabelVertical: true, CareLabelHorizontal: true}
+
 // TechCardCareLabel — СОСТАВНИК: the overrides of the always-present composition label (1:1 with the
 // card, tech_card_care_label). Every empty field means «the derived value». Line lists are stored
 // newline-joined; nil = NULL = derived.
@@ -3887,6 +3930,7 @@ type TechCardCareLabel struct {
 	BackCaptionLines []string
 	AddressLines     []string
 	Colorways        []TechCardCareLabelColorway // sorted by ColorwayId after parse and on read
+	Orientation      string                      // one of ValidCareLabelOrientations; never "" after parse or on read
 }
 
 // TechCardCareLabelColorway is one colourway's overrides on the composition label
@@ -4054,8 +4098,8 @@ func (tc *TechCardInsert) LabelMediaIds() []int {
 			add(id)
 		}
 	}
-	if tc.Packaging != nil && tc.Packaging.PackedMediaId.Valid {
-		add(int(tc.Packaging.PackedMediaId.Int32))
+	for _, id := range tc.Packaging.PackedPhotoIds() {
+		add(id)
 	}
 	return out
 }

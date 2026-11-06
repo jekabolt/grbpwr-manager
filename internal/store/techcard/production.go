@@ -638,6 +638,12 @@ func insertTechCardPackaging(ctx context.Context, db dependency.DB, tcID int, p 
 	if p == nil {
 		return nil
 	}
+	// The list wins: its first photo is the cover, whatever packed_media_id says.
+	photos := p.PackedPhotoIds()
+	cover := p.PackedMediaId
+	if len(photos) > 0 {
+		cover = sql.NullInt32{Int32: int32(photos[0]), Valid: true}
+	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_packaging
 			(tech_card_id, folding_method, polybag, bag_sticker, inserts, units_per_box,
@@ -659,11 +665,71 @@ func insertTechCardPackaging(ctx context.Context, db dependency.DB, tcID int, p 
 			"weight_gross_grams": p.WeightGrossGrams,
 			"notes":              p.Notes,
 			"packed_size":        p.PackedSize,
-			"packed_media_id":    p.PackedMediaId,
+			"packed_media_id":    cover,
 		}); err != nil {
 		return fmt.Errorf("failed to insert tech card packaging: %w", err)
 	}
+	// The cover is packed_media_id; the further photos go to tech_card_packaging_media (0452).
+	if len(photos) < 2 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(photos)-1)
+	for j, mid := range photos[1:] {
+		rows = append(rows, map[string]any{"tech_card_id": tcID, "media_id": mid, "display_order": j + 1})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_packaging_media", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card packaging photos: %w", err)
+	}
 	return nil
+}
+
+// keepStoredPackedPhotos serves an older client, which sends the pack cover alone (packed_media_id,
+// no packed_media_ids): when that cover is the stored one, the stored further photos stay, since that
+// client never saw them. Any other cover is a one-photo list. Run before the packaging row is replaced
+// (its photos cascade with it).
+func keepStoredPackedPhotos(ctx context.Context, db dependency.DB, tcID int, p *entity.TechCardPackaging) error {
+	if p == nil || len(p.PackedMediaIds) > 0 || !p.PackedMediaId.Valid || p.PackedMediaId.Int32 <= 0 {
+		return nil
+	}
+	stored, err := storeutil.QueryListNamed[struct {
+		Cover sql.NullInt32 `db:"packed_media_id"`
+	}](ctx, db, `SELECT packed_media_id FROM tech_card_packaging WHERE tech_card_id = :id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("can't load stored pack cover: %w", err)
+	}
+	if len(stored) == 0 || !stored[0].Cover.Valid || stored[0].Cover.Int32 != p.PackedMediaId.Int32 {
+		return nil
+	}
+	further, err := storeutil.QueryScalarListNamed[int](ctx, db, `
+		SELECT media_id FROM tech_card_packaging_media WHERE tech_card_id = :id
+		ORDER BY display_order, id`, map[string]any{"id": tcID})
+	if err != nil {
+		return fmt.Errorf("can't load stored pack photos: %w", err)
+	}
+	p.CarryStoredPackedPhotos(append([]int{int(stored[0].Cover.Int32)}, further...))
+	return nil
+}
+
+// packedPhotosByCard loads the further pack photos (after the cover) of the cards, in display order.
+func packedPhotosByCard(ctx context.Context, db dependency.DB, ids []int) (map[int][]int, error) {
+	out := make(map[int][]int, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		TechCardID int `db:"tech_card_id"`
+		MediaID    int `db:"media_id"`
+	}](ctx, db, `
+		SELECT tech_card_id, media_id FROM tech_card_packaging_media
+		WHERE tech_card_id IN (:ids)
+		ORDER BY tech_card_id, display_order, id`, map[string]any{"ids": ids})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card packaging photos: %w", err)
+	}
+	for _, r := range rows {
+		out[r.TechCardID] = append(out[r.TechCardID], r.MediaID)
+	}
+	return out, nil
 }
 
 func insertTechCardCosting(ctx context.Context, db dependency.DB, tcID int, c *entity.TechCardCosting) error {
@@ -1212,9 +1278,23 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 	if err != nil {
 		return fmt.Errorf("can't load tech card packaging: %w", err)
 	}
+	pkgCards := make([]int, 0, len(pkgRows))
+	for i := range pkgRows {
+		if pkgRows[i].PackedMediaId.Valid {
+			pkgCards = append(pkgCards, pkgRows[i].TechCardID)
+		}
+	}
+	furtherPhotos, err := packedPhotosByCard(ctx, s.DB, pkgCards)
+	if err != nil {
+		return err
+	}
 	pkgByCard := make(map[int]*entity.TechCardPackaging, len(pkgRows))
 	for i := range pkgRows {
 		p := pkgRows[i].TechCardPackaging
+		// Every photo, the cover first; further photos without a cover cannot be written.
+		if p.PackedMediaId.Valid && p.PackedMediaId.Int32 > 0 {
+			p.PackedMediaIds = append([]int{int(p.PackedMediaId.Int32)}, furtherPhotos[pkgRows[i].TechCardID]...)
+		}
 		pkgByCard[pkgRows[i].TechCardID] = &p
 	}
 

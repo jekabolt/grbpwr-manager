@@ -705,6 +705,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	// этикетку без них: перенос. Пин на снятую выноску и ключ снятой линии сохранение не ломают: они
 	// гаснут здесь. Цвет файла адресован product.id: сохранение карточки продукты не пересоздаёт.
 	dto.CarryOmittedGarmentLabelArtwork(&stored.TechCardInsert, tc)
+	// Фото упаковки (0452): бандл без packed_media_ids шлёт одну обложку; та же обложка оставляет
+	// сохранённые фото. Здесь, а не только в сторе, — раньше подписи: PACKAGING хеширует весь список.
+	tc.Packaging.CarryStoredPackedPhotos(stored.Packaging.PackedPhotoIds())
 	dto.ClearDanglingGarmentLabelPins(tc)
 	dto.NormalizeLabelBomLinks(&stored.TechCardInsert, tc)
 	dto.DropForeignGarmentLabelColorwayFiles(stored.Colorways, tc)

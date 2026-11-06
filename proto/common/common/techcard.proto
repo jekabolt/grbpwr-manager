@@ -3050,7 +3050,12 @@ message TechCardPackaging {
   int32 weight_gross_grams = 9; // вес брутто, граммы (0 = unset)
   string notes = 10;
   string packed_size = 11; // size of the finished pack, free text
-  int32 packed_media_id = 12; // FK media(id): photo of the finished pack; 0 = none
+  int32 packed_media_id = 12; // FK media(id): the cover photo of the finished pack (= packed_media_ids[0]); 0 = none
+  // The photos of the finished pack in display order; the first is the cover. Read always fills both:
+  // packed_media_id = packed_media_ids[0] (0 when empty). Write: non-empty wins over packed_media_id;
+  // empty with packed_media_id set is an older client: a one-photo list, except that a cover equal to
+  // the stored one keeps the stored further photos (that client never saw them).
+  repeated int32 packed_media_ids = 13;
 }
 
 // TechCardCareLabelFiber is one fibre row of a colourway's composition OVERRIDE on the composition
@@ -3079,6 +3084,7 @@ message TechCardCareLabel {
   repeated string back_caption_lines = 5; // empty = the default two lines
   repeated string address_lines = 6; // empty = the company constant
   repeated TechCardCareLabelColorway colorways = 7; // one entry per overridden colourway
+  string orientation = 8; // vertical | horizontal (a wide ribbon); "" = vertical. Read returns vertical or horizontal
 }
 
 // TechCardGarmentLabel is one label on the garment other than the composition label (labels rework,

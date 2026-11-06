@@ -34,7 +34,7 @@ func payloadCarriesPackagingPicks(pb *pb_common.TechCardInsert) bool {
 	if pb == nil {
 		return false
 	}
-	if p := pb.GetPackaging(); p.GetPackedSize() != "" || p.GetPackedMediaId() != 0 {
+	if p := pb.GetPackaging(); p.GetPackedSize() != "" || p.GetPackedMediaId() != 0 || len(p.GetPackedMediaIds()) > 0 {
 		return true
 	}
 	for _, it := range pb.GetPackagingItems() {

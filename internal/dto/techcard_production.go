@@ -774,6 +774,15 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 	if pb.PackedMediaId < 0 {
 		return nil, entity.NewFieldViolation("packaging.packed_media_id", "must not be negative", fmt.Sprint(pb.PackedMediaId), "send 0 for no photo")
 	}
+	// The list wins over the single id; empty means an older client that knows only the cover.
+	packedIds, err := parseLabelMediaIds("packaging.packed_media_ids", pb.PackedMediaIds)
+	if err != nil {
+		return nil, err
+	}
+	packedCover := pb.PackedMediaId
+	if len(packedIds) > 0 {
+		packedCover = int32(packedIds[0])
+	}
 	return &entity.TechCardPackaging{
 		FoldingMethod:    nullStringFromPb(pb.FoldingMethod),
 		Polybag:          nullStringFromPb(pb.Polybag),
@@ -786,7 +795,8 @@ func parseTechCardPackaging(pb *pb_common.TechCardPackaging) (*entity.TechCardPa
 		WeightGrossGrams: nullInt32FromPb(pb.WeightGrossGrams),
 		Notes:            nullStringFromPb(pb.Notes),
 		PackedSize:       nullStringFromPb(pb.PackedSize),
-		PackedMediaId:    nullInt32FromPb(pb.PackedMediaId),
+		PackedMediaId:    nullInt32FromPb(packedCover),
+		PackedMediaIds:   packedIds,
 	}, nil
 }
 
@@ -1261,6 +1271,12 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 	if p == nil {
 		return nil
 	}
+	// packed_media_id is always the first photo, so an older client reads the cover.
+	photos := p.PackedPhotoIds()
+	var cover int32
+	if len(photos) > 0 {
+		cover = int32(photos[0])
+	}
 	return &pb_common.TechCardPackaging{
 		FoldingMethod:    pbStringFromNull(p.FoldingMethod),
 		Polybag:          pbStringFromNull(p.Polybag),
@@ -1273,7 +1289,8 @@ func techCardPackagingToPb(p *entity.TechCardPackaging) *pb_common.TechCardPacka
 		WeightGrossGrams: pbInt32FromNull(p.WeightGrossGrams),
 		Notes:            pbStringFromNull(p.Notes),
 		PackedSize:       pbStringFromNull(p.PackedSize),
-		PackedMediaId:    pbInt32FromNull(p.PackedMediaId),
+		PackedMediaId:    cover,
+		PackedMediaIds:   labelMediaIdsToPb(photos),
 	}
 }
 

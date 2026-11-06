@@ -1461,10 +1461,16 @@ func careLabelRow(c *entity.TechCardCareLabel) []any {
 		}
 		colorways = append(colorways, []any{cw.ColorwayId, cw.ColourName.String, digestList(fs)})
 	}
-	return []any{
+	row := []any{
 		c.LogoMediaId.Int32, digestList(c.CareProseLines), preset, c.QRTemplate.String,
 		digestList(c.BackCaptionLines), digestList(c.AddressLines), digestList(colorways),
 	}
+	// Ориентация (0452) — тегированный хвост только у горизонтальной ленты: вертикальная (и "")
+	// — сегодняшние байты, нулевая запись по-прежнему совпадает с записью из дефолтов.
+	if c.Orientation == entity.CareLabelHorizontal {
+		row = append(row, []any{"orientation", entity.CareLabelHorizontal})
+	}
+	return row
 }
 
 // packagingProjection — упаковочный лист: ГОЛОВА из десяти замороженных позиций плюс тегированные
@@ -1570,6 +1576,7 @@ func packagingTails(p *entity.TechCardPackaging) []any {
 		operationKindTail("packed",
 			opKindInt("packed_media_id", p.PackedMediaId),
 			opKindStr("packed_size", p.PackedSize),
+			packedFurtherPhotosPair(p),
 		),
 	}
 	out := make([]any, 0, len(tails))
@@ -1579,6 +1586,21 @@ func packagingTails(p *entity.TechCardPackaging) []any {
 		}
 	}
 	return out
+}
+
+// packedFurtherPhotosPair — фото упаковки после обложки (0452), В ПОРЯДКЕ ПОКАЗА: порядок здесь
+// содержание (первое — обложка, и она уже в packed_media_id). Пара рождается только со второго фото,
+// так что лист с одной обложкой сохраняет сегодняшние байты.
+func packedFurtherPhotosPair(p *entity.TechCardPackaging) operationKindPair {
+	photos := p.PackedPhotoIds()
+	if len(photos) < 2 {
+		return operationKindPair{key: "packed_media_ids"}
+	}
+	rest := make([]any, 0, len(photos)-1)
+	for _, id := range photos[1:] {
+		rest = append(rest, id)
+	}
+	return operationKindPair{key: "packed_media_ids", value: rest, valid: true}
 }
 
 // costingProjection fingerprints what the card COSTS: the manual articles, the declared typical
