@@ -132,7 +132,7 @@ func TestTechCardPackPhotosMigrationIsIdempotent(t *testing.T) {
 	defer cancel()
 	conn, err := testDB.Conn(ctx)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = conn.ExecContext(ctx, "SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',ANSI_QUOTES')")
 	require.NoError(t, err)
 	up := migrationUpBody(t, "0452_tech_card_pack_photos_care_orientation.sql")
