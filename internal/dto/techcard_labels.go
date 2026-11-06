@@ -133,6 +133,13 @@ func parseTechCardCareLabel(pb *pb_common.TechCardCareLabel) (*entity.TechCardCa
 	if !entity.ValidCareLabelQRPresets[preset] {
 		return nil, entity.NewFieldViolation(f+".qr_preset", "unknown preset", preset, "storefront, custom or fixed")
 	}
+	orientation := pb.Orientation
+	if orientation == "" {
+		orientation = entity.CareLabelVertical
+	}
+	if !entity.ValidCareLabelOrientations[orientation] {
+		return nil, entity.NewFieldViolation(f+".orientation", "unknown orientation", orientation, "vertical or horizontal")
+	}
 	if err := checkLabelText(f+".qr_template", pb.QrTemplate, maxVarchar512); err != nil {
 		return nil, err
 	}
@@ -155,6 +162,7 @@ func parseTechCardCareLabel(pb *pb_common.TechCardCareLabel) (*entity.TechCardCa
 		QRTemplate:       nullStringFromPb(pb.QrTemplate),
 		BackCaptionLines: caption,
 		AddressLines:     address,
+		Orientation:      orientation,
 	}
 	seenColorway := make(map[int32]bool, len(pb.Colorways))
 	for i, cw := range pb.Colorways {
@@ -526,6 +534,7 @@ func techCardCareLabelToPb(c *entity.TechCardCareLabel) *pb_common.TechCardCareL
 		QrTemplate:       pbStringFromNull(c.QRTemplate),
 		BackCaptionLines: c.BackCaptionLines,
 		AddressLines:     c.AddressLines,
+		Orientation:      careLabelOrientation(c.Orientation),
 	}
 	for _, cw := range c.Colorways {
 		pcw := &pb_common.TechCardCareLabelColorway{
@@ -797,4 +806,13 @@ func LabelsLinkedToBornBomLines(tc *entity.TechCardInsert) []string {
 		}
 	}
 	return out
+}
+
+// careLabelOrientation is the orientation as the contract reads it: "" (a record built before 0452 or
+// by server code) is vertical.
+func careLabelOrientation(o string) string {
+	if o == "" {
+		return entity.CareLabelVertical
+	}
+	return o
 }

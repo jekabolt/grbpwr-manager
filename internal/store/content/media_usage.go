@@ -186,6 +186,12 @@ var mediaRefRegistry = []mediaRefSource{
 		entityExpr: "tc.id", labelExpr: techCardLabel, slot: "packed photo",
 	},
 	{
+		// The further photos of the finished pack, after the cover above (0452).
+		kind: "tech_card", table: "tech_card_packaging_media tcpkgm", column: "tcpkgm.media_id",
+		joins:      `JOIN tech_card tc ON tc.id = tcpkgm.tech_card_id`,
+		entityExpr: "tc.id", labelExpr: techCardLabel, slot: "packed photo",
+	},
+	{
 		kind: "tech_card", table: "tech_card_packaging_item_media tcpim", column: "tcpim.media_id",
 		joins: `JOIN tech_card_packaging_item tcpi ON tcpi.id = tcpim.item_id ` +
 			`JOIN tech_card tc ON tc.id = tcpi.tech_card_id`,

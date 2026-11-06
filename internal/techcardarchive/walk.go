@@ -243,6 +243,8 @@ var MediaFieldNames = map[string]bool{
 	"logo_media_id": true,
 	// the photo of the finished pack (TechCardPackaging, 0448).
 	"packed_media_id": true,
+	// every photo of the finished pack, the cover first (TechCardPackaging, 0452).
+	"packed_media_ids": true,
 }
 
 // moneyFieldNamesCosting is a VERBATIM COPY of costingRedactedFieldNames from

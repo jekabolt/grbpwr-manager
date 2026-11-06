@@ -144,6 +144,7 @@ func TestLabelsReworkRoundTrip(t *testing.T) {
 			QrTemplate: "https://grbpwr.com/x", BackCaptionLines: []string{"SCAN", "ME"}, AddressLines: []string{"A", "B", "C"},
 			Colorways: []*pb_common.TechCardCareLabelColorway{{ColorwayId: 7, ColourName: "BLACK",
 				Fibers: []*pb_common.TechCardCareLabelFiber{{Part: pb_common.TechCardBomLabelPart_TECH_CARD_BOM_LABEL_PART_SHELL, FiberCode: "COT", Pct: 100}}}},
+			Orientation: "horizontal",
 		},
 		GarmentLabels: []*pb_common.TechCardGarmentLabel{{Key: "brand", Placement: "neck", Attachment: "sewn", Folding: "end fold",
 			Size: "15x60", QtyPerGarment: 1, BomItemId: 3, Note: "n", MediaIds: []int32{8, 2},

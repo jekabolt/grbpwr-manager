@@ -64,11 +64,19 @@ func insertTechCardCareLabel(ctx context.Context, db dependency.DB, tcID int, c 
 	if preset == "" {
 		preset = entity.CareLabelQRStorefront
 	}
+	// The column keeps "" for vertical (0452), so a vertical row reads like one written before it.
+	orientation := c.Orientation
+	if orientation == entity.CareLabelVertical {
+		orientation = ""
+	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_care_label
-			(tech_card_id, logo_media_id, care_prose_lines, qr_preset, qr_template, back_caption_lines, address_lines)
-		VALUES (:tech_card_id, :logo_media_id, :care_prose_lines, :qr_preset, :qr_template, :back_caption_lines, :address_lines)`,
+			(tech_card_id, logo_media_id, care_prose_lines, qr_preset, qr_template, back_caption_lines, address_lines,
+			 care_orientation)
+		VALUES (:tech_card_id, :logo_media_id, :care_prose_lines, :qr_preset, :qr_template, :back_caption_lines, :address_lines,
+			 :care_orientation)`,
 		map[string]any{
+			"care_orientation":   orientation,
 			"tech_card_id":       tcID,
 			"logo_media_id":      c.LogoMediaId,
 			"care_prose_lines":   joinLabelLines(c.CareProseLines),
@@ -412,6 +420,7 @@ type careLabelRow struct {
 	QRTemplate       sql.NullString `db:"qr_template"`
 	BackCaptionLines sql.NullString `db:"back_caption_lines"`
 	AddressLines     sql.NullString `db:"address_lines"`
+	Orientation      string         `db:"care_orientation"`
 }
 
 type careLabelColorwayRow struct {
@@ -562,7 +571,8 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	}
 
 	careRows, err := storeutil.QueryListNamed[careLabelRow](ctx, s.DB, `
-		SELECT tech_card_id, logo_media_id, care_prose_lines, qr_preset, qr_template, back_caption_lines, address_lines
+		SELECT tech_card_id, logo_media_id, care_prose_lines, qr_preset, qr_template, back_caption_lines, address_lines,
+		       care_orientation
 		FROM tech_card_care_label WHERE tech_card_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
 		return fmt.Errorf("can't load tech card care labels: %w", err)
@@ -576,6 +586,7 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 			QRTemplate:       r.QRTemplate,
 			BackCaptionLines: splitLabelLines(r.BackCaptionLines),
 			AddressLines:     splitLabelLines(r.AddressLines),
+			Orientation:      careLabelOrientationFromColumn(r.Orientation),
 		}
 	}
 	if len(careRows) > 0 {
@@ -811,4 +822,12 @@ func (s *Store) enrichPackagingPicks(ctx context.Context, cards []entity.TechCar
 		}
 	}
 	return nil
+}
+
+// careLabelOrientationFromColumn reads care_orientation: "" is vertical.
+func careLabelOrientationFromColumn(v string) string {
+	if v == "" {
+		return entity.CareLabelVertical
+	}
+	return v
 }

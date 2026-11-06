@@ -931,8 +931,8 @@ func archiveCardMediaSlots(card *entity.TechCard) []archiveMediaSlot {
 		}
 	}
 	// The photo of the finished pack.
-	if card.Packaging != nil && card.Packaging.PackedMediaId.Valid {
-		add(int(card.Packaging.PackedMediaId.Int32), "", "")
+	for _, id := range card.Packaging.PackedPhotoIds() {
+		add(id, "", "")
 	}
 	return out
 }
