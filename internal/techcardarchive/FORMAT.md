@@ -287,6 +287,7 @@ Four verdicts, and they are not synonyms:
 | 34 | `piece_folds` | travels and is **written** — see §5.3c. Nothing in a fold is a foreign id; the people, the stamps and `source_fingerprint` on the row are source provenance and are **ignored** (the importer is the author, the server computes the fingerprint), and a fold the source read as `stale` lands stale. |
 | 35 | `cut_strips` | travels and is **written** — see §5.3d. Nothing in a strip is a foreign id except the size rows' `size_id`, which is remapped by name. `cut_mm` and `sewn_mm` on a size row are output-only and **ignored**. |
 | 36 | `cut_strip_norms` | **cleared in card.json.** The norm of a strip line is computed from the strips on every read, so a copy in the file would be a second truth. |
+| 37 | `release_size_chart` | **cleared in card.json.** OUTPUT-ONLY and set only inside a release snapshot (the chart frozen at release); a live card read never carries it. The chart itself travels in its own sidecar. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`

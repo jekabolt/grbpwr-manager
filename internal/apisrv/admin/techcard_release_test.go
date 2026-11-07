@@ -35,6 +35,7 @@ func TestSnapshotReleaseBuildsStoreNumberedMetadata(t *testing.T) {
 		UpdatedAt: now,
 	}, nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().GetStyleSizeChart(mock.Anything, 5).Return(entity.StyleSizeChart{StyleID: 5}, nil)
 	tc.EXPECT().SaveTechCardRelease(mock.Anything, mock.AnythingOfType("entity.TechCardRelease")).
 		Run(func(_ context.Context, rel entity.TechCardRelease) {
 			require.Equal(t, 5, rel.TechCardId)
@@ -230,6 +231,12 @@ func TestReleaseSnapshotCarriesEquipmentParkAndMachineFields(t *testing.T) {
 	repo.EXPECT().TechCards().Return(tc)
 	tc.EXPECT().GetTechCardByIdConsistent(mock.Anything, 5).Return(card, nil)
 	tc.EXPECT().GetCostingFxRatesToBase(mock.Anything).Return(nil, nil)
+	tc.EXPECT().GetStyleSizeChart(mock.Anything, 5).Return(entity.StyleSizeChart{
+		StyleID: 5,
+		Cells: []entity.StyleSizeChartCell{
+			{SizeID: 3, MeasurementNameID: 11, Value: decimal.RequireFromString("50")},
+		},
+	}, nil)
 	var blob string
 	tc.EXPECT().SaveTechCardRelease(mock.Anything, mock.AnythingOfType("entity.TechCardRelease")).
 		Run(func(_ context.Context, rel entity.TechCardRelease) { blob = rel.Snapshot }).Return(nil)
@@ -239,6 +246,11 @@ func TestReleaseSnapshotCarriesEquipmentParkAndMachineFields(t *testing.T) {
 
 	resp := readSnapshotBlob(t, blob)
 	require.Empty(t, resp.SnapshotError)
+	// The size chart is frozen with the release, so a reprint of this revision keeps its numbers.
+	chart := resp.Snapshot.ReleaseSizeChart
+	require.NotNil(t, chart, "a release must freeze the size chart it was released with")
+	require.Len(t, chart.Cells, 1)
+	require.Equal(t, "50", chart.Cells[0].Value.GetValue())
 	require.NotNil(t, resp.Snapshot.TechCard.Construction)
 	park := resp.Snapshot.TechCard.Construction.EquipmentDefaults
 	require.NotNil(t, park, "a frozen release without the wrapper is a card whose park was never captured")

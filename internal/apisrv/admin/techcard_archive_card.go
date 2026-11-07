@@ -335,6 +335,10 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 	// every read from these very strips, so a copy of it in the file would be a second truth.
 	pb.CutStripNorms = nil
 
+	// The release-frozen chart (37) is set only inside a release snapshot; a live read never has it,
+	// and the chart travels in its own sidecar. Cleared so the file never carries a second chart.
+	pb.ReleaseSizeChart = nil
+
 	// Nil-checked like stripTechCardCosting rather than assumed, so the two are safe in either
 	// order on the same value; a card without its insert half does not occur in practice.
 	if ins := pb.TechCard; ins != nil {

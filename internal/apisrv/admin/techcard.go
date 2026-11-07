@@ -869,7 +869,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 }
 
 func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, error) {
-	pb := dto.ConvertEntityTechCardToPb(card, fx)
+	return marshalTechCardPbSnapshot(dto.ConvertEntityTechCardToPb(card, fx))
+}
+
+// marshalTechCardPbSnapshot is marshalTechCardSnapshot for an already converted card, so the release
+// snapshot can add what only a release freezes (the size chart) before it is written.
+func marshalTechCardPbSnapshot(pb *pb_common.TechCard) (string, error) {
 	blob, err := protojson.Marshal(pb)
 	if err != nil {
 		return "", err
@@ -1549,7 +1554,17 @@ func (s *Server) snapshotReleaseIfReleased(ctx context.Context, techCardID int) 
 		return
 	}
 	fx := s.costingFx(ctx)
-	blob, err := marshalTechCardSnapshot(card, fx)
+	pb := dto.ConvertEntityTechCardToPb(card, fx)
+	// The size chart lives in its own tables and stays editable after release; freeze it here so a
+	// reprint of this revision carries the numbers it was released with. Without it the snapshot is
+	// still worth keeping: the paper then says the chart is not in the revision.
+	if chart, chartErr := s.repo.TechCards().GetStyleSizeChart(ctx, techCardID); chartErr != nil {
+		slog.Default().ErrorContext(ctx, "release snapshot: can't load size chart; snapshot goes without it",
+			slog.Int("tech_card_id", techCardID), slog.String("err", chartErr.Error()))
+	} else {
+		pb.ReleaseSizeChart = dto.StyleSizeChartToPb(chart)
+	}
+	blob, err := marshalTechCardPbSnapshot(pb)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "release snapshot: can't marshal snapshot",
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
