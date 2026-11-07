@@ -379,7 +379,7 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 		}
 		sc.rememberSize(c.SizeID, sizeName)
 		out.Cells = append(out.Cells, techcardarchive.SizeChartCell{
-			SizeName: sizeName, Measurement: name, Value: c.Value.String(),
+			SizeName: sizeName, Measurement: name, Value: c.Value.String(), Source: c.Source,
 		})
 	}
 
@@ -405,6 +405,25 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 		out.GradeSteps = append(out.GradeSteps, techcardarchive.SizeChartGradeStep{
 			Measurement: name, Step: st.Step.String(),
 		})
+	}
+	for _, point := range chart.Points {
+		name, ok := measurements[point.MeasurementNameID]
+		if !ok {
+			holes = append(holes, archiveHole(techcardarchive.EntityMeasurement,
+				fmt.Sprintf("measurement_name_id=%d", point.MeasurementNameID),
+				techcardarchive.ReasonMeasurementUnknown,
+				"the measurement is not in the exporting instance's dictionary; the point row is not exported"))
+			continue
+		}
+		out.Points = append(out.Points, techcardarchive.SizeChartPoint{
+			Measurement: name, PomCode: point.PomCode, Position: point.Position,
+			TolMinusCm: point.TolMinusCm.String(), TolPlusCm: point.TolPlusCm.String(),
+			InShop: point.InShop, BasisPieceLineKeys: append([]string(nil), point.BasisPieceLineKeys...),
+			Stale: point.Stale,
+		})
+	}
+	if chart.ShrinkagePct.Valid {
+		out.ShrinkagePct = chart.ShrinkagePct.Decimal.String()
 	}
 	return out, holes, nil
 }

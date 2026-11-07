@@ -8,6 +8,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // CloneTechCardForSeason creates a new card from the already-converted source payload and carries
@@ -74,8 +75,8 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 	params := map[string]any{"source": sourceID, "target": targetID, "actor": actor}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_size_measurement
-			(tech_card_id, size_id, measurement_name_id, measurement_value)
-		SELECT :target, src.size_id, src.measurement_name_id, src.measurement_value
+			(tech_card_id, size_id, measurement_name_id, measurement_value, source)
+		SELECT :target, src.size_id, src.measurement_name_id, src.measurement_value, src.source
 		FROM tech_card_size_measurement src
 		JOIN tech_card_size target_size
 		  ON target_size.tech_card_id = :target AND target_size.size_id = src.size_id
@@ -88,6 +89,16 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 		FROM tech_card_grade_rule
 		WHERE tech_card_id = :source`, params); err != nil {
 		return fmt.Errorf("copy cloned style grade rule: %w", err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_size_chart_point
+			(tech_card_id, measurement_name_id, pom_code, position, tol_minus_cm, tol_plus_cm,
+			 in_shop, basis_pieces, source_fingerprint)
+		SELECT :target, measurement_name_id, pom_code, position, tol_minus_cm, tol_plus_cm,
+		       in_shop, basis_pieces, source_fingerprint
+		FROM tech_card_size_chart_point
+		WHERE tech_card_id = :source`, params); err != nil {
+		return fmt.Errorf("copy cloned style size chart points: %w", err)
 	}
 	// The age group (0366) rides the same statement: like target_gender it is a fact about the
 	// garment, not the season, but unlike target_gender it is not on TechCardInsert (UpdateStyle
@@ -104,9 +115,30 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 			) THEN src_card.grade_base_size_id
 			ELSE NULL
 		END,
+			dst.size_chart_shrinkage_pct = src_card.size_chart_shrinkage_pct,
 			dst.age_group = src_card.age_group
 		WHERE dst.id = :target`, params); err != nil {
 		return fmt.Errorf("copy cloned style grade base and age group: %w", err)
+	}
+	// Re-stamp against the clone's current pattern sources so point provenance is owned by the clone.
+	points, err := loadStyleSizeChartPoints(ctx, db, targetID)
+	if err != nil {
+		return err
+	}
+	if len(points) > 0 {
+		shrinkage, err := storeutil.QueryNamedOne[struct {
+			Value decimal.NullDecimal `db:"size_chart_shrinkage_pct"`
+		}](ctx, db, `
+			SELECT size_chart_shrinkage_pct FROM tech_card WHERE id = :id`, map[string]any{"id": targetID})
+		if err != nil {
+			return fmt.Errorf("load cloned style shrinkage: %w", err)
+		}
+		if err := resolveStyleSizeChartPointFingerprints(ctx, db, targetID, points, shrinkage.Value, true); err != nil {
+			return err
+		}
+		if err := replaceStyleSizeChartPoints(ctx, db, targetID, points); err != nil {
+			return err
+		}
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO style_assembly

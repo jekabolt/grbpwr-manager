@@ -554,12 +554,20 @@ message ColorwayDevelopment {
   repeated ColorwayLabDipRound lab_dip_rounds = 3; // OUTPUT-ONLY history, oldest first
 }
 
+enum StyleSizeChartCellSource {
+  STYLE_SIZE_CHART_CELL_SOURCE_UNKNOWN = 0;
+  STYLE_SIZE_CHART_CELL_SOURCE_MANUAL = 1;
+  STYLE_SIZE_CHART_CELL_SOURCE_PATTERN = 2;
+}
+
 // StyleSizeChart is the style-owned size chart (R5). Written full-replace under the shared
-// tech_card.lock_version; there is no separate chart version.
+// tech_card.lock_version; there is no separate chart version. A cell value is the finished-garment
+// value in centimetres; a girth is the half (flat) value.
 message StyleSizeChartCell {
   int32 size_id = 1;
   int32 measurement_name_id = 2;
   google.type.Decimal value = 3;
+  StyleSizeChartCellSource source = 4;
 }
 
 // StyleSizeChartGradeStep is one measurement's grade increment — the per-size-position step the
@@ -567,6 +575,17 @@ message StyleSizeChartCell {
 message StyleSizeChartGradeStep {
   int32 measurement_name_id = 1; // FK measurement_name(id)
   google.type.Decimal step = 2; // increment per size position; may be negative
+}
+
+message StyleSizeChartPoint {
+  int32 measurement_name_id = 1;
+  string pom_code = 2;
+  int32 position = 3;
+  google.type.Decimal tol_minus_cm = 4;
+  google.type.Decimal tol_plus_cm = 5;
+  bool in_shop = 6;
+  repeated string basis_piece_line_keys = 7;
+  bool stale = 8; // output only
 }
 
 message StyleSizeChart {
@@ -584,6 +603,8 @@ message StyleSizeChart {
   // empty steps) means the chart was typed cell by cell, which is what every pre-existing chart is.
   int32 grade_base_size_id = 4; // FK size(id); 0 = no rule authored
   repeated StyleSizeChartGradeStep grade_steps = 5; // one per graded measurement; absent = ungraded
+  repeated StyleSizeChartPoint points = 6;
+  google.type.Decimal shrinkage_pct = 7;
 }
 
 // AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may

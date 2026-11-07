@@ -5098,6 +5098,9 @@ message UpdateStyleSizeChartRequest {
   // appear in `cells` (a step for a measurement the chart does not carry is meaningless).
   int32 grade_base_size_id = 4;
   repeated common.StyleSizeChartGradeStep grade_steps = 5;
+  repeated common.StyleSizeChartPoint points = 6;
+  bool points_set = 7;
+  google.type.Decimal shrinkage_pct = 8;
 }
 
 message UpdateStyleSizeChartResponse {

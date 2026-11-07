@@ -778,6 +778,18 @@ func TestTechCardCutStripsClone(t *testing.T) {
 		in.CutStrips = []*pb_common.TechCardCutStrip{seamed, r.oneLength(), r.perSize()}
 		cutsOpByNote(t, in, "a").InputKeys = []string{cutsPieceFront, cutsStripSeam}
 	}))
+	var measurementID int
+	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM measurement_name").Scan(&measurementID))
+	chart0, err := r.T.GetStyleSizeChart(ctx, r.cardID)
+	require.NoError(t, err)
+	shrinkage := decimal.RequireFromString("1.5")
+	_, err = r.T.UpdateStyleSizeChart(ctx, r.cardID, chart0.LockVersion,
+		[]entity.StyleSizeChartCell{{SizeID: r.sizeA, MeasurementNameID: measurementID,
+			Value: decimal.RequireFromString("50"), Source: entity.StyleSizeChartCellSourcePattern}},
+		0, nil, []entity.StyleSizeChartPoint{{MeasurementNameID: measurementID, PomCode: "length-cb",
+			Position: 1, TolMinusCm: decimal.RequireFromString("0.5"), TolPlusCm: decimal.RequireFromString("0.8"),
+			InShop: true, BasisPieceLineKeys: []string{cutsPieceFront}}}, true, &shrinkage)
+	require.NoError(t, err)
 	src := r.read()
 	resp, err := r.rt.srv.CloneStyleForSeason(r.rt.adminCtx("cut.owner@example.com"), &pb_admin.CloneStyleForSeasonRequest{
 		SourceStyleId: int64(r.cardID), ExpectedSourceVersion: uint64(src.LockVersion),
@@ -797,6 +809,15 @@ func TestTechCardCutStripsClone(t *testing.T) {
 	require.Empty(t, wire.GetCutStrips()[0].GetSeamKey(), "seams are not copied, the seam lengths are")
 	require.Equal(t, cutsNormOf(r.wire(), cutsLineRubber), cutsNormOf(wire, cutsLineRubber))
 	require.Equal(t, []string{cutsPieceFront, cutsStripSeam}, cutsOpByNote(t, wire.GetTechCard(), "a").GetInputKeys())
+	clonedChart, err := r.T.GetStyleSizeChart(ctx, newID)
+	require.NoError(t, err)
+	require.Len(t, clonedChart.Cells, 1)
+	require.Equal(t, entity.StyleSizeChartCellSourcePattern, clonedChart.Cells[0].Source)
+	require.Len(t, clonedChart.Points, 1)
+	require.Equal(t, "length-cb", clonedChart.Points[0].PomCode)
+	require.False(t, clonedChart.Points[0].Stale, "the cloned point stamp uses current pattern provenance")
+	require.True(t, clonedChart.ShrinkagePct.Valid)
+	require.True(t, clonedChart.ShrinkagePct.Decimal.Equal(shrinkage))
 
 	var sourceRow, cloneRow int
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM tech_card_cut_strip WHERE tech_card_id = ? AND line_key = ?", r.cardID, cutsStripSeam).Scan(&sourceRow))

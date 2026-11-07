@@ -427,13 +427,19 @@ size names (`size.name`, UNIQUE) and measurement names (`measurement_name.name`,
 ```json
 {
   "cells": [
-    {"size_name": "s", "measurement": "chest", "value": "50"},
+    {"size_name": "s", "measurement": "chest", "value": "50", "source": "pattern"},
     {"size_name": "m", "measurement": "chest", "value": "52"}
   ],
   "grade_base_size_name": "m",
   "grade_steps": [
     {"measurement": "chest", "step": "2"}
-  ]
+  ],
+  "points": [
+    {"measurement": "chest", "pom_code": "chest", "position": 1,
+     "tol_minus_cm": "1", "tol_plus_cm": "1", "in_shop": true,
+     "basis_piece_line_keys": ["01JPIECE00000000000000001"]}
+  ],
+  "shrinkage_pct": "2.5"
 }
 ```
 
@@ -444,6 +450,10 @@ This is why the file is not raw protojson — protojson of that message cannot e
 
 `grade_base_size_name` empty and `grade_steps` empty mean the chart was typed cell by cell, which
 is what every pre-existing chart is.
+
+`source` defaults to `manual` when absent. Point rows address the measurement dictionary by name.
+Old archives without points or shrinkage import with default point rows derived from their cells
+and grade steps.
 
 ### 5.2 `assembly.json`
 
