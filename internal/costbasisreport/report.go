@@ -403,6 +403,13 @@ func buildCard(card *entity.TechCard, fx dto.CostingFx, sizeNames map[int]string
 		cr.Colorways = append(cr.Colorways, buildColorway(card, old, cw, i, fx, sizeNames,
 			owned[int(cw.ProductId.Int32)]))
 	}
+	if len(card.Colorways) == 0 {
+		// An aux card's one recipe is its BOM (entity.AuxRecipe, 0456). Its norms are flat, so the
+		// basis change cannot move them; the row keeps the card's materials in the report.
+		if recipe := entity.AuxRecipe(&card.TechCardInsert); recipe != nil {
+			cr.Colorways = append(cr.Colorways, buildColorway(card, old, recipe, 0, fx, sizeNames, false))
+		}
+	}
 	return cr
 }
 
@@ -426,7 +433,11 @@ func buildColorway(card, old *entity.TechCard, cw *entity.TechCardColorway, idx 
 		cw.CostPriceSource.String == "" || cw.CostPriceSource.String == "tech_card"
 
 	newCost, newCcy := colorwayUnitCost(card, cw, idx, fx)
-	oldCost, oldCcy := colorwayUnitCost(old, &old.Colorways[idx], idx, fx)
+	oldCw := cw // an aux recipe is not a stored colourway: both sides read it off the BOM
+	if idx < len(old.Colorways) {
+		oldCw = &old.Colorways[idx]
+	}
+	oldCost, oldCcy := colorwayUnitCost(old, oldCw, idx, fx)
 
 	if oldCost.Valid {
 		s := oldCost.Decimal.StringFixed(2)

@@ -184,6 +184,14 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		return nil
 	}
 	card := &entity.TechCard{Id: int(snap.GetId())}
+	// An auxiliary card's recipe is its BOM (entity.AuxRecipe, 0456), so the purpose, who makes it, the
+	// norm per unit and the strips go with the projection. A blob older than 0456 has no norm: its
+	// lines stay unpriced and the cell falls back to the frozen scalar, never to zero.
+	card.Name = ins.GetName()
+	card.Purpose = techCardPurposeFromPb(ins.GetPurpose())
+	if v, ok := auxMadeByFromPb[ins.GetAuxMadeBy()]; ok && card.IsAuxiliary() {
+		card.AuxMadeBy = sql.NullString{String: v, Valid: true}
+	}
 	for _, id := range ins.GetSizeIds() {
 		card.SizeIds = append(card.SizeIds, int(id))
 	}
@@ -217,6 +225,8 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			// норма и до волны означала «считай строку по её собственному числу».
 			QtyPerGarment: frozenDecimal(b.GetQtyPerGarment()),
 			SpareQty:      frozenDecimal(b.GetSpareQty()),
+			// An aux line's measured norm per unit (0456); AuxRecipe reads it only on an aux card.
+			ConsumptionPerUnit: frozenDecimal(b.GetConsumptionPerUnit()),
 		}
 		if mid := b.GetMaterialId(); mid > 0 {
 			item.MaterialId = sql.NullInt64{Int64: mid, Valid: true}
@@ -241,6 +251,23 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			item.Currency = sql.NullString{}
 		}
 		card.BomItems = append(card.BomItems, item)
+	}
+	if card.IsAuxiliary() {
+		// An aux card has no recipe rows to say a line is cut to length: its strips do. A strip that no
+		// longer reads is dropped, so its line has no norm and the cell falls back, never prices low.
+		strips := snap.GetCutStrips()
+		if len(strips) == 0 {
+			strips = ins.GetCutStrips()
+		}
+		for i, p := range strips {
+			if p == nil {
+				continue
+			}
+			if strip, err := cutStripFromPb(p, p.GetLineKey(), i, "cut_strips"); err == nil {
+				card.CutStrips = append(card.CutStrips, strip)
+			}
+		}
+		entity.MarkCutStripLines(card.BomItems, entity.CutStripLineNorms(card.BomItems, card.CutStrips, nil))
 	}
 	if c := ins.GetCosting(); c != nil {
 		ccy := strings.TrimSpace(c.GetCurrency())
