@@ -1302,6 +1302,8 @@ message Material {
   google.type.Decimal fabric_thickness_mm = 33;
   // The type of a label in stock, section LABEL only (0451). The label picker filters on it.
   MaterialLabelType label_type = 34;
+  int32 source_material_id = 35; // read-only, one-hop source for a converted material
+  string source_material_name = 36; // read-only display name of source_material_id
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -1311,7 +1313,7 @@ message MaterialPrice {
   google.type.Decimal price = 2;
   string currency = 3; // ISO 4217
   google.protobuf.Timestamp valid_from = 4; // the price applies from this date
-  string source = 5; // manual | production_run
+  string source = 5; // manual | production_run | purchase | conversion
   string note = 6;
 }
 

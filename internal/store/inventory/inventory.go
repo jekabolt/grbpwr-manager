@@ -56,7 +56,7 @@ const materialMovementSelect = `
 		msm.product_id, msm.lot, msm.lot_id, msm.supplier_doc, msm.invoice_file_id,
 		lf.file_name AS invoice_file_name, msm.supplier_id, msm.expected_at, msm.reason,
 		msm.comment, msm.admin_username, msm.occurred_at, msm.created_at,
-		msm.input_vat_amount, msm.input_vat_regime`
+		msm.input_vat_amount, msm.input_vat_regime, msm.conversion_id, msm.loss_qty`
 
 // readMovement hydrates a movement together with the invoice's current library filename. The LEFT
 // JOIN deliberately keeps a receipt readable when its optional file was deleted (the FK clears the
@@ -114,12 +114,12 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
 			 unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
 			 lot, lot_id, supplier_doc, invoice_file_id, supplier_id, expected_at, reason, comment, admin_username, occurred_at,
-			 input_vat_amount, input_vat_regime)
+			 input_vat_amount, input_vat_regime, conversion_id, loss_qty)
 		VALUES
 			(:material_id, :movement_type, :quantity, :on_hand_before, :on_hand_after,
 			 :unit_cost, :currency, :unit_cost_base, :production_run_id, :sample_id, :tech_card_id, :product_id,
 			 :lot, :lot_id, :supplier_doc, :invoice_file_id, :supplier_id, :expected_at, :reason, :comment, :admin_username, :occurred_at,
-			 :input_vat_amount, :input_vat_regime)`,
+			 :input_vat_amount, :input_vat_regime, :conversion_id, :loss_qty)`,
 		map[string]any{
 			"material_id":       m.MaterialId,
 			"movement_type":     string(m.MovementType),
@@ -145,6 +145,8 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			"occurred_at":       m.OccurredAt,
 			"input_vat_amount":  nullDecimal(m.InputVatAmount),
 			"input_vat_regime":  m.InputVatRegime,
+			"conversion_id":     m.ConversionId,
+			"loss_qty":          nullDecimal(m.LossQty),
 		})
 	if err != nil {
 		return entity.MaterialMovement{}, fmt.Errorf("insert material movement: %w", err)
@@ -161,12 +163,16 @@ func dateOnlyUTC(t time.Time) time.Time {
 
 // materialMeta is the descriptive state needed to gate a movement (archived flag).
 type materialMeta struct {
-	Archived bool `db:"archived"`
+	Name             string         `db:"name"`
+	Unit             sql.NullString `db:"unit"`
+	MaterialClass    string         `db:"material_class"`
+	Archived         bool           `db:"archived"`
+	SourceMaterialId sql.NullInt32  `db:"source_material_id"`
 }
 
 func readMaterialMeta(ctx context.Context, db dependency.DB, materialID int) (materialMeta, error) {
 	meta, err := storeutil.QueryNamedOne[materialMeta](ctx, db,
-		`SELECT archived FROM material WHERE id = :id`, map[string]any{"id": materialID})
+		`SELECT name, unit, material_class, archived, source_material_id FROM material WHERE id = :id`, map[string]any{"id": materialID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return materialMeta{}, fmt.Errorf("%w: material %d", entity.ErrMaterialNotFound, materialID)
@@ -355,6 +361,32 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
 	if err != nil {
 		return entity.MaterialMovement{}, err
+	}
+	if !ins.FromProduction {
+		// Re-read after taking the stock lock. A conversion takes that same lock before filling
+		// source_material_id, so a purchase that waited behind it cannot proceed on stale lineage.
+		lineage, err := storeutil.QueryNamedOne[struct {
+			SourceMaterialId sql.NullInt32 `db:"source_material_id"`
+		}](ctx, db, `SELECT source_material_id FROM material WHERE id = :id FOR UPDATE`,
+			map[string]any{"id": ins.MaterialId})
+		if err != nil {
+			return entity.MaterialMovement{}, fmt.Errorf("lock material %d purchase guard: %w", ins.MaterialId, err)
+		}
+		if lineage.SourceMaterialId.Valid {
+			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d", entity.ErrMaterialMadeNotPurchasable, ins.MaterialId)
+		}
+		// A multi-input conversion leaves source_material_id NULL, so the conversion history itself is
+		// the second half of the guard.
+		made, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM material_stock_movement
+			WHERE material_id = :id AND movement_type = 'convert_in'`,
+			map[string]any{"id": ins.MaterialId})
+		if err != nil {
+			return entity.MaterialMovement{}, fmt.Errorf("check material %d conversion history: %w", ins.MaterialId, err)
+		}
+		if made > 0 {
+			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d", entity.ErrMaterialMadeNotPurchasable, ins.MaterialId)
+		}
 	}
 
 	// Resolve the receipt's base-currency unit cost.
@@ -783,6 +815,10 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 		where += " AND msm.movement_type = :movement_type"
 		params["movement_type"] = string(filter.MovementType)
 	}
+	if filter.ConversionId > 0 {
+		where += " AND msm.conversion_id = :conversion_id"
+		params["conversion_id"] = filter.ConversionId
+	}
 	// Inclusive occurred_at date window (B-5). occurred_at is a DATE column, so a plain YYYY-MM-DD bound
 	// is already day-inclusive; comparing the bare column (not DATE(occurred_at)) lets idx_msm_occurred
 	// serve the range. Every movement is dated (insertMovement defaults it; the occurred-at backfill
@@ -835,8 +871,10 @@ func (s *Store) ListMaterialStock(ctx context.Context, filter entity.MaterialSto
 		"belowMn": filter.BelowMinOnly,
 	}
 	rows, err := storeutil.QueryListNamed[materialStockRow](ctx, s.DB, `
-		SELECT m.*, s.on_hand AS on_hand, s.avg_unit_cost_base AS avg_unit_cost_base
+		SELECT m.*, sm.name AS source_material_name,
+		       s.on_hand AS on_hand, s.avg_unit_cost_base AS avg_unit_cost_base
 		FROM material m
+		LEFT JOIN material sm ON sm.id = m.source_material_id
 		LEFT JOIN material_stock s ON s.material_id = m.id
 		WHERE m.archived = FALSE
 			AND (:section = '' OR m.section = :section)

@@ -707,6 +707,9 @@ var methodRequirements = map[string]Requirement{
 	"GetMaterialStock":          rd(SectionInventory),
 	"ListMaterialStock":         rd(SectionInventory),
 	"ListMaterialMovements":     rd(SectionInventory),
+	"ConvertMaterialStock":      wr(SectionInventory),
+	"ShrinkMaterialLot":         wr(SectionInventory),
+	"GetMaterialConversion":     rd(SectionInventory),
 	// packaging BOM consumed on ship (gap-07 v2 B) — warehouse config
 	"UpsertPackagingBom": wr(SectionInventory),
 	"ListPackagingBom":   rd(SectionInventory),

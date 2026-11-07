@@ -41,6 +41,20 @@ var (
 	ErrInsufficientMaterialLot = errors.New("insufficient material lot remaining")
 	// ErrMaterialLotMismatch is returned when a referenced lot belongs to a different material.
 	ErrMaterialLotMismatch = errors.New("material lot belongs to a different material")
+	// ErrMaterialConversionUncosted refuses an input whose moving average is unknown.
+	ErrMaterialConversionUncosted = errors.New("material conversion input is uncosted")
+	// ErrMaterialConversionNoFxRate refuses work cost whose currency cannot be folded to base.
+	ErrMaterialConversionNoFxRate = errors.New("material conversion has no costing FX rate")
+	// ErrMaterialConversionPrecision refuses a unit-cost rounding spread outside the bounded tolerance.
+	ErrMaterialConversionPrecision = errors.New("material conversion loses too much precision")
+	// ErrMaterialConversionInvalid is a store-level shape guard for conversion inputs and output.
+	ErrMaterialConversionInvalid = errors.New("invalid material conversion")
+	// ErrConversionOutputPurchased prevents bought and converted stock from sharing one bucket.
+	ErrConversionOutputPurchased = errors.New("conversion output has purchase receipts")
+	// ErrMaterialMadeNotPurchasable is the reverse guard: a made material cannot receive purchases.
+	ErrMaterialMadeNotPurchasable = errors.New("made material cannot receive purchase stock")
+	// ErrMaterialLotStale fences a shrink request measured against an older lot balance.
+	ErrMaterialLotStale = errors.New("material lot quantity changed; reload and retry")
 )
 
 // MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code
@@ -71,11 +85,18 @@ type MaterialLot struct {
 	// why pieces of one garment are cut from adjacent layers — that is a lay-screen note, not a
 	// field.
 	ShadeCode sql.NullString `db:"shade_code"`
+	// ShrunkQty is cumulative physical length lost after receipt. Arrival facts above never change.
+	ShrunkQty     decimal.Decimal     `db:"shrunk_qty"`
+	WashedWidthCm decimal.NullDecimal `db:"washed_width_cm"`
+	ShrinkagePct  decimal.NullDecimal `db:"shrinkage_pct"`
 }
 
 // MaterialPriceSourcePurchase marks a price point that entered the history from a stock receipt
 // (a real purchase document), as opposed to a manual catalog entry or a production-run cost.
-const MaterialPriceSourcePurchase = "purchase"
+const (
+	MaterialPriceSourcePurchase   = "purchase"
+	MaterialPriceSourceConversion = "conversion"
+)
 
 // MaterialMovementType enumerates the kinds of material-stock movement. quantity is always
 // non-negative; the type (with on_hand before/after) encodes the direction.
@@ -90,6 +111,9 @@ const (
 	MaterialMovementReturnSample      MaterialMovementType = "return_sample"      // returned from a sample
 	MaterialMovementAdjustment        MaterialMovementType = "adjustment"         // stock count (set/adjust)
 	MaterialMovementWriteoff          MaterialMovementType = "writeoff"           // damage/loss/defect
+	MaterialMovementConvertOut        MaterialMovementType = "convert_out"        // input consumed by a conversion
+	MaterialMovementConvertIn         MaterialMovementType = "convert_in"         // output produced by a conversion
+	MaterialMovementShrinkage         MaterialMovementType = "shrinkage"          // physical lot loss; value stays in stock
 )
 
 // ValidMaterialMovementTypes is the closed set enforced by the DB CHECK and validated in the dto.
@@ -98,6 +122,7 @@ var ValidMaterialMovementTypes = map[MaterialMovementType]struct{}{
 	MaterialMovementIssueProduction: {}, MaterialMovementIssueSample: {},
 	MaterialMovementReturnProduction: {}, MaterialMovementReturnSample: {},
 	MaterialMovementAdjustment: {}, MaterialMovementWriteoff: {},
+	MaterialMovementConvertOut: {}, MaterialMovementConvertIn: {}, MaterialMovementShrinkage: {},
 }
 
 // Material adjustment reasons (a subset shared with product stock-count semantics). Packaging is
@@ -165,6 +190,87 @@ type MaterialMovement struct {
 	// wave 1). Set only on receipts that record VAT; NULL everywhere else.
 	InputVatAmount decimal.NullDecimal `db:"input_vat_amount"`
 	InputVatRegime sql.NullString      `db:"input_vat_regime"`
+	// ConversionId groups the convert_out rows and convert_in row into one operation. LossQty is
+	// informational and is included in a convert_out's Quantity, never posted separately.
+	ConversionId sql.NullInt32       `db:"conversion_id"`
+	LossQty      decimal.NullDecimal `db:"loss_qty"`
+}
+
+// MaterialConversionInput is one source stock bucket consumed by a conversion.
+type MaterialConversionInput struct {
+	MaterialId int
+	Quantity   decimal.Decimal
+	LossQty    decimal.NullDecimal
+	LotId      sql.NullInt32
+}
+
+// MaterialConversionOutput is the one existing catalog material produced by a conversion.
+type MaterialConversionOutput struct {
+	MaterialId      int
+	Quantity        decimal.Decimal
+	LotCode         sql.NullString
+	MeasuredWidthCm decimal.NullDecimal
+	ShadeCode       sql.NullString
+}
+
+// MaterialConversionInsert is the atomic conversion command.
+type MaterialConversionInsert struct {
+	Inputs          []MaterialConversionInput
+	Output          MaterialConversionOutput
+	WorkCost        decimal.Decimal
+	WorkCurrency    string
+	SupplierId      sql.NullInt32
+	SupplierDoc     sql.NullString
+	Comment         sql.NullString
+	AdminUsername   string
+	OccurredAt      sql.NullTime
+	ClientRequestId sql.NullString
+}
+
+// MaterialConversionLine enriches one conversion movement for history display.
+type MaterialConversionLine struct {
+	Movement     MaterialMovement
+	MaterialName string
+	Unit         string
+}
+
+// MaterialConversion is the header plus all of its movement sides.
+type MaterialConversion struct {
+	Id                 int                      `db:"id"`
+	OutputMaterialId   int                      `db:"output_material_id"`
+	SupplierId         sql.NullInt32            `db:"supplier_id"`
+	WorkCost           decimal.Decimal          `db:"work_cost"`
+	WorkCurrency       sql.NullString           `db:"work_currency"`
+	WorkCostBase       decimal.Decimal          `db:"work_cost_base"`
+	InputsCostBase     decimal.Decimal          `db:"inputs_cost_base"`
+	InputsValueBase    decimal.Decimal          `db:"inputs_value_base"`
+	TotalCostBase      decimal.Decimal          `db:"total_cost_base"`
+	OutputUnitCostBase decimal.Decimal          `db:"output_unit_cost_base"`
+	OutputAvgBefore    decimal.NullDecimal      `db:"output_avg_before"`
+	SupplierDoc        sql.NullString           `db:"supplier_doc"`
+	Comment            sql.NullString           `db:"comment"`
+	ClientRequestId    sql.NullString           `db:"client_request_id"`
+	AdminUsername      string                   `db:"admin_username"`
+	OccurredAt         sql.NullTime             `db:"occurred_at"`
+	CreatedAt          time.Time                `db:"created_at"`
+	Lines              []MaterialConversionLine `db:"-"`
+}
+
+// MaterialLotShrinkInsert records one physical wash/shrink measurement.
+type MaterialLotShrinkInsert struct {
+	LotId         int
+	LengthAfter   decimal.Decimal
+	WidthAfter    decimal.NullDecimal
+	LengthBefore  decimal.NullDecimal
+	Comment       sql.NullString
+	AdminUsername string
+}
+
+// MaterialLotShrinkResult is the committed movement, updated lot, and weighted material percent.
+type MaterialLotShrinkResult struct {
+	Movement             MaterialMovement
+	Lot                  MaterialLot
+	MaterialShrinkagePct decimal.NullDecimal
 }
 
 // MaterialReceiptInsert is the payload of a stock receipt (purchase-in or produced-in). UnitCost is
@@ -295,6 +401,7 @@ type MaterialMovementFilter struct {
 	ProductionRunId int
 	SampleId        int
 	MovementType    MaterialMovementType
+	ConversionId    int
 	// Optional inclusive occurred_at DATE bounds (YYYY-MM-DD); empty = open (B-5).
 	OccurredFrom string
 	OccurredTo   string

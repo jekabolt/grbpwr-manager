@@ -20,6 +20,9 @@ enum MaterialMovementType {
   MATERIAL_MOVEMENT_TYPE_RETURN_SAMPLE = 6; // returned from a sample
   MATERIAL_MOVEMENT_TYPE_ADJUSTMENT = 7; // stock count (set/adjust)
   MATERIAL_MOVEMENT_TYPE_WRITEOFF = 8; // damage/loss/defect
+  MATERIAL_MOVEMENT_TYPE_CONVERT_OUT = 9; // consumed by a material conversion
+  MATERIAL_MOVEMENT_TYPE_CONVERT_IN = 10; // produced by a material conversion
+  MATERIAL_MOVEMENT_TYPE_SHRINKAGE = 11; // physical lot shrinkage; no value leaves stock
 }
 
 // MaterialStock is a material's maintained on-hand balance and moving-average unit cost. The cost
@@ -60,6 +63,8 @@ message MaterialMovement {
   google.protobuf.Timestamp expected_at = 22;
   int32 invoice_file_id = 23; // supplier invoice in the private files library; 0 = none
   string invoice_file_name = 24; // current library filename; empty when no invoice is attached
+  int32 conversion_id = 25; // material conversion header; 0 = none
+  google.type.Decimal loss_qty = 26; // informational loss included in convert_out quantity
 }
 
 // MaterialLot is a received batch (roll / dye-lot) of a material (gap-07 v2 D): a supplier lot code
@@ -87,6 +92,46 @@ message MaterialLot {
   // unrecorded. The shade also drifts WITHIN one batch, which is why pieces of one garment come
   // from adjacent layers — that is a note on the lay screen, not another field here.
   string shade_code = 13;
+  google.type.Decimal shrunk_qty = 14; // cumulative physical length lost from this lot
+  google.type.Decimal washed_width_cm = 15; // post-wash width; measured_width_cm remains arrival width
+  google.type.Decimal shrinkage_pct = 16; // cumulative compounded length shrinkage
+}
+
+message MaterialConversionInput {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2;
+  google.type.Decimal loss_qty = 3;
+  int32 lot_id = 4;
+}
+
+message MaterialConversionOutput {
+  int32 material_id = 1;
+  google.type.Decimal quantity = 2;
+  string lot_code = 3;
+  google.type.Decimal measured_width_cm = 4;
+  string shade_code = 5;
+}
+
+message MaterialConversionLine {
+  MaterialMovement movement = 1;
+  string material_name = 2;
+  string unit = 3;
+}
+
+message MaterialConversion {
+  int32 id = 1;
+  repeated MaterialConversionLine lines = 2; // convert_out rows, then convert_in
+  google.type.Decimal work_cost = 3; // costing:read only
+  string work_currency = 4; // costing:read only
+  google.type.Decimal work_cost_base = 5; // costing:read only
+  google.type.Decimal output_unit_cost_base = 6; // costing:read only
+  google.type.Decimal total_cost_base = 7; // costing:read only
+  int32 supplier_id = 8;
+  string supplier_doc = 9;
+  string comment = 10;
+  string admin_username = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+  google.protobuf.Timestamp created_at = 13;
 }
 
 // MaterialReservationClaim is ONE still-open claim on a material — a soft hold that depresses

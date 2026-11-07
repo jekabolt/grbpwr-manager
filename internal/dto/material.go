@@ -471,17 +471,19 @@ func ConvertEntityMaterialToPb(m entity.MaterialWithPrice) *pb_common.Material {
 		// Ф4.8 — unset stays unset, and here the difference is not merely informational: an article
 		// that reads back as 0 mm would let the lay path compute a 0 cm stack that "fits", instead of
 		// telling the operator to go and measure the cloth.
-		FabricThicknessMm: pbDecimalFromNull(m.FabricThicknessMm),
-		Archived:          m.Archived,
-		Code:              pbStringFromNull(m.Code),
-		Color:             pbStringFromNull(m.Color),
-		Pantone:           pbStringFromNull(m.Pantone),
-		MinStock:          pbDecimalFromNull(m.MinStock),
-		Notes:             pbStringFromNull(m.Notes),
-		LockVersion:       int32(m.LockVersion),
-		ImageId:           pbInt32FromNull(m.ImageId),
-		Purpose:           pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
-		LabelType:         pbMaterialLabelType(entity.MaterialLabelType(m.LabelType)),
+		FabricThicknessMm:  pbDecimalFromNull(m.FabricThicknessMm),
+		Archived:           m.Archived,
+		Code:               pbStringFromNull(m.Code),
+		Color:              pbStringFromNull(m.Color),
+		Pantone:            pbStringFromNull(m.Pantone),
+		MinStock:           pbDecimalFromNull(m.MinStock),
+		Notes:              pbStringFromNull(m.Notes),
+		LockVersion:        int32(m.LockVersion),
+		ImageId:            pbInt32FromNull(m.ImageId),
+		Purpose:            pbMaterialPurpose(entity.MaterialPurpose(m.Purpose)),
+		LabelType:          pbMaterialLabelType(entity.MaterialLabelType(m.LabelType)),
+		SourceMaterialId:   nullInt32Value(m.SourceMaterialId),
+		SourceMaterialName: m.SourceMaterialName.String,
 	}
 	if m.Image != nil {
 		out.Image = ConvertEntityToCommonMedia(m.Image)
@@ -558,7 +560,7 @@ func ConvertPbMaterialPriceToEntity(pb *pb_common.MaterialPrice) (entity.Materia
 	if !entity.ValidMaterialPriceSources[source] {
 		return entity.MaterialPrice{}, entity.NewFieldViolation("price.source",
 			fmt.Sprintf("unknown price source %q", source), "",
-			"use one of: manual, production_run, purchase")
+			"use one of: manual, production_run, purchase, conversion")
 	}
 	return entity.MaterialPrice{
 		MaterialId: int(pb.MaterialId),

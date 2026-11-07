@@ -2664,6 +2664,21 @@ service AdminService {
   rpc ListMaterialMovements(ListMaterialMovementsRequest) returns (ListMaterialMovementsResponse) {
     option (google.api.http) = {get: "/api/admin/inventory/movements"};
   }
+  rpc ConvertMaterialStock(ConvertMaterialStockRequest) returns (ConvertMaterialStockResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/convert"
+      body: "*"
+    };
+  }
+  rpc ShrinkMaterialLot(ShrinkMaterialLotRequest) returns (ShrinkMaterialLotResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/inventory/lots/shrink"
+      body: "*"
+    };
+  }
+  rpc GetMaterialConversion(GetMaterialConversionRequest) returns (GetMaterialConversionResponse) {
+    option (google.api.http) = {get: "/api/admin/inventory/conversions/{id}"};
+  }
 
   // UpsertPackagingBom full-replaces the global packaging recipe consumed on ship (gap-07 v2 B).
   rpc UpsertPackagingBom(UpsertPackagingBomRequest) returns (UpsertPackagingBomResponse) {
@@ -12292,11 +12307,51 @@ message ListMaterialMovementsRequest {
   common.MaterialMovementType movement_type = 6;
   string occurred_from = 7; // optional inclusive lower bound on occurred_at date, YYYY-MM-DD ("" = open)
   string occurred_to = 8; // optional inclusive upper bound on occurred_at date, YYYY-MM-DD ("" = open)
+  int32 conversion_id = 9;
 }
 
 message ListMaterialMovementsResponse {
   repeated common.MaterialMovement movements = 1;
   int32 total = 2;
+  repeated common.MaterialConversion conversions = 3; // conversions referenced by this page
+}
+
+message ConvertMaterialStockRequest {
+  repeated common.MaterialConversionInput inputs = 1;
+  common.MaterialConversionOutput output = 2;
+  google.type.Decimal work_cost = 3;
+  string work_currency = 4;
+  int32 supplier_id = 5;
+  string supplier_doc = 6;
+  string comment = 7;
+  google.protobuf.Timestamp occurred_at = 8;
+  string client_request_id = 9;
+}
+
+message ConvertMaterialStockResponse {
+  common.MaterialConversion conversion = 1;
+}
+
+message ShrinkMaterialLotRequest {
+  int32 lot_id = 1;
+  google.type.Decimal length_after = 2;
+  google.type.Decimal width_after = 3;
+  google.type.Decimal length_before = 4;
+  string comment = 5;
+}
+
+message ShrinkMaterialLotResponse {
+  common.MaterialMovement movement = 1;
+  common.MaterialLot lot = 2;
+  google.type.Decimal material_shrinkage_pct = 3;
+}
+
+message GetMaterialConversionRequest {
+  int32 id = 1;
+}
+
+message GetMaterialConversionResponse {
+  common.MaterialConversion conversion = 1;
 }
 
 // PackagingBomItem is one line of the global packaging recipe (gap-07 v2 B): a material consumed on

@@ -226,10 +226,22 @@ func TestMaterialLabelTypeDBCheckNoDrift(t *testing.T) {
 	assertSameSet(t, "MaterialLabelType", dbValues, mapKeysAsStrings(entity.ValidMaterialLabelTypes))
 }
 
+// TestMaterialMovementTypeDBCheckNoDrift checks the inventory movement vocabulary against the
+// latest full chk_msm_type definition.
+func TestMaterialMovementTypeDBCheckNoDrift(t *testing.T) {
+	content := readMigrationFile(t, "0455_material_conversion.sql")
+	dbValues := extractDBEnumValues(t, content, "movement_type REGEXP", 500)
+	entityValues := make([]string, 0, len(entity.ValidMaterialMovementTypes))
+	for value := range entity.ValidMaterialMovementTypes {
+		entityValues = append(entityValues, string(value))
+	}
+	assertSameSet(t, "MaterialMovementType", dbValues, entityValues)
+}
+
 // TestMaterialPriceSourceDBCheckNoDrift extends the drift test to material_price.source
-// (entity.ValidMaterialPriceSources) <-> DB CHECK (migration 0158, chk_material_price_source).
+// (entity.ValidMaterialPriceSources) <-> DB CHECK (latest definition in migration 0455).
 func TestMaterialPriceSourceDBCheckNoDrift(t *testing.T) {
-	content := readMigrationFile(t, "0158_material_price_source_check.sql")
+	content := readMigrationFile(t, "0455_material_conversion.sql")
 	dbValues := extractDBEnumValues(t, content, "source REGEXP", 120)
 	assertSameSet(t, "MaterialPriceSource", dbValues, mapKeysAsStrings(entity.ValidMaterialPriceSources))
 }

@@ -234,6 +234,9 @@ type Material struct {
 	Id int `db:"id"`
 	MaterialInsert
 	Archived bool `db:"archived"`
+	// SourceMaterialId/Name are read-only, one-hop lineage for a single-input conversion.
+	SourceMaterialId   sql.NullInt32  `db:"source_material_id"`
+	SourceMaterialName sql.NullString `db:"source_material_name"`
 	// LockVersion is the optimistic-lock counter (S25). UpdateMaterial requires the caller to echo
 	// the version it read and bumps it on success; a stale echo yields ErrMaterialConflict.
 	LockVersion int       `db:"lock_version"`
@@ -353,13 +356,14 @@ const (
 )
 
 // ValidMaterialPriceSources is the storable set for material_price.source — the single source of
-// truth mirrored by the DB CHECK (chk_material_price_source, migration 0158). source was previously
+// truth mirrored by the DB CHECK (chk_material_price_source, latest definition in migration 0455). source was previously
 // the only PLM field with no validation at all (A3.4), so a typo silently entered the append-only
 // price history.
 var ValidMaterialPriceSources = map[string]bool{
 	MaterialPriceSourceManual:        true,
 	MaterialPriceSourceProductionRun: true,
 	MaterialPriceSourcePurchase:      true,
+	MaterialPriceSourceConversion:    true,
 }
 
 // MaterialPrice is one point in a material's append-only price history. The latest row with

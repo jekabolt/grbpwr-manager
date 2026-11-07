@@ -71,7 +71,8 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		MaterialId int             `db:"material_id"`
 		Received   decimal.Decimal `db:"received_qty"`
 		Remaining  decimal.Decimal `db:"remaining_qty"`
-	}](ctx, db, `SELECT material_id, received_qty, remaining_qty FROM material_lot WHERE id = :id FOR UPDATE`,
+		Shrunk     decimal.Decimal `db:"shrunk_qty"`
+	}](ctx, db, `SELECT material_id, received_qty, remaining_qty, shrunk_qty FROM material_lot WHERE id = :id FOR UPDATE`,
 		map[string]any{"id": lotID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -88,7 +89,7 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		// A lot can never hold more than was ever received into it — a return naming the wrong lot
 		// would otherwise mint phantom roll stock (g25-05). The target-level outstanding cap has
 		// already passed; this guards the per-lot ledger.
-		if newRemaining.GreaterThan(lot.Received) {
+		if newRemaining.GreaterThan(lot.Received.Sub(lot.Shrunk)) {
 			return fmt.Errorf("%w: lot %d has %s remaining of %s received", entity.ErrExcessiveMaterialReturn, lotID, lot.Remaining.String(), lot.Received.String())
 		}
 	} else if lot.Remaining.LessThan(qty) {
@@ -111,7 +112,8 @@ func (s *Store) ListMaterialLots(ctx context.Context, materialID int, includeArc
 	}
 	rows, err := storeutil.QueryListNamed[entity.MaterialLot](ctx, s.DB, `
 		SELECT id, material_id, lot_code, supplier_doc, received_qty, remaining_qty, unit_cost,
-		       currency, received_at, note, archived, measured_width_cm, shade_code
+		       currency, received_at, note, archived, measured_width_cm, shade_code,
+		       shrunk_qty, washed_width_cm, shrinkage_pct
 		FROM material_lot `+where+`
 		ORDER BY received_at DESC, id DESC`, map[string]any{"m": materialID})
 	if err != nil {
@@ -145,11 +147,11 @@ func (s *Store) NarrowestMeasuredLotWidths(ctx context.Context, materialIDs []in
 		MaterialId int             `db:"material_id"`
 		WidthCm    decimal.Decimal `db:"width_cm"`
 	}](ctx, s.DB, `
-		SELECT material_id, MIN(measured_width_cm) AS width_cm
+		SELECT material_id, MIN(COALESCE(washed_width_cm, measured_width_cm)) AS width_cm
 		FROM material_lot
 		WHERE material_id IN (:ids)
 		  AND archived = FALSE
-		  AND measured_width_cm IS NOT NULL
+		  AND COALESCE(washed_width_cm, measured_width_cm) IS NOT NULL
 		  AND remaining_qty > 0
 		GROUP BY material_id`, map[string]any{"ids": materialIDs})
 	if err != nil {

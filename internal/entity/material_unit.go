@@ -75,6 +75,20 @@ func NormalizeMaterialUnit(s string) (MaterialUnit, bool) {
 	return u, ok
 }
 
+// IsCountableMaterialUnit reports whether quantities in s must be whole numbers.
+func IsCountableMaterialUnit(s string) bool {
+	u, ok := NormalizeMaterialUnit(s)
+	if !ok {
+		return false
+	}
+	switch u {
+	case MaterialUnitPcs, MaterialUnitPair, MaterialUnitSet, MaterialUnitCone, MaterialUnitRoll:
+		return true
+	default:
+		return false
+	}
+}
+
 // CanonicalMaterialUnit returns the canonical spelling of a free-text unit, or the trimmed original
 // when the vocabulary does not know it — the Go twin of migration 0271's CASE plus its `ELSE unit`
 // arm, which is why it is worth having and testing even though nothing calls it at runtime.
