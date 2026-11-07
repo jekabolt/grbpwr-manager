@@ -63,6 +63,33 @@ func TestStyleSizeChartPatternProvenance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, legacy.ShrinkagePct.Valid, "a save without points keeps the card shrinkage override")
 	require.True(t, legacy.ShrinkagePct.Decimal.Equal(shrink))
+
+	// A cell with no point row gets one from the server. Only an old client's row is public.
+	var otherID int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT MIN(id) FROM measurement_name WHERE id > ?", measurementID).Scan(&otherID))
+	other := entity.StyleSizeChartCell{SizeID: fx.sizeA, MeasurementNameID: otherID,
+		Value: decimal.RequireFromString("40"), Source: entity.StyleSizeChartCellSourceManual}
+	inShopOf := func(c entity.StyleSizeChart, id int) bool {
+		for _, p := range c.Points {
+			if p.MeasurementNameID == id {
+				return p.InShop
+			}
+		}
+		t.Fatalf("no point for measurement %d", id)
+		return false
+	}
+	fresh, err := T.UpdateStyleSizeChart(ctx, fx.cardID, legacy.LockVersion,
+		[]entity.StyleSizeChartCell{cell, other}, 0, nil, legacy.Points[:1], true, nil)
+	require.NoError(t, err)
+	require.False(t, inShopOf(fresh, otherID), "a new client's unsent row stays off the shop")
+	cleared, err := T.UpdateStyleSizeChart(ctx, fx.cardID, fresh.LockVersion,
+		[]entity.StyleSizeChartCell{cell}, 0, nil, fresh.Points[:1], true, nil)
+	require.NoError(t, err)
+	old, err := T.UpdateStyleSizeChart(ctx, fx.cardID, cleared.LockVersion,
+		[]entity.StyleSizeChartCell{cell, other}, 0, nil, nil, false, nil)
+	require.NoError(t, err)
+	require.True(t, inShopOf(old, otherID), "an old client's row stays public, as before points")
 }
 
 // TestStyleSizeChartPointsMigrationReplaysOverExistingCells simulates the important upgrade shape:

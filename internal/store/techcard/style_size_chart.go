@@ -216,7 +216,9 @@ func reconcileStyleSizeChartPoints(
 		maxPosition++
 		points = append(points, entity.StyleSizeChartPoint{
 			MeasurementNameID: measurementID, Position: maxPosition,
-			TolMinusCm: decimal.NewFromInt(1), TolPlusCm: decimal.NewFromInt(1), InShop: true,
+			// An old client's implicit row keeps the storefront unchanged (public, as before points
+			// existed). A new client owns the flag: a row it did not send stays off the shop.
+			TolMinusCm: decimal.NewFromInt(1), TolPlusCm: decimal.NewFromInt(1), InShop: !pointsSet,
 		})
 	}
 	if err := entity.ValidateStyleSizeChartPoints(points); err != nil {
