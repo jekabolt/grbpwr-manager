@@ -1,0 +1,157 @@
+package dto
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+)
+
+// CarryStoredGarmentLabelGeometry protects geometry and operation links from an older whole-card
+// client. Label key is a human-facing kind/name, so it is the only address that client can echo;
+// matching is allowed only when it identifies exactly one stored row.
+func CarryStoredGarmentLabelGeometry(stored, in *entity.TechCardInsert) {
+	if stored == nil || in == nil {
+		return
+	}
+	allLabelsOmittedKeys := true
+	for i := range in.GarmentLabels {
+		if strings.TrimSpace(in.GarmentLabels[i].LineKey) != "" {
+			allLabelsOmittedKeys = false
+			break
+		}
+	}
+	allOperationsOmittedKeys := true
+	for i := range in.Operations {
+		if len(in.Operations[i].LabelKeys) != 0 {
+			allOperationsOmittedKeys = false
+			break
+		}
+	}
+
+	if !in.LabelsAware {
+		in.GarmentLabels = cloneGarmentLabels(stored.GarmentLabels)
+	} else {
+		byKey := make(map[string][]*entity.TechCardGarmentLabel, len(stored.GarmentLabels))
+		for i := range stored.GarmentLabels {
+			row := &stored.GarmentLabels[i]
+			key := strings.ToLower(strings.TrimSpace(row.Key))
+			byKey[key] = append(byKey[key], row)
+		}
+		for i := range in.GarmentLabels {
+			row := &in.GarmentLabels[i]
+			if strings.TrimSpace(row.LineKey) != "" {
+				continue
+			}
+			matches := byKey[strings.ToLower(strings.TrimSpace(row.Key))]
+			if len(matches) != 1 {
+				continue
+			}
+			row.LineKey = matches[0].LineKey
+			row.WidthMm = matches[0].WidthMm
+			row.HeightMm = matches[0].HeightMm
+			row.Fold = matches[0].Fold
+		}
+	}
+
+	if !allLabelsOmittedKeys || !allOperationsOmittedKeys {
+		return
+	}
+	liveLabels := make(map[string]bool, len(in.GarmentLabels))
+	for i := range in.GarmentLabels {
+		if key := normalizeGarmentLabelLineKey(in.GarmentLabels[i].LineKey); key != "" {
+			liveLabels[key] = true
+		}
+	}
+	storedOperations := make(map[int32]*entity.TechCardOperation, len(stored.Operations))
+	for i := range stored.Operations {
+		if n := stored.Operations[i].OperationNumber; n.Valid {
+			storedOperations[n.Int32] = &stored.Operations[i]
+		}
+	}
+	for i := range in.Operations {
+		op := &in.Operations[i]
+		if !op.OperationNumber.Valid {
+			continue
+		}
+		prev := storedOperations[op.OperationNumber.Int32]
+		if prev == nil {
+			continue
+		}
+		seen := make(map[string]bool, len(prev.LabelKeys))
+		for _, raw := range prev.LabelKeys {
+			key := normalizeGarmentLabelLineKey(raw)
+			if key == "" || !liveLabels[key] || seen[key] {
+				continue
+			}
+			seen[key] = true
+			op.LabelKeys = append(op.LabelKeys, key)
+		}
+	}
+}
+
+func cloneGarmentLabels(in []entity.TechCardGarmentLabel) []entity.TechCardGarmentLabel {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]entity.TechCardGarmentLabel, len(in))
+	copy(out, in)
+	for i := range out {
+		out[i].MediaIds = append([]int(nil), in[i].MediaIds...)
+		out[i].Files = append([]entity.TechCardGarmentLabelFile(nil), in[i].Files...)
+	}
+	return out
+}
+
+func normalizeGarmentLabelLineKey(key string) string {
+	return strings.ToUpper(strings.TrimSpace(key))
+}
+
+// finalizeGarmentLabelGeometry runs after the private compatibility carry and before any operation
+// is written or a sign-off is stamped. It mints missing keys, enforces the shared key space, and
+// checks every operation link against the effective labels of this payload.
+func finalizeGarmentLabelGeometry(in *entity.TechCardInsert) error {
+	taken := make(map[string]string, len(in.Pieces)+len(in.CutStrips)+len(in.GarmentLabels))
+	for i := range in.Pieces {
+		if key := normalizeGarmentLabelLineKey(in.Pieces[i].LineKey); key != "" {
+			taken[key] = fmt.Sprintf("pieces[%d].line_key", i)
+		}
+	}
+	for i := range in.CutStrips {
+		if key := normalizeGarmentLabelLineKey(in.CutStrips[i].LineKey); key != "" {
+			taken[key] = fmt.Sprintf("cut_strips[%d].line_key", i)
+		}
+	}
+	live := make(map[string]bool, len(in.GarmentLabels))
+	for i := range in.GarmentLabels {
+		path := fmt.Sprintf("garment_labels[%d].line_key", i)
+		key := normalizeGarmentLabelLineKey(in.GarmentLabels[i].LineKey)
+		if key == "" {
+			minted, err := mintTechCardLineKey()
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			key = minted
+		}
+		if !entity.IsValidProductionRunLineKey(key) {
+			return entity.NewFieldViolation(path, "invalid", in.GarmentLabels[i].LineKey, "a 26-character ULID")
+		}
+		if owner, exists := taken[key]; exists {
+			return entity.NewFieldViolation(path, "duplicate", owner, "each piece, cut strip and label has its own key")
+		}
+		taken[key] = path
+		live[key] = true
+		in.GarmentLabels[i].LineKey = key
+	}
+	for i := range in.Operations {
+		for j := range in.Operations[i].LabelKeys {
+			key := normalizeGarmentLabelLineKey(in.Operations[i].LabelKeys[j])
+			in.Operations[i].LabelKeys[j] = key
+			if !live[key] {
+				return entity.NewFieldViolation(fmt.Sprintf("operations[%d].label_keys[%d]", i, j),
+					"label_missing", key, "a garment label of this card")
+			}
+		}
+	}
+	return nil
+}

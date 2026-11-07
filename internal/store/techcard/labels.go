@@ -177,15 +177,21 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		}
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_garment_label
-				(tech_card_id, label_key, placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
+				(tech_card_id, label_key, line_key, width_mm, height_mm, fold,
+				 placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
 				 callout_number, artwork_per_size, artwork_per_colorway,
 				 label_source, label_kind, made_by, print_method, length_cm)
-			VALUES (:tech_card_id, :label_key, :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
+			VALUES (:tech_card_id, :label_key, :line_key, :width_mm, :height_mm, :fold,
+				 :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
 				 :callout_number, :artwork_per_size, :artwork_per_colorway,
 				 :label_source, :label_kind, :made_by, :print_method, :length_cm)`,
 			map[string]any{
 				"tech_card_id":         tcID,
 				"label_key":            l.Key,
+				"line_key":             l.LineKey,
+				"width_mm":             l.WidthMm,
+				"height_mm":            l.HeightMm,
+				"fold":                 l.Fold,
 				"placement":            l.Placement,
 				"attachment":           l.Attachment,
 				"folding":              l.Folding,
@@ -438,17 +444,21 @@ type careLabelFiberRow struct {
 }
 
 type garmentLabelRow struct {
-	Id            int            `db:"id"`
-	TechCardID    int            `db:"tech_card_id"`
-	Key           string         `db:"label_key"`
-	Placement     sql.NullString `db:"placement"`
-	Attachment    sql.NullString `db:"attachment"`
-	Folding       sql.NullString `db:"folding"`
-	Size          sql.NullString `db:"size"`
-	QtyPerGarment int            `db:"qty_per_garment"`
-	BomItemId     sql.NullInt32  `db:"bom_item_id"`
-	BomLineKey    sql.NullString `db:"bom_line_key"`
-	Note          sql.NullString `db:"note"`
+	Id            int                 `db:"id"`
+	TechCardID    int                 `db:"tech_card_id"`
+	Key           string              `db:"label_key"`
+	LineKey       sql.NullString      `db:"line_key"`
+	WidthMm       decimal.NullDecimal `db:"width_mm"`
+	HeightMm      decimal.NullDecimal `db:"height_mm"`
+	Fold          sql.NullString      `db:"fold"`
+	Placement     sql.NullString      `db:"placement"`
+	Attachment    sql.NullString      `db:"attachment"`
+	Folding       sql.NullString      `db:"folding"`
+	Size          sql.NullString      `db:"size"`
+	QtyPerGarment int                 `db:"qty_per_garment"`
+	BomItemId     sql.NullInt32       `db:"bom_item_id"`
+	BomLineKey    sql.NullString      `db:"bom_line_key"`
+	Note          sql.NullString      `db:"note"`
 
 	CalloutNumber      int  `db:"callout_number"`
 	ArtworkPerSize     bool `db:"artwork_per_size"`
@@ -631,7 +641,8 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	}
 
 	glRows, err := storeutil.QueryListNamed[garmentLabelRow](ctx, s.DB, `
-		SELECT l.id, l.tech_card_id, l.label_key, l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
+		SELECT l.id, l.tech_card_id, l.label_key, l.line_key, l.width_mm, l.height_mm, l.fold,
+			l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
 			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway,
 			l.label_source, l.label_kind, l.made_by, l.print_method, l.length_cm
 		FROM tech_card_garment_label l
@@ -656,7 +667,8 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	glByCard := make(map[int][]entity.TechCardGarmentLabel, len(ids))
 	for _, r := range glRows {
 		glByCard[r.TechCardID] = append(glByCard[r.TechCardID], entity.TechCardGarmentLabel{
-			Key: r.Key, Placement: r.Placement, Attachment: r.Attachment, Folding: r.Folding, Size: r.Size,
+			Key: r.Key, LineKey: r.LineKey.String, WidthMm: r.WidthMm, HeightMm: r.HeightMm, Fold: r.Fold,
+			Placement: r.Placement, Attachment: r.Attachment, Folding: r.Folding, Size: r.Size,
 			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, BomLineKey: r.BomLineKey.String,
 			Note: r.Note, MediaIds: glMedia[r.Id],
 			CalloutNumber: r.CalloutNumber, ArtworkPerSize: r.ArtworkPerSize, ArtworkPerColorway: r.ArtworkPerColorway,

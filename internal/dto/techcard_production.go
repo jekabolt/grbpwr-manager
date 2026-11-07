@@ -465,6 +465,13 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, err
 		}
 
+		// Garment labels attached or hung by this step. They are not assembly inputs; only shape and
+		// within-step set semantics are handled here. Card membership follows label carry/minting.
+		labelKeys, err := operationLabelKeysFromPb(i, o.LabelKeys)
+		if err != nil {
+			return nil, err
+		}
+
 		// Порядок слоёв шага (0445): только форма, с входами не сверяется.
 		layerOrder, err := operationLayerOrderFromPb(i, o.LayerOrder)
 		if err != nil {
@@ -544,6 +551,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Media:                 media,
 			SeamKeys:              seamKeys,
 			FoldKeys:              foldKeys,
+			LabelKeys:             labelKeys,
 			LayerOrder:            layerOrder,
 			SeamToleranceMm:       seamTolerance,
 
@@ -974,6 +982,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			SeamKeys:              o.SeamKeys,
 			FoldKeys:              o.FoldKeys,
+			LabelKeys:             o.LabelKeys,
 			LayerOrder:            o.LayerOrder,
 			SeamToleranceMm:       pbDecimalFromNull(o.SeamToleranceMm),
 

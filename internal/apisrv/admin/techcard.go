@@ -507,6 +507,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		// A client that does not know about strips echoes their keys in the step inputs. The stored
 		// strips are what makes those keys strips and not dangling units.
 		entity.CarryStoredCutStrips(tc, &stored.TechCardInsert)
+		// A pre-0454 client cannot echo label geometry or step links. Carry them before the converter
+		// mints missing label keys and validates operation membership.
+		dto.CarryStoredGarmentLabelGeometry(&stored.TechCardInsert, tc)
 	})
 	if err != nil {
 		return nil, techCardConvertErr(err)

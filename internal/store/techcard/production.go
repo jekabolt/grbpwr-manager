@@ -183,7 +183,9 @@ func requireEquipmentProfileKey(key, field string) error {
 	return nil
 }
 
-func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation, bomRes bomResolver) error {
+func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation,
+	labels []entity.TechCardGarmentLabel, bomRes bomResolver,
+) error {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -329,6 +331,9 @@ func insertTechCardOperations(ctx context.Context, db dependency.DB, tcID int, o
 		return fmt.Errorf("failed to insert tech card operations: %w", err)
 	}
 	if err := insertTechCardOperationInputs(ctx, db, tcID, ops); err != nil {
+		return err
+	}
+	if err := insertTechCardOperationLabels(ctx, db, tcID, ops, labels); err != nil {
 		return err
 	}
 	if err := insertTechCardOperationMedia(ctx, db, tcID, ops); err != nil {
@@ -1170,6 +1175,20 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 			continue
 		}
 		opsByCard[pos.cardID][pos.index].FoldKeys = keys
+	}
+
+	// The garment labels each step attaches or hangs (0454). These are not assembly inputs and are
+	// read from their own soft-key link table.
+	labelKeysByOp, err := loadOperationLabelKeys(ctx, s.DB, ids)
+	if err != nil {
+		return err
+	}
+	for opID, keys := range labelKeysByOp {
+		pos, ok := posByOpID[opID]
+		if !ok {
+			continue
+		}
+		opsByCard[pos.cardID][pos.index].LabelKeys = keys
 	}
 
 	// Operation -> BOM-line links (0200), same keying as the piece links above.

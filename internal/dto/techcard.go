@@ -1117,9 +1117,12 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 	if prepare != nil {
 		prepare(insert)
 	}
+	if err := finalizeGarmentLabelGeometry(insert); err != nil {
+		return nil, err
+	}
 	// --- РЕЕСТР ПОСТ-ПРОХОДОВ. Порядок обязателен, а не сложился ---------------------------------
 	//
-	//     private prepare → canonicalizeAssembly → release gates → StampTechCardSignoffDigests
+	//     private prepare → label mint/link validation → canonicalizeAssembly → release gates → StampTechCardSignoffDigests
 	//
 	// Канонизация МУТИРУЕТ разобранный payload: классифицирует входы операций в «деталь или
 	// узел», пересобирает PieceLineKeys как проекцию объединения и переносит имя узла на первого

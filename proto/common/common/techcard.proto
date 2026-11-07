@@ -2984,6 +2984,10 @@ message TechCardOperation {
   // operation_seam_tolerance_aware (132). Enters no section digest.
   google.type.Decimal seam_tolerance_mm = 76;
 
+  // The labels this step attaches or hangs, by TechCardGarmentLabel.line_key. Not an assembly input. A key
+  // that names no label of the saved card is a field violation.
+  repeated string label_keys = 77;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3094,7 +3098,7 @@ message TechCardGarmentLabel {
   string key = 1; // required, ≤ 64; brand / size / flag / hangtag / barcode / special or a custom name
   string placement = 2; // where on the garment
   string attachment = 3; // how it is attached / where it is inserted
-  string folding = 4; // how the label is folded
+  string folding = 4; // legacy free note, see fold
   string size = 5; // free text, mm
   int32 qty_per_garment = 6; // ≥ 1; 0 = 1
   int32 bom_item_id = 7; // FK to a BOM line of THIS card; 0 = none
@@ -3104,8 +3108,8 @@ message TechCardGarmentLabel {
   // same save (no id yet). Non-empty wins over bom_item_id on write; the read path returns it too.
   // A key that names no line of the payload BOM is cleared, it never breaks a save.
   string bom_line_key = 10;
-  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. The label holds no
-  // geometry. A number no callout carries any more is cleared on write, it never breaks a save.
+  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. A number no callout
+  // carries any more is cleared on write, it never breaks a save.
   int32 callout_number = 11;
   // Artwork per size (true) or one for all sizes (false). PRESENCE BIT: a client that knows this block
   // always sends it; absent means an older client, whose save keeps the stored pin, modes and files.
@@ -3125,6 +3129,15 @@ message TechCardGarmentLabel {
   string print_method = 18; // screen / digital / flexo / foil; only with source make
   // Per garment length in cm, for goods sold by the metre; unset or 0 = counted in qty_per_garment.
   google.type.Decimal length_cm = 19;
+  // Stable key, 26-character ULID minted by the client like a BOM line key; empty is minted by the server.
+  // Unique per card. Shares the key space of the pieces and the cut strips: a pose row of the seam table may
+  // name it, which is how a step's picture keeps the label where it was dragged.
+  string line_key = 20;
+  google.type.Decimal width_mm = 21; // label width, mm; unset = unknown
+  google.type.Decimal height_mm = 22; // label height, mm; unset = unknown
+  // flat | half | ends | mitre | loop; "" = not set. THE fold. `folding` (4) is a legacy free note kept for
+  // display only: migration 0454 moved every unambiguous text into this field and cleared it.
+  string fold = 23;
 }
 
 // TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.

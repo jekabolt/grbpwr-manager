@@ -761,6 +761,9 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// it knows them (labels_aware): an older bundle's payload cannot tell «none» from «never heard of
 	// them», so without the flag both stored lists are kept and nothing of them is inserted.
 	preserveLabelLists := !tc.LabelsAware
+	if err := reconcileRemovedGarmentLabelSeams(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
 	// Read from the labels stored now, so before they are cleared below.
 	if err := product.ReleasePickedLines(ctx, rep.DB(), id, tc); err != nil {
 		return nil, err
@@ -1664,6 +1667,9 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 // its id is stamped on every pattern row the save archives. Create/import callers pass nil because
 // a new card has no outgoing pattern state.
 func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert, snapshotIDForArchive func(string) (int64, error)) error {
+	if err := prepareGarmentLabelKeys(tc); err != nil {
+		return err
+	}
 	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
@@ -1741,7 +1747,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := upsertTechCardCutStrips(ctx, db, id, tc, bomRes); err != nil {
 		return err
 	}
-	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
+	if err := insertTechCardOperations(ctx, db, id, tc.Operations, tc.GarmentLabels, bomRes); err != nil {
 		return err
 	}
 	// The seams each step sews (0434). After the operations (ids re-read by display_order), checked

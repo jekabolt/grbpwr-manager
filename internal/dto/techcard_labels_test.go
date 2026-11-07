@@ -150,6 +150,8 @@ func TestLabelsReworkRoundTrip(t *testing.T) {
 			Size: "15x60", QtyPerGarment: 1, BomItemId: 3, Note: "n", MediaIds: []int32{8, 2},
 			BomLineKey: "k1", CalloutNumber: 4, ArtworkPerSize: &perSize, ArtworkPerColorway: true,
 			Source: &source, Kind: "brand", MadeBy: "printed", PrintMethod: "screen", LengthCm: &pb_decimal.Decimal{Value: "6.5"},
+			LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", WidthMm: &pb_decimal.Decimal{Value: "60.25"},
+			HeightMm: &pb_decimal.Decimal{Value: "15"}, Fold: "ends",
 			Files: []*pb_common.TechCardGarmentLabelFile{{ColorwayId: 7, SizeId: 2, LibraryFileId: 9, SourceHash: "h"}}}},
 		PackagingItems: []*pb_common.TechCardPackagingItem{{Key: "polybag", Usage: "each", Packing: "folded", Size: "30x40",
 			QtyPerGarment: 2, BomItemId: 4, Note: "m", MediaIds: []int32{6}, BomLineKey: "k2"}},

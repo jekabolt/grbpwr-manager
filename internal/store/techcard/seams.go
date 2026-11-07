@@ -113,6 +113,8 @@ type seamSources struct {
 	// strips are the cut strips of the card. No fabric sheet draws a strip, so a strip end has no scope
 	// of its own: left in, it would read as an unlinked piece and any re-upload would stale the seam.
 	strips map[string]bool
+	// labels follow the same rule: a pose may place one, but no pattern sheet draws it.
+	labels map[string]bool
 }
 
 func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*seamSources, error) {
@@ -140,7 +142,17 @@ func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*se
 	for _, k := range stripKeys {
 		strips[entity.CutStripLineKey(k)] = true
 	}
-	return &seamSources{sheets: sheets, blocks: blocks, memo: map[string]string{}, strips: strips}, nil
+	labelKeys, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT line_key FROM tech_card_garment_label
+		WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load garment label keys of tech card %d: %w", techCardID, err)
+	}
+	labels := make(map[string]bool, len(labelKeys))
+	for _, k := range labelKeys {
+		labels[entity.CutStripLineKey(k)] = true
+	}
+	return &seamSources{sheets: sheets, blocks: blocks, memo: map[string]string{}, strips: strips, labels: labels}, nil
 }
 
 func (s *seamSources) fingerprint(pieceKeys []string) string {
@@ -150,7 +162,8 @@ func (s *seamSources) fingerprint(pieceKeys []string) string {
 	}
 	fabric := make([]string, 0, len(pieceKeys))
 	for _, p := range pieceKeys {
-		if !s.strips[entity.CutStripLineKey(p)] {
+		key := entity.CutStripLineKey(p)
+		if !s.strips[key] && !s.labels[key] {
 			fabric = append(fabric, p)
 		}
 	}
@@ -238,6 +251,17 @@ func writeTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int,
 			return fmt.Errorf("load strip keys of tech card %d: %w", techCardID, err)
 		}
 		for _, k := range strips {
+			mine[strings.ToUpper(strings.TrimSpace(k))] = true
+		}
+		// A garment label of the same card is a legitimate pose anchor (0454). Like a strip it
+		// shares the piece key space but is not a fabric sheet source.
+		labels, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT line_key FROM tech_card_garment_label
+			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load garment label keys of tech card %d: %w", techCardID, err)
+		}
+		for _, k := range labels {
 			mine[strings.ToUpper(strings.TrimSpace(k))] = true
 		}
 		for i, seam := range seams {
