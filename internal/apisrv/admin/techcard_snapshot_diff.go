@@ -67,7 +67,7 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	if after.GetMeasurementUnit() == pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
 		after.MeasurementUnit = before.GetMeasurementUnit()
 	}
-	if after.GetAuxMadeBy() == pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED &&
+	if after.GetAuxMadeBy() == pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN &&
 		after.GetPurpose() == pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY {
 		after.AuxMadeBy = before.GetAuxMadeBy() // aux: absent keeps the stored value
 	}

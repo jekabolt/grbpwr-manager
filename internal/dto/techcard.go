@@ -812,12 +812,12 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		}
 		auxSubtype = sql.NullString{String: string(st), Valid: true}
 	}
-	// 0456 aux_made_by: UNSPECIFIED on an aux card = keep the stored value (none reads us). A value on a
+	// 0456 aux_made_by: UNKNOWN on an aux card = keep the stored value (none reads us). A value on a
 	// sellable card is refused, like aux_subtype; a sellable card always stores NULL, so nothing is
 	// omitted there.
 	var auxMadeBy sql.NullString
-	auxMadeByOmitted := purpose == entity.TechCardPurposeAuxiliary && pb.AuxMadeBy == pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED
-	if pb.AuxMadeBy != pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED {
+	auxMadeByOmitted := purpose == entity.TechCardPurposeAuxiliary && pb.AuxMadeBy == pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
+	if pb.AuxMadeBy != pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN {
 		if purpose != entity.TechCardPurposeAuxiliary {
 			return nil, fmt.Errorf("aux_made_by is only for auxiliary cards")
 		}
@@ -5033,12 +5033,12 @@ var auxMadeByFromPb = map[pb_common.AuxMadeBy]string{
 	pb_common.AuxMadeBy_AUX_MADE_BY_SUPPLIER: entity.AuxMadeBySupplier,
 }
 
-// auxMadeByToPb reads who makes the card's item: UNSPECIFIED on a sellable card, SUPPLIER only for an
+// auxMadeByToPb reads who makes the card's item: UNKNOWN on a sellable card, SUPPLIER only for an
 // explicit 'supplier', otherwise US (NULL on an aux card reads as made by us).
 func auxMadeByToPb(tc *entity.TechCardInsert) pb_common.AuxMadeBy {
 	switch {
 	case !tc.IsAuxiliary():
-		return pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED
+		return pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
 	case tc.AuxBoughtFinished():
 		return pb_common.AuxMadeBy_AUX_MADE_BY_SUPPLIER
 	}

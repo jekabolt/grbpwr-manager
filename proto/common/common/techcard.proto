@@ -470,10 +470,10 @@ enum TechCardAuxSubtype {
 
 // AuxMadeBy says who makes an AUXILIARY card's item (0456). US: made from the card's BOM, whose norms
 // (consumption_per_unit, qty_per_garment + spare_qty) are costed and planned. SUPPLIER: bought
-// finished; the supplier's price is the cost and no material is reserved or issued. UNSPECIFIED on
+// finished; the supplier's price is the cost and no material is reserved or issued. UNKNOWN on
 // write = keep the stored value (an aux card with none reads US). Only for purpose=auxiliary.
 enum AuxMadeBy {
-  AUX_MADE_BY_UNSPECIFIED = 0;
+  AUX_MADE_BY_UNKNOWN = 0;
   AUX_MADE_BY_US = 1;
   AUX_MADE_BY_SUPPLIER = 2;
 }

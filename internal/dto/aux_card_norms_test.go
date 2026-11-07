@@ -217,7 +217,7 @@ func TestAuxNormsWire(t *testing.T) {
 	})
 	t.Run("aux_made_by unspecified keeps the stored value", func(t *testing.T) {
 		pb := auxNormsPb()
-		pb.AuxMadeBy = pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED
+		pb.AuxMadeBy = pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
 		got, err := ConvertPbTechCardInsertToEntity(pb)
 		require.NoError(t, err)
 		require.False(t, got.AuxMadeBy.Valid)
@@ -232,7 +232,7 @@ func TestAuxNormsWire(t *testing.T) {
 	})
 	t.Run("refused on a sellable card", func(t *testing.T) {
 		pb := auxNormsPb()
-		pb.Purpose, pb.OutputMaterialId, pb.AuxMadeBy = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN, 0, pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED
+		pb.Purpose, pb.OutputMaterialId, pb.AuxMadeBy = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_UNKNOWN, 0, pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
 		_, err := ConvertPbTechCardInsertToEntity(pb)
 		cutRequireViolation(t, err, "bom_items[0].consumption_per_unit", "aux_only")
 
@@ -296,7 +296,7 @@ func TestAuxNormsToPb(t *testing.T) {
 	require.Equal(t, pb_common.AuxMadeBy_AUX_MADE_BY_US, ConvertEntityTechCardToPb(card, fx).GetTechCard().GetAuxMadeBy(),
 		"NULL on an aux card reads as made by us")
 	card.Purpose = entity.TechCardPurposeSellable
-	require.Equal(t, pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED, ConvertEntityTechCardToPb(card, fx).GetTechCard().GetAuxMadeBy())
+	require.Equal(t, pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN, ConvertEntityTechCardToPb(card, fx).GetTechCard().GetAuxMadeBy())
 }
 
 func TestAuxNormDigest(t *testing.T) {
@@ -351,7 +351,7 @@ func TestAuxReleaseRestorerCarriesTheNorms(t *testing.T) {
 		for _, b := range old.GetTechCard().GetBomItems() {
 			b.ConsumptionPerUnit = nil
 		}
-		old.GetTechCard().AuxMadeBy = pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED
+		old.GetTechCard().AuxMadeBy = pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
 		restored := releaseCostingCardFromSnapshot(old)
 		require.False(t, restored.AuxMadeBy.Valid, "NULL reads as made by us")
 		unit, _ := ComputeTechCardUnitCost(restored, CostingFx{})
