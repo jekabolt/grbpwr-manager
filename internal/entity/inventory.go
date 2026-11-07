@@ -53,9 +53,6 @@ var (
 	ErrConversionOutputPurchased = errors.New("conversion output has purchase receipts")
 	// ErrMaterialMadeNotPurchasable is the reverse guard: a made material cannot receive purchases.
 	ErrMaterialMadeNotPurchasable = errors.New("made material cannot receive purchase stock")
-	// ErrMaterialConversionLotRequired is returned when a conversion input names no lot although a
-	// live lot of that material covers the quantity: the lot ledger would drift from the shelf.
-	ErrMaterialConversionLotRequired = errors.New("choose a lot")
 	// ErrMaterialLotStale fences a shrink request measured against an older lot balance.
 	ErrMaterialLotStale = errors.New("material lot quantity changed; reload and retry")
 )

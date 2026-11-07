@@ -443,8 +443,7 @@ func mapInventoryErr(ctx context.Context, what string, err error) error {
 	case errors.Is(err, entity.ErrMaterialConversionUncosted),
 		errors.Is(err, entity.ErrMaterialConversionNoFxRate),
 		errors.Is(err, entity.ErrConversionOutputPurchased),
-		errors.Is(err, entity.ErrMaterialMadeNotPurchasable),
-		errors.Is(err, entity.ErrMaterialConversionLotRequired):
+		errors.Is(err, entity.ErrMaterialMadeNotPurchasable):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, entity.ErrMaterialConversionPrecision),
 		errors.Is(err, entity.ErrMaterialConversionInvalid),

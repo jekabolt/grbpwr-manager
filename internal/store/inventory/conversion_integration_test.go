@@ -527,39 +527,70 @@ func TestMaterialShrinkageDBUncosted(t *testing.T) {
 	assert.True(t, result.MaterialShrinkagePct.Decimal.Equal(d("5")))
 }
 
-func TestMaterialConversionDBLotRequiredWhenALotCovers(t *testing.T) {
+func TestMaterialConversionDBLotlessDrawsLotsOldestFirst(t *testing.T) {
 	f := newConversionFixture(t)
 	ctx := context.Background()
+	lotRemaining := func(id sql.NullInt32) decimal.Decimal {
+		t.Helper()
+		var r decimal.Decimal
+		require.NoError(t, f.raw.QueryRow(`SELECT remaining_qty FROM material_lot WHERE id = ?`, id.Int32).Scan(&r))
+		return r
+	}
+
+	// Two rolls, neither covers 10 m alone: both empty, value leaves at the average.
 	input := f.material("m", entity.MaterialClassFabric)
 	output := f.material("pcs", entity.MaterialClassOther)
-	received := f.receipt(input, "20", "4.20", "E-LOT-"+uuid.NewString()[:8], decimal.NullDecimal{})
-	require.True(t, received.LotId.Valid)
-
-	_, err := f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(input, output, "10", "200"))
-	assert.ErrorIs(t, err, entity.ErrMaterialConversionLotRequired)
-	assertStock(t, f.rep, input, "20", "4.2")
-	var outRows int
-	require.NoError(t, f.raw.QueryRow(`SELECT COUNT(*) FROM material_stock WHERE material_id = ? AND on_hand > 0`, output).Scan(&outRows))
-	assert.Zero(t, outRows, "a refused conversion must not create output stock")
-
-	withLot := f.convert(input, output, "10", "200")
-	withLot.Inputs[0].LotId = received.LotId
-	withLot.WorkCost, withLot.WorkCurrency = d("50"), "EUR"
-	conv, err := f.rep.MaterialStock().ConvertMaterialStock(ctx, withLot)
+	older := f.receipt(input, "6", "4", "E-OLD-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	newer := f.receipt(input, "4", "6", "E-NEW-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	_, err := f.raw.Exec(`UPDATE material_lot SET received_at = ? WHERE id = ?`, "2026-01-01", older.LotId.Int32)
 	require.NoError(t, err)
-	assert.True(t, conv.TotalCostBase.Equal(d("92")))
-	assert.True(t, conv.OutputUnitCostBase.Equal(d("0.46")))
-	assertStock(t, f.rep, input, "10", "4.2")
-	var remaining decimal.Decimal
-	require.NoError(t, f.raw.QueryRow(`SELECT remaining_qty FROM material_lot WHERE id = ?`, received.LotId.Int32).Scan(&remaining))
-	assert.True(t, remaining.Equal(d("10")), "lot remaining %s, want 10", remaining)
+	_, err = f.raw.Exec(`UPDATE material_lot SET received_at = ? WHERE id = ?`, "2026-02-01", newer.LotId.Int32)
+	require.NoError(t, err)
+	ins := f.convert(input, output, "10", "200")
+	ins.WorkCost, ins.WorkCurrency = d("50"), "EUR"
+	conv, err := f.rep.MaterialStock().ConvertMaterialStock(ctx, ins)
+	require.NoError(t, err)
+	assert.True(t, conv.InputsValueBase.Equal(d("48")), "inputs %s, want 48", conv.InputsValueBase)
+	assert.True(t, conv.TotalCostBase.Equal(d("98")), "total %s, want 98", conv.TotalCostBase)
+	assert.True(t, conv.OutputUnitCostBase.Equal(d("0.49")), "unit %s, want 0.49", conv.OutputUnitCostBase)
+	stock, err := f.rep.MaterialStock().GetMaterialStock(ctx, input)
+	require.NoError(t, err)
+	assert.True(t, stock.OnHand.IsZero(), "on_hand %s, want 0", stock.OnHand)
+	assert.True(t, lotRemaining(older.LotId).IsZero())
+	assert.True(t, lotRemaining(newer.LotId).IsZero())
+	assertStock(t, f.rep, output, "200", "0.49")
 
-	// No lot covers 10: a short roll plus untracked stock still converts without a lot.
+	// Partial: the oldest roll goes first, the newer keeps the rest.
+	partial := f.material("m", entity.MaterialClassFabric)
+	first := f.receipt(partial, "6", "2", "E-A-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	second := f.receipt(partial, "4", "2", "E-B-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	_, err = f.raw.Exec(`UPDATE material_lot SET received_at = ? WHERE id = ?`, "2026-03-01", first.LotId.Int32)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(`UPDATE material_lot SET received_at = ? WHERE id = ?`, "2026-01-01", second.LotId.Int32)
+	require.NoError(t, err)
+	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(partial, f.material("pcs", entity.MaterialClassOther), "5", "10"))
+	require.NoError(t, err)
+	assert.True(t, lotRemaining(second.LotId).IsZero(), "older-dated roll drawn first")
+	assert.True(t, lotRemaining(first.LotId).Equal(d("5")), "newer roll %s, want 5", lotRemaining(first.LotId))
+	assertStock(t, f.rep, partial, "5", "2")
+
+	// A named lot is drawn alone, as before.
+	named := f.material("m", entity.MaterialClassFabric)
+	a := f.receipt(named, "6", "1", "E-N1-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	b := f.receipt(named, "4", "1", "E-N2-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	withLot := f.convert(named, f.material("pcs", entity.MaterialClassOther), "3", "3")
+	withLot.Inputs[0].LotId = b.LotId
+	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, withLot)
+	require.NoError(t, err)
+	assert.True(t, lotRemaining(a.LotId).Equal(d("6")))
+	assert.True(t, lotRemaining(b.LotId).Equal(d("1")))
+
+	// One roll plus stock that never had a lot: the roll empties, the rest is untracked.
 	mixed := f.material("m", entity.MaterialClassFabric)
-	f.receipt(mixed, "5", "2", "E-SHORT-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	roll := f.receipt(mixed, "5", "2", "E-SHORT-"+uuid.NewString()[:8], decimal.NullDecimal{})
 	f.receipt(mixed, "25", "2", "", decimal.NullDecimal{})
-	mixedOut := f.material("pcs", entity.MaterialClassOther)
-	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(mixed, mixedOut, "10", "20"))
+	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(mixed, f.material("pcs", entity.MaterialClassOther), "10", "20"))
 	require.NoError(t, err)
 	assertStock(t, f.rep, mixed, "20", "2")
+	assert.True(t, lotRemaining(roll.LotId).IsZero())
 }

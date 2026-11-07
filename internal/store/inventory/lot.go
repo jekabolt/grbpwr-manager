@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -99,6 +100,52 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		`UPDATE material_lot SET remaining_qty = :r WHERE id = :id`,
 		map[string]any{"r": newRemaining.Round(qtyScale), "id": lotID}); err != nil {
 		return fmt.Errorf("update material lot %d remaining: %w", lotID, err)
+	}
+	return nil
+}
+
+// drawLotsOldestFirst takes qty out of a material's live lots, oldest receipt first, when a
+// movement names no lot. Without it a lot-less draw lowered on_hand but left every roll's remaining
+// as it was (6 + 4 m in two rolls, 10 m converted: stock 0, lots still 6 + 4). Whatever the lots
+// cannot cover is stock that never had a lot and needs no lot write. Rows are locked in id order,
+// the same order lockConversionLots uses, and sorted by receipt date afterwards.
+func drawLotsOldestFirst(ctx context.Context, db dependency.DB, materialID int, qty decimal.Decimal) error {
+	if !qty.IsPositive() {
+		return nil
+	}
+	lots, err := storeutil.QueryListNamed[struct {
+		Id         int             `db:"id"`
+		Remaining  decimal.Decimal `db:"remaining_qty"`
+		ReceivedAt sql.NullTime    `db:"received_at"`
+	}](ctx, db, `
+		SELECT id, remaining_qty, received_at FROM material_lot
+		WHERE material_id = :m AND archived = FALSE AND remaining_qty > 0
+		ORDER BY id FOR UPDATE`, map[string]any{"m": materialID})
+	if err != nil {
+		return fmt.Errorf("lock material %d lots: %w", materialID, err)
+	}
+	sort.SliceStable(lots, func(i, j int) bool {
+		a, b := lots[i].ReceivedAt, lots[j].ReceivedAt
+		if a.Valid != b.Valid {
+			return a.Valid // dated lots before undated ones
+		}
+		if a.Valid && !a.Time.Equal(b.Time) {
+			return a.Time.Before(b.Time)
+		}
+		return lots[i].Id < lots[j].Id
+	})
+	left := qty
+	for _, lot := range lots {
+		if !left.IsPositive() {
+			break
+		}
+		take := decimal.Min(left, lot.Remaining)
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE material_lot SET remaining_qty = :r WHERE id = :id`,
+			map[string]any{"r": lot.Remaining.Sub(take).Round(qtyScale), "id": lot.Id}); err != nil {
+			return fmt.Errorf("update material lot %d remaining: %w", lot.Id, err)
+		}
+		left = left.Sub(take)
 	}
 	return nil
 }

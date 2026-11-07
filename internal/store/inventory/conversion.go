@@ -236,10 +236,6 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 	if outputBefore.OnHand.IsPositive() && !outputBefore.Avg.Valid {
 		return nil, fmt.Errorf("%w: output material %d has uncosted stock", entity.ErrMaterialConversionUncosted, ins.Output.MaterialId)
 	}
-	// Last guard before any write, so the money guards above keep reporting their own causes.
-	if err := requireLotWhenOneCovers(ctx, db, ins.Inputs); err != nil {
-		return nil, err
-	}
 	outputUnitCost := decimal.NullDecimal{Decimal: cost.OutputUnitCostBase, Valid: true}
 	outputAvg := blendIntoAvg(outputBefore, ins.Output.Quantity, outputUnitCost)
 	baseCurrency := strings.ToUpper(cache.GetBaseCurrency())
@@ -295,6 +291,8 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 			if err := drawFromLot(ctx, db, int(input.LotId.Int32), input.MaterialId, input.Quantity, false); err != nil {
 				return nil, err
 			}
+		} else if err := drawLotsOldestFirst(ctx, db, input.MaterialId, input.Quantity); err != nil {
+			return nil, err
 		}
 		if _, err := insertMovement(ctx, db, entity.MaterialMovement{
 			MaterialId: input.MaterialId, MovementType: entity.MaterialMovementConvertOut,
@@ -392,29 +390,6 @@ func lockConversionLots(ctx context.Context, db dependency.DB, inputs []entity.M
 		}
 		if lot.Remaining.LessThan(input.Quantity) {
 			return fmt.Errorf("%w: lot %d has %s remaining", entity.ErrInsufficientMaterialLot, lot.Id, lot.Remaining.String())
-		}
-	}
-	return nil
-}
-
-// requireLotWhenOneCovers refuses a lot-less input while a live lot of that material could cover
-// the whole quantity. Lots are drawn only when named (a plain OUT behaves the same), so a lot-less
-// conversion would leave the roll's remaining above what is really on the shelf. Stock that no lot
-// can cover (untracked, or spread over short rolls) still converts without one.
-func requireLotWhenOneCovers(ctx context.Context, db dependency.DB, inputs []entity.MaterialConversionInput) error {
-	for _, input := range inputs {
-		if input.LotId.Valid {
-			continue
-		}
-		n, err := storeutil.QueryCountNamed(ctx, db, `
-			SELECT COUNT(*) FROM material_lot
-			WHERE material_id = :material_id AND NOT archived AND remaining_qty >= :qty`,
-			map[string]any{"material_id": input.MaterialId, "qty": input.Quantity})
-		if err != nil {
-			return fmt.Errorf("check conversion input lots: %w", err)
-		}
-		if n > 0 {
-			return entity.ErrMaterialConversionLotRequired
 		}
 	}
 	return nil
