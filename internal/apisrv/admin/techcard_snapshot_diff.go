@@ -34,7 +34,7 @@ func techCardChangedSections(before, after *pb_common.TechCardInsert) []string {
 	appendGroup("name", "name")
 	appendGroup("note", "status", "notes", "mood_note", "garment_description", "flat_words", "concept")
 	appendGroup("style", "style_number", "style_number_source", "category_id", "stage", "purpose",
-		"output_material_id", "aux_subtype", "target_drop_date", "base_model_id")
+		"output_material_id", "aux_subtype", "aux_made_by", "target_drop_date", "base_model_id")
 	appendGroup("sizes", "measurement_unit", "base_sample_size_id", "size_ids", "size_quantities",
 		"required_seam_allowance_mm")
 	if n := changedBomLineCount(b.GetBomItems(), a.GetBomItems()); n > 0 {
@@ -66,6 +66,10 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	}
 	if after.GetMeasurementUnit() == pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
 		after.MeasurementUnit = before.GetMeasurementUnit()
+	}
+	if after.GetAuxMadeBy() == pb_common.AuxMadeBy_AUX_MADE_BY_UNSPECIFIED &&
+		after.GetPurpose() == pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY {
+		after.AuxMadeBy = before.GetAuxMadeBy() // aux: absent keeps the stored value
 	}
 	if after.MoodNote == nil {
 		after.MoodNote = cloneStringPtr(before.MoodNote)
@@ -333,6 +337,9 @@ func materializePreservedBomFields(before, after *pb_common.TechCardBomItem) {
 	}
 	if after.EstUsage == nil {
 		after.EstUsage = cloneMessage(before.EstUsage)
+	}
+	if after.ConsumptionPerUnit == nil {
+		after.ConsumptionPerUnit = cloneMessage(before.ConsumptionPerUnit)
 	}
 }
 

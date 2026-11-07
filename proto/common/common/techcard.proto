@@ -468,6 +468,16 @@ enum TechCardAuxSubtype {
   TECH_CARD_AUX_SUBTYPE_SPARE_KIT_BAG = 13;
 }
 
+// AuxMadeBy says who makes an AUXILIARY card's item (0456). US: made from the card's BOM, whose norms
+// (consumption_per_unit, qty_per_garment + spare_qty) are costed and planned. SUPPLIER: bought
+// finished; the supplier's price is the cost and no material is reserved or issued. UNSPECIFIED on
+// write = keep the stored value (an aux card with none reads US). Only for purpose=auxiliary.
+enum AuxMadeBy {
+  AUX_MADE_BY_UNSPECIFIED = 0;
+  AUX_MADE_BY_US = 1;
+  AUX_MADE_BY_SUPPLIER = 2;
+}
+
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
 // (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
 // comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
@@ -1048,6 +1058,12 @@ message TechCardBomItem {
   // proto3-дефолт UNSPECIFIED и стёрла бы выбор части у ВСЕХ строк карточки. Явно присланный
   // UNSPECIFIED (поле присутствует) очищает в NULL.
   optional TechCardBomLabelPart label_part = 45;
+  // AUX CARD NORM (0456): the measured norm of this line per ONE output unit of an auxiliary card, in
+  // this line's `unit`, net of wastage. Only on auxiliary cards and measured sections, never on a line
+  // cut to length (its strips give the norm); counted sections keep qty_per_garment/spare_qty.
+  // Absent = keep the stored value; explicit Decimal{value:""} clears it (the est_usage protocol).
+  // Unset = no norm: the line is unpriced and blocks the run plan, never zero.
+  google.type.Decimal consumption_per_unit = 46;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -3751,6 +3767,9 @@ message TechCardInsert {
 
   // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
   TechCardAuxSubtype aux_subtype = 105;
+  // 0456: who makes an auxiliary card's item. UNSPECIFIED = keep stored (aux default US); refused on
+  // a sellable card.
+  AuxMadeBy aux_made_by = 136;
 
   // Planning date for the overdue view (production cockpit): the calendar day this style is planned
   // to drop, the anchor a run's promised_at is judged against ("до дропа N дней / просрочен"). Owner-

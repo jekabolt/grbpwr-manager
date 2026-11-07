@@ -240,6 +240,7 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.CategoryId = current.GetCategoryId()
 	in.Purpose = current.GetPurpose()
 	in.AuxSubtype = current.GetAuxSubtype()
+	in.AuxMadeBy = current.GetAuxMadeBy()
 	in.OutputMaterialId = current.GetOutputMaterialId()
 	in.Stage = current.GetStage()
 	in.ApprovalState = current.GetApprovalState()
@@ -348,6 +349,11 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 		}
 		if b.EstUsage == nil {
 			b.EstUsage = &pb_decimal.Decimal{}
+		}
+		// The purpose stays as it is now: a norm per unit belongs to an aux card only, so a sellable one
+		// clears whatever the snapshot froze.
+		if b.ConsumptionPerUnit == nil || current.GetPurpose() != pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY {
+			b.ConsumptionPerUnit = &pb_decimal.Decimal{}
 		}
 	}
 	for _, p := range in.GetPieces() {

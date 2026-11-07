@@ -2015,6 +2015,15 @@ type TechCardBomItem struct {
 	// ТОЛЬКО явный Decimal{value:""}. Нулевое значение флага = «пиши как обычно», значит любой
 	// внутренний конструктор (тесты, сидер, клон) работает как писал.
 	EstUsageOmitted bool `db:"-"`
+	// ConsumptionPerUnit is the measured norm of an AUXILIARY card's line per one output unit, in the
+	// line's unit, net of wastage (0456). An aux card has no colourways, so its BOM is its recipe:
+	// AuxRecipe reads this for measured sections, and costing and the run plan read it through that
+	// recipe. Counted sections keep QtyPerGarment + SpareQty; a strip line takes its strips' norm.
+	// NULL = no norm (unpriced, a plan blocker), never zero. Inert on a sellable card.
+	ConsumptionPerUnit decimal.NullDecimal `db:"consumption_per_unit"`
+	// ConsumptionPerUnitOmitted: the field was absent on the wire, so the save keeps the stored value
+	// (the EstUsageOmitted protocol).
+	ConsumptionPerUnitOmitted bool `db:"-"`
 	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
 	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
 	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится
@@ -4736,8 +4745,13 @@ type TechCardInsert struct {
 	// cards and for unclassified auxiliary ones. Only meaningful when Purpose == auxiliary (DB gate
 	// chk_tech_card_aux_subtype_purpose). Additive (WS7); the sellable path never reads it.
 	AuxSubtype sql.NullString `db:"aux_subtype"`
-	Name       string         `db:"name"`
-	Brand      sql.NullString `db:"brand"`
+	// AuxMadeBy says who makes an auxiliary card's item: us (from the BOM) or supplier (bought
+	// finished, nothing reserved or issued) — 0456. NULL on sellable cards; NULL on an aux card reads
+	// as us. AuxMadeByOmitted: the wire said nothing, keep the stored value.
+	AuxMadeBy        sql.NullString `db:"aux_made_by"`
+	AuxMadeByOmitted bool           `db:"-"`
+	Name             string         `db:"name"`
+	Brand            sql.NullString `db:"brand"`
 	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
 	// It is never accepted from the public contract.
 	SeasonLabel  sql.NullString `db:"season"`
