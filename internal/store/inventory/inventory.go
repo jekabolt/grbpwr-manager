@@ -373,7 +373,7 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 			return entity.MaterialMovement{}, fmt.Errorf("lock material %d purchase guard: %w", ins.MaterialId, err)
 		}
 		if lineage.SourceMaterialId.Valid {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d", entity.ErrMaterialMadeNotPurchasable, ins.MaterialId)
+			return entity.MaterialMovement{}, entity.ErrMaterialMadeNotPurchasable
 		}
 		// A multi-input conversion leaves source_material_id NULL, so the conversion history itself is
 		// the second half of the guard.
@@ -385,7 +385,7 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 			return entity.MaterialMovement{}, fmt.Errorf("check material %d conversion history: %w", ins.MaterialId, err)
 		}
 		if made > 0 {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d", entity.ErrMaterialMadeNotPurchasable, ins.MaterialId)
+			return entity.MaterialMovement{}, entity.ErrMaterialMadeNotPurchasable
 		}
 	}
 

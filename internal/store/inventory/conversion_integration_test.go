@@ -526,3 +526,40 @@ func TestMaterialShrinkageDBUncosted(t *testing.T) {
 	assert.False(t, result.Lot.UnitCost.Valid)
 	assert.True(t, result.MaterialShrinkagePct.Decimal.Equal(d("5")))
 }
+
+func TestMaterialConversionDBLotRequiredWhenALotCovers(t *testing.T) {
+	f := newConversionFixture(t)
+	ctx := context.Background()
+	input := f.material("m", entity.MaterialClassFabric)
+	output := f.material("pcs", entity.MaterialClassOther)
+	received := f.receipt(input, "20", "4.20", "E-LOT-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	require.True(t, received.LotId.Valid)
+
+	_, err := f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(input, output, "10", "200"))
+	assert.ErrorIs(t, err, entity.ErrMaterialConversionLotRequired)
+	assertStock(t, f.rep, input, "20", "4.2")
+	var outRows int
+	require.NoError(t, f.raw.QueryRow(`SELECT COUNT(*) FROM material_stock WHERE material_id = ? AND on_hand > 0`, output).Scan(&outRows))
+	assert.Zero(t, outRows, "a refused conversion must not create output stock")
+
+	withLot := f.convert(input, output, "10", "200")
+	withLot.Inputs[0].LotId = received.LotId
+	withLot.WorkCost, withLot.WorkCurrency = d("50"), "EUR"
+	conv, err := f.rep.MaterialStock().ConvertMaterialStock(ctx, withLot)
+	require.NoError(t, err)
+	assert.True(t, conv.TotalCostBase.Equal(d("92")))
+	assert.True(t, conv.OutputUnitCostBase.Equal(d("0.46")))
+	assertStock(t, f.rep, input, "10", "4.2")
+	var remaining decimal.Decimal
+	require.NoError(t, f.raw.QueryRow(`SELECT remaining_qty FROM material_lot WHERE id = ?`, received.LotId.Int32).Scan(&remaining))
+	assert.True(t, remaining.Equal(d("10")), "lot remaining %s, want 10", remaining)
+
+	// No lot covers 10: a short roll plus untracked stock still converts without a lot.
+	mixed := f.material("m", entity.MaterialClassFabric)
+	f.receipt(mixed, "5", "2", "E-SHORT-"+uuid.NewString()[:8], decimal.NullDecimal{})
+	f.receipt(mixed, "25", "2", "", decimal.NullDecimal{})
+	mixedOut := f.material("pcs", entity.MaterialClassOther)
+	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, f.convert(mixed, mixedOut, "10", "20"))
+	require.NoError(t, err)
+	assertStock(t, f.rep, mixed, "20", "2")
+}
