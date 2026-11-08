@@ -97,7 +97,7 @@ func shrinkMaterialLotInTx(ctx context.Context, rep dependency.Repository, ins e
 	}
 	loss := before.Sub(ins.LengthAfter)
 	if loss.GreaterThan(stock.OnHand) {
-		return nil, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, lot.MaterialId, stock.OnHand.String())
+		return nil, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, materialLabel(ctx, db, lot.MaterialId), stock.OnHand.String())
 	}
 	newOnHand := stock.OnHand.Sub(loss)
 	newAvg := stock.Avg
@@ -201,7 +201,7 @@ func readShrinkageLotForUpdate(ctx context.Context, db dependency.DB, id int) (e
 		FROM material_lot WHERE id = :id FOR UPDATE`, map[string]any{"id": id})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return entity.MaterialLot{}, fmt.Errorf("%w: lot %d", entity.ErrMaterialLotMismatch, id)
+			return entity.MaterialLot{}, fmt.Errorf("%w: lot not found", entity.ErrMaterialLotMismatch)
 		}
 		return entity.MaterialLot{}, fmt.Errorf("lock material lot %d: %w", id, err)
 	}

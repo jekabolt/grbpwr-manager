@@ -126,7 +126,7 @@ func TestBatchIssueMaterialStock(t *testing.T) {
 			{MaterialId: materialIDs[0], Quantity: decimal.NewFromInt(1)},
 		},
 	})
-	require.ErrorContains(t, err, "duplicate material_id")
+	require.ErrorContains(t, err, "line 2: same material as line 1")
 	assertBalances()
 	require.Equal(t, len(happyLines), movementCount(), "duplicate validation happens before any write")
 }

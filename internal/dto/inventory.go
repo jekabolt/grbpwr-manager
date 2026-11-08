@@ -609,7 +609,7 @@ func ConvertPbMaterialConversion(req *pb_admin.ConvertMaterialStockRequest) (ent
 			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d].material_id is required", i)
 		}
 		if seen[input.GetMaterialId()] {
-			return entity.MaterialConversionInsert{}, fmt.Errorf("material_id %d appears more than once", input.GetMaterialId())
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d]: same material twice", i)
 		}
 		seen[input.GetMaterialId()] = true
 		if input.GetMaterialId() == req.GetOutput().GetMaterialId() {
@@ -842,7 +842,7 @@ func parseNonNegDecimal(d *pb_decimal.Decimal, field string) (decimal.Decimal, e
 func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity.PackagingBomItem, error) {
 	out := make([]entity.PackagingBomItem, 0, len(items))
 	seen := map[int32]bool{}
-	for _, it := range items {
+	for i, it := range items {
 		if it == nil {
 			continue
 		}
@@ -850,7 +850,7 @@ func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity
 			return nil, fmt.Errorf("packaging bom line needs a material_id")
 		}
 		if seen[it.MaterialId] {
-			return nil, fmt.Errorf("packaging bom has duplicate material_id %d", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d: same material twice", i+1)
 		}
 		seen[it.MaterialId] = true
 		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
@@ -862,7 +862,7 @@ func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity
 			return nil, err
 		}
 		if perOrder.IsZero() && perItem.IsZero() {
-			return nil, fmt.Errorf("packaging bom material %d has no quantity", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d has no quantity", i+1)
 		}
 		out = append(out, entity.PackagingBomItem{
 			MaterialId:  int(it.MaterialId),
@@ -904,7 +904,7 @@ func PackagingBomListToPb(items []entity.PackagingBomItem) []*pb_admin.Packaging
 func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]entity.PackagingRecipeInsert, error) {
 	out := make([]entity.PackagingRecipeInsert, 0, len(items))
 	seen := map[int32]bool{}
-	for _, it := range items {
+	for i, it := range items {
 		if it == nil {
 			continue
 		}
@@ -912,7 +912,7 @@ func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]
 			return nil, fmt.Errorf("packaging recipe line needs a material_id")
 		}
 		if seen[it.MaterialId] {
-			return nil, fmt.Errorf("packaging recipe has duplicate material_id %d", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d: same material twice", i+1)
 		}
 		seen[it.MaterialId] = true
 		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
@@ -924,7 +924,7 @@ func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]
 			return nil, err
 		}
 		if perOrder.IsZero() && perItem.IsZero() {
-			return nil, fmt.Errorf("packaging recipe material %d has no quantity", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d has no quantity", i+1)
 		}
 		out = append(out, entity.PackagingRecipeInsert{
 			MaterialId:  int(it.MaterialId),

@@ -191,6 +191,15 @@ func quoteMaterial(name string) string {
 	return strconv.Quote(name)
 }
 
+// materialLabel names a material in a user-facing error by its name, read on the error path only.
+func materialLabel(ctx context.Context, db dependency.DB, materialID int) string {
+	meta, err := readMaterialMeta(ctx, db, materialID)
+	if err != nil {
+		return "material"
+	}
+	return quoteMaterial(meta.Name)
+}
+
 // lotLabel names a lot in a user-facing error by its code, never by its id. It reads on the error
 // path only; a failed read falls back to the bare word.
 func lotLabel(ctx context.Context, db dependency.DB, lotID int) string {
