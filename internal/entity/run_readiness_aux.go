@@ -7,15 +7,17 @@ import "fmt"
 // aux run itself needs:
 //
 //   - an output to receipt into — BLOCKER without one, the same degree as a sellable card's blocker;
-//   - made by us: a norm per unit on every measured BOM line that is not cut to length — WARNING
+//   - made by us: a norm on every line of the resolved recipe (AuxBomLinesMissingNorm) — WARNING
 //     per line, since the run still makes sense and the line is only left uncosted and unissued;
 //   - bought: a manual or purchase price on every output material — WARNING per material, the run
 //     cost then gets no supplier price article and the operator types it.
 //
-// supplierPrices holds the supplier price of each output material that has one (a bought card
-// only; a missing key is «no price»). Every row carries the card id; a gap row also names its line
-// or material.
-func AuxRunReadinessFindings(card *TechCard, supplierPrices map[int]MaterialPrice) []RunReadinessFinding {
+// runVariants are the output colours an existing run's lines name (nil for a future run): a colour
+// retired after the run was planned still counts as that run's output, because the receipt books
+// into it. supplierPrices holds the supplier price of each output material that has one (a bought
+// card only; a missing key is «no price»). Every row carries the card id; a gap row also names its
+// line or material.
+func AuxRunReadinessFindings(card *TechCard, runVariants []int, supplierPrices map[int]MaterialPrice) []RunReadinessFinding {
 	if card == nil || card.Purpose != TechCardPurposeAuxiliary {
 		return nil
 	}
@@ -27,7 +29,7 @@ func AuxRunReadinessFindings(card *TechCard, supplierPrices map[int]MaterialPric
 		Target:   target,
 	}}
 
-	outputs := auxRunOutputs(card)
+	outputs := auxRunOutputs(card, runVariants)
 	if len(outputs) == 0 {
 		rows = append(rows, RunReadinessFinding{
 			Key:      RunReadinessKeyAuxOutputMaterial,
@@ -118,10 +120,10 @@ type auxRunOutput struct {
 }
 
 // AuxRunOutputMaterialIds lists the materials an aux card's run receipts into: its active output
-// colours' materials, or the single output material when it has no active colour. Deduplicated,
-// in colour order.
-func AuxRunOutputMaterialIds(card *TechCard) []int {
-	outs := auxRunOutputs(card)
+// colours' materials plus those of the colours runVariants names (an existing run's own, retired or
+// not), or the single output material when there is no such colour. Deduplicated, in colour order.
+func AuxRunOutputMaterialIds(card *TechCard, runVariants []int) []int {
+	outs := auxRunOutputs(card, runVariants)
 	ids := make([]int, 0, len(outs))
 	for _, o := range outs {
 		ids = append(ids, o.materialId)
@@ -129,15 +131,19 @@ func AuxRunOutputMaterialIds(card *TechCard) []int {
 	return ids
 }
 
-func auxRunOutputs(card *TechCard) []auxRunOutput {
+func auxRunOutputs(card *TechCard, runVariants []int) []auxRunOutput {
 	if card == nil {
 		return nil
+	}
+	named := make(map[int]bool, len(runVariants))
+	for _, id := range runVariants {
+		named[id] = true
 	}
 	var out []auxRunOutput
 	seen := map[int]bool{}
 	for i := range card.OutputVariants {
 		v := &card.OutputVariants[i]
-		if !v.Active || v.MaterialId <= 0 || seen[v.MaterialId] {
+		if (!v.Active && !named[v.Id]) || v.MaterialId <= 0 || seen[v.MaterialId] {
 			continue
 		}
 		seen[v.MaterialId] = true

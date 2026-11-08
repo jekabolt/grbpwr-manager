@@ -64,8 +64,13 @@ type RunReadinessInput struct {
 	// figure a minute after creation.
 	ActualWastagePercent decimal.NullDecimal
 	// AuxSupplierPrices is a BOUGHT aux card's output material id → its supplier price (the newest
-	// manual or purchase row, entity.SupplierPrice). A missing key is «no price». Unused otherwise.
+	// manual or purchase row in force, entity.SupplierPrice). A missing key is «no price». Unused
+	// otherwise.
 	AuxSupplierPrices map[int]entity.MaterialPrice
+	// RunOutputVariantIds are the aux output colours an EXISTING run's lines name. A colour retired
+	// after the run was planned is still that run's output (the receipt books into it), so the aux
+	// rows count it; for a future run it is empty and only active colours count.
+	RunOutputVariantIds []int
 }
 
 // RunReadinessResult is the verdict plus the two coverage tables. The report is the part the create
@@ -96,7 +101,7 @@ func ComputeProductionRunReadiness(in RunReadinessInput) RunReadinessResult {
 	// What does apply to an aux run is judged by entity.AuxRunReadinessFindings: an output to
 	// receipt into (BLOCKER), norms per unit when made by us, a supplier price when bought.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
-		res.Report.Card = entity.AuxRunReadinessFindings(card, in.AuxSupplierPrices)
+		res.Report.Card = entity.AuxRunReadinessFindings(card, in.RunOutputVariantIds, in.AuxSupplierPrices)
 		return res
 	}
 

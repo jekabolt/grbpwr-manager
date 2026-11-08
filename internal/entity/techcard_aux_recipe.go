@@ -109,19 +109,47 @@ func ValidateAuxBomNorms(tc *TechCardInsert) error {
 	return nil
 }
 
-// AuxBomLinesMissingNorm returns the indices of an own-made aux card's BOM lines that have no norm:
-// a measured section, no consumption_per_unit, and not cut to length. These are the lines
-// ValidateAuxBomNorms would accept a norm on and AuxRecipe reads as NULL. nil for a sellable or a
-// bought card.
+// AuxBomLinesMissingNorm returns the indices of an own-made aux card's BOM lines that its recipe
+// gives no norm. It is judged on the RESOLVED recipe (AuxRecipe), not on the line's flags: a line
+// cut to length has a norm only when its strips give a size-less one (every strip one length, its
+// length known, bought in metres), so an incomplete or graded strip line is reported like a
+// measured line with no consumption_per_unit. A counted line that is not cut to length is skipped:
+// its qty_per_garment answers. nil for a sellable or a bought card.
 func AuxBomLinesMissingNorm(tc *TechCardInsert) []int {
-	if !tc.IsAuxiliary() || tc.AuxBoughtFinished() {
+	if tc.AuxBoughtFinished() {
 		return nil
+	}
+	recipe := AuxRecipe(tc)
+	if recipe == nil {
+		return nil
+	}
+	byID := make(map[int]int, len(tc.BomItems))
+	for i := range tc.BomItems {
+		if tc.BomItems[i].Id > 0 {
+			byID[tc.BomItems[i].Id] = i
+		}
+	}
+	normed := make([]bool, len(tc.BomItems))
+	for i := range recipe.Usages {
+		u := &recipe.Usages[i]
+		idx := -1
+		switch {
+		case u.BomItemIndex.Valid:
+			idx = int(u.BomItemIndex.Int32)
+		case u.BomItemId.Valid:
+			if j, ok := byID[int(u.BomItemId.Int64)]; ok {
+				idx = j
+			}
+		}
+		if idx >= 0 && idx < len(normed) && u.Consumption.Valid {
+			normed[idx] = true
+		}
 	}
 	stripLines := auxCutStripLines(tc)
 	var out []int
 	for i := range tc.BomItems {
 		b := &tc.BomItems[i]
-		if IsCountableSection(b.Section) || b.ConsumptionPerUnit.Valid || auxLineCutToLength(b, stripLines) {
+		if normed[i] || (IsCountableSection(b.Section) && !auxLineCutToLength(b, stripLines)) {
 			continue
 		}
 		out = append(out, i)

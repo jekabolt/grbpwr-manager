@@ -269,8 +269,47 @@ func TestRunReadinessAuxNoOutputBlocks(t *testing.T) {
 	}
 }
 
-// TestRunReadinessAuxOwnNormPerLine: made by us, each measured line without a norm per unit and not
-// cut to length is one WARNING aimed at the line; counted, normed and cut lines say nothing.
+// TestRunReadinessAuxExistingRunKeepsRetiredColour: a colour retired after a run was planned is still
+// that run's output (the receipt books into it), so re-checking the existing run neither blocks on
+// «no output» nor forgets to price it. A future run still counts active colours only.
+func TestRunReadinessAuxExistingRunKeepsRetiredColour(t *testing.T) {
+	card := rrHealthyCard()
+	card.Purpose = entity.TechCardPurposeAuxiliary
+	card.AuxMadeBy = sql.NullString{String: entity.AuxMadeBySupplier, Valid: true}
+	card.OutputVariants = []entity.TechCardOutputVariant{
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 1, MaterialId: 31, Active: false}, MaterialName: "bag black"},
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 2, MaterialId: 32, Active: false}, MaterialName: "bag white"},
+	}
+	in := rrInput(card)
+	in.Settings = &entity.WorkshopSettings{RunReadinessBlocking: sql.NullBool{Bool: true, Valid: true}}
+	in.RunOutputVariantIds = []int{1}
+	res := ComputeProductionRunReadiness(in)
+	if f, ok := rrFind(res, entity.RunReadinessKeyAuxOutputMaterial); !ok || f.Severity != entity.RunReadinessOK {
+		t.Fatalf("the run's own retired colour is its output, got %+v", f)
+	}
+	if res.Report.WouldBlock() {
+		t.Fatalf("an existing run on a retired colour is not refused: %v", res.Report.Blockers())
+	}
+	f, ok := rrFind(res, entity.RunReadinessKeyAuxSupplierPrice)
+	if !ok || f.Severity != entity.RunReadinessWarning || f.Target.MaterialId != 31 {
+		t.Fatalf("the retired colour is priced like any output, got %+v", f)
+	}
+	if got := entity.AuxRunOutputMaterialIds(card, in.RunOutputVariantIds); len(got) != 1 || got[0] != 31 {
+		t.Fatalf("only the colour the run names, got %v", got)
+	}
+	assertDetailDiscipline(t, res)
+
+	// A future run (no run colours) on the same card has no output.
+	in.RunOutputVariantIds = nil
+	res = ComputeProductionRunReadiness(in)
+	if f, ok := rrFind(res, entity.RunReadinessKeyAuxOutputMaterial); !ok || f.Severity != entity.RunReadinessBlocker {
+		t.Fatalf("a new run cannot be planned on retired colours, got %+v", f)
+	}
+}
+
+// TestRunReadinessAuxOwnNormPerLine: made by us, each line the resolved recipe gives no norm is one
+// WARNING aimed at the line — a measured line with no norm per unit, and a strip line whose strips
+// give no size-less norm (graded or unfinished); counted, normed and fully cut lines say nothing.
 func TestRunReadinessAuxOwnNormPerLine(t *testing.T) {
 	card := rrHealthyCard()
 	card.Purpose = entity.TechCardPurposeAuxiliary
@@ -281,10 +320,16 @@ func TestRunReadinessAuxOwnNormPerLine(t *testing.T) {
 		{Id: 2, LineKey: "L2", Section: entity.BomSectionFabric, Name: "lining",
 			ConsumptionPerUnit: rrNullDec("0.25")},
 		{Id: 3, LineKey: "L3", Section: entity.BomSectionHardware, Name: "snap"},
-		{Id: 4, LineKey: "L4", Section: entity.BomSectionTrim, Name: "tape"},
+		{Id: 4, LineKey: "L4", Section: entity.BomSectionTrim, Name: "tape", Unit: sql.NullString{String: "m", Valid: true}},
 		{Id: 5, LineKey: "L5", Section: entity.BomSectionThread, Name: "thread"},
+		{Id: 6, LineKey: "L6", Section: entity.BomSectionTrim, Name: "binding", Unit: sql.NullString{String: "m", Valid: true}},
 	}
-	card.CutStrips = []entity.TechCardCutStrip{{BomLineKey: "L4", LineKey: "S1"}}
+	card.CutStrips = []entity.TechCardCutStrip{
+		{BomLineKey: "L4", LineKey: "S1", LengthMode: entity.CutStripModeOneLength, OneLengthMm: sql.NullInt32{Int32: 300, Valid: true}, Qty: 1},
+		// Graded: the size-less aux recipe has no size to read it at.
+		{BomLineKey: "L6", LineKey: "S2", LengthMode: entity.CutStripModePerSize, Qty: 1,
+			Sizes: []entity.TechCardCutStripSize{{SizeId: 1, ManualCutMm: sql.NullInt32{Int32: 500, Valid: true}}}},
+	}
 	res := ComputeProductionRunReadiness(rrInput(card))
 	var gaps []entity.RunReadinessFinding
 	for _, f := range res.Report.Card {
@@ -292,8 +337,8 @@ func TestRunReadinessAuxOwnNormPerLine(t *testing.T) {
 			gaps = append(gaps, f)
 		}
 	}
-	if len(gaps) != 2 {
-		t.Fatalf("want the canvas and thread lines, got %+v", gaps)
+	if len(gaps) != 3 {
+		t.Fatalf("want the canvas, thread and binding lines, got %+v", gaps)
 	}
 	if gaps[0].Target.BomLineKey != "L1" || gaps[0].Target.BomItemId != 1 || gaps[0].Target.MaterialId != 41 ||
 		gaps[0].Severity != entity.RunReadinessWarning || !strings.Contains(gaps[0].Detail, "canvas") {
@@ -301,6 +346,9 @@ func TestRunReadinessAuxOwnNormPerLine(t *testing.T) {
 	}
 	if gaps[1].Target.BomLineKey != "L5" {
 		t.Errorf("thread row: %+v", gaps[1])
+	}
+	if gaps[2].Target.BomLineKey != "L6" || !strings.Contains(gaps[2].Detail, "binding") {
+		t.Errorf("graded strip row: %+v", gaps[2])
 	}
 	if !res.Report.Ready() {
 		t.Fatal("a missing norm warns, it does not block")

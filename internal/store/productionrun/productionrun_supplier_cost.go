@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -156,9 +157,11 @@ func supplierPriceSeed(ctx context.Context, db dependency.DB, techCardID int, le
 	for _, p := range rows {
 		byMaterial[p.MaterialId] = append(byMaterial[p.MaterialId], p)
 	}
+	// One date rule for the seed and the readiness gate: entity.SupplierPrice drops a row dated ahead.
+	now := time.Now()
 	prices := make(map[int]entity.MaterialPrice, len(byMaterial))
 	for m, ps := range byMaterial {
-		if p, ok := entity.SupplierPrice(ps); ok {
+		if p, ok := entity.SupplierPrice(ps, now); ok {
 			prices[m] = p
 		}
 	}

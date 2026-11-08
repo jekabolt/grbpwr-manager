@@ -145,19 +145,37 @@ func TestValidateAuxBomNorms(t *testing.T) {
 }
 
 func TestAuxBomLinesMissingNorm(t *testing.T) {
+	metres := sql.NullString{String: "m", Valid: true}
+	oneLength := func(line string, mm int32) TechCardCutStrip {
+		return TechCardCutStrip{BomLineKey: line, LengthMode: CutStripModeOneLength,
+			OneLengthMm: sql.NullInt32{Int32: mm, Valid: mm > 0}, Qty: 2}
+	}
 	tc := &TechCardInsert{
 		Purpose: TechCardPurposeAuxiliary,
 		BomItems: []TechCardBomItem{
-			{LineKey: "A", Section: BomSectionFabric},                                   // missing
-			{LineKey: "B", Section: BomSectionFabric, ConsumptionPerUnit: auxNd("0.3")}, // normed
-			{LineKey: "C", Section: BomSectionHardware},                                 // counted
-			{LineKey: "D", Section: BomSectionTrim},                                     // cut by strip
-			{LineKey: "E", Section: BomSectionThread, CutToLength: true},                // cut, read mark
-			{LineKey: "F", Section: BomSectionLining},                                   // missing
+			{Id: 1, LineKey: "A", Section: BomSectionFabric},                                   // missing
+			{Id: 2, LineKey: "B", Section: BomSectionFabric, ConsumptionPerUnit: auxNd("0.3")}, // normed
+			{Id: 3, LineKey: "C", Section: BomSectionHardware},                                 // counted
+			{Id: 4, LineKey: "D", Section: BomSectionTrim, Unit: metres},                       // one-length strips: 0.5 m
+			{Id: 5, LineKey: "E", Section: BomSectionThread, Unit: metres},                     // graded strip: no size-less norm
+			{Id: 6, LineKey: "F", Section: BomSectionLining},                                   // missing
+			{Id: 7, LineKey: "G", Section: BomSectionTrim, Unit: metres},                       // strip with no length yet
+			{Id: 8, LineKey: "H", Section: BomSectionTrim},                                     // strip on a line not in metres
+			{Id: 9, LineKey: "I", Section: BomSectionHardware, Unit: metres},                   // counted, cut, graded
 		},
-		CutStrips: []TechCardCutStrip{{BomLineKey: "D"}},
+		CutStrips: []TechCardCutStrip{
+			oneLength("D", 250),
+			{BomLineKey: "E", LengthMode: CutStripModePerSize, Qty: 1, Sizes: []TechCardCutStripSize{
+				{SizeId: 1, ManualCutMm: sql.NullInt32{Int32: 400, Valid: true}},
+				{SizeId: 2, ManualCutMm: sql.NullInt32{Int32: 420, Valid: true}}}},
+			oneLength("G", 0),
+			oneLength("H", 300),
+			{BomLineKey: "I", LengthMode: CutStripModePerSize, Qty: 1, Sizes: []TechCardCutStripSize{
+				{SizeId: 1, ManualCutMm: sql.NullInt32{Int32: 100, Valid: true}}}},
+		},
 	}
-	require.Equal(t, []int{0, 5}, AuxBomLinesMissingNorm(tc))
+	// Judged on the resolved recipe: a strip only stands for a norm when it gives one.
+	require.Equal(t, []int{0, 4, 5, 6, 7, 8}, AuxBomLinesMissingNorm(tc))
 
 	tc.AuxMadeBy = sql.NullString{String: AuxMadeBySupplier, Valid: true}
 	require.Nil(t, AuxBomLinesMissingNorm(tc), "a bought card's norms are not needed")

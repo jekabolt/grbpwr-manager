@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -18,7 +19,8 @@ import (
 // The marker is the run's own audit trail, not a column: every seed, re-seed and removal appends a
 // supplier_price_seeded event listing the articles it wrote. While those articles are still
 // present EXACTLY as written, they are the system's and follow their basis (plan or price). The
-// moment the operator edits or deletes one, they are the operator's and nothing re-seeds them.
+// moment the operator edits or deletes one (its base amount included), they are the operator's and
+// nothing re-seeds them.
 
 // SupplierPriceCostDescription is the description of the seeded article.
 const SupplierPriceCostDescription = "supplier price"
@@ -27,10 +29,13 @@ const SupplierPriceCostDescription = "supplier price"
 // article list records their removal (the basis is gone and the articles were untouched).
 const ProductionRunEventSupplierPriceSeeded = "supplier_price_seeded"
 
-// SupplierPriceSeedArticle is one written article as the event remembers it.
+// SupplierPriceSeedArticle is one written article as the event remembers it. AmountBase is the base
+// amount the seed was folded to (null when no rate was known): an operator who overrides it with the
+// invoice's own rate has edited the article, exactly like one who changes the amount.
 type SupplierPriceSeedArticle struct {
-	Amount   decimal.Decimal `json:"amount"`
-	Currency string          `json:"currency"`
+	Amount     decimal.Decimal     `json:"amount"`
+	Currency   string              `json:"currency"`
+	AmountBase decimal.NullDecimal `json:"amount_base"`
 }
 
 // SupplierPriceSeedBasis is one output material's share of the seed: why the figure is what it is.
@@ -65,16 +70,17 @@ func SupplierPriceSeedOpen(s ProductionRunStatus) bool {
 	return false
 }
 
-// SupplierPrice picks a material's supplier price the way the card screen shows it: the newest
-// manual or purchase row (valid_from DESC, ties by currency ASC). ok=false: none.
-func SupplierPrice(prices []MaterialPrice) (MaterialPrice, bool) {
+// SupplierPrice picks a material's supplier price as of asOf: the newest manual or purchase row
+// already in force (valid_from <= asOf; valid_from DESC, ties by currency ASC). A price dated ahead
+// is not today's price. ok=false: none.
+func SupplierPrice(prices []MaterialPrice, asOf time.Time) (MaterialPrice, bool) {
 	var best MaterialPrice
 	found := false
 	for _, p := range prices {
 		if p.Source != MaterialPriceSourceManual && p.Source != MaterialPriceSourcePurchase {
 			continue
 		}
-		if !p.Price.IsPositive() {
+		if !p.Price.IsPositive() || p.ValidFrom.After(asOf) {
 			continue
 		}
 		if !found || p.ValidFrom.After(best.ValidFrom) ||
@@ -199,11 +205,14 @@ func ReconcileSupplierPriceCost(costs []ProductionRunCost, seed SupplierPriceSee
 func seedArticles(costs []ProductionRunCost) []SupplierPriceSeedArticle {
 	out := make([]SupplierPriceSeedArticle, 0, len(costs))
 	for i := range costs {
-		out = append(out, SupplierPriceSeedArticle{Amount: costs[i].Amount, Currency: costs[i].Currency})
+		out = append(out, SupplierPriceSeedArticle{Amount: costs[i].Amount, Currency: costs[i].Currency,
+			AmountBase: costs[i].AmountBase})
 	}
 	return out
 }
 
+// sameSeedArticles compares amount and currency only: a costing rate that moved while the plan and
+// price did not is no reason to rewrite a base amount already booked.
 func sameSeedArticles(a, b []SupplierPriceSeedArticle) bool {
 	if len(a) != len(b) {
 		return false
@@ -225,8 +234,8 @@ func sameSeedArticles(a, b []SupplierPriceSeedArticle) bool {
 }
 
 // matchSeededArticles finds every recorded article among costs, each matched once. An article
-// counts only while it is exactly as seeded: materials, the seed description, the same amount and
-// currency, and no document field filled (a supplier, a document ref, VAT or a payable state past
+// counts only while it is exactly as seeded: materials, the seed description, the same amount,
+// currency and base amount, and no document field filled (a supplier, a document ref, VAT or a payable state past
 // accrued all mean the operator took it over).
 func matchSeededArticles(costs []ProductionRunCost, recorded []SupplierPriceSeedArticle) ([]int, bool) {
 	used := make([]bool, len(costs))
@@ -254,6 +263,10 @@ func seededArticleIntact(c *ProductionRunCost, a SupplierPriceSeedArticle) bool 
 		return false
 	}
 	if !c.Amount.Equal(a.Amount) || !strings.EqualFold(c.Currency, a.Currency) {
+		return false
+	}
+	if c.AmountBase.Valid != a.AmountBase.Valid ||
+		(c.AmountBase.Valid && !c.AmountBase.Decimal.Equal(a.AmountBase.Decimal)) {
 		return false
 	}
 	if (c.SupplierId.Valid && c.SupplierId.Int64 != 0) ||

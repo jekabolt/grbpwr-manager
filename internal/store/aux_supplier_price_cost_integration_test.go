@@ -209,6 +209,51 @@ func TestAuxSupplierPriceCost(t *testing.T) {
 		require.Equal(t, 1, seeds(runID))
 	})
 
+	t.Run("an invoice-rate base override is an edit: never re-seeded", func(t *testing.T) {
+		runID := createRun(card, 500)
+		run := get(runID)
+		requireArticle(run, "900")
+
+		// Same amount, the operator's own base (the invoice's rate) — the plan is unchanged.
+		ins := setPlan(run, 500)
+		ins.Costs[0].AmountBase = decimal.NullDecimal{Decimal: dec("905.50"), Valid: true}
+		require.NoError(t, P.UpdateProductionRun(ctx, runID, ins, entity.NoLockVersion(), fx))
+
+		// Later plan moves on either path keep the article and its base as the operator left them.
+		require.NoError(t, P.UpdateProductionRun(ctx, runID, setPlan(get(runID), 600), entity.NoLockVersion(), fx))
+		require.NoError(t, P.UpdateProductionRunPreservingCosts(ctx, runID, setPlan(get(runID), 700), entity.NoLockVersion()))
+		run = get(runID)
+		require.Len(t, run.Costs, 1)
+		require.True(t, run.Costs[0].Amount.Equal(dec("900")), "amount %s", run.Costs[0].Amount)
+		require.True(t, run.Costs[0].AmountBase.Valid && run.Costs[0].AmountBase.Decimal.Equal(dec("905.50")),
+			"base %v", run.Costs[0].AmountBase)
+		require.Equal(t, 1, seeds(runID))
+	})
+
+	t.Run("a price dated ahead is not today's price", func(t *testing.T) {
+		box := material("AUXSP box")
+		require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{
+			MaterialId: box, Price: dec("2.00"), Currency: "EUR",
+			ValidFrom: time.Now().UTC().AddDate(0, 0, -1), Source: entity.MaterialPriceSourceManual,
+		}))
+		require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{
+			MaterialId: box, Price: dec("3.00"), Currency: "EUR",
+			ValidFrom: time.Now().UTC().AddDate(0, 1, 0), Source: entity.MaterialPriceSourcePurchase,
+		}))
+		runID := createRun(boughtCard("AUXSP-BOX", box), 100)
+		requireArticle(get(runID), "200")
+
+		// Only next month's price → no article yet.
+		later := material("AUXSP later")
+		require.NoError(t, T.AddMaterialPrice(ctx, entity.MaterialPrice{
+			MaterialId: later, Price: dec("3.00"), Currency: "EUR",
+			ValidFrom: time.Now().UTC().AddDate(0, 1, 0), Source: entity.MaterialPriceSourceManual,
+		}))
+		runID = createRun(boughtCard("AUXSP-LATER", later), 100)
+		require.Empty(t, get(runID).Costs)
+		require.Equal(t, 0, seeds(runID))
+	})
+
 	t.Run("no price → no article", func(t *testing.T) {
 		unpriced := material("AUXSP unpriced")
 		// A production_run price is the run's own output, never a supplier price.

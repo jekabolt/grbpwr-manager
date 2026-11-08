@@ -33,15 +33,38 @@ func TestSupplierPricePicksNewestManualOrPurchase(t *testing.T) {
 		{Price: spDec("2.10"), Currency: "usd", ValidFrom: d(10), Source: MaterialPriceSourcePurchase},
 		{Price: spDec("1.80"), Currency: "EUR", ValidFrom: d(10), Source: MaterialPriceSourceManual},
 	}
-	p, ok := SupplierPrice(prices)
+	asOf := d(25)
+	p, ok := SupplierPrice(prices, asOf)
 	require.True(t, ok)
 	// production_run is never a supplier price; the tie on 10 March goes to the currency first in order.
 	require.True(t, p.Price.Equal(spDec("1.80")))
 	require.Equal(t, "EUR", p.Currency)
 
-	_, ok = SupplierPrice([]MaterialPrice{{Price: spDec("3"), Currency: "EUR", Source: MaterialPriceSourceProductionRun}})
+	_, ok = SupplierPrice([]MaterialPrice{{Price: spDec("3"), Currency: "EUR", Source: MaterialPriceSourceProductionRun}}, asOf)
 	require.False(t, ok)
-	_, ok = SupplierPrice(nil)
+	_, ok = SupplierPrice(nil, asOf)
+	require.False(t, ok)
+}
+
+func TestSupplierPriceIgnoresAPriceDatedAhead(t *testing.T) {
+	today := time.Date(2026, 3, 15, 9, 30, 0, 0, time.UTC)
+	day := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC) }
+	prices := []MaterialPrice{
+		{Price: spDec("2.00"), Currency: "EUR", ValidFrom: day(3, 1), Source: MaterialPriceSourceManual},
+		{Price: spDec("3.00"), Currency: "EUR", ValidFrom: day(4, 1), Source: MaterialPriceSourcePurchase},
+	}
+	p, ok := SupplierPrice(prices, today)
+	require.True(t, ok)
+	require.True(t, p.Price.Equal(spDec("2.00")), "next month's price is not today's: %s", p.Price)
+
+	// A price dated today is in force.
+	prices = append(prices, MaterialPrice{Price: spDec("2.40"), Currency: "EUR", ValidFrom: day(3, 15), Source: MaterialPriceSourceManual})
+	p, ok = SupplierPrice(prices, today)
+	require.True(t, ok)
+	require.True(t, p.Price.Equal(spDec("2.40")), p.Price.String())
+
+	// Only a price dated ahead → none yet.
+	_, ok = SupplierPrice(prices[1:2], today)
 	require.False(t, ok)
 }
 
@@ -91,17 +114,20 @@ func TestComputeSupplierPriceSeedAllOrNothing(t *testing.T) {
 	}
 }
 
+// spSeed is a seed as the store hands it over: already folded to base (EUR here, so base = amount).
 func spSeed(amount string) SupplierPriceSeed {
 	return SupplierPriceSeed{
 		Articles: []ProductionRunCost{{Kind: ProductionRunCostMaterials,
 			Description: sql.NullString{String: SupplierPriceCostDescription, Valid: true},
-			Amount:      spDec(amount), Currency: "EUR"}},
+			Amount:      spDec(amount), Currency: "EUR",
+			AmountBase: decimal.NullDecimal{Decimal: spDec(amount), Valid: true}}},
 		Basis: []SupplierPriceSeedBasis{{MaterialId: 7, Qty: 1, Price: spDec(amount), Currency: "EUR"}},
 	}
 }
 
 func spRecord(amount string) *SupplierPriceSeedRecord {
-	return &SupplierPriceSeedRecord{Articles: []SupplierPriceSeedArticle{{Amount: spDec(amount), Currency: "EUR"}}}
+	return &SupplierPriceSeedRecord{Articles: []SupplierPriceSeedArticle{{Amount: spDec(amount), Currency: "EUR",
+		AmountBase: decimal.NullDecimal{Decimal: spDec(amount), Valid: true}}}}
 }
 
 func spStored(amount string) ProductionRunCost {
@@ -171,6 +197,9 @@ func TestReconcileSupplierPriceCostHandsOffOnceEdited(t *testing.T) {
 		"supplier":    func(c *ProductionRunCost) { c.SupplierId = sql.NullInt64{Int64: 3, Valid: true} },
 		"vat":         func(c *ProductionRunCost) { c.VatRate = decimal.NullDecimal{Decimal: spDec("23"), Valid: true} },
 		"paid":        func(c *ProductionRunCost) { c.ApStatus = sql.NullString{String: "paid", Valid: true} },
+		// The invoice's own rate typed over the folded base: the amount is the seed's, the money is not.
+		"base override": func(c *ProductionRunCost) { c.AmountBase = decimal.NullDecimal{Decimal: spDec("905.12"), Valid: true} },
+		"base cleared":  func(c *ProductionRunCost) { c.AmountBase = decimal.NullDecimal{} },
 	}
 	for name, edit := range edits {
 		c := spStored("900")
