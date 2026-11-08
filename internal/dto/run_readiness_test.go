@@ -202,10 +202,11 @@ func assertDetailDiscipline(t *testing.T, res RunReadinessResult) {
 // TestRunReadinessAuxCardShortCircuits: an auxiliary card produces a MATERIAL, has no colourways by
 // construction, and the cloth-norm vocabulary does not apply to it. The filter is on the SERVER
 // because the create-time re-check is on the server — a client-side filter would leave aux runs
-// blockable through the API.
+// blockable through the API. Only the aux checks follow the card_auxiliary row.
 func TestRunReadinessAuxCardShortCircuits(t *testing.T) {
 	card := rrHealthyCard()
 	card.Purpose = entity.TechCardPurposeAuxiliary
+	card.OutputMaterialId = sql.NullInt64{Int64: 900, Valid: true}
 	// Spoil everything a sellable card would be refused for; none of it may matter.
 	card.SizeIds = nil
 	card.Pieces = nil
@@ -214,14 +215,139 @@ func TestRunReadinessAuxCardShortCircuits(t *testing.T) {
 	in.Settings = &entity.WorkshopSettings{RunReadinessBlocking: sql.NullBool{Bool: true, Valid: true}}
 	res := ComputeProductionRunReadiness(in)
 	if !res.Report.Ready() || res.Report.WouldBlock() {
-		t.Fatalf("an auxiliary card is never gated; blockers: %v", res.Report.Blockers())
+		t.Fatalf("an auxiliary card with an output is never gated by cloth checks; blockers: %v", res.Report.Blockers())
 	}
-	if len(res.Report.Card) != 1 || res.Report.Card[0].Key != entity.RunReadinessKeyCardAuxiliary {
-		t.Fatalf("expected exactly the card_auxiliary row, got %+v", res.Report.Card)
+	keys := rrKeys(res)
+	want := map[string]entity.RunReadinessSeverity{
+		entity.RunReadinessKeyCardAuxiliary:     entity.RunReadinessOK,
+		entity.RunReadinessKeyAuxOutputMaterial: entity.RunReadinessOK,
+		// The fixture's fabric line has no norm per unit: an own-made aux card says so.
+		entity.RunReadinessKeyAuxNormPerUnit: entity.RunReadinessWarning,
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("expected exactly the aux rows %v, got %v", want, keys)
+	}
+	for k, sev := range want {
+		if keys[k] != sev {
+			t.Errorf("%s: got %s, want %s", k, keys[k], sev)
+		}
+	}
+	if res.Report.Card[0].Key != entity.RunReadinessKeyCardAuxiliary {
+		t.Fatalf("card_auxiliary leads, got %+v", res.Report.Card)
 	}
 	if len(res.Report.Colorways) != 0 || len(res.Report.Run) != 0 {
 		t.Fatal("the aux short circuit emits no colourway and no run rows at all")
 	}
+	assertDetailDiscipline(t, res)
+}
+
+// TestRunReadinessAuxNoOutputBlocks: an aux card with neither an active output colour nor an output
+// material has nowhere to receipt the run into — a BLOCKER, refused in blocking mode.
+func TestRunReadinessAuxNoOutputBlocks(t *testing.T) {
+	card := rrHealthyCard()
+	card.Purpose = entity.TechCardPurposeAuxiliary
+	// A retired colour is not an output.
+	card.OutputVariants = []entity.TechCardOutputVariant{{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{
+		Id: 1, MaterialId: 31, Active: false}}}
+	in := rrInput(card)
+	in.Settings = &entity.WorkshopSettings{RunReadinessBlocking: sql.NullBool{Bool: true, Valid: true}}
+	res := ComputeProductionRunReadiness(in)
+	f, ok := rrFind(res, entity.RunReadinessKeyAuxOutputMaterial)
+	if !ok || f.Severity != entity.RunReadinessBlocker || f.Target.TechCardId != rrCard {
+		t.Fatalf("aux_output_material must block with the card as target, got %+v", f)
+	}
+	if !res.Report.WouldBlock() {
+		t.Fatal("blocking mode refuses an aux run with no output")
+	}
+	assertDetailDiscipline(t, res)
+
+	// Bought: no output means no price row either — there is nothing to price.
+	card.AuxMadeBy = sql.NullString{String: entity.AuxMadeBySupplier, Valid: true}
+	res = ComputeProductionRunReadiness(rrInput(card))
+	if _, ok := rrFind(res, entity.RunReadinessKeyAuxSupplierPrice); ok {
+		t.Fatal("a price row needs an output to price")
+	}
+}
+
+// TestRunReadinessAuxOwnNormPerLine: made by us, each measured line without a norm per unit and not
+// cut to length is one WARNING aimed at the line; counted, normed and cut lines say nothing.
+func TestRunReadinessAuxOwnNormPerLine(t *testing.T) {
+	card := rrHealthyCard()
+	card.Purpose = entity.TechCardPurposeAuxiliary
+	card.OutputMaterialId = sql.NullInt64{Int64: 900, Valid: true}
+	card.BomItems = []entity.TechCardBomItem{
+		{Id: 1, LineKey: "L1", Section: entity.BomSectionFabric, Name: "canvas",
+			MaterialId: sql.NullInt64{Int64: 41, Valid: true}},
+		{Id: 2, LineKey: "L2", Section: entity.BomSectionFabric, Name: "lining",
+			ConsumptionPerUnit: rrNullDec("0.25")},
+		{Id: 3, LineKey: "L3", Section: entity.BomSectionHardware, Name: "snap"},
+		{Id: 4, LineKey: "L4", Section: entity.BomSectionTrim, Name: "tape"},
+		{Id: 5, LineKey: "L5", Section: entity.BomSectionThread, Name: "thread"},
+	}
+	card.CutStrips = []entity.TechCardCutStrip{{BomLineKey: "L4", LineKey: "S1"}}
+	res := ComputeProductionRunReadiness(rrInput(card))
+	var gaps []entity.RunReadinessFinding
+	for _, f := range res.Report.Card {
+		if f.Key == entity.RunReadinessKeyAuxNormPerUnit {
+			gaps = append(gaps, f)
+		}
+	}
+	if len(gaps) != 2 {
+		t.Fatalf("want the canvas and thread lines, got %+v", gaps)
+	}
+	if gaps[0].Target.BomLineKey != "L1" || gaps[0].Target.BomItemId != 1 || gaps[0].Target.MaterialId != 41 ||
+		gaps[0].Severity != entity.RunReadinessWarning || !strings.Contains(gaps[0].Detail, "canvas") {
+		t.Errorf("canvas row: %+v", gaps[0])
+	}
+	if gaps[1].Target.BomLineKey != "L5" {
+		t.Errorf("thread row: %+v", gaps[1])
+	}
+	if !res.Report.Ready() {
+		t.Fatal("a missing norm warns, it does not block")
+	}
+	assertDetailDiscipline(t, res)
+
+	// All normed → one OK row.
+	card.BomItems = card.BomItems[1:4]
+	res = ComputeProductionRunReadiness(rrInput(card))
+	if f, ok := rrFind(res, entity.RunReadinessKeyAuxNormPerUnit); !ok || f.Severity != entity.RunReadinessOK {
+		t.Fatalf("want an OK norm row, got %+v", f)
+	}
+	assertDetailDiscipline(t, res)
+}
+
+// TestRunReadinessAuxBoughtSupplierPrice: bought, each output material without a manual or purchase
+// price is one WARNING aimed at the material; the BOM norms are not judged at all.
+func TestRunReadinessAuxBoughtSupplierPrice(t *testing.T) {
+	card := rrHealthyCard() // its fabric line has no norm per unit — irrelevant when bought
+	card.Purpose = entity.TechCardPurposeAuxiliary
+	card.AuxMadeBy = sql.NullString{String: entity.AuxMadeBySupplier, Valid: true}
+	card.OutputMaterialId = sql.NullInt64{Int64: 900, Valid: true} // ignored: colours win
+	card.OutputVariants = []entity.TechCardOutputVariant{
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 1, MaterialId: 31, Active: true}, MaterialName: "bag black"},
+		{TechCardOutputVariantInsert: entity.TechCardOutputVariantInsert{Id: 2, MaterialId: 32, Active: true}, MaterialName: "bag white"},
+	}
+	in := rrInput(card)
+	in.AuxSupplierPrices = map[int]entity.MaterialPrice{31: {MaterialId: 31, Price: decimal.RequireFromString("1.80"), Currency: "EUR"}}
+	res := ComputeProductionRunReadiness(in)
+	if _, ok := rrFind(res, entity.RunReadinessKeyAuxNormPerUnit); ok {
+		t.Fatal("a bought card's BOM norms are not judged")
+	}
+	f, ok := rrFind(res, entity.RunReadinessKeyAuxSupplierPrice)
+	if !ok || f.Severity != entity.RunReadinessWarning || f.Target.MaterialId != 32 || !strings.Contains(f.Detail, "bag white") {
+		t.Fatalf("want a warning on the white bag, got %+v", f)
+	}
+	if !res.Report.Ready() {
+		t.Fatal("a missing price warns, it does not block")
+	}
+	assertDetailDiscipline(t, res)
+
+	in.AuxSupplierPrices[32] = entity.MaterialPrice{MaterialId: 32, Price: decimal.RequireFromString("2"), Currency: "EUR"}
+	res = ComputeProductionRunReadiness(in)
+	if f, ok := rrFind(res, entity.RunReadinessKeyAuxSupplierPrice); !ok || f.Severity != entity.RunReadinessOK {
+		t.Fatalf("want an OK price row, got %+v", f)
+	}
+	assertDetailDiscipline(t, res)
 }
 
 // TestRunReadinessReportOnlyVsBlocking: the VERDICT is identical in both modes and only would_block

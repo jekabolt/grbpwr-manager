@@ -85,6 +85,16 @@ func (s *Server) loadRunReadiness(ctx context.Context, q runReadinessQuery) (dto
 		Cells:       q.Cells,
 	}
 
+	// A bought aux card's run is costed at its supplier price, so the gate needs to know which
+	// output materials have one (aux_supplier_price).
+	if card.AuxBoughtFinished() {
+		prices, err := s.auxSupplierPrices(ctx, entity.AuxRunOutputMaterialIds(card))
+		if err != nil {
+			return out, err
+		}
+		in.AuxSupplierPrices = prices
+	}
+
 	// The release is resolved but a MISSING one is not an error here: «release_id names nothing» is a
 	// verdict the gate reports as a BLOCKER row with a target, not a 404 that tells the modal nothing
 	// about the other eleven checks.
@@ -155,6 +165,23 @@ func (s *Server) loadRunReadiness(ctx context.Context, q runReadinessQuery) (dto
 	in.PatternSizeIndex = index
 
 	return dto.ComputeProductionRunReadiness(in), nil
+}
+
+// auxSupplierPrices is material id → supplier price (entity.SupplierPrice) for the materials that
+// have one.
+func (s *Server) auxSupplierPrices(ctx context.Context, materialIDs []int) (map[int]entity.MaterialPrice, error) {
+	out := make(map[int]entity.MaterialPrice, len(materialIDs))
+	for _, mid := range materialIDs {
+		prices, err := s.repo.TechCards().ListMaterialPrices(ctx, mid)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load material prices for run readiness", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load material prices")
+		}
+		if p, ok := entity.SupplierPrice(prices); ok {
+			out[mid] = p
+		}
+	}
+	return out, nil
 }
 
 // readinessMaterialIDs is the union of articles the plan may resolve: slot defaults, colourway pins,

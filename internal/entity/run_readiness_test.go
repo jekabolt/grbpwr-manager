@@ -103,6 +103,7 @@ func TestRunReadinessWouldBlockNeedsBothHalves(t *testing.T) {
 func TestRunReadinessKeyRegistryIsComplete(t *testing.T) {
 	declared := []string{
 		RunReadinessKeyCardAuxiliary, RunReadinessKeyReleaseFrozen, RunReadinessKeyCardSizeRange,
+		RunReadinessKeyAuxOutputMaterial, RunReadinessKeyAuxNormPerUnit, RunReadinessKeyAuxSupplierPrice,
 		RunReadinessKeyCardPieces, RunReadinessKeyCardPiecesDxfMatched, RunReadinessKeyPatternBindingResolved,
 		RunReadinessKeyColorwayLive, RunReadinessKeySlotArticle, RunReadinessKeySlotNorm,
 		RunReadinessKeyNormProvenance, RunReadinessKeyNormConditionsRecorded, RunReadinessKeyNormSeamAllowance,

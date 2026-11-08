@@ -143,3 +143,26 @@ func TestValidateAuxBomNorms(t *testing.T) {
 	}
 	require.NoError(t, ValidateAuxBomNorms(cleared))
 }
+
+func TestAuxBomLinesMissingNorm(t *testing.T) {
+	tc := &TechCardInsert{
+		Purpose: TechCardPurposeAuxiliary,
+		BomItems: []TechCardBomItem{
+			{LineKey: "A", Section: BomSectionFabric},                                   // missing
+			{LineKey: "B", Section: BomSectionFabric, ConsumptionPerUnit: auxNd("0.3")}, // normed
+			{LineKey: "C", Section: BomSectionHardware},                                 // counted
+			{LineKey: "D", Section: BomSectionTrim},                                     // cut by strip
+			{LineKey: "E", Section: BomSectionThread, CutToLength: true},                // cut, read mark
+			{LineKey: "F", Section: BomSectionLining},                                   // missing
+		},
+		CutStrips: []TechCardCutStrip{{BomLineKey: "D"}},
+	}
+	require.Equal(t, []int{0, 5}, AuxBomLinesMissingNorm(tc))
+
+	tc.AuxMadeBy = sql.NullString{String: AuxMadeBySupplier, Valid: true}
+	require.Nil(t, AuxBomLinesMissingNorm(tc), "a bought card's norms are not needed")
+
+	tc.AuxMadeBy = sql.NullString{}
+	tc.Purpose = TechCardPurposeSellable
+	require.Nil(t, AuxBomLinesMissingNorm(tc), "a sellable card's norms live on its colourways")
+}

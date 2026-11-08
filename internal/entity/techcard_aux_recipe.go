@@ -87,10 +87,7 @@ func ValidateAuxBomNorms(tc *TechCardInsert) error {
 	if tc == nil {
 		return nil
 	}
-	stripLines := make(map[string]bool, len(tc.CutStrips))
-	for i := range tc.CutStrips {
-		stripLines[CutStripLineKey(tc.CutStrips[i].BomLineKey)] = true
-	}
+	stripLines := auxCutStripLines(tc)
 	for i := range tc.BomItems {
 		b := &tc.BomItems[i]
 		if b.ConsumptionPerUnitOmitted || !b.ConsumptionPerUnit.Valid {
@@ -104,10 +101,44 @@ func ValidateAuxBomNorms(tc *TechCardInsert) error {
 		case IsCountableSection(b.Section):
 			return NewFieldViolation(field, "measured_only", "",
 				"a counted line takes qty_per_garment and spare_qty")
-		case b.CutToLength || (b.LineKey != "" && stripLines[CutStripLineKey(b.LineKey)]):
+		case auxLineCutToLength(b, stripLines):
 			return NewFieldViolation(field, "cut_to_length", "",
 				"a line cut to length takes its norm from its strips")
 		}
 	}
 	return nil
+}
+
+// AuxBomLinesMissingNorm returns the indices of an own-made aux card's BOM lines that have no norm:
+// a measured section, no consumption_per_unit, and not cut to length. These are the lines
+// ValidateAuxBomNorms would accept a norm on and AuxRecipe reads as NULL. nil for a sellable or a
+// bought card.
+func AuxBomLinesMissingNorm(tc *TechCardInsert) []int {
+	if !tc.IsAuxiliary() || tc.AuxBoughtFinished() {
+		return nil
+	}
+	stripLines := auxCutStripLines(tc)
+	var out []int
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		if IsCountableSection(b.Section) || b.ConsumptionPerUnit.Valid || auxLineCutToLength(b, stripLines) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// auxCutStripLines is the set of BOM lines that have strips, by their strip line key.
+func auxCutStripLines(tc *TechCardInsert) map[string]bool {
+	stripLines := make(map[string]bool, len(tc.CutStrips))
+	for i := range tc.CutStrips {
+		stripLines[CutStripLineKey(tc.CutStrips[i].BomLineKey)] = true
+	}
+	return stripLines
+}
+
+// auxLineCutToLength reports a line whose norm comes from its strips.
+func auxLineCutToLength(b *TechCardBomItem, stripLines map[string]bool) bool {
+	return b.CutToLength || (b.LineKey != "" && stripLines[CutStripLineKey(b.LineKey)])
 }

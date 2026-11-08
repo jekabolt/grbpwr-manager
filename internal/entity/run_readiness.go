@@ -91,9 +91,18 @@ func (s RunReadinessSeverity) String() string {
 // There are no prefixes: a key is globally unique so a client can branch with ONE map.
 const (
 	// --- карточка ---
-	// RunReadinessKeyCardAuxiliary — the card produces a material, not a garment. The gate short
-	// circuits on it (see AuxiliaryReport) and emits nothing else at all.
+	// RunReadinessKeyCardAuxiliary — the card produces a material, not a garment. The cloth-norm
+	// gate does not apply to it; only the aux checks below follow (see AuxRunReadinessFindings).
 	RunReadinessKeyCardAuxiliary = "card_auxiliary"
+	// RunReadinessKeyAuxOutputMaterial — an aux card names where its run receipts into: an active
+	// output colour or the single output material. BLOCKER without one: the receipt has nowhere to go.
+	RunReadinessKeyAuxOutputMaterial = "aux_output_material"
+	// RunReadinessKeyAuxNormPerUnit — every measured BOM line of an aux card made by us has a norm per
+	// unit (or takes it from its strips). WARNING: the line is neither costed nor issued without it.
+	RunReadinessKeyAuxNormPerUnit = "aux_norm_per_unit"
+	// RunReadinessKeyAuxSupplierPrice — every output material of a bought aux card has a manual or
+	// purchase price. WARNING: without one the run's cost gets no supplier price article.
+	RunReadinessKeyAuxSupplierPrice = "aux_supplier_price"
 	// RunReadinessKeyReleaseFrozen — is the run planned against a frozen release or against the live
 	// card. WARNING, never BLOCKER, and that is a decision with an argument: a release is created as a
 	// SIDE EFFECT of moving a card to RELEASED, and it is created BEST-EFFORT — a failure logs
@@ -182,6 +191,9 @@ const (
 // place rather than in the branch that happens to build it.
 var RunReadinessKeyGroups = map[string]RunReadinessGroup{
 	RunReadinessKeyCardAuxiliary:          RunReadinessGroupCard,
+	RunReadinessKeyAuxOutputMaterial:      RunReadinessGroupCard,
+	RunReadinessKeyAuxNormPerUnit:         RunReadinessGroupCard,
+	RunReadinessKeyAuxSupplierPrice:       RunReadinessGroupCard,
 	RunReadinessKeyReleaseFrozen:          RunReadinessGroupCard,
 	RunReadinessKeyCardSizeRange:          RunReadinessGroupCard,
 	RunReadinessKeyCardPieces:             RunReadinessGroupCard,
