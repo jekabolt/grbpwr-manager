@@ -132,7 +132,7 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 			return nil, err
 		}
 		if meta.Archived {
-			return nil, fmt.Errorf("%w: material %d", entity.ErrMaterialArchived, id)
+			return nil, fmt.Errorf("%w: %s", entity.ErrMaterialArchived, quoteMaterial(meta.Name))
 		}
 		metas[id] = meta
 		if err := ensureStockRow(ctx, db, id); err != nil {
@@ -170,7 +170,7 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 		map[string]any{"id": ins.Output.MaterialId}); err != nil {
 		return nil, fmt.Errorf("check conversion output purchase history: %w", err)
 	} else if n > 0 {
-		return nil, fmt.Errorf("%w: material %d", entity.ErrConversionOutputPurchased, ins.Output.MaterialId)
+		return nil, fmt.Errorf("%w: %s", entity.ErrConversionOutputPurchased, quoteMaterial(metas[ins.Output.MaterialId].Name))
 	}
 	if ins.SupplierId.Valid {
 		n, err := storeutil.QueryCountNamed(ctx, db, `SELECT COUNT(*) FROM supplier WHERE id = :id`,
@@ -179,7 +179,7 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 			return nil, fmt.Errorf("check conversion supplier: %w", err)
 		}
 		if n == 0 {
-			return nil, fmt.Errorf("%w: supplier %d", entity.ErrMaterialConversionInvalid, ins.SupplierId.Int32)
+			return nil, fmt.Errorf("%w: supplier not found", entity.ErrMaterialConversionInvalid)
 		}
 	}
 
@@ -193,20 +193,20 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 		if entity.IsCountableMaterialUnit(meta.Unit.String) &&
 			(!input.Quantity.Equal(input.Quantity.Truncate(0)) ||
 				(input.LossQty.Valid && !input.LossQty.Decimal.Equal(input.LossQty.Decimal.Truncate(0)))) {
-			return nil, fmt.Errorf("%w: countable material %d requires integer quantity", entity.ErrMaterialConversionInvalid, input.MaterialId)
+			return nil, fmt.Errorf("%w: %s is counted in whole units", entity.ErrMaterialConversionInvalid, quoteMaterial(meta.Name))
 		}
 		state := states[input.MaterialId]
 		if !state.Avg.Valid {
-			return nil, fmt.Errorf("%w: material %d", entity.ErrMaterialConversionUncosted, input.MaterialId)
+			return nil, fmt.Errorf("%w: %s", entity.ErrMaterialConversionUncosted, quoteMaterial(meta.Name))
 		}
 		if state.OnHand.LessThan(input.Quantity) {
-			return nil, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, input.MaterialId, state.OnHand.String())
+			return nil, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), state.OnHand.String())
 		}
 		costInputs = append(costInputs, conversionCostInput{Quantity: input.Quantity, Avg: state.Avg.Decimal})
 	}
 	if meta := metas[ins.Output.MaterialId]; entity.IsCountableMaterialUnit(meta.Unit.String) &&
 		!ins.Output.Quantity.Equal(ins.Output.Quantity.Truncate(0)) {
-		return nil, fmt.Errorf("%w: countable output material %d requires integer quantity", entity.ErrMaterialConversionInvalid, ins.Output.MaterialId)
+		return nil, fmt.Errorf("%w: %s is counted in whole units", entity.ErrMaterialConversionInvalid, quoteMaterial(meta.Name))
 	}
 
 	workBase := decimal.Zero
@@ -234,7 +234,7 @@ func convertMaterialStockInTx(ctx context.Context, rep dependency.Repository, in
 	// hand (blendIntoAvg adopts the new cost when the old average is NULL), creating value no journal
 	// entry carries. The existing stock must be costed first.
 	if outputBefore.OnHand.IsPositive() && !outputBefore.Avg.Valid {
-		return nil, fmt.Errorf("%w: output material %d has uncosted stock", entity.ErrMaterialConversionUncosted, ins.Output.MaterialId)
+		return nil, fmt.Errorf("%w: %s has stock without a cost", entity.ErrMaterialConversionUncosted, quoteMaterial(metas[ins.Output.MaterialId].Name))
 	}
 	outputUnitCost := decimal.NullDecimal{Decimal: cost.OutputUnitCostBase, Valid: true}
 	outputAvg := blendIntoAvg(outputBefore, ins.Output.Quantity, outputUnitCost)
@@ -386,10 +386,10 @@ func lockConversionLots(ctx context.Context, db dependency.DB, inputs []entity.M
 	for _, lot := range rows {
 		input := want[lot.Id]
 		if lot.MaterialId != input.MaterialId {
-			return fmt.Errorf("%w: lot %d is material %d, not %d", entity.ErrMaterialLotMismatch, lot.Id, lot.MaterialId, input.MaterialId)
+			return fmt.Errorf("%w: %s belongs to another material", entity.ErrMaterialLotMismatch, lotLabel(ctx, db, lot.Id))
 		}
 		if lot.Remaining.LessThan(input.Quantity) {
-			return fmt.Errorf("%w: lot %d has %s remaining", entity.ErrInsufficientMaterialLot, lot.Id, lot.Remaining.String())
+			return fmt.Errorf("%w: %s has %s remaining", entity.ErrInsufficientMaterialLot, lotLabel(ctx, db, lot.Id), lot.Remaining.String())
 		}
 	}
 	return nil

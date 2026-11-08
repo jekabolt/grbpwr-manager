@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -304,6 +305,17 @@ func TestMaterialConversionDBGuardsRollback(t *testing.T) {
 			_ = f.raw.QueryRow(`SELECT on_hand FROM material_stock WHERE material_id = ?`, output).Scan(&beforeOutput)
 			_, err := f.rep.MaterialStock().ConvertMaterialStock(context.Background(), ins)
 			assert.ErrorIs(t, err, tc.want)
+			// The refusal reaches the admin UI verbatim: it names the material and lot, never an id.
+			require.Error(t, err)
+			assert.NotRegexp(t, `\b(material|lot|supplier|sample|run|colourway|product) \d`, err.Error())
+			var inputName string
+			require.NoError(t, f.raw.QueryRow(`SELECT name FROM material WHERE id = ?`, input).Scan(&inputName))
+			switch tc.name {
+			case "uncosted input", "insufficient input", "archived input":
+				assert.Contains(t, err.Error(), strconv.Quote(inputName))
+			case "foreign lot":
+				assert.Contains(t, err.Error(), `lot "FOREIGN"`)
+			}
 			var afterInput, afterOutput decimal.Decimal
 			require.NoError(t, f.raw.QueryRow(`SELECT on_hand FROM material_stock WHERE material_id = ?`, input).Scan(&afterInput))
 			_ = f.raw.QueryRow(`SELECT on_hand FROM material_stock WHERE material_id = ?`, output).Scan(&afterOutput)

@@ -276,7 +276,7 @@ func ConvertPbReceiveMaterialStockBatch(req *pb_admin.ReceiveMaterialStockBatchR
 			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d material_id is required", i+1)
 		}
 		if _, duplicate := seen[line.GetMaterialId()]; duplicate {
-			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("material_id %d appears more than once", line.GetMaterialId())
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d: same material twice", i+1)
 		}
 		seen[line.GetMaterialId()] = struct{}{}
 		qty, err := positiveDecimal(line.GetQuantity().GetValue(), fmt.Sprintf("line %d quantity", i+1))
@@ -465,13 +465,13 @@ func ConvertPbBatchIssueMaterialStock(req *pb_admin.BatchIssueMaterialStockReque
 			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: material_id is required", i+1)
 		}
 		if first, ok := seen[materialID]; ok {
-			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): duplicate material_id (first used on line %d)", i+1, materialID, first)
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: same material as line %d", i+1, first)
 		}
 		seen[materialID] = i + 1
 
 		qty, err := positiveDecimal(line.GetQuantity().GetValue(), "quantity")
 		if err != nil {
-			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): %w", i+1, materialID, err)
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: %w", i+1, err)
 		}
 		comment := line.GetComment()
 		if comment == "" {

@@ -493,7 +493,7 @@ func (s *Store) MaterialAvailable(ctx context.Context, materialID int) (entity.M
 	st, err := s.GetMaterialStock(ctx, materialID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return entity.MaterialAvailability{}, fmt.Errorf("%w: material %d", entity.ErrMaterialNotFound, materialID)
+			return entity.MaterialAvailability{}, entity.ErrMaterialNotFound
 		}
 		return entity.MaterialAvailability{}, err
 	}
@@ -933,7 +933,7 @@ func lotAvailableInTx(ctx context.Context, db dependency.DB, lotID int) (entity.
 		map[string]any{"id": lotID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return entity.MaterialLotAvailability{}, fmt.Errorf("%w: lot %d", entity.ErrMaterialLotNotFound, lotID)
+			return entity.MaterialLotAvailability{}, entity.ErrMaterialLotNotFound
 		}
 		return entity.MaterialLotAvailability{}, fmt.Errorf("read material lot %d: %w", lotID, err)
 	}

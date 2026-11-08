@@ -163,7 +163,7 @@ func TestConvertPbReceiveMaterialStockBatch_AllocationAndGuards(t *testing.T) {
 	duplicate.Lines[1] = &pb_admin.ReceiveMaterialStockLine{MaterialId: 1, Quantity: dec("1"), UnitCost: dec("1")}
 	_, err = ConvertPbReceiveMaterialStockBatch(duplicate)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "more than once")
+	assert.Contains(t, err.Error(), "same material twice")
 
 	uncosted := proto.Clone(req).(*pb_admin.ReceiveMaterialStockBatchRequest)
 	uncosted.Lines[1] = &pb_admin.ReceiveMaterialStockLine{MaterialId: 2, Quantity: dec("1")}

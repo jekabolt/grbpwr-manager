@@ -77,12 +77,12 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		map[string]any{"id": lotID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: lot %d", entity.ErrMaterialLotMismatch, lotID)
+			return fmt.Errorf("%w: lot not found", entity.ErrMaterialLotMismatch)
 		}
 		return fmt.Errorf("read material lot %d: %w", lotID, err)
 	}
 	if lot.MaterialId != materialID {
-		return fmt.Errorf("%w: lot %d is material %d, not %d", entity.ErrMaterialLotMismatch, lotID, lot.MaterialId, materialID)
+		return fmt.Errorf("%w: %s belongs to another material", entity.ErrMaterialLotMismatch, lotLabel(ctx, db, lotID))
 	}
 	newRemaining := lot.Remaining.Sub(qty)
 	if isReturn {
@@ -91,10 +91,10 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		// would otherwise mint phantom roll stock (g25-05). The target-level outstanding cap has
 		// already passed; this guards the per-lot ledger.
 		if newRemaining.GreaterThan(lot.Received.Sub(lot.Shrunk)) {
-			return fmt.Errorf("%w: lot %d has %s remaining of %s received", entity.ErrExcessiveMaterialReturn, lotID, lot.Remaining.String(), lot.Received.String())
+			return fmt.Errorf("%w: %s has %s remaining of %s received", entity.ErrExcessiveMaterialReturn, lotLabel(ctx, db, lotID), lot.Remaining.String(), lot.Received.String())
 		}
 	} else if lot.Remaining.LessThan(qty) {
-		return fmt.Errorf("%w: lot %d has %s remaining", entity.ErrInsufficientMaterialLot, lotID, lot.Remaining.String())
+		return fmt.Errorf("%w: %s has %s remaining", entity.ErrInsufficientMaterialLot, lotLabel(ctx, db, lotID), lot.Remaining.String())
 	}
 	if err := storeutil.ExecNamed(ctx, db,
 		`UPDATE material_lot SET remaining_qty = :r WHERE id = :id`,

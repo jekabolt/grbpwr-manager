@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,11 +176,31 @@ func readMaterialMeta(ctx context.Context, db dependency.DB, materialID int) (ma
 		`SELECT name, unit, material_class, archived, source_material_id FROM material WHERE id = :id`, map[string]any{"id": materialID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return materialMeta{}, fmt.Errorf("%w: material %d", entity.ErrMaterialNotFound, materialID)
+			return materialMeta{}, entity.ErrMaterialNotFound
 		}
 		return materialMeta{}, fmt.Errorf("read material %d: %w", materialID, err)
 	}
 	return meta, nil
+}
+
+// quoteMaterial names a material in a user-facing error by its name, never by its id.
+func quoteMaterial(name string) string {
+	if name == "" {
+		return "material"
+	}
+	return strconv.Quote(name)
+}
+
+// lotLabel names a lot in a user-facing error by its code, never by its id. It reads on the error
+// path only; a failed read falls back to the bare word.
+func lotLabel(ctx context.Context, db dependency.DB, lotID int) string {
+	row, err := storeutil.QueryNamedOne[struct {
+		Code sql.NullString `db:"lot_code"`
+	}](ctx, db, `SELECT lot_code FROM material_lot WHERE id = :id`, map[string]any{"id": lotID})
+	if err != nil || !row.Code.Valid || row.Code.String == "" {
+		return "lot"
+	}
+	return "lot " + strconv.Quote(row.Code.String)
 }
 
 // materialExists reports whether a material id exists (used to tell a real zero-stock material from
@@ -201,12 +222,12 @@ func checkSampleOpen(ctx context.Context, db dependency.DB, sampleID int) error 
 	}](ctx, db, `SELECT status FROM sample WHERE id = :id`, map[string]any{"id": sampleID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: sample %d not found", entity.ErrMaterialIssueTargetInvalid, sampleID)
+			return fmt.Errorf("%w: sample not found", entity.ErrMaterialIssueTargetInvalid)
 		}
 		return fmt.Errorf("read sample %d: %w", sampleID, err)
 	}
 	if cur.Status == entity.SampleStatusScrapped {
-		return fmt.Errorf("%w: sample %d is scrapped", entity.ErrMaterialIssueTargetInvalid, sampleID)
+		return fmt.Errorf("%w: sample is scrapped", entity.ErrMaterialIssueTargetInvalid)
 	}
 	return nil
 }
@@ -278,7 +299,7 @@ func checkRunProduct(ctx context.Context, db dependency.DB, runID int, techCardI
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: product %d is not a colour-model of this run (not on its lines or tech card)", entity.ErrMaterialIssueTargetInvalid, productID)
+	return fmt.Errorf("%w: colourway is not on this run", entity.ErrMaterialIssueTargetInvalid)
 }
 
 // blendIntoAvg folds a returned quantity+cost back into the material's moving average (like a
@@ -571,9 +592,9 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 		}
 		if ins.Quantity.GreaterThan(outQty) {
 			if attributed := productAttribution(ins); attributed.Valid {
-				return entity.MaterialMovement{}, fmt.Errorf("%w: colourway %d has %s of material %d outstanding on this run", entity.ErrExcessiveMaterialReturn, attributed.Int32, outQty.String(), ins.MaterialId)
+				return entity.MaterialMovement{}, fmt.Errorf("%w: this colourway has %s of %s outstanding on this run", entity.ErrExcessiveMaterialReturn, outQty.String(), quoteMaterial(meta.Name))
 			}
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, ins.MaterialId, outQty.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, quoteMaterial(meta.Name), outQty.String())
 		}
 		// Price the return at the costed outstanding average — but only when the returned quantity
 		// is covered by costed issues. A return that includes units which left UNPRICED cannot be
@@ -590,7 +611,7 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 		}
 	} else {
 		if before.OnHand.LessThan(ins.Quantity) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 		newOnHand = before.OnHand.Sub(ins.Quantity)
 		// An issue does not change the average; the movement freezes it as the issue cost.
@@ -707,7 +728,8 @@ func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdju
 // (packaging auto-consume) can share one atomic transaction with their bookkeeping (g25-02). Every
 // guard fails BEFORE any write, so a guard failure leaves the shared transaction clean.
 func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert, reservedOpen decimal.Decimal, now time.Time) (entity.MaterialMovement, error) {
-	if _, err := readMaterialMeta(ctx, db, ins.MaterialId); err != nil {
+	meta, err := readMaterialMeta(ctx, db, ins.MaterialId)
+	if err != nil {
 		return entity.MaterialMovement{}, err
 	}
 	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
@@ -726,14 +748,14 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 	case entity.MaterialAdjustModeAdjust:
 		newOnHand = before.OnHand.Add(ins.Quantity)
 		if newOnHand.LessThan(decimal.Zero) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 	case entity.MaterialAdjustModeWriteoff:
 		if ins.Quantity.LessThanOrEqual(decimal.Zero) {
 			return entity.MaterialMovement{}, fmt.Errorf("write-off quantity must be positive")
 		}
 		if before.OnHand.LessThan(ins.Quantity) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 		newOnHand = before.OnHand.Sub(ins.Quantity)
 		mvType = entity.MaterialMovementWriteoff
@@ -745,8 +767,8 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 	// reserved for open orders — that deepens a packaging oversell. reservedOpen=0 disables the guard
 	// for internal reserve-fulfilling paths (packaging consume).
 	if reservedOpen.IsPositive() && newOnHand.LessThan(reservedOpen) {
-		return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s reserved for open orders, only %s free",
-			entity.ErrMaterialReserved, ins.MaterialId, reservedOpen.String(), before.OnHand.String())
+		return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s reserved for open orders, only %s free",
+			entity.ErrMaterialReserved, quoteMaterial(meta.Name), reservedOpen.String(), before.OnHand.String())
 	}
 
 	if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, before.Avg); err != nil {
@@ -928,13 +950,13 @@ func checkRunOpen(ctx context.Context, db dependency.DB, runID int) error {
 	}](ctx, db, `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: production run %d not found", entity.ErrMaterialIssueTargetInvalid, runID)
+			return fmt.Errorf("%w: production run not found", entity.ErrMaterialIssueTargetInvalid)
 		}
 		return fmt.Errorf("read production run %d: %w", runID, err)
 	}
 	if cur.Status != string(entity.ProductionRunPlanned) && cur.Status != string(entity.ProductionRunInProgress) &&
 		cur.Status != string(entity.ProductionRunPartiallyReceived) {
-		return fmt.Errorf("%w: production run %d is %s (not open)", entity.ErrMaterialIssueTargetInvalid, runID, cur.Status)
+		return fmt.Errorf("%w: production run is %s", entity.ErrMaterialIssueTargetInvalid, cur.Status)
 	}
 	return nil
 }

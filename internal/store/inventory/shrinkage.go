@@ -56,7 +56,7 @@ func shrinkMaterialLotInTx(ctx context.Context, rep dependency.Repository, ins e
 	}](ctx, db, `SELECT material_id FROM material_lot WHERE id = :id`, map[string]any{"id": ins.LotId})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("%w: lot %d", entity.ErrMaterialLotMismatch, ins.LotId)
+			return nil, fmt.Errorf("%w: lot not found", entity.ErrMaterialLotMismatch)
 		}
 		return nil, fmt.Errorf("read material lot %d: %w", ins.LotId, err)
 	}
@@ -72,7 +72,7 @@ func shrinkMaterialLotInTx(ctx context.Context, rep dependency.Repository, ins e
 		return nil, err
 	}
 	if lot.MaterialId != ref.MaterialId {
-		return nil, fmt.Errorf("%w: lot %d changed material", entity.ErrMaterialLotMismatch, ins.LotId)
+		return nil, fmt.Errorf("%w: lot changed material", entity.ErrMaterialLotMismatch)
 	}
 
 	material, err := storeutil.QueryNamedOne[shrinkageMaterialState](ctx, db, `
