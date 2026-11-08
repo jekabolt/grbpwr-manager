@@ -111,3 +111,49 @@ func TestTechCardChangedSectionsHonoursPreserveOnAbsence(t *testing.T) {
 		t.Fatalf("preserve-on-absence fields produced changes: %#v", got)
 	}
 }
+
+func TestTechCardChangedSectionsSeesGarmentLabelGeometryAndStepLinks(t *testing.T) {
+	before := snapshotDiffCard()
+	before.LabelsAware = true
+	before.GarmentLabels = []*pb_common.TechCardGarmentLabel{{
+		Key: "size", LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", WidthMm: &pb_decimal.Decimal{Value: "40"},
+	}}
+	before.Operations = []*pb_common.TechCardOperation{{OperationNumber: 10}}
+
+	geometry := proto.Clone(before).(*pb_common.TechCardInsert)
+	geometry.GarmentLabels[0].WidthMm = &pb_decimal.Decimal{Value: "45"}
+	if got := techCardChangedSections(before, geometry); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("geometry change = %#v, want labels", got)
+	}
+
+	linked := proto.Clone(before).(*pb_common.TechCardInsert)
+	linked.Operations[0].LabelKeys = []string{"01JABCDEFGHJKMNPQRSTVWXYZ1"}
+	if got := techCardChangedSections(before, linked); !reflect.DeepEqual(got, []string{"operations"}) {
+		t.Fatalf("operation label link change = %#v, want operations", got)
+	}
+}
+
+func TestTechCardChangedSectionsCarriesGeometryForOldClient(t *testing.T) {
+	before := snapshotDiffCard()
+	before.LabelsAware = true
+	before.GarmentLabels = []*pb_common.TechCardGarmentLabel{{
+		Key: " Size ", LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", WidthMm: &pb_decimal.Decimal{Value: "40"},
+		HeightMm: &pb_decimal.Decimal{Value: "15"}, Fold: "half",
+	}}
+	before.Operations = []*pb_common.TechCardOperation{{
+		OperationNumber: 10, LabelKeys: []string{"01JABCDEFGHJKMNPQRSTVWXYZ1"},
+	}}
+	for _, labelsAware := range []bool{true, false} {
+		after := proto.Clone(before).(*pb_common.TechCardInsert)
+		after.LabelsAware = labelsAware
+		after.GarmentLabels[0].LineKey = ""
+		after.GarmentLabels[0].WidthMm = nil
+		after.GarmentLabels[0].HeightMm = nil
+		after.GarmentLabels[0].Fold = ""
+		after.Operations[0].LabelKeys = nil
+
+		if got := techCardChangedSections(before, after); len(got) != 0 {
+			t.Fatalf("old-client omission (labels_aware=%v) produced changes: %#v", labelsAware, got)
+		}
+	}
+}

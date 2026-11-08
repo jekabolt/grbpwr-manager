@@ -117,11 +117,20 @@ func (s *Store) CreateProductionRun(ctx context.Context, r *entity.ProductionRun
 		if err := insertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
+		// A bought aux card's supplier price × plan becomes a cost article (see
+		// entity.ReconcileSupplierPriceCost); it is written with the typed ones.
+		seeded, err := reconcileSupplierPriceCost(ctx, rep.DB(), 0, r.TechCardId, r)
+		if err != nil {
+			return err
+		}
 		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
 			return err
 		}
-		return recordRunEvent(ctx, rep.DB(), id, entity.ProductionRunEventCreated, r.Actor, "",
-			map[string]any{"status": string(r.Status)})
+		if err := recordRunEvent(ctx, rep.DB(), id, entity.ProductionRunEventCreated, r.Actor, "",
+			map[string]any{"status": string(r.Status)}); err != nil {
+			return err
+		}
+		return recordSupplierPriceSeed(ctx, rep.DB(), id, r.Actor, seeded)
 	})
 	if err != nil {
 		// The colour-linkage refusals are caller-fixable preconditions and are returned bare, so the
@@ -368,7 +377,16 @@ func (s *Store) updateProductionRun(ctx context.Context, id int, r *entity.Produ
 		if err := upsertRunLines(ctx, rep.DB(), id, r.Lines); err != nil {
 			return err
 		}
-		return insertRunCosts(ctx, rep.DB(), id, r.Costs)
+		// The supplier price article follows the plan while the operator has not touched it. Judged
+		// on the articles about to be written — on the cost-blind path those are the stored ones.
+		seeded, err := reconcileSupplierPriceCost(ctx, rep.DB(), id, cur.TechCardId, r)
+		if err != nil {
+			return err
+		}
+		if err := insertRunCosts(ctx, rep.DB(), id, r.Costs); err != nil {
+			return err
+		}
+		return recordSupplierPriceSeed(ctx, rep.DB(), id, r.Actor, seeded)
 	})
 	if err != nil {
 		switch err {

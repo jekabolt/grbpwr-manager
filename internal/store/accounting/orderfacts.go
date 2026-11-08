@@ -128,9 +128,12 @@ func (s *Store) ListUnpostedMovements(ctx context.Context, afterID int64, startD
 		limit = defaultScanBatch
 	}
 	movements, err := storeutil.QueryListNamed[entity.AcctMovementFacts](ctx, s.DB, `
-		SELECT m.*, mat.name AS material_name
+		SELECT m.*, mat.name AS material_name,
+		       mc.work_cost_base AS conv_work_cost_base,
+		       mc.inputs_value_base AS conv_inputs_value_base
 		FROM material_stock_movement m
 		JOIN material mat ON mat.id = m.material_id
+		LEFT JOIN material_conversion mc ON mc.id = m.conversion_id
 		WHERE m.id > :after_id AND m.created_at >= :start_date
 		ORDER BY m.id
 		LIMIT :limit`,

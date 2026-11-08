@@ -63,6 +63,14 @@ type RunReadinessInput struct {
 	// modal's coverage is labelled «оценка по норме» and systematically differs from the same run's
 	// figure a minute after creation.
 	ActualWastagePercent decimal.NullDecimal
+	// AuxSupplierPrices is a BOUGHT aux card's output material id → its supplier price (the newest
+	// manual or purchase row in force, entity.SupplierPrice). A missing key is «no price». Unused
+	// otherwise.
+	AuxSupplierPrices map[int]entity.MaterialPrice
+	// RunOutputVariantIds are the aux output colours an EXISTING run's lines name. A colour retired
+	// after the run was planned is still that run's output (the receipt books into it), so the aux
+	// rows count it; for a future run it is empty and only active colours count.
+	RunOutputVariantIds []int
 }
 
 // RunReadinessResult is the verdict plus the two coverage tables. The report is the part the create
@@ -89,13 +97,11 @@ func ComputeProductionRunReadiness(in RunReadinessInput) RunReadinessResult {
 	// filter has to be here and not in the modal because the create-time re-check is also here: a
 	// client-side filter would leave aux runs blockable THROUGH THE API, which is the one thing the
 	// acceptance probe explicitly tests.
+	//
+	// What does apply to an aux run is judged by entity.AuxRunReadinessFindings: an output to
+	// receipt into (BLOCKER), norms per unit when made by us, a supplier price when bought.
 	if card.Purpose == entity.TechCardPurposeAuxiliary {
-		res.Report.Card = []entity.RunReadinessFinding{{
-			Key:      entity.RunReadinessKeyCardAuxiliary,
-			Severity: entity.RunReadinessOK,
-			Label:    "auxiliary card — the cloth norm gate does not apply to it",
-			Target:   entity.RunReadinessTarget{TechCardId: card.Id},
-		}}
+		res.Report.Card = entity.AuxRunReadinessFindings(card, in.RunOutputVariantIds, in.AuxSupplierPrices)
 		return res
 	}
 

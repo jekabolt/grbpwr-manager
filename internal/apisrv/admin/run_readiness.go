@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -121,7 +122,19 @@ func (s *Server) loadRunReadiness(ctx context.Context, q runReadinessQuery) (dto
 		if run != nil {
 			in.ActualWastagePercent = run.ActualWastagePercent
 			in.Issued = dto.AggregateRunMaterialIssues(run.MaterialMovements)
+			in.RunOutputVariantIds = runOutputVariantIds(run.Lines)
 		}
+	}
+
+	// A bought aux card's run is costed at its supplier price, so the gate needs to know which
+	// output materials have one (aux_supplier_price). After the run read: an existing run's retired
+	// colours are still its outputs.
+	if card.AuxBoughtFinished() {
+		prices, err := s.auxSupplierPrices(ctx, entity.AuxRunOutputMaterialIds(card, in.RunOutputVariantIds))
+		if err != nil {
+			return out, err
+		}
+		in.AuxSupplierPrices = prices
 	}
 
 	matIDs := readinessMaterialIDs(card, in.Issued)
@@ -155,6 +168,41 @@ func (s *Server) loadRunReadiness(ctx context.Context, q runReadinessQuery) (dto
 	in.PatternSizeIndex = index
 
 	return dto.ComputeProductionRunReadiness(in), nil
+}
+
+// runOutputVariantIds lists the output colours a stored run's lines name, deduplicated.
+func runOutputVariantIds(lines []entity.ProductionRunLine) []int {
+	seen := map[int]bool{}
+	var out []int
+	for i := range lines {
+		if !lines[i].OutputVariantId.Valid {
+			continue
+		}
+		id := int(lines[i].OutputVariantId.Int32)
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// auxSupplierPrices is material id → supplier price in force today (entity.SupplierPrice, the
+// seed's rule) for the materials that have one.
+func (s *Server) auxSupplierPrices(ctx context.Context, materialIDs []int) (map[int]entity.MaterialPrice, error) {
+	now := time.Now()
+	out := make(map[int]entity.MaterialPrice, len(materialIDs))
+	for _, mid := range materialIDs {
+		prices, err := s.repo.TechCards().ListMaterialPrices(ctx, mid)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't load material prices for run readiness", slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "can't load material prices")
+		}
+		if p, ok := entity.SupplierPrice(prices, now); ok {
+			out[mid] = p
+		}
+	}
+	return out, nil
 }
 
 // readinessMaterialIDs is the union of articles the plan may resolve: slot defaults, colourway pins,

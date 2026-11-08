@@ -468,6 +468,16 @@ enum TechCardAuxSubtype {
   TECH_CARD_AUX_SUBTYPE_SPARE_KIT_BAG = 13;
 }
 
+// AuxMadeBy says who makes an AUXILIARY card's item (0456). US: made from the card's BOM, whose norms
+// (consumption_per_unit, qty_per_garment + spare_qty) are costed and planned. SUPPLIER: bought
+// finished; the supplier's price is the cost and no material is reserved or issued. UNKNOWN on
+// write = keep the stored value (an aux card with none reads US). Only for purpose=auxiliary.
+enum AuxMadeBy {
+  AUX_MADE_BY_UNKNOWN = 0;
+  AUX_MADE_BY_US = 1;
+  AUX_MADE_BY_SUPPLIER = 2;
+}
+
 // ColorwayDevelopmentInsert carries the PLM / lab-dip development fields that moved onto the colourway
 // (product) in the R1 merge: ex tech_card_colorway.code/name/hex/comment become dev_code/name/dev_hex/
 // comment. Lives in techcard.proto to reach TechCardLabDipStatus and the usage recipe without a circular
@@ -544,12 +554,20 @@ message ColorwayDevelopment {
   repeated ColorwayLabDipRound lab_dip_rounds = 3; // OUTPUT-ONLY history, oldest first
 }
 
+enum StyleSizeChartCellSource {
+  STYLE_SIZE_CHART_CELL_SOURCE_UNKNOWN = 0;
+  STYLE_SIZE_CHART_CELL_SOURCE_MANUAL = 1;
+  STYLE_SIZE_CHART_CELL_SOURCE_PATTERN = 2;
+}
+
 // StyleSizeChart is the style-owned size chart (R5). Written full-replace under the shared
-// tech_card.lock_version; there is no separate chart version.
+// tech_card.lock_version; there is no separate chart version. A cell value is the finished-garment
+// value in centimetres; a girth is the half (flat) value.
 message StyleSizeChartCell {
   int32 size_id = 1;
   int32 measurement_name_id = 2;
   google.type.Decimal value = 3;
+  StyleSizeChartCellSource source = 4;
 }
 
 // StyleSizeChartGradeStep is one measurement's grade increment — the per-size-position step the
@@ -557,6 +575,17 @@ message StyleSizeChartCell {
 message StyleSizeChartGradeStep {
   int32 measurement_name_id = 1; // FK measurement_name(id)
   google.type.Decimal step = 2; // increment per size position; may be negative
+}
+
+message StyleSizeChartPoint {
+  int32 measurement_name_id = 1;
+  string pom_code = 2;
+  int32 position = 3;
+  google.type.Decimal tol_minus_cm = 4;
+  google.type.Decimal tol_plus_cm = 5;
+  bool in_shop = 6;
+  repeated string basis_piece_line_keys = 7;
+  bool stale = 8; // output only
 }
 
 message StyleSizeChart {
@@ -574,6 +603,8 @@ message StyleSizeChart {
   // empty steps) means the chart was typed cell by cell, which is what every pre-existing chart is.
   int32 grade_base_size_id = 4; // FK size(id); 0 = no rule authored
   repeated StyleSizeChartGradeStep grade_steps = 5; // one per graded measurement; absent = ungraded
+  repeated StyleSizeChartPoint points = 6;
+  google.type.Decimal shrinkage_pct = 7;
 }
 
 // AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may
@@ -1048,6 +1079,12 @@ message TechCardBomItem {
   // proto3-дефолт UNSPECIFIED и стёрла бы выбор части у ВСЕХ строк карточки. Явно присланный
   // UNSPECIFIED (поле присутствует) очищает в NULL.
   optional TechCardBomLabelPart label_part = 45;
+  // AUX CARD NORM (0456): the measured norm of this line per ONE output unit of an auxiliary card, in
+  // this line's `unit`, net of wastage. Only on auxiliary cards and measured sections, never on a line
+  // cut to length (its strips give the norm); counted sections keep qty_per_garment/spare_qty.
+  // Absent = keep the stored value; explicit Decimal{value:""} clears it (the est_usage protocol).
+  // Unset = no norm: the line is unpriced and blocks the run plan, never zero.
+  google.type.Decimal consumption_per_unit = 46;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -1302,6 +1339,8 @@ message Material {
   google.type.Decimal fabric_thickness_mm = 33;
   // The type of a label in stock, section LABEL only (0451). The label picker filters on it.
   MaterialLabelType label_type = 34;
+  int32 source_material_id = 35; // read-only, one-hop source for a converted material
+  string source_material_name = 36; // read-only display name of source_material_id
 }
 
 // MaterialPrice is one point in a material's append-only price history. Prices are in the
@@ -1311,7 +1350,7 @@ message MaterialPrice {
   google.type.Decimal price = 2;
   string currency = 3; // ISO 4217
   google.protobuf.Timestamp valid_from = 4; // the price applies from this date
-  string source = 5; // manual | production_run
+  string source = 5; // manual | production_run | purchase | conversion
   string note = 6;
 }
 
@@ -2984,6 +3023,10 @@ message TechCardOperation {
   // operation_seam_tolerance_aware (132). Enters no section digest.
   google.type.Decimal seam_tolerance_mm = 76;
 
+  // The labels this step attaches or hangs, by TechCardGarmentLabel.line_key. Not an assembly input. A key
+  // that names no label of the saved card is a field violation.
+  repeated string label_keys = 77;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -3094,7 +3137,7 @@ message TechCardGarmentLabel {
   string key = 1; // required, ≤ 64; brand / size / flag / hangtag / barcode / special or a custom name
   string placement = 2; // where on the garment
   string attachment = 3; // how it is attached / where it is inserted
-  string folding = 4; // how the label is folded
+  string folding = 4; // legacy free note, see fold
   string size = 5; // free text, mm
   int32 qty_per_garment = 6; // ≥ 1; 0 = 1
   int32 bom_item_id = 7; // FK to a BOM line of THIS card; 0 = none
@@ -3104,8 +3147,8 @@ message TechCardGarmentLabel {
   // same save (no id yet). Non-empty wins over bom_item_id on write; the read path returns it too.
   // A key that names no line of the payload BOM is cleared, it never breaks a save.
   string bom_line_key = 10;
-  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. The label holds no
-  // geometry. A number no callout carries any more is cleared on write, it never breaks a save.
+  // The pin: number of a TechCardCallout on a flat of this card; 0 = no pin. A number no callout
+  // carries any more is cleared on write, it never breaks a save.
   int32 callout_number = 11;
   // Artwork per size (true) or one for all sizes (false). PRESENCE BIT: a client that knows this block
   // always sends it; absent means an older client, whose save keeps the stored pin, modes and files.
@@ -3125,6 +3168,15 @@ message TechCardGarmentLabel {
   string print_method = 18; // screen / digital / flexo / foil; only with source make
   // Per garment length in cm, for goods sold by the metre; unset or 0 = counted in qty_per_garment.
   google.type.Decimal length_cm = 19;
+  // Stable key, 26-character ULID minted by the client like a BOM line key; empty is minted by the server.
+  // Unique per card. Shares the key space of the pieces and the cut strips: a pose row of the seam table may
+  // name it, which is how a step's picture keeps the label where it was dragged.
+  string line_key = 20;
+  google.type.Decimal width_mm = 21; // label width, mm; unset = unknown
+  google.type.Decimal height_mm = 22; // label height, mm; unset = unknown
+  // flat | half | ends | mitre | loop; "" = not set. THE fold. `folding` (4) is a legacy free note kept for
+  // display only: migration 0454 moved every unambiguous text into this field and cleared it.
+  string fold = 23;
 }
 
 // TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.
@@ -3736,6 +3788,9 @@ message TechCardInsert {
 
   // WS7: sub-classifies an auxiliary card (UNKNOWN=unset). Ignored / must be UNKNOWN for a sellable card.
   TechCardAuxSubtype aux_subtype = 105;
+  // 0456: who makes an auxiliary card's item. UNSPECIFIED = keep stored (aux default US); refused on
+  // a sellable card.
+  AuxMadeBy aux_made_by = 136;
 
   // Planning date for the overdue view (production cockpit): the calendar day this style is planned
   // to drop, the anchor a run's promised_at is judged against ("до дропа N дней / просрочен"). Owner-
@@ -4152,6 +4207,10 @@ message TechCard {
   // OUTPUT-ONLY: the norm each strip line gets from its strips, one row per BOM line. Present even on
   // a card with no colourways, which has no recipe row to read a norm from. Ignored on write.
   repeated TechCardCutStripNorm cut_strip_norms = 36;
+  // OUTPUT-ONLY, RELEASE SNAPSHOTS ONLY: the style size chart frozen when the card was released
+  // (tech_card_release.snapshot), so every print of that revision carries the same numbers. Never
+  // set on a live card read. A release captured before this field existed has none. Ignored on write.
+  StyleSizeChart release_size_chart = 37;
 }
 
 // One size of a cut-to-length strip.

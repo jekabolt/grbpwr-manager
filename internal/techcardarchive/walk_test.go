@@ -500,6 +500,10 @@ var guardExclusions = map[string]string{
 		"(materials/index.json), not remapped by id — an id-remap here would bind the card to a " +
 		"material row that merely happens to share the number",
 	"output_material_id": "same as material_id: the aux card's output article is matched, not remapped",
+	"source_material_id": "Material lineage (the fabric a dyed fabric or own label was converted from): a " +
+		"read-only DB id set only by a warehouse conversion; the archive import never writes it back " +
+		"(dto reads it entity→pb only), so a foreign id in materials/index.json binds nothing. " +
+		"source_material_name carries the human-readable side",
 	"total_count": "TechCardMarkerSummary: how many pieces the marker holds. A count, not money — " +
 		"and a marker's own numbers are exported as data, not as a figure to hide",
 	"total_units": "TechCardMarkerSummary: garments per lay. Same as total_count",

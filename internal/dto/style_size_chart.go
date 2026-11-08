@@ -18,6 +18,7 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 			SizeId:            int32(cell.SizeID),
 			MeasurementNameId: int32(cell.MeasurementNameID),
 			Value:             &pb_decimal.Decimal{Value: cell.Value.String()},
+			Source:            styleSizeChartCellSourceToPb(cell.Source),
 		})
 	}
 	steps := make([]*pb_common.StyleSizeChartGradeStep, 0, len(c.GradeSteps))
@@ -27,13 +28,31 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 			Step:              &pb_decimal.Decimal{Value: s.Step.String()},
 		})
 	}
+	points := make([]*pb_common.StyleSizeChartPoint, 0, len(c.Points))
+	for _, p := range c.Points {
+		points = append(points, &pb_common.StyleSizeChartPoint{
+			MeasurementNameId: int32(p.MeasurementNameID), PomCode: p.PomCode,
+			Position: int32(p.Position), TolMinusCm: pbDecimalFromDecimal(p.TolMinusCm),
+			TolPlusCm: pbDecimalFromDecimal(p.TolPlusCm), InShop: p.InShop,
+			BasisPieceLineKeys: append([]string(nil), p.BasisPieceLineKeys...), Stale: p.Stale,
+		})
+	}
 	return &pb_common.StyleSizeChart{
 		StyleId:         int32(c.StyleID),
 		LockVersion:     int32(c.LockVersion),
 		Cells:           cells,
 		GradeBaseSizeId: int32(c.GradeBaseSizeID),
 		GradeSteps:      steps,
+		Points:          points,
+		ShrinkagePct:    pbDecimalFromNull(c.ShrinkagePct),
 	}
+}
+
+func styleSizeChartCellSourceToPb(source string) pb_common.StyleSizeChartCellSource {
+	if source == entity.StyleSizeChartCellSourcePattern {
+		return pb_common.StyleSizeChartCellSource_STYLE_SIZE_CHART_CELL_SOURCE_PATTERN
+	}
+	return pb_common.StyleSizeChartCellSource_STYLE_SIZE_CHART_CELL_SOURCE_MANUAL
 }
 
 const (
@@ -123,7 +142,79 @@ func StyleSizeChartCellsFromPb(cells []*pb_common.StyleSizeChartCell) ([]entity.
 			SizeID:            sizeID,
 			MeasurementNameID: nameID,
 			Value:             v,
+			Source:            styleSizeChartCellSourceFromPb(c.GetSource()),
 		})
 	}
 	return out, nil
+}
+
+func styleSizeChartCellSourceFromPb(source pb_common.StyleSizeChartCellSource) string {
+	switch source {
+	case pb_common.StyleSizeChartCellSource_STYLE_SIZE_CHART_CELL_SOURCE_PATTERN:
+		return entity.StyleSizeChartCellSourcePattern
+	case pb_common.StyleSizeChartCellSource_STYLE_SIZE_CHART_CELL_SOURCE_UNKNOWN,
+		pb_common.StyleSizeChartCellSource_STYLE_SIZE_CHART_CELL_SOURCE_MANUAL:
+		return entity.StyleSizeChartCellSourceManual
+	default:
+		return source.String()
+	}
+}
+
+// StyleSizeChartPointsFromPb parses point metadata. The entity validator owns cross-row uniqueness
+// and pom-code rules; this layer owns decimal presence, scale and transport ids.
+func StyleSizeChartPointsFromPb(points []*pb_common.StyleSizeChartPoint) ([]entity.StyleSizeChartPoint, error) {
+	out := make([]entity.StyleSizeChartPoint, 0, len(points))
+	for i, p := range points {
+		if p == nil {
+			continue
+		}
+		minus, err := chartToleranceFromPb(p.GetTolMinusCm(), fmt.Sprintf("points[%d].tol_minus_cm", i))
+		if err != nil {
+			return nil, err
+		}
+		plus, err := chartToleranceFromPb(p.GetTolPlusCm(), fmt.Sprintf("points[%d].tol_plus_cm", i))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entity.StyleSizeChartPoint{
+			MeasurementNameID: int(p.GetMeasurementNameId()), PomCode: p.GetPomCode(),
+			Position: int(p.GetPosition()), TolMinusCm: minus, TolPlusCm: plus,
+			InShop: p.GetInShop(), BasisPieceLineKeys: append([]string(nil), p.GetBasisPieceLineKeys()...),
+		})
+	}
+	if err := entity.ValidateStyleSizeChartPoints(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func chartToleranceFromPb(in *pb_decimal.Decimal, field string) (decimal.Decimal, error) {
+	if in == nil || in.GetValue() == "" {
+		return decimal.NewFromInt(1), nil
+	}
+	value, err := decimal.NewFromString(in.GetValue())
+	if err != nil {
+		return decimal.Decimal{}, fmt.Errorf("%s: %w", field, err)
+	}
+	if err := validateDecimalFits(field, value, 2, 1000, false); err != nil {
+		return decimal.Decimal{}, err
+	}
+	return value, nil
+}
+
+func StyleSizeChartShrinkageFromPb(in *pb_decimal.Decimal) (*decimal.Decimal, error) {
+	if in == nil || in.GetValue() == "" {
+		return nil, nil
+	}
+	value, err := decimal.NewFromString(in.GetValue())
+	if err != nil {
+		return nil, fmt.Errorf("invalid shrinkage_pct %q: %w", in.GetValue(), err)
+	}
+	if value.IsNegative() || value.GreaterThan(decimal.NewFromInt(100)) {
+		return nil, entity.NewFieldViolation("shrinkage_pct", "out_of_range", value.String(), "between 0 and 100")
+	}
+	if value.Exponent() < -2 {
+		return nil, entity.NewFieldViolation("shrinkage_pct", "too_many_decimal_places", value.String(), "round to at most 2 decimal places")
+	}
+	return &value, nil
 }

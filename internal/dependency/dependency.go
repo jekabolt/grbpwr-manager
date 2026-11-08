@@ -1086,7 +1086,7 @@ type (
 		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
 		// gradeBaseSizeID + gradeSteps are the authoring grade rule behind the expanded cells and are
 		// replaced in the same transaction (0 / empty clears the rule).
-		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell, gradeBaseSizeID int, gradeSteps []entity.StyleSizeChartGradeStep) (entity.StyleSizeChart, error)
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell, gradeBaseSizeID int, gradeSteps []entity.StyleSizeChartGradeStep, points []entity.StyleSizeChartPoint, pointsSet bool, shrinkage *decimal.Decimal) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)
@@ -1103,6 +1103,10 @@ type (
 		ListMaterials(ctx context.Context, section string, includeArchived bool) ([]entity.MaterialWithPrice, error)
 		AddMaterialPrice(ctx context.Context, p entity.MaterialPrice) error
 		ListMaterialPrices(ctx context.Context, materialID int) ([]entity.MaterialPrice, error)
+		// SetMaterialSourceIfEmpty records one-hop conversion lineage without overwriting an existing source.
+		SetMaterialSourceIfEmpty(ctx context.Context, materialID, sourceMaterialID int) error
+		// SetFabricShrinkagePct stores the measured percent for fabric and always bumps material.lock_version.
+		SetFabricShrinkagePct(ctx context.Context, materialID int, pct decimal.Decimal) error
 		// Colour variants of an AUXILIARY card's warehouse output (0252): one stock bucket per
 		// colour, extending the single tech_card.output_material_id of 0111. ZERO variants is legacy
 		// single-output mode and behaves exactly as before; the first variant switches the card over.
@@ -1550,6 +1554,10 @@ type (
 		GetMaterialStock(ctx context.Context, materialID int) (*entity.MaterialStock, error)
 		ListMaterialStock(ctx context.Context, filter entity.MaterialStockFilter) ([]entity.MaterialStockRow, error)
 		ListMaterialMovements(ctx context.Context, limit, offset int, filter entity.MaterialMovementFilter) ([]entity.MaterialMovement, int, error)
+		ConvertMaterialStock(ctx context.Context, ins entity.MaterialConversionInsert) (*entity.MaterialConversion, error)
+		GetMaterialConversion(ctx context.Context, id int) (*entity.MaterialConversion, error)
+		GetMaterialConversionsByIds(ctx context.Context, ids []int) ([]entity.MaterialConversion, error)
+		ShrinkMaterialLot(ctx context.Context, ins entity.MaterialLotShrinkInsert) (*entity.MaterialLotShrinkResult, error)
 		// UpsertPackagingBom full-replaces the global packaging recipe consumed on ship (gap-07 v2 B).
 		UpsertPackagingBom(ctx context.Context, items []entity.PackagingBomItem) error
 		// ListPackagingBom returns the packaging recipe joined with material name/unit.

@@ -601,7 +601,9 @@ type AcctDevExpenseFacts struct {
 // the movement is uncosted: no entry is posted and it surfaces in the reconciliation report.
 type AcctMovementFacts struct {
 	MaterialMovement
-	MaterialName string `db:"material_name"`
+	MaterialName        string              `db:"material_name"`
+	ConvWorkCostBase    decimal.NullDecimal `db:"conv_work_cost_base"`
+	ConvInputsValueBase decimal.NullDecimal `db:"conv_inputs_value_base"`
 }
 
 // AcctRunIssueFact is one material issue/return movement of a production run (03/04, P1). It carries

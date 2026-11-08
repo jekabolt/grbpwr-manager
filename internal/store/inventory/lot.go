@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -71,16 +72,17 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		MaterialId int             `db:"material_id"`
 		Received   decimal.Decimal `db:"received_qty"`
 		Remaining  decimal.Decimal `db:"remaining_qty"`
-	}](ctx, db, `SELECT material_id, received_qty, remaining_qty FROM material_lot WHERE id = :id FOR UPDATE`,
+		Shrunk     decimal.Decimal `db:"shrunk_qty"`
+	}](ctx, db, `SELECT material_id, received_qty, remaining_qty, shrunk_qty FROM material_lot WHERE id = :id FOR UPDATE`,
 		map[string]any{"id": lotID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: lot %d", entity.ErrMaterialLotMismatch, lotID)
+			return fmt.Errorf("%w: lot not found", entity.ErrMaterialLotMismatch)
 		}
 		return fmt.Errorf("read material lot %d: %w", lotID, err)
 	}
 	if lot.MaterialId != materialID {
-		return fmt.Errorf("%w: lot %d is material %d, not %d", entity.ErrMaterialLotMismatch, lotID, lot.MaterialId, materialID)
+		return fmt.Errorf("%w: %s belongs to another material", entity.ErrMaterialLotMismatch, lotLabel(ctx, db, lotID))
 	}
 	newRemaining := lot.Remaining.Sub(qty)
 	if isReturn {
@@ -88,16 +90,62 @@ func drawFromLot(ctx context.Context, db dependency.DB, lotID, materialID int, q
 		// A lot can never hold more than was ever received into it — a return naming the wrong lot
 		// would otherwise mint phantom roll stock (g25-05). The target-level outstanding cap has
 		// already passed; this guards the per-lot ledger.
-		if newRemaining.GreaterThan(lot.Received) {
-			return fmt.Errorf("%w: lot %d has %s remaining of %s received", entity.ErrExcessiveMaterialReturn, lotID, lot.Remaining.String(), lot.Received.String())
+		if newRemaining.GreaterThan(lot.Received.Sub(lot.Shrunk)) {
+			return fmt.Errorf("%w: %s has %s remaining of %s received", entity.ErrExcessiveMaterialReturn, lotLabel(ctx, db, lotID), lot.Remaining.String(), lot.Received.String())
 		}
 	} else if lot.Remaining.LessThan(qty) {
-		return fmt.Errorf("%w: lot %d has %s remaining", entity.ErrInsufficientMaterialLot, lotID, lot.Remaining.String())
+		return fmt.Errorf("%w: %s has %s remaining", entity.ErrInsufficientMaterialLot, lotLabel(ctx, db, lotID), lot.Remaining.String())
 	}
 	if err := storeutil.ExecNamed(ctx, db,
 		`UPDATE material_lot SET remaining_qty = :r WHERE id = :id`,
 		map[string]any{"r": newRemaining.Round(qtyScale), "id": lotID}); err != nil {
 		return fmt.Errorf("update material lot %d remaining: %w", lotID, err)
+	}
+	return nil
+}
+
+// drawLotsOldestFirst takes qty out of a material's live lots, oldest receipt first, when a
+// movement names no lot. Without it a lot-less draw lowered on_hand but left every roll's remaining
+// as it was (6 + 4 m in two rolls, 10 m converted: stock 0, lots still 6 + 4). Whatever the lots
+// cannot cover is stock that never had a lot and needs no lot write. Rows are locked in id order,
+// the same order lockConversionLots uses, and sorted by receipt date afterwards.
+func drawLotsOldestFirst(ctx context.Context, db dependency.DB, materialID int, qty decimal.Decimal) error {
+	if !qty.IsPositive() {
+		return nil
+	}
+	lots, err := storeutil.QueryListNamed[struct {
+		Id         int             `db:"id"`
+		Remaining  decimal.Decimal `db:"remaining_qty"`
+		ReceivedAt sql.NullTime    `db:"received_at"`
+	}](ctx, db, `
+		SELECT id, remaining_qty, received_at FROM material_lot
+		WHERE material_id = :m AND archived = FALSE AND remaining_qty > 0
+		ORDER BY id FOR UPDATE`, map[string]any{"m": materialID})
+	if err != nil {
+		return fmt.Errorf("lock material %d lots: %w", materialID, err)
+	}
+	sort.SliceStable(lots, func(i, j int) bool {
+		a, b := lots[i].ReceivedAt, lots[j].ReceivedAt
+		if a.Valid != b.Valid {
+			return a.Valid // dated lots before undated ones
+		}
+		if a.Valid && !a.Time.Equal(b.Time) {
+			return a.Time.Before(b.Time)
+		}
+		return lots[i].Id < lots[j].Id
+	})
+	left := qty
+	for _, lot := range lots {
+		if !left.IsPositive() {
+			break
+		}
+		take := decimal.Min(left, lot.Remaining)
+		if err := storeutil.ExecNamed(ctx, db,
+			`UPDATE material_lot SET remaining_qty = :r WHERE id = :id`,
+			map[string]any{"r": lot.Remaining.Sub(take).Round(qtyScale), "id": lot.Id}); err != nil {
+			return fmt.Errorf("update material lot %d remaining: %w", lot.Id, err)
+		}
+		left = left.Sub(take)
 	}
 	return nil
 }
@@ -111,7 +159,8 @@ func (s *Store) ListMaterialLots(ctx context.Context, materialID int, includeArc
 	}
 	rows, err := storeutil.QueryListNamed[entity.MaterialLot](ctx, s.DB, `
 		SELECT id, material_id, lot_code, supplier_doc, received_qty, remaining_qty, unit_cost,
-		       currency, received_at, note, archived, measured_width_cm, shade_code
+		       currency, received_at, note, archived, measured_width_cm, shade_code,
+		       shrunk_qty, washed_width_cm, shrinkage_pct
 		FROM material_lot `+where+`
 		ORDER BY received_at DESC, id DESC`, map[string]any{"m": materialID})
 	if err != nil {
@@ -145,11 +194,11 @@ func (s *Store) NarrowestMeasuredLotWidths(ctx context.Context, materialIDs []in
 		MaterialId int             `db:"material_id"`
 		WidthCm    decimal.Decimal `db:"width_cm"`
 	}](ctx, s.DB, `
-		SELECT material_id, MIN(measured_width_cm) AS width_cm
+		SELECT material_id, MIN(COALESCE(washed_width_cm, measured_width_cm)) AS width_cm
 		FROM material_lot
 		WHERE material_id IN (:ids)
 		  AND archived = FALSE
-		  AND measured_width_cm IS NOT NULL
+		  AND COALESCE(washed_width_cm, measured_width_cm) IS NOT NULL
 		  AND remaining_qty > 0
 		GROUP BY material_id`, map[string]any{"ids": materialIDs})
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ const materialMovementSelect = `
 		msm.product_id, msm.lot, msm.lot_id, msm.supplier_doc, msm.invoice_file_id,
 		lf.file_name AS invoice_file_name, msm.supplier_id, msm.expected_at, msm.reason,
 		msm.comment, msm.admin_username, msm.occurred_at, msm.created_at,
-		msm.input_vat_amount, msm.input_vat_regime`
+		msm.input_vat_amount, msm.input_vat_regime, msm.conversion_id, msm.loss_qty`
 
 // readMovement hydrates a movement together with the invoice's current library filename. The LEFT
 // JOIN deliberately keeps a receipt readable when its optional file was deleted (the FK clears the
@@ -114,12 +115,12 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			(material_id, movement_type, quantity, on_hand_before, on_hand_after,
 			 unit_cost, currency, unit_cost_base, production_run_id, sample_id, tech_card_id, product_id,
 			 lot, lot_id, supplier_doc, invoice_file_id, supplier_id, expected_at, reason, comment, admin_username, occurred_at,
-			 input_vat_amount, input_vat_regime)
+			 input_vat_amount, input_vat_regime, conversion_id, loss_qty)
 		VALUES
 			(:material_id, :movement_type, :quantity, :on_hand_before, :on_hand_after,
 			 :unit_cost, :currency, :unit_cost_base, :production_run_id, :sample_id, :tech_card_id, :product_id,
 			 :lot, :lot_id, :supplier_doc, :invoice_file_id, :supplier_id, :expected_at, :reason, :comment, :admin_username, :occurred_at,
-			 :input_vat_amount, :input_vat_regime)`,
+			 :input_vat_amount, :input_vat_regime, :conversion_id, :loss_qty)`,
 		map[string]any{
 			"material_id":       m.MaterialId,
 			"movement_type":     string(m.MovementType),
@@ -145,6 +146,8 @@ func insertMovement(ctx context.Context, db dependency.DB, m entity.MaterialMove
 			"occurred_at":       m.OccurredAt,
 			"input_vat_amount":  nullDecimal(m.InputVatAmount),
 			"input_vat_regime":  m.InputVatRegime,
+			"conversion_id":     m.ConversionId,
+			"loss_qty":          nullDecimal(m.LossQty),
 		})
 	if err != nil {
 		return entity.MaterialMovement{}, fmt.Errorf("insert material movement: %w", err)
@@ -161,19 +164,52 @@ func dateOnlyUTC(t time.Time) time.Time {
 
 // materialMeta is the descriptive state needed to gate a movement (archived flag).
 type materialMeta struct {
-	Archived bool `db:"archived"`
+	Name             string         `db:"name"`
+	Unit             sql.NullString `db:"unit"`
+	MaterialClass    string         `db:"material_class"`
+	Archived         bool           `db:"archived"`
+	SourceMaterialId sql.NullInt32  `db:"source_material_id"`
 }
 
 func readMaterialMeta(ctx context.Context, db dependency.DB, materialID int) (materialMeta, error) {
 	meta, err := storeutil.QueryNamedOne[materialMeta](ctx, db,
-		`SELECT archived FROM material WHERE id = :id`, map[string]any{"id": materialID})
+		`SELECT name, unit, material_class, archived, source_material_id FROM material WHERE id = :id`, map[string]any{"id": materialID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return materialMeta{}, fmt.Errorf("%w: material %d", entity.ErrMaterialNotFound, materialID)
+			return materialMeta{}, entity.ErrMaterialNotFound
 		}
 		return materialMeta{}, fmt.Errorf("read material %d: %w", materialID, err)
 	}
 	return meta, nil
+}
+
+// quoteMaterial names a material in a user-facing error by its name, never by its id.
+func quoteMaterial(name string) string {
+	if name == "" {
+		return "material"
+	}
+	return strconv.Quote(name)
+}
+
+// materialLabel names a material in a user-facing error by its name, read on the error path only.
+func materialLabel(ctx context.Context, db dependency.DB, materialID int) string {
+	meta, err := readMaterialMeta(ctx, db, materialID)
+	if err != nil {
+		return "material"
+	}
+	return quoteMaterial(meta.Name)
+}
+
+// lotLabel names a lot in a user-facing error by its code, never by its id. It reads on the error
+// path only; a failed read falls back to the bare word.
+func lotLabel(ctx context.Context, db dependency.DB, lotID int) string {
+	row, err := storeutil.QueryNamedOne[struct {
+		Code sql.NullString `db:"lot_code"`
+	}](ctx, db, `SELECT lot_code FROM material_lot WHERE id = :id`, map[string]any{"id": lotID})
+	if err != nil || !row.Code.Valid || row.Code.String == "" {
+		return "lot"
+	}
+	return "lot " + strconv.Quote(row.Code.String)
 }
 
 // materialExists reports whether a material id exists (used to tell a real zero-stock material from
@@ -195,12 +231,12 @@ func checkSampleOpen(ctx context.Context, db dependency.DB, sampleID int) error 
 	}](ctx, db, `SELECT status FROM sample WHERE id = :id`, map[string]any{"id": sampleID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: sample %d not found", entity.ErrMaterialIssueTargetInvalid, sampleID)
+			return fmt.Errorf("%w: sample not found", entity.ErrMaterialIssueTargetInvalid)
 		}
 		return fmt.Errorf("read sample %d: %w", sampleID, err)
 	}
 	if cur.Status == entity.SampleStatusScrapped {
-		return fmt.Errorf("%w: sample %d is scrapped", entity.ErrMaterialIssueTargetInvalid, sampleID)
+		return fmt.Errorf("%w: sample is scrapped", entity.ErrMaterialIssueTargetInvalid)
 	}
 	return nil
 }
@@ -272,7 +308,7 @@ func checkRunProduct(ctx context.Context, db dependency.DB, runID int, techCardI
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: product %d is not a colour-model of this run (not on its lines or tech card)", entity.ErrMaterialIssueTargetInvalid, productID)
+	return fmt.Errorf("%w: colourway is not on this run", entity.ErrMaterialIssueTargetInvalid)
 }
 
 // blendIntoAvg folds a returned quantity+cost back into the material's moving average (like a
@@ -355,6 +391,32 @@ func ReceiveInTx(ctx context.Context, rep dependency.Repository, ins entity.Mate
 	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
 	if err != nil {
 		return entity.MaterialMovement{}, err
+	}
+	if !ins.FromProduction {
+		// Re-read after taking the stock lock. A conversion takes that same lock before filling
+		// source_material_id, so a purchase that waited behind it cannot proceed on stale lineage.
+		lineage, err := storeutil.QueryNamedOne[struct {
+			SourceMaterialId sql.NullInt32 `db:"source_material_id"`
+		}](ctx, db, `SELECT source_material_id FROM material WHERE id = :id FOR UPDATE`,
+			map[string]any{"id": ins.MaterialId})
+		if err != nil {
+			return entity.MaterialMovement{}, fmt.Errorf("lock material %d purchase guard: %w", ins.MaterialId, err)
+		}
+		if lineage.SourceMaterialId.Valid {
+			return entity.MaterialMovement{}, entity.ErrMaterialMadeNotPurchasable
+		}
+		// A multi-input conversion leaves source_material_id NULL, so the conversion history itself is
+		// the second half of the guard.
+		made, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM material_stock_movement
+			WHERE material_id = :id AND movement_type = 'convert_in'`,
+			map[string]any{"id": ins.MaterialId})
+		if err != nil {
+			return entity.MaterialMovement{}, fmt.Errorf("check material %d conversion history: %w", ins.MaterialId, err)
+		}
+		if made > 0 {
+			return entity.MaterialMovement{}, entity.ErrMaterialMadeNotPurchasable
+		}
 	}
 
 	// Resolve the receipt's base-currency unit cost.
@@ -539,9 +601,9 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 		}
 		if ins.Quantity.GreaterThan(outQty) {
 			if attributed := productAttribution(ins); attributed.Valid {
-				return entity.MaterialMovement{}, fmt.Errorf("%w: colourway %d has %s of material %d outstanding on this run", entity.ErrExcessiveMaterialReturn, attributed.Int32, outQty.String(), ins.MaterialId)
+				return entity.MaterialMovement{}, fmt.Errorf("%w: this colourway has %s of %s outstanding on this run", entity.ErrExcessiveMaterialReturn, outQty.String(), quoteMaterial(meta.Name))
 			}
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, ins.MaterialId, outQty.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, quoteMaterial(meta.Name), outQty.String())
 		}
 		// Price the return at the costed outstanding average — but only when the returned quantity
 		// is covered by costed issues. A return that includes units which left UNPRICED cannot be
@@ -558,7 +620,7 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 		}
 	} else {
 		if before.OnHand.LessThan(ins.Quantity) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 		newOnHand = before.OnHand.Sub(ins.Quantity)
 		// An issue does not change the average; the movement freezes it as the issue cost.
@@ -675,7 +737,8 @@ func (s *Store) AdjustMaterialStock(ctx context.Context, ins entity.MaterialAdju
 // (packaging auto-consume) can share one atomic transaction with their bookkeeping (g25-02). Every
 // guard fails BEFORE any write, so a guard failure leaves the shared transaction clean.
 func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjustInsert, reservedOpen decimal.Decimal, now time.Time) (entity.MaterialMovement, error) {
-	if _, err := readMaterialMeta(ctx, db, ins.MaterialId); err != nil {
+	meta, err := readMaterialMeta(ctx, db, ins.MaterialId)
+	if err != nil {
 		return entity.MaterialMovement{}, err
 	}
 	before, err := readStockForUpdate(ctx, db, ins.MaterialId)
@@ -694,14 +757,14 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 	case entity.MaterialAdjustModeAdjust:
 		newOnHand = before.OnHand.Add(ins.Quantity)
 		if newOnHand.LessThan(decimal.Zero) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 	case entity.MaterialAdjustModeWriteoff:
 		if ins.Quantity.LessThanOrEqual(decimal.Zero) {
 			return entity.MaterialMovement{}, fmt.Errorf("write-off quantity must be positive")
 		}
 		if before.OnHand.LessThan(ins.Quantity) {
-			return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s available", entity.ErrInsufficientMaterialStock, ins.MaterialId, before.OnHand.String())
+			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s available", entity.ErrInsufficientMaterialStock, quoteMaterial(meta.Name), before.OnHand.String())
 		}
 		newOnHand = before.OnHand.Sub(ins.Quantity)
 		mvType = entity.MaterialMovementWriteoff
@@ -713,8 +776,8 @@ func adjustInTx(ctx context.Context, db dependency.DB, ins entity.MaterialAdjust
 	// reserved for open orders — that deepens a packaging oversell. reservedOpen=0 disables the guard
 	// for internal reserve-fulfilling paths (packaging consume).
 	if reservedOpen.IsPositive() && newOnHand.LessThan(reservedOpen) {
-		return entity.MaterialMovement{}, fmt.Errorf("%w: material %d has %s reserved for open orders, only %s free",
-			entity.ErrMaterialReserved, ins.MaterialId, reservedOpen.String(), before.OnHand.String())
+		return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s reserved for open orders, only %s free",
+			entity.ErrMaterialReserved, quoteMaterial(meta.Name), reservedOpen.String(), before.OnHand.String())
 	}
 
 	if err := upsertStock(ctx, db, ins.MaterialId, newOnHand, before.Avg); err != nil {
@@ -783,6 +846,10 @@ func (s *Store) ListMaterialMovements(ctx context.Context, limit, offset int, fi
 		where += " AND msm.movement_type = :movement_type"
 		params["movement_type"] = string(filter.MovementType)
 	}
+	if filter.ConversionId > 0 {
+		where += " AND msm.conversion_id = :conversion_id"
+		params["conversion_id"] = filter.ConversionId
+	}
 	// Inclusive occurred_at date window (B-5). occurred_at is a DATE column, so a plain YYYY-MM-DD bound
 	// is already day-inclusive; comparing the bare column (not DATE(occurred_at)) lets idx_msm_occurred
 	// serve the range. Every movement is dated (insertMovement defaults it; the occurred-at backfill
@@ -835,8 +902,10 @@ func (s *Store) ListMaterialStock(ctx context.Context, filter entity.MaterialSto
 		"belowMn": filter.BelowMinOnly,
 	}
 	rows, err := storeutil.QueryListNamed[materialStockRow](ctx, s.DB, `
-		SELECT m.*, s.on_hand AS on_hand, s.avg_unit_cost_base AS avg_unit_cost_base
+		SELECT m.*, sm.name AS source_material_name,
+		       s.on_hand AS on_hand, s.avg_unit_cost_base AS avg_unit_cost_base
 		FROM material m
+		LEFT JOIN material sm ON sm.id = m.source_material_id
 		LEFT JOIN material_stock s ON s.material_id = m.id
 		WHERE m.archived = FALSE
 			AND (:section = '' OR m.section = :section)
@@ -890,13 +959,13 @@ func checkRunOpen(ctx context.Context, db dependency.DB, runID int) error {
 	}](ctx, db, `SELECT status FROM production_run WHERE id = :id FOR UPDATE`, map[string]any{"id": runID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: production run %d not found", entity.ErrMaterialIssueTargetInvalid, runID)
+			return fmt.Errorf("%w: production run not found", entity.ErrMaterialIssueTargetInvalid)
 		}
 		return fmt.Errorf("read production run %d: %w", runID, err)
 	}
 	if cur.Status != string(entity.ProductionRunPlanned) && cur.Status != string(entity.ProductionRunInProgress) &&
 		cur.Status != string(entity.ProductionRunPartiallyReceived) {
-		return fmt.Errorf("%w: production run %d is %s (not open)", entity.ErrMaterialIssueTargetInvalid, runID, cur.Status)
+		return fmt.Errorf("%w: production run is %s", entity.ErrMaterialIssueTargetInvalid, cur.Status)
 	}
 	return nil
 }

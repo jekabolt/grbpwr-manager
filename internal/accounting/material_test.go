@@ -91,6 +91,18 @@ func TestBuildMaterialMovementEntry_Skips(t *testing.T) {
 	})
 }
 
+func TestBuildMaterialMovementEntry_HandlesEveryKnownType(t *testing.T) {
+	for movementType := range entity.ValidMaterialMovementTypes {
+		m := movementFacts(movementType)
+		if movementType == entity.MaterialMovementConvertIn {
+			m.ConvInputsValueBase = nd("180")
+			m.ConvWorkCostBase = nd("0")
+		}
+		_, err := BuildMaterialMovementEntry(m, testStartDate)
+		assert.NotErrorIs(t, err, ErrUnknownMovementType, "known movement %q must have an accounting rule", movementType)
+	}
+}
+
 func TestBuildMaterialMovementEntry_OccurredAtClamp(t *testing.T) {
 	after := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	before := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -195,4 +207,79 @@ func TestBuildMaterialMovementEntry_InputVAT(t *testing.T) {
 		assertAmount(t, e, Acc1110, entity.AcctSideCredit, "180.00")
 		assert.False(t, hasLine(e, Acc2080, entity.AcctSideDebit))
 	})
+}
+
+func TestBuildMaterialMovementEntry_ConversionE1(t *testing.T) {
+	t.Run("convert out moves input value to WIP", func(t *testing.T) {
+		m := movementFacts(entity.MaterialMovementConvertOut)
+		m.Quantity = dec("10")
+		m.UnitCostBase = nd("4.2000")
+		m.OnHandBefore, m.OnHandAfter = dec("30"), dec("20")
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.Equal(t, entity.AcctSourceMaterialIssue, e.SourceType)
+		assertAmount(t, e, Acc1120, entity.AcctSideDebit, "42.00")
+		assertAmount(t, e, Acc1110, entity.AcctSideCredit, "42.00")
+	})
+
+	t.Run("convert in clears WIP and credits supplier work", func(t *testing.T) {
+		m := movementFacts(entity.MaterialMovementConvertIn)
+		m.Quantity = dec("200")
+		m.UnitCostBase = nd("0.4600")
+		m.ConvInputsValueBase = nd("42.00")
+		m.ConvWorkCostBase = nd("50.00")
+		m.SupplierId = sql.NullInt32{Int32: 17, Valid: true}
+		e, err := BuildMaterialMovementEntry(m, testStartDate)
+		require.NoError(t, err)
+		require.NoError(t, ValidateBalanced(e))
+		assert.Equal(t, entity.AcctSourceMaterialReceipt, e.SourceType)
+		assert.Equal(t, int64(17), e.SupplierID.Int64)
+		assertAmount(t, e, Acc1110, entity.AcctSideDebit, "92.00")
+		assertAmount(t, e, Acc1120, entity.AcctSideCredit, "42.00")
+		assertAmount(t, e, Acc2010, entity.AcctSideCredit, "50.00")
+		assert.False(t, hasLine(e, Acc5090, entity.AcctSideDebit))
+		assert.False(t, hasLine(e, Acc5090, entity.AcctSideCredit))
+	})
+}
+
+func TestBuildMaterialMovementEntry_ConversionResidual(t *testing.T) {
+	m := movementFacts(entity.MaterialMovementConvertIn)
+	m.Quantity = dec("333")
+	m.UnitCostBase = nd("0.1490")
+	m.ConvInputsValueBase = nd("29.64")
+	m.ConvWorkCostBase = nd("19.99")
+	e, err := BuildMaterialMovementEntry(m, testStartDate)
+	require.NoError(t, err)
+	require.NoError(t, ValidateBalanced(e))
+	assertAmount(t, e, Acc1110, entity.AcctSideDebit, "49.62")
+	assertAmount(t, e, Acc5090, entity.AcctSideDebit, "0.01")
+	assertAmount(t, e, Acc1120, entity.AcctSideCredit, "29.64")
+	assertAmount(t, e, Acc2010, entity.AcctSideCredit, "19.99")
+}
+
+func TestBuildMaterialMovementEntry_ConversionPostingOrderIndependent(t *testing.T) {
+	out := movementFacts(entity.MaterialMovementConvertOut)
+	out.Quantity, out.UnitCostBase = dec("10"), nd("4.2000")
+	in := movementFacts(entity.MaterialMovementConvertIn)
+	in.Id, in.Quantity, in.UnitCostBase = 43, dec("200"), nd("0.4600")
+	in.ConvInputsValueBase, in.ConvWorkCostBase = nd("42.00"), nd("50.00")
+
+	firstOut, err := BuildMaterialMovementEntry(out, testStartDate)
+	require.NoError(t, err)
+	secondIn, err := BuildMaterialMovementEntry(in, testStartDate)
+	require.NoError(t, err)
+	firstIn, err := BuildMaterialMovementEntry(in, testStartDate)
+	require.NoError(t, err)
+	secondOut, err := BuildMaterialMovementEntry(out, testStartDate)
+	require.NoError(t, err)
+	assert.Equal(t, firstOut, secondOut)
+	assert.Equal(t, firstIn, secondIn)
+}
+
+func TestBuildMaterialMovementEntry_ShrinkageSkipped(t *testing.T) {
+	m := movementFacts(entity.MaterialMovementShrinkage)
+	m.UnitCostBase = nd("0")
+	_, err := BuildMaterialMovementEntry(m, testStartDate)
+	assert.ErrorIs(t, err, ErrSkipUncosted)
 }

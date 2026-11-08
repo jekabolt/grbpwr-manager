@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -33,7 +34,7 @@ func techCardChangedSections(before, after *pb_common.TechCardInsert) []string {
 	appendGroup("name", "name")
 	appendGroup("note", "status", "notes", "mood_note", "garment_description", "flat_words", "concept")
 	appendGroup("style", "style_number", "style_number_source", "category_id", "stage", "purpose",
-		"output_material_id", "aux_subtype", "target_drop_date", "base_model_id")
+		"output_material_id", "aux_subtype", "aux_made_by", "target_drop_date", "base_model_id")
 	appendGroup("sizes", "measurement_unit", "base_sample_size_id", "size_ids", "size_quantities",
 		"required_seam_allowance_mm")
 	if n := changedBomLineCount(b.GetBomItems(), a.GetBomItems()); n > 0 {
@@ -66,6 +67,10 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	if after.GetMeasurementUnit() == pb_common.TechCardMeasurementUnit_TECH_CARD_MEASUREMENT_UNIT_UNKNOWN {
 		after.MeasurementUnit = before.GetMeasurementUnit()
 	}
+	if after.GetAuxMadeBy() == pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN &&
+		after.GetPurpose() == pb_common.TechCardPurpose_TECH_CARD_PURPOSE_AUXILIARY {
+		after.AuxMadeBy = before.GetAuxMadeBy() // aux: absent keeps the stored value
+	}
 	if after.MoodNote == nil {
 		after.MoodNote = cloneStringPtr(before.MoodNote)
 	}
@@ -97,6 +102,7 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	if after.PieceDxfAliases == nil {
 		after.PieceDxfAliases = cloneMessage(before.PieceDxfAliases)
 	}
+	materializePreservedGarmentLabelGeometry(before, after)
 	if !after.GetLabelsAware() {
 		after.GarmentLabels = cloneMessages(before.GetGarmentLabels())
 		after.PackagingItems = cloneMessages(before.GetPackagingItems())
@@ -146,6 +152,81 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 	}
 	before.Costing = writableCosting(before.GetCosting())
 	after.Costing = writableCosting(after.GetCosting())
+}
+
+// materializePreservedGarmentLabelGeometry mirrors the pre-0454 compatibility carry on the write
+// path, so an old tab does not report labels and operations changed merely because it cannot echo
+// the new fields.
+func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardInsert) {
+	allLabelsOmitted := true
+	for _, label := range after.GetGarmentLabels() {
+		if strings.TrimSpace(label.GetLineKey()) != "" {
+			allLabelsOmitted = false
+			break
+		}
+	}
+	allOperationsOmitted := true
+	for _, op := range after.GetOperations() {
+		if len(op.GetLabelKeys()) > 0 {
+			allOperationsOmitted = false
+			break
+		}
+	}
+	if !after.GetLabelsAware() {
+		after.GarmentLabels = cloneMessages(before.GetGarmentLabels())
+	}
+	byKey := make(map[string][]*pb_common.TechCardGarmentLabel, len(before.GetGarmentLabels()))
+	for _, label := range before.GetGarmentLabels() {
+		if label != nil {
+			key := strings.ToLower(strings.TrimSpace(label.GetKey()))
+			byKey[key] = append(byKey[key], label)
+		}
+	}
+	for _, label := range after.GetGarmentLabels() {
+		if label == nil || strings.TrimSpace(label.GetLineKey()) != "" {
+			continue
+		}
+		matches := byKey[strings.ToLower(strings.TrimSpace(label.GetKey()))]
+		if len(matches) != 1 {
+			continue
+		}
+		label.LineKey = matches[0].GetLineKey()
+		label.WidthMm = cloneMessage(matches[0].GetWidthMm())
+		label.HeightMm = cloneMessage(matches[0].GetHeightMm())
+		label.Fold = matches[0].GetFold()
+	}
+	if !allLabelsOmitted || !allOperationsOmitted {
+		return
+	}
+	live := make(map[string]bool, len(after.GetGarmentLabels()))
+	for _, label := range after.GetGarmentLabels() {
+		if key := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); key != "" {
+			live[key] = true
+		}
+	}
+	storedOps := make(map[int32]*pb_common.TechCardOperation, len(before.GetOperations()))
+	for _, op := range before.GetOperations() {
+		if op != nil {
+			storedOps[op.GetOperationNumber()] = op
+		}
+	}
+	for _, op := range after.GetOperations() {
+		if op == nil {
+			continue
+		}
+		prev := storedOps[op.GetOperationNumber()]
+		if prev == nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, raw := range prev.GetLabelKeys() {
+			key := strings.ToUpper(strings.TrimSpace(raw))
+			if key != "" && live[key] && !seen[key] {
+				seen[key] = true
+				op.LabelKeys = append(op.LabelKeys, key)
+			}
+		}
+	}
 }
 
 // normalizePackedPhotosDiff puts both pack sheets in the form the save writes and the read returns
@@ -256,6 +337,9 @@ func materializePreservedBomFields(before, after *pb_common.TechCardBomItem) {
 	}
 	if after.EstUsage == nil {
 		after.EstUsage = cloneMessage(before.EstUsage)
+	}
+	if after.ConsumptionPerUnit == nil {
+		after.ConsumptionPerUnit = cloneMessage(before.ConsumptionPerUnit)
 	}
 }
 

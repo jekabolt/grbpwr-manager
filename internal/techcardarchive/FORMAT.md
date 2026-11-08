@@ -287,6 +287,7 @@ Four verdicts, and they are not synonyms:
 | 34 | `piece_folds` | travels and is **written** — see §5.3c. Nothing in a fold is a foreign id; the people, the stamps and `source_fingerprint` on the row are source provenance and are **ignored** (the importer is the author, the server computes the fingerprint), and a fold the source read as `stale` lands stale. |
 | 35 | `cut_strips` | travels and is **written** — see §5.3d. Nothing in a strip is a foreign id except the size rows' `size_id`, which is remapped by name. `cut_mm` and `sewn_mm` on a size row are output-only and **ignored**. |
 | 36 | `cut_strip_norms` | **cleared in card.json.** The norm of a strip line is computed from the strips on every read, so a copy in the file would be a second truth. |
+| 37 | `release_size_chart` | **cleared in card.json.** OUTPUT-ONLY and set only inside a release snapshot (the chart frozen at release); a live card read never carries it. The chart itself travels in its own sidecar. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
 `care_instructions`, the two `model_wears_*` and `age_group` are catalogue columns of `tech_card`
@@ -427,13 +428,19 @@ size names (`size.name`, UNIQUE) and measurement names (`measurement_name.name`,
 ```json
 {
   "cells": [
-    {"size_name": "s", "measurement": "chest", "value": "50"},
+    {"size_name": "s", "measurement": "chest", "value": "50", "source": "pattern"},
     {"size_name": "m", "measurement": "chest", "value": "52"}
   ],
   "grade_base_size_name": "m",
   "grade_steps": [
     {"measurement": "chest", "step": "2"}
-  ]
+  ],
+  "points": [
+    {"measurement": "chest", "pom_code": "chest", "position": 1,
+     "tol_minus_cm": "1", "tol_plus_cm": "1", "in_shop": true,
+     "basis_piece_line_keys": ["01JPIECE00000000000000001"]}
+  ],
+  "shrinkage_pct": "2.5"
 }
 ```
 
@@ -444,6 +451,10 @@ This is why the file is not raw protojson — protojson of that message cannot e
 
 `grade_base_size_name` empty and `grade_steps` empty mean the chart was typed cell by cell, which
 is what every pre-existing chart is.
+
+`source` defaults to `manual` when absent. Point rows address the measurement dictionary by name.
+Old archives without points or shrinkage import with default point rows derived from their cells
+and grade steps.
 
 ### 5.2 `assembly.json`
 

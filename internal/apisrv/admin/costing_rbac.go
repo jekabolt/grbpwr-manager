@@ -145,6 +145,24 @@ func stripMaterialMovementCosting(m *pb_common.MaterialMovement) {
 	m.Currency = ""
 }
 
+// stripMaterialConversionCosting removes header and line money while retaining quantities,
+// lineage, supplier and history grouping.
+func stripMaterialConversionCosting(c *pb_common.MaterialConversion) {
+	if c == nil {
+		return
+	}
+	c.WorkCost = nil
+	c.WorkCurrency = ""
+	c.WorkCostBase = nil
+	c.OutputUnitCostBase = nil
+	c.TotalCostBase = nil
+	for _, line := range c.Lines {
+		if line != nil {
+			stripMaterialMovementCosting(line.Movement)
+		}
+	}
+}
+
 // stripMaterialStockCosting clears the moving-average cost on a stock balance, keeping on-hand.
 func stripMaterialStockCosting(st *pb_common.MaterialStock) {
 	if st == nil {

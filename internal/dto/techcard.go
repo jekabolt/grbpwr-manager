@@ -812,6 +812,21 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		}
 		auxSubtype = sql.NullString{String: string(st), Valid: true}
 	}
+	// 0456 aux_made_by: UNKNOWN on an aux card = keep the stored value (none reads us). A value on a
+	// sellable card is refused, like aux_subtype; a sellable card always stores NULL, so nothing is
+	// omitted there.
+	var auxMadeBy sql.NullString
+	auxMadeByOmitted := purpose == entity.TechCardPurposeAuxiliary && pb.AuxMadeBy == pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
+	if pb.AuxMadeBy != pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN {
+		if purpose != entity.TechCardPurposeAuxiliary {
+			return nil, fmt.Errorf("aux_made_by is only for auxiliary cards")
+		}
+		v, ok := auxMadeByFromPb[pb.AuxMadeBy]
+		if !ok {
+			return nil, fmt.Errorf("aux_made_by is invalid")
+		}
+		auxMadeBy = sql.NullString{String: v, Valid: true}
+	}
 
 	// base_sample_size_id, when set, must be part of the declared size range: the
 	// POM grade radiates from the base size, so a base outside the graded columns
@@ -1032,6 +1047,8 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		Purpose:            purpose,
 		OutputMaterialId:   outputMaterialId,
 		AuxSubtype:         auxSubtype,
+		AuxMadeBy:          auxMadeBy,
+		AuxMadeByOmitted:   auxMadeByOmitted,
 		Name:               pb.Name,
 		Brand:              nullStringFromPb(pb.Brand),
 		SeasonCode:         sql.NullString{String: string(seasonCode), Valid: seasonCode != ""},
@@ -1117,9 +1134,17 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 	if prepare != nil {
 		prepare(insert)
 	}
+	if err := finalizeGarmentLabelGeometry(insert); err != nil {
+		return nil, err
+	}
+	// After prepare: the strips a non-aware client did not send are carried by then, and a norm per
+	// unit on a line cut to length is judged against them.
+	if err := entity.ValidateAuxBomNorms(insert); err != nil {
+		return nil, err
+	}
 	// --- РЕЕСТР ПОСТ-ПРОХОДОВ. Порядок обязателен, а не сложился ---------------------------------
 	//
-	//     private prepare → canonicalizeAssembly → release gates → StampTechCardSignoffDigests
+	//     private prepare → label mint/link validation → canonicalizeAssembly → release gates → StampTechCardSignoffDigests
 	//
 	// Канонизация МУТИРУЕТ разобранный payload: классифицирует входы операций в «деталь или
 	// узел», пересобирает PieceLineKeys как проекцию объединения и переносит имя узла на первого
@@ -1544,6 +1569,7 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 			Purpose:           techCardPurposeToPb(tc.Purpose),
 			OutputMaterialId:  int32(tc.OutputMaterialId.Int64),
 			AuxSubtype:        techCardAuxSubtypeToPb(tc.AuxSubtype),
+			AuxMadeBy:         auxMadeByToPb(&tc.TechCardInsert),
 			Name:              tc.Name,
 			Brand:             pbStringFromNull(tc.Brand),
 			SkuSeason:         skuSeasonToPb(tc.SeasonCode, tc.SeasonYear),
@@ -3708,6 +3734,18 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				return nil, err
 			}
 		}
+		// AUX NORM PER UNIT (0456): the est_usage presence protocol. Range and scale here; the rules
+		// that need the card (aux only, measured only, not cut to length) in entity.ValidateAuxBomNorms.
+		consumptionPerUnitOmitted := b.ConsumptionPerUnit == nil
+		consumptionPerUnit, err := nullDecimalFromPb(b.ConsumptionPerUnit)
+		if err != nil {
+			return nil, fmt.Errorf("bom consumption_per_unit: %w", err)
+		}
+		if consumptionPerUnit.Valid {
+			if err := validateDecimalFits(fmt.Sprintf("bom_items[%d].consumption_per_unit", i), consumptionPerUnit.Decimal, bomQtyMaxFrac, bomQtyLimit, false); err != nil {
+				return nil, err
+			}
+		}
 
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
@@ -3766,6 +3804,9 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			// Оценка расхода (0365) — совещательная, в единице строки; в подпись MATERIALS не входит.
 			EstUsage:        estUsage,
 			EstUsageOmitted: estUsageOmitted,
+			// Aux norm per unit (0456).
+			ConsumptionPerUnit:        consumptionPerUnit,
+			ConsumptionPerUnitOmitted: consumptionPerUnitOmitted,
 		})
 	}
 	return out, nil
@@ -4323,6 +4364,8 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			// nil'ом, как любой другой Decimal этой строки; ОЧИСТИТЬ поле клиент обязан явным
 			// Decimal{value:""} — разбор ловушки в parseTechCardBomItems.
 			EstUsage: pbDecimalFromNull(b.EstUsage),
+			// Aux norm per unit (0456) as stored; nil when unset.
+			ConsumptionPerUnit: pbDecimalFromNull(b.ConsumptionPerUnit),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),
@@ -4982,6 +5025,24 @@ func techCardAuxSubtypeToPb(s sql.NullString) pb_common.TechCardAuxSubtype {
 		return v
 	}
 	return pb_common.TechCardAuxSubtype_TECH_CARD_AUX_SUBTYPE_UNKNOWN
+}
+
+// auxMadeByFromPb maps the wire enum to tech_card.aux_made_by (0456); UNSPECIFIED has no entry.
+var auxMadeByFromPb = map[pb_common.AuxMadeBy]string{
+	pb_common.AuxMadeBy_AUX_MADE_BY_US:       entity.AuxMadeByUs,
+	pb_common.AuxMadeBy_AUX_MADE_BY_SUPPLIER: entity.AuxMadeBySupplier,
+}
+
+// auxMadeByToPb reads who makes the card's item: UNKNOWN on a sellable card, SUPPLIER only for an
+// explicit 'supplier', otherwise US (NULL on an aux card reads as made by us).
+func auxMadeByToPb(tc *entity.TechCardInsert) pb_common.AuxMadeBy {
+	switch {
+	case !tc.IsAuxiliary():
+		return pb_common.AuxMadeBy_AUX_MADE_BY_UNKNOWN
+	case tc.AuxBoughtFinished():
+		return pb_common.AuxMadeBy_AUX_MADE_BY_SUPPLIER
+	}
+	return pb_common.AuxMadeBy_AUX_MADE_BY_US
 }
 
 // techCardAuxSubtypeFromPb maps the proto enum to the stored string ("" for UNKNOWN, which the caller

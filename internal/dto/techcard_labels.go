@@ -226,6 +226,7 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		return nil, entity.NewFieldViolation("garment_labels", "too_many", fmt.Sprint(len(pbs)), fmt.Sprintf("at most %d labels", maxLabelEntries))
 	}
 	out := make([]entity.TechCardGarmentLabel, 0, len(pbs))
+	seenLineKey := make(map[string]int, len(pbs))
 	for i, l := range pbs {
 		if l == nil {
 			continue
@@ -258,7 +259,7 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		if err != nil {
 			return nil, err
 		}
-		lineKey, err := parseLabelBomLineKey(f+".bom_line_key", l.BomLineKey)
+		bomLineKey, err := parseLabelBomLineKey(f+".bom_line_key", l.BomLineKey)
 		if err != nil {
 			return nil, err
 		}
@@ -290,8 +291,35 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		if err != nil {
 			return nil, err
 		}
+		lineKey := strings.ToUpper(strings.TrimSpace(l.LineKey))
+		if lineKey != "" {
+			if !entity.IsValidProductionRunLineKey(lineKey) {
+				return nil, entity.NewFieldViolation(f+".line_key", "invalid", l.LineKey, "a 26-character ULID")
+			}
+			if prev, ok := seenLineKey[lineKey]; ok {
+				return nil, entity.NewFieldViolation(f+".line_key", "duplicate",
+					fmt.Sprintf("garment_labels[%d].line_key", prev), "each label has its own key")
+			}
+			seenLineKey[lineKey] = i
+		}
+		widthMm, err := parseGarmentLabelDimension(f+".width_mm", l.WidthMm)
+		if err != nil {
+			return nil, err
+		}
+		heightMm, err := parseGarmentLabelDimension(f+".height_mm", l.HeightMm)
+		if err != nil {
+			return nil, err
+		}
+		fold, err := parseGarmentLabelFold(f+".fold", l.Fold)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, entity.TechCardGarmentLabel{
 			Key:           l.Key,
+			LineKey:       lineKey,
+			WidthMm:       widthMm,
+			HeightMm:      heightMm,
+			Fold:          fold,
 			Placement:     nullStringFromPb(l.Placement),
 			Attachment:    nullStringFromPb(l.Attachment),
 			Folding:       nullStringFromPb(l.Folding),
@@ -300,7 +328,7 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			BomItemId:     bom,
 			Note:          nullStringFromPb(l.Note),
 			MediaIds:      media,
-			BomLineKey:    lineKey,
+			BomLineKey:    bomLineKey,
 
 			CalloutNumber:      int(l.CalloutNumber),
 			ArtworkPerSize:     l.GetArtworkPerSize(),
@@ -317,6 +345,42 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		})
 	}
 	return out, nil
+}
+
+var garmentLabelFolds = map[string]bool{
+	"flat": true, "half": true, "ends": true, "mitre": true, "loop": true,
+}
+
+func parseGarmentLabelFold(field, raw string) (sql.NullString, error) {
+	fold := strings.TrimSpace(raw)
+	if fold == "" {
+		return sql.NullString{}, nil
+	}
+	if !garmentLabelFolds[fold] {
+		return sql.NullString{}, entity.NewFieldViolation(field, "invalid", raw, "use flat, half, ends, mitre or loop")
+	}
+	return sql.NullString{String: fold, Valid: true}, nil
+}
+
+func parseGarmentLabelDimension(field string, raw *pb_decimal.Decimal) (decimal.NullDecimal, error) {
+	v, err := nullDecimalFromPb(raw)
+	if err != nil {
+		value := ""
+		if raw != nil {
+			value = raw.Value
+		}
+		return decimal.NullDecimal{}, entity.NewFieldViolation(field, "not_a_number", value, "enter millimetres")
+	}
+	if !v.Valid {
+		return v, nil
+	}
+	if !v.Decimal.IsPositive() || v.Decimal.GreaterThan(decimal.RequireFromString("99999.99")) {
+		return decimal.NullDecimal{}, entity.NewFieldViolation(field, "out_of_range", v.Decimal.String(), "from 0.01 to 99999.99")
+	}
+	if v.Decimal.Exponent() < -2 {
+		return decimal.NullDecimal{}, entity.NewFieldViolation(field, "too_many_decimal_places", v.Decimal.String(), "at most 2 decimal places")
+	}
+	return v, nil
 }
 
 // parseLabelBomLineKey validates the address of a BOM line. Whether a line carries it is judged
@@ -571,6 +635,10 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 		source := string(l.Source)
 		out = append(out, &pb_common.TechCardGarmentLabel{
 			Key:           l.Key,
+			LineKey:       l.LineKey,
+			WidthMm:       pbDecimalFromNull(l.WidthMm),
+			HeightMm:      pbDecimalFromNull(l.HeightMm),
+			Fold:          pbStringFromNull(l.Fold),
 			Placement:     pbStringFromNull(l.Placement),
 			Attachment:    pbStringFromNull(l.Attachment),
 			Folding:       pbStringFromNull(l.Folding),

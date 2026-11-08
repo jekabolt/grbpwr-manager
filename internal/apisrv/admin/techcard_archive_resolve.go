@@ -1396,6 +1396,7 @@ func (r *tcimpResolver) resolveSizeChart() error {
 		}
 		out.Cells = append(out.Cells, entity.StyleSizeChartCell{
 			SizeID: sizeID, MeasurementNameID: measurementID, Value: value,
+			Source: archiveChartCellSource(c.Source),
 		})
 	}
 
@@ -1425,6 +1426,72 @@ func (r *tcimpResolver) resolveSizeChart() error {
 		})
 	}
 
+	pieces := map[string]bool{}
+	for _, piece := range r.out.Insert.GetPieces() {
+		if key := strings.ToUpper(strings.TrimSpace(piece.GetLineKey())); key != "" {
+			pieces[key] = true
+		}
+	}
+	for _, strip := range r.out.Insert.GetCutStrips() {
+		pieces[entity.CutStripLineKey(strip.GetLineKey())] = true
+	}
+	seenPointName, seenPosition, seenCode := map[int]bool{}, map[int]bool{}, map[string]bool{}
+	for i, point := range chart.Points {
+		measurementID, ok := r.lookupMeasurement(point.Measurement, "point row")
+		if !ok {
+			continue
+		}
+		minus, err := decimal.NewFromString(strings.TrimSpace(point.TolMinusCm))
+		if err != nil {
+			r.hole(techcardarchive.EntityMeasurement, fmt.Sprintf("measurement=%s", point.Measurement),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the point row carries invalid tol_minus_cm %q; it was dropped", point.TolMinusCm))
+			continue
+		}
+		plus, err := decimal.NewFromString(strings.TrimSpace(point.TolPlusCm))
+		if err != nil {
+			r.hole(techcardarchive.EntityMeasurement, fmt.Sprintf("measurement=%s", point.Measurement),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				fmt.Sprintf("the point row carries invalid tol_plus_cm %q; it was dropped", point.TolPlusCm))
+			continue
+		}
+		basis := make([]string, 0, len(point.BasisPieceLineKeys))
+		for _, key := range entity.NormalizedPieceLineKeys(point.BasisPieceLineKeys) {
+			if pieces[key] {
+				basis = append(basis, key)
+			}
+		}
+		candidate := entity.StyleSizeChartPoint{
+			MeasurementNameID: measurementID, PomCode: point.PomCode, Position: point.Position,
+			TolMinusCm: minus, TolPlusCm: plus, InShop: point.InShop,
+			BasisPieceLineKeys: basis, Stale: point.Stale,
+		}
+		candidate.PomCode = strings.TrimSpace(candidate.PomCode)
+		if err := entity.ValidateStyleSizeChartPoints([]entity.StyleSizeChartPoint{candidate}); err != nil ||
+			seenPointName[measurementID] || seenPosition[candidate.Position] ||
+			(candidate.PomCode != "" && seenCode[candidate.PomCode]) {
+			r.hole(techcardarchive.EntityMeasurement,
+				fmt.Sprintf("measurement=%s/index=%d", point.Measurement, i),
+				techcardarchive.StatusSkipped, techcardarchive.ReasonArchiveRowInvalid,
+				"the point row is invalid or duplicates another point row; it was dropped")
+			continue
+		}
+		seenPointName[measurementID], seenPosition[candidate.Position] = true, true
+		if candidate.PomCode != "" {
+			seenCode[candidate.PomCode] = true
+		}
+		out.Points = append(out.Points, candidate)
+	}
+	if raw := strings.TrimSpace(chart.ShrinkagePct); raw != "" {
+		value, err := decimal.NewFromString(raw)
+		if err != nil || value.IsNegative() || value.GreaterThan(decimal.NewFromInt(100)) || value.Exponent() < -2 {
+			r.hole(techcardarchive.EntityCard, "size_chart.shrinkage_pct",
+				techcardarchive.StatusDegraded, techcardarchive.ReasonArchiveRowInvalid,
+				"the applied shrinkage is invalid; the chart imported without it")
+		} else {
+			out.ShrinkagePct = decimal.NullDecimal{Decimal: value, Valid: true}
+		}
+	}
 	// A grade rule with a base and no steps (or steps and no base) is half a rule and would read as
 	// an authored one. Both halves or neither — the cells stand on their own either way, which is
 	// what every pre-existing chart looks like.
@@ -1433,6 +1500,13 @@ func (r *tcimpResolver) resolveSizeChart() error {
 	}
 	r.out.SizeChartPlan = out
 	return nil
+}
+
+func archiveChartCellSource(source string) string {
+	if strings.TrimSpace(source) == entity.StyleSizeChartCellSourcePattern {
+		return entity.StyleSizeChartCellSourcePattern
+	}
+	return entity.StyleSizeChartCellSourceManual
 }
 
 // lookupChartSize resolves a size NAME off the chart and records the hole itself, so the two call

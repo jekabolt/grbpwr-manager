@@ -93,6 +93,7 @@ var operationWorkSeedMigrations = []string{
 	operationWorkBackfillMigration,
 	operationWorkHemTurnedMigration,
 	operationWorkIconCatalogMigration,
+	operationWorkHangTagMigration,
 }
 
 type seedWork struct {
@@ -157,6 +158,11 @@ func assertOneInsertPerCatalogTable(t *testing.T, file, content string) {
 		}
 	}
 	for table, wantN := range want {
+		// Файл, все работы которого не машинные (machine_mode none), машинок не сеет вовсе (0458):
+		// ноль вставок здесь законен, а работы fixed/ask без машинок ловит checkSeedCatalog.
+		if table == "operation_work_machine" && got[table] == 0 {
+			continue
+		}
 		if got[table] != wantN {
 			t.Errorf("%s: вставок в %s найдено %d, ожидается ровно %d — вторая вставка с другим порядком колонок прошла бы мимо разбора и мимо замороженного хеша",
 				file, table, got[table], wantN)
@@ -170,6 +176,15 @@ func assertOneInsertPerCatalogTable(t *testing.T, file, content string) {
 // insertBody returns the VALUES tuples of the one INSERT whose header line is `header`, cut at the
 // `ON DUPLICATE KEY UPDATE` clause. It fails loudly when the header is absent or appears twice —
 // a silently-empty body is exactly how this whole file would go false-green.
+// insertBodyIf — insertBody для необязательной вставки: пустой заголовок значит «вставки нет».
+func insertBodyIf(t *testing.T, file, content, header string) []string {
+	t.Helper()
+	if header == "" {
+		return nil
+	}
+	return insertBody(t, file, content, header)
+}
+
 func insertBody(t *testing.T, file, content, header string) []string {
 	t.Helper()
 	idx := strings.Index(content, header)
@@ -221,7 +236,11 @@ func parseSeedCatalog(t *testing.T, file, content string) seedCatalog {
 		})
 	}
 
-	for _, line := range insertBody(t, file, content, "INSERT INTO operation_work_machine (work_token, machine_type) VALUES") {
+	machineHeader := "INSERT INTO operation_work_machine (work_token, machine_type) VALUES"
+	if !strings.Contains(content, machineHeader) {
+		machineHeader = ""
+	}
+	for _, line := range insertBodyIf(t, file, content, machineHeader) {
 		m := pairTupleRe.FindStringSubmatch(line)
 		if m == nil {
 			t.Fatalf("%s: строка сида машинок не разбирается: %s", file, line)
@@ -455,15 +474,15 @@ func TestOperationWorkCatalogSeed(t *testing.T) {
 	t.Logf("(е) sha256(token=verb) = %s", tokenVerbDigest(cat))
 }
 
-// TestOperationWorkCatalogSeedUnion прогоняет восемь правил по 0329 + 0331 + 0332 + 0437.
+// TestOperationWorkCatalogSeedUnion прогоняет восемь правил по 0329 + 0331 + 0332 + 0437 + 0458.
 // Именно объединённый срез ловит token/sort, занятый в другом файле; остальные правила заодно
 // не дают новой миграции миновать закрытые словари, арифметику machine_mode и RU/EN-поиск.
 func TestOperationWorkCatalogSeedUnion(t *testing.T) {
 	cat := operationWorkSeedUnion(t)
-	for _, p := range checkSeedCatalog(cat, catalogWorkCountAfterIconCatalog) {
+	for _, p := range checkSeedCatalog(cat, catalogWorkCountAfterHangTag) {
 		t.Error(p)
 	}
-	t.Logf("объединённый каталог после 0437: работ %d, машинок %d, синонимов %d",
+	t.Logf("объединённый каталог после 0458: работ %d, машинок %d, синонимов %d",
 		len(cat.Works), len(cat.Machines), len(cat.Syns))
 }
 

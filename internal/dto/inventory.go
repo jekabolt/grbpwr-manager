@@ -24,6 +24,9 @@ var materialMovementTypeToPb = map[entity.MaterialMovementType]pb_common.Materia
 	entity.MaterialMovementReturnSample:      pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_RETURN_SAMPLE,
 	entity.MaterialMovementAdjustment:        pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_ADJUSTMENT,
 	entity.MaterialMovementWriteoff:          pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_WRITEOFF,
+	entity.MaterialMovementConvertOut:        pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_CONVERT_OUT,
+	entity.MaterialMovementConvertIn:         pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_CONVERT_IN,
+	entity.MaterialMovementShrinkage:         pb_common.MaterialMovementType_MATERIAL_MOVEMENT_TYPE_SHRINKAGE,
 }
 
 // materialMovementTypeFromPb is the reverse map for list filtering.
@@ -273,7 +276,7 @@ func ConvertPbReceiveMaterialStockBatch(req *pb_admin.ReceiveMaterialStockBatchR
 			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d material_id is required", i+1)
 		}
 		if _, duplicate := seen[line.GetMaterialId()]; duplicate {
-			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("material_id %d appears more than once", line.GetMaterialId())
+			return entity.MaterialReceiptBatchInsert{}, fmt.Errorf("line %d: same material twice", i+1)
 		}
 		seen[line.GetMaterialId()] = struct{}{}
 		qty, err := positiveDecimal(line.GetQuantity().GetValue(), fmt.Sprintf("line %d quantity", i+1))
@@ -462,13 +465,13 @@ func ConvertPbBatchIssueMaterialStock(req *pb_admin.BatchIssueMaterialStockReque
 			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: material_id is required", i+1)
 		}
 		if first, ok := seen[materialID]; ok {
-			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): duplicate material_id (first used on line %d)", i+1, materialID, first)
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: same material as line %d", i+1, first)
 		}
 		seen[materialID] = i + 1
 
 		qty, err := positiveDecimal(line.GetQuantity().GetValue(), "quantity")
 		if err != nil {
-			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d (material %d): %w", i+1, materialID, err)
+			return entity.MaterialBatchIssueInsert{}, fmt.Errorf("line %d: %w", i+1, err)
 		}
 		comment := line.GetComment()
 		if comment == "" {
@@ -538,6 +541,8 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 		SupplierDoc:     m.SupplierDoc.String,
 		InvoiceFileId:   nullInt32Value(m.InvoiceFileId),
 		InvoiceFileName: m.InvoiceFileName.String,
+		ConversionId:    nullInt32Value(m.ConversionId),
+		LossQty:         pbDecimalFromNull(m.LossQty),
 		Reason:          m.Reason.String,
 		Comment:         m.Comment.String,
 		AdminUsername:   m.AdminUsername,
@@ -586,6 +591,198 @@ func ConvertEntityMaterialStockRowToPb(r entity.MaterialStockRow, baseCurrency s
 // UNKNOWN).
 func MaterialMovementTypeFromPb(t pb_common.MaterialMovementType) entity.MaterialMovementType {
 	return materialMovementTypeFromPb[t]
+}
+
+// ConvertPbMaterialConversion validates the wire command. Unit-dependent integer guards remain in
+// the store, where the locked material rows provide the authoritative units.
+func ConvertPbMaterialConversion(req *pb_admin.ConvertMaterialStockRequest) (entity.MaterialConversionInsert, error) {
+	if req == nil || len(req.GetInputs()) < 1 || len(req.GetInputs()) > 5 {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("inputs must contain 1 to 5 materials")
+	}
+	if req.GetOutput() == nil || req.GetOutput().GetMaterialId() <= 0 {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("output.material_id is required")
+	}
+	seen := make(map[int32]bool, len(req.GetInputs()))
+	inputs := make([]entity.MaterialConversionInput, 0, len(req.GetInputs()))
+	for i, input := range req.GetInputs() {
+		if input == nil || input.GetMaterialId() <= 0 {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d].material_id is required", i)
+		}
+		if seen[input.GetMaterialId()] {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d]: same material twice", i)
+		}
+		seen[input.GetMaterialId()] = true
+		if input.GetMaterialId() == req.GetOutput().GetMaterialId() {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("output material cannot also be an input")
+		}
+		qty, err := positiveDecimal(input.GetQuantity().GetValue(), fmt.Sprintf("inputs[%d].quantity", i))
+		if err != nil {
+			return entity.MaterialConversionInsert{}, err
+		}
+		if err := validateDecimalScale(decimal.NullDecimal{Decimal: qty, Valid: true}, fmt.Sprintf("inputs[%d].quantity", i), 3, 1_000_000_000); err != nil {
+			return entity.MaterialConversionInsert{}, err
+		}
+		loss, err := nullDecimalFromPb(input.GetLossQty())
+		if err != nil {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d].loss_qty: %w", i, err)
+		}
+		if loss.Valid && (loss.Decimal.IsNegative() || loss.Decimal.GreaterThan(qty)) {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d].loss_qty must be between zero and quantity", i)
+		}
+		if err := validateDecimalScale(loss, fmt.Sprintf("inputs[%d].loss_qty", i), 3, 1_000_000_000); err != nil {
+			return entity.MaterialConversionInsert{}, err
+		}
+		if input.GetLotId() < 0 {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("inputs[%d].lot_id must be non-negative", i)
+		}
+		inputs = append(inputs, entity.MaterialConversionInput{
+			MaterialId: int(input.GetMaterialId()), Quantity: qty, LossQty: loss,
+			LotId: sql.NullInt32{Int32: input.GetLotId(), Valid: input.GetLotId() > 0},
+		})
+	}
+
+	outputQty, err := positiveDecimal(req.GetOutput().GetQuantity().GetValue(), "output.quantity")
+	if err != nil {
+		return entity.MaterialConversionInsert{}, err
+	}
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: outputQty, Valid: true}, "output.quantity", 3, 1_000_000_000); err != nil {
+		return entity.MaterialConversionInsert{}, err
+	}
+	measuredWidth, err := nullDecimalFromPb(req.GetOutput().GetMeasuredWidthCm())
+	if err != nil {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("output.measured_width_cm: %w", err)
+	}
+	if measuredWidth.Valid && !measuredWidth.Decimal.IsPositive() {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("output.measured_width_cm must be positive")
+	}
+	if err := validateDecimalScale(measuredWidth, "output.measured_width_cm", 2, 10_000); err != nil {
+		return entity.MaterialConversionInsert{}, err
+	}
+	lotCode := strings.TrimSpace(req.GetOutput().GetLotCode())
+	shadeCode := strings.TrimSpace(req.GetOutput().GetShadeCode())
+	if len(lotCode) > maxVarchar64 || len(shadeCode) > maxVarchar64 {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("output lot_code/shade_code must be at most %d characters", maxVarchar64)
+	}
+	if lotCode == "" && (measuredWidth.Valid || shadeCode != "") {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("output.lot_code is required for measured_width_cm or shade_code")
+	}
+
+	workCost, err := nullDecimalFromPb(req.GetWorkCost())
+	if err != nil {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("work_cost: %w", err)
+	}
+	work := decimal.Zero
+	if workCost.Valid {
+		work = workCost.Decimal
+	}
+	if work.IsNegative() {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("work_cost must be non-negative")
+	}
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: work, Valid: true}, "work_cost", 2, 10_000_000_000); err != nil {
+		return entity.MaterialConversionInsert{}, err
+	}
+	currency := strings.ToUpper(strings.TrimSpace(req.GetWorkCurrency()))
+	if currency != "" && !IsExpenseCurrency(currency) {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("work_currency must be a supported currency or USDT")
+	}
+	if work.IsPositive() && currency == "" {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("work_currency is required when work_cost is positive")
+	}
+	if req.GetSupplierId() < 0 {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("supplier_id must be non-negative")
+	}
+	if len(req.GetSupplierDoc()) > maxVarchar255 || len(req.GetComment()) > maxVarchar255 ||
+		len(req.GetClientRequestId()) > maxVarchar64 {
+		return entity.MaterialConversionInsert{}, fmt.Errorf("supplier_doc/comment/client_request_id is too long")
+	}
+	var occurredAt sql.NullTime
+	if req.GetOccurredAt() != nil {
+		if err := req.GetOccurredAt().CheckValid(); err != nil {
+			return entity.MaterialConversionInsert{}, fmt.Errorf("occurred_at: %w", err)
+		}
+		occurredAt = sql.NullTime{Time: req.GetOccurredAt().AsTime(), Valid: true}
+	}
+	return entity.MaterialConversionInsert{
+		Inputs: inputs,
+		Output: entity.MaterialConversionOutput{
+			MaterialId: int(req.GetOutput().GetMaterialId()), Quantity: outputQty,
+			LotCode: nullStringFromPb(lotCode), MeasuredWidthCm: measuredWidth,
+			ShadeCode: nullStringFromPb(shadeCode),
+		},
+		WorkCost: work, WorkCurrency: currency,
+		SupplierId:  sql.NullInt32{Int32: req.GetSupplierId(), Valid: req.GetSupplierId() > 0},
+		SupplierDoc: nullStringFromPb(req.GetSupplierDoc()), Comment: nullStringFromPb(req.GetComment()),
+		OccurredAt: occurredAt, ClientRequestId: nullStringFromPb(req.GetClientRequestId()),
+	}, nil
+}
+
+// ConvertPbMaterialLotShrink validates a lot shrink measurement.
+func ConvertPbMaterialLotShrink(req *pb_admin.ShrinkMaterialLotRequest) (entity.MaterialLotShrinkInsert, error) {
+	if req == nil || req.GetLotId() <= 0 {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("lot_id is required")
+	}
+	after, err := positiveDecimal(req.GetLengthAfter().GetValue(), "length_after")
+	if err != nil {
+		return entity.MaterialLotShrinkInsert{}, err
+	}
+	if err := validateDecimalScale(decimal.NullDecimal{Decimal: after, Valid: true}, "length_after", 3, 1_000_000_000); err != nil {
+		return entity.MaterialLotShrinkInsert{}, err
+	}
+	before, err := nullDecimalFromPb(req.GetLengthBefore())
+	if err != nil {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("length_before: %w", err)
+	}
+	if before.Valid && !before.Decimal.IsPositive() {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("length_before must be positive when set")
+	}
+	if err := validateDecimalScale(before, "length_before", 3, 1_000_000_000); err != nil {
+		return entity.MaterialLotShrinkInsert{}, err
+	}
+	width, err := nullDecimalFromPb(req.GetWidthAfter())
+	if err != nil {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("width_after: %w", err)
+	}
+	if width.Valid && !width.Decimal.IsPositive() {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("width_after must be positive when set")
+	}
+	if err := validateDecimalScale(width, "width_after", 2, 10_000); err != nil {
+		return entity.MaterialLotShrinkInsert{}, err
+	}
+	if len(req.GetComment()) > maxVarchar255 {
+		return entity.MaterialLotShrinkInsert{}, fmt.Errorf("comment must be at most %d characters", maxVarchar255)
+	}
+	return entity.MaterialLotShrinkInsert{
+		LotId: int(req.GetLotId()), LengthAfter: after, LengthBefore: before,
+		WidthAfter: width, Comment: nullStringFromPb(req.GetComment()),
+	}, nil
+}
+
+// ConvertEntityMaterialConversionToPb converts a complete conversion operation.
+func ConvertEntityMaterialConversionToPb(c entity.MaterialConversion) *pb_common.MaterialConversion {
+	out := &pb_common.MaterialConversion{
+		Id: int32(c.Id), WorkCost: pbDecimalFromDecimal(c.WorkCost), WorkCurrency: c.WorkCurrency.String,
+		WorkCostBase:       pbDecimalFromDecimal(c.WorkCostBase),
+		OutputUnitCostBase: pbDecimalFromDecimal(c.OutputUnitCostBase),
+		TotalCostBase:      pbDecimalFromDecimal(c.TotalCostBase), SupplierId: nullInt32Value(c.SupplierId),
+		SupplierDoc: c.SupplierDoc.String, Comment: c.Comment.String, AdminUsername: c.AdminUsername,
+		CreatedAt: timestamppb.New(c.CreatedAt),
+	}
+	if c.OccurredAt.Valid {
+		out.OccurredAt = timestamppb.New(c.OccurredAt.Time)
+	}
+	for _, line := range c.Lines {
+		out.Lines = append(out.Lines, &pb_common.MaterialConversionLine{
+			Movement:     ConvertEntityMaterialMovementToPb(line.Movement),
+			MaterialName: line.MaterialName, Unit: line.Unit,
+		})
+	}
+	return out
+}
+
+// DecimalToPb exposes the package's null-preserving decimal projection for handlers assembling a
+// response from a small result wrapper rather than a full entity converter.
+func DecimalToPb(d decimal.NullDecimal) *pb_decimal.Decimal {
+	return pbDecimalFromNull(d)
 }
 
 // --- small local helpers ---
@@ -645,7 +842,7 @@ func parseNonNegDecimal(d *pb_decimal.Decimal, field string) (decimal.Decimal, e
 func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity.PackagingBomItem, error) {
 	out := make([]entity.PackagingBomItem, 0, len(items))
 	seen := map[int32]bool{}
-	for _, it := range items {
+	for i, it := range items {
 		if it == nil {
 			continue
 		}
@@ -653,7 +850,7 @@ func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity
 			return nil, fmt.Errorf("packaging bom line needs a material_id")
 		}
 		if seen[it.MaterialId] {
-			return nil, fmt.Errorf("packaging bom has duplicate material_id %d", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d: same material twice", i+1)
 		}
 		seen[it.MaterialId] = true
 		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
@@ -665,7 +862,7 @@ func ConvertPbPackagingBomToEntity(items []*pb_admin.PackagingBomItem) ([]entity
 			return nil, err
 		}
 		if perOrder.IsZero() && perItem.IsZero() {
-			return nil, fmt.Errorf("packaging bom material %d has no quantity", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d has no quantity", i+1)
 		}
 		out = append(out, entity.PackagingBomItem{
 			MaterialId:  int(it.MaterialId),
@@ -707,7 +904,7 @@ func PackagingBomListToPb(items []entity.PackagingBomItem) []*pb_admin.Packaging
 func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]entity.PackagingRecipeInsert, error) {
 	out := make([]entity.PackagingRecipeInsert, 0, len(items))
 	seen := map[int32]bool{}
-	for _, it := range items {
+	for i, it := range items {
 		if it == nil {
 			continue
 		}
@@ -715,7 +912,7 @@ func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]
 			return nil, fmt.Errorf("packaging recipe line needs a material_id")
 		}
 		if seen[it.MaterialId] {
-			return nil, fmt.Errorf("packaging recipe has duplicate material_id %d", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d: same material twice", i+1)
 		}
 		seen[it.MaterialId] = true
 		perOrder, err := parseNonNegDecimal(it.QtyPerOrder, "qty_per_order")
@@ -727,7 +924,7 @@ func ConvertPbPackagingRecipeToEntity(items []*pb_admin.PackagingRecipeItem) ([]
 			return nil, err
 		}
 		if perOrder.IsZero() && perItem.IsZero() {
-			return nil, fmt.Errorf("packaging recipe material %d has no quantity", it.MaterialId)
+			return nil, fmt.Errorf("packaging line %d has no quantity", i+1)
 		}
 		out = append(out, entity.PackagingRecipeInsert{
 			MaterialId:  int(it.MaterialId),
@@ -788,6 +985,9 @@ func MaterialLotToPb(l entity.MaterialLot) *pb_common.MaterialLot {
 		// "0 cm wide" or as agreeing with the article's nominal width.
 		MeasuredWidthCm: pbDecimalFromNull(l.MeasuredWidthCm),
 		ShadeCode:       l.ShadeCode.String,
+		ShrunkQty:       pbDecimalFromDecimal(l.ShrunkQty),
+		WashedWidthCm:   pbDecimalFromNull(l.WashedWidthCm),
+		ShrinkagePct:    pbDecimalFromNull(l.ShrinkagePct),
 	}
 	if l.ReceivedAt.Valid {
 		pb.ReceivedAt = timestamppb.New(l.ReceivedAt.Time)

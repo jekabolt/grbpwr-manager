@@ -847,6 +847,7 @@ const bomItemUpdateQuery = `
 		qty_per_garment=IF(:countable_omitted, qty_per_garment, :qty_per_garment),
 		spare_qty=IF(:countable_omitted, spare_qty, :spare_qty),
 		est_usage=IF(:est_usage_omitted, est_usage, :est_usage),
+		consumption_per_unit=IF(:consumption_per_unit_omitted, consumption_per_unit, :consumption_per_unit),
 		price_source=:price_source, price_snapshot_at=:price_snapshot_at
 	WHERE id=:id`
 
@@ -855,11 +856,11 @@ const bomItemInsertQuery = `
 		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, label_part, is_sample, name, supplier, supplier_ref,
 		 color, pantone, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
 		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
-		 wastage_applied_percent, qty_per_garment, spare_qty, est_usage, line_key, price_source, price_snapshot_at)
+		 wastage_applied_percent, qty_per_garment, spare_qty, est_usage, consumption_per_unit, line_key, price_source, price_snapshot_at)
 	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :label_part, :is_sample, :name, :supplier, :supplier_ref,
 		 :color, :pantone, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
-		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :est_usage, :line_key, :price_source, :price_snapshot_at)`
+		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :est_usage, :consumption_per_unit, :line_key, :price_source, :price_snapshot_at)`
 
 // validateBomKindSection enforces the kind↔section pairing (0278) the DB CHECK deliberately does not:
 // a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
@@ -1156,7 +1157,12 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		// состояние, а «нитка с оценкой в метрах» — обычное.
 		"est_usage":         b.EstUsage,
 		"est_usage_omitted": b.EstUsageOmitted,
-		"line_key":          lineKey,
+		// AUX NORM PER UNIT (0456) under its own presence flag, like est_usage. The write rules
+		// (aux only, measured only, not cut to length) are held in Go (entity.ValidateAuxBomNorms);
+		// a stale value on a line that no longer qualifies is inert because AuxRecipe never reads it.
+		"consumption_per_unit":         b.ConsumptionPerUnit,
+		"consumption_per_unit_omitted": b.ConsumptionPerUnitOmitted,
+		"line_key":                     lineKey,
 	}
 }
 
@@ -1442,7 +1448,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
 		       bi.wastage_source, bi.wastage_lay_count, bi.wastage_applied_at, bi.wastage_applied_percent,
 		       bi.qty_per_garment, bi.spare_qty,
-		       bi.est_usage,
+		       bi.est_usage, bi.consumption_per_unit,
 		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
 		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
 		       mfa.selvedge_cm AS selvedge_cm

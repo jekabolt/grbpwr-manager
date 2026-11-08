@@ -1320,6 +1320,9 @@ func materialsTails(b *entity.TechCardBomItem) []any {
 		// ПАРОЙ, А НЕ ПОЗИЦИЕЙ, поэтому у строк без кода — а это каждая существующая — хвост не
 		// рождается вовсе и отпечаток не двигается.
 		operationKindTail("colour", opKindStr("pantone", b.Pantone)),
+		// НОРМА AUX-СТРОКИ НА ЕДИНИЦУ (0456) задаёт закупаемое количество, как счётная норма выше. Ключ —
+		// имя колонки. NULL пары не рождает, поэтому у всех существующих строк отпечаток не двигается.
+		operationKindTail("aux", opKindDec("consumption_per_unit", b.ConsumptionPerUnit)),
 	}
 	out := make([]any, 0, len(tails))
 	for _, t := range tails {

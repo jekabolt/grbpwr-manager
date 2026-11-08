@@ -792,6 +792,31 @@ func insertImportedSizeChart(ctx context.Context, db dependency.DB, id int,
 			return fmt.Errorf("write imported grade base of tech card %d: %w", id, err)
 		}
 	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		UPDATE tech_card SET size_chart_shrinkage_pct = :shrinkage WHERE id = :id`,
+		map[string]any{"id": id, "shrinkage": chart.ShrinkagePct}); err != nil {
+		return fmt.Errorf("write imported size chart shrinkage of tech card %d: %w", id, err)
+	}
+	points, err := reconcileStyleSizeChartPoints(ctx, db, id, chart.Cells, chart.GradeSteps,
+		chart.Points, len(chart.Points) > 0)
+	if err != nil {
+		return fmt.Errorf("reconcile imported size chart points of tech card %d: %w", id, err)
+	}
+	if err := resolveStyleSizeChartPointFingerprints(ctx, db, id, points, chart.ShrinkagePct, true); err != nil {
+		return err
+	}
+	stalePoints := make(map[int]bool, len(chart.Points))
+	for _, point := range chart.Points {
+		stalePoints[point.MeasurementNameID] = point.Stale
+	}
+	for i := range points {
+		if stalePoints[points[i].MeasurementNameID] {
+			points[i].SourceFingerprint = seamFingerprintStale
+		}
+	}
+	if err := replaceStyleSizeChartPoints(ctx, db, id, points); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -814,11 +839,16 @@ func importedChartCellRows(id int, chart entity.StyleSizeChart,
 		case !rng.Has(c.SizeID):
 			outOfRange[c.SizeID]++
 		default:
+			source := c.Source
+			if source == "" {
+				source = entity.StyleSizeChartCellSourceManual
+			}
 			rows = append(rows, map[string]any{
 				"tech_card_id":        id,
 				"size_id":             c.SizeID,
 				"measurement_name_id": c.MeasurementNameID,
 				"measurement_value":   c.Value,
+				"source":              source,
 			})
 		}
 	}

@@ -23,10 +23,16 @@ import (
 // M8 (adjustment) takes its direction from the on-hand delta (quantity on the row is abs(delta)):
 // a positive delta is a stock gain (Dr 1110 / Cr 5090), a negative delta a loss (Dr 5090 / Cr 1110).
 func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time) (entity.AcctJournalEntryInsert, error) {
+	if m.MovementType == entity.MaterialMovementShrinkage {
+		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
+	}
 	if !m.UnitCostBase.Valid {
 		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
 	}
 	v := m.Quantity.Mul(m.UnitCostBase.Decimal).Round(2)
+	if m.MovementType == entity.MaterialMovementConvertIn {
+		return buildMaterialConversionIn(m, v, movementOccurredAt(m, startDate))
+	}
 	if !v.IsPositive() {
 		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
 	}
@@ -71,6 +77,8 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 			dr, cr = Acc5090, Acc1110
 		}
 		sourceType = entity.AcctSourceMaterialAdjustment
+	case entity.MaterialMovementConvertOut:
+		dr, cr, sourceType = Acc1120, Acc1110, entity.AcctSourceMaterialIssue
 	default:
 		return entity.AcctJournalEntryInsert{}, ErrUnknownMovementType
 	}
@@ -90,12 +98,45 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 	return entry, nil
 }
 
-// tagReceiptSupplier copies a purchase receipt's supplier onto its journal entry (phase 2, wave 4 — AP by
-// supplier). Only a material_receipt (M1, Cr 2010) carries the tag; every other movement leaves it NULL.
+// tagReceiptSupplier copies an AP supplier onto a purchase receipt or conversion-work entry.
 func tagReceiptSupplier(entry *entity.AcctJournalEntryInsert, m entity.AcctMovementFacts) {
-	if m.MovementType == entity.MaterialMovementReceipt && m.SupplierId.Valid {
+	if (m.MovementType == entity.MaterialMovementReceipt || m.MovementType == entity.MaterialMovementConvertIn) && m.SupplierId.Valid {
 		entry.SupplierID = sql.NullInt64{Int64: int64(m.SupplierId.Int32), Valid: true}
 	}
+}
+
+// buildMaterialConversionIn posts the conversion receipt from header facts only, so posting order
+// is irrelevant. Positive lines only: zero-value inputs/work/residual never create journal noise.
+func buildMaterialConversionIn(m entity.AcctMovementFacts, valueIn decimal.Decimal, occ time.Time) (entity.AcctJournalEntryInsert, error) {
+	if !m.ConvInputsValueBase.Valid || !m.ConvWorkCostBase.Valid {
+		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
+	}
+	inputs := m.ConvInputsValueBase.Decimal.Round(2)
+	work := m.ConvWorkCostBase.Decimal.Round(2)
+	residual := valueIn.Sub(inputs).Sub(work).Round(2)
+	entry := entity.AcctJournalEntryInsert{
+		OccurredAt: occ, Description: movementDescription(m),
+		SourceType: entity.AcctSourceMaterialReceipt, SourceKey: strconv.Itoa(m.Id),
+		CreatedBy: createdBySystem,
+	}
+	appendLine := func(code string, side entity.AcctSide, amount decimal.Decimal) {
+		if amount.IsPositive() {
+			entry.Lines = append(entry.Lines, entity.AcctJournalLineInsert{AccountCode: code, Side: side, Amount: amount})
+		}
+	}
+	appendLine(Acc1110, entity.AcctSideDebit, valueIn)
+	appendLine(Acc1120, entity.AcctSideCredit, inputs)
+	appendLine(Acc2010, entity.AcctSideCredit, work)
+	if residual.IsNegative() {
+		appendLine(Acc5090, entity.AcctSideDebit, residual.Abs())
+	} else {
+		appendLine(Acc5090, entity.AcctSideCredit, residual)
+	}
+	if len(entry.Lines) < 2 {
+		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
+	}
+	tagReceiptSupplier(&entry, m)
+	return entry, nil
 }
 
 // movementOccurredAt is the movement's occurred_at (falling back to created_at), clamped up to the

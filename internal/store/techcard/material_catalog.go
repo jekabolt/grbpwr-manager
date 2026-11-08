@@ -95,10 +95,11 @@ const materialWithPriceSelect = `
 		FROM material_price
 		WHERE valid_from <= CURDATE()
 	)
-	SELECT m.*,
+	SELECT m.*, sm.name AS source_material_name,
 		l.price AS lp_price, l.currency AS lp_currency, l.valid_from AS lp_valid_from,
 		l.source AS lp_source, l.note AS lp_note
 	FROM material m
+	LEFT JOIN material sm ON sm.id = m.source_material_id
 	LEFT JOIN latest l ON l.material_id = m.id AND l.rn = 1`
 
 // CreateMaterial inserts a catalog material and returns its id. The uniqueness guard and the insert
@@ -460,6 +461,42 @@ func (s *Store) ListMaterialPrices(ctx context.Context, materialID int) ([]entit
 		return nil, fmt.Errorf("list material prices for %d: %w", materialID, err)
 	}
 	return rows, nil
+}
+
+// SetMaterialSourceIfEmpty records the single-input lineage of a converted material. Existing
+// lineage is immutable through this helper: a later conversion can replenish the bucket but cannot
+// rewrite what the catalog already says it was made from.
+func (s *Store) SetMaterialSourceIfEmpty(ctx context.Context, materialID, sourceMaterialID int) error {
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		UPDATE material SET source_material_id = :source
+		WHERE id = :id AND source_material_id IS NULL`,
+		map[string]any{"id": materialID, "source": sourceMaterialID}); err != nil {
+		return fmt.Errorf("set source material %d from %d: %w", materialID, sourceMaterialID, err)
+	}
+	return nil
+}
+
+// SetFabricShrinkagePct stores a measured length-shrinkage percent for a fabric material and moves
+// the material's optimistic-lock fence. The bump happens for every material class: a stale catalog
+// form must fail after a physical lot measurement even when no fabric side-row is written.
+func (s *Store) SetFabricShrinkagePct(ctx context.Context, materialID int, pct decimal.Decimal) error {
+	rows, err := storeutil.ExecNamedRows(ctx, s.DB, `
+		UPDATE material SET lock_version = lock_version + 1, updated_at = NOW() WHERE id = :id`,
+		map[string]any{"id": materialID})
+	if err != nil {
+		return fmt.Errorf("bump material %d after shrinkage: %w", materialID, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: material %d", entity.ErrMaterialNotFound, materialID)
+	}
+	if err := storeutil.ExecNamed(ctx, s.DB, `
+		INSERT INTO material_fabric_attr (material_id, shrinkage_pct)
+		SELECT id, :pct FROM material WHERE id = :id AND material_class = 'fabric'
+		ON DUPLICATE KEY UPDATE shrinkage_pct = VALUES(shrinkage_pct)`,
+		map[string]any{"id": materialID, "pct": pct.Round(2)}); err != nil {
+		return fmt.Errorf("set material %d fabric shrinkage: %w", materialID, err)
+	}
+	return nil
 }
 
 // materialParams maps a MaterialInsert to named query params, normalising name, section and class.

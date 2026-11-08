@@ -432,6 +432,9 @@ func (s *Store) reconMaterials(ctx context.Context, fromT, toT time.Time) (entit
 				WHEN 'adjustment'         THEN CASE WHEN m.on_hand_after >= m.on_hand_before
 				                                    THEN  m.quantity * m.unit_cost_base
 				                                    ELSE -m.quantity * m.unit_cost_base END
+				WHEN 'convert_in'         THEN  ROUND(m.quantity * m.unit_cost_base, 2)
+				WHEN 'convert_out'        THEN -ROUND(m.quantity * m.unit_cost_base, 2)
+				WHEN 'shrinkage'          THEN 0
 				ELSE 0
 			END), 0) AS v
 		FROM material_stock_movement m

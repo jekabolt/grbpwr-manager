@@ -465,6 +465,13 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			return nil, err
 		}
 
+		// Garment labels attached or hung by this step. They are not assembly inputs; only shape and
+		// within-step set semantics are handled here. Card membership follows label carry/minting.
+		labelKeys, err := operationLabelKeysFromPb(i, o.LabelKeys)
+		if err != nil {
+			return nil, err
+		}
+
 		// Порядок слоёв шага (0445): только форма, с входами не сверяется.
 		layerOrder, err := operationLayerOrderFromPb(i, o.LayerOrder)
 		if err != nil {
@@ -544,6 +551,7 @@ func parseTechCardOperations(pbs []*pb_common.TechCardOperation, calloutNumbers 
 			Media:                 media,
 			SeamKeys:              seamKeys,
 			FoldKeys:              foldKeys,
+			LabelKeys:             labelKeys,
 			LayerOrder:            layerOrder,
 			SeamToleranceMm:       seamTolerance,
 
@@ -974,6 +982,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			AssemblyBlockDetached: o.AssemblyBlockDetached,
 			SeamKeys:              o.SeamKeys,
 			FoldKeys:              o.FoldKeys,
+			LabelKeys:             o.LabelKeys,
 			LayerOrder:            o.LayerOrder,
 			SeamToleranceMm:       pbDecimalFromNull(o.SeamToleranceMm),
 
@@ -1387,6 +1396,14 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 				unit, _ := unitAndOrder(inherited.materialsPerUnit)
 				colorwayCosts[ci].InheritedUnitCost = pbDecimalFromDecimal(roundMoney(unit))
 			}
+		}
+	}
+	// An auxiliary card has no colourways: its BOM is its one recipe (entity.AuxRecipe, 0456), and the
+	// root is that recipe's cost. ColorwayCosts stays empty. A line with no norm marks the root
+	// unpriced, never zero; an item bought from a supplier has no material usages at all.
+	if len(tc.Colorways) == 0 {
+		if recipe := entity.AuxRecipe(&tc.TechCardInsert); recipe != nil {
+			root = colorwayCostOf(tc, recipe, recipe, tc.BomItems, tc.LinkedMaterials, costingCcy, basis, fx)
 		}
 	}
 	rootMaterialsPerUnit := root.materialsPerUnit
@@ -1863,7 +1880,14 @@ func cardWithRunWastage(tc *entity.TechCard, override decimal.NullDecimal) *enti
 // rate — i.e. exactly when ComputeTechCardUnitCost's base rollup is unset — so cost_breakdown is
 // written iff cost_price is seeded from a base-convertible cost, and the two never disagree.
 func ComputeTechCardCostBreakdownBase(tc *entity.TechCard, fx CostingFx) (entity.CostBreakdown, bool) {
-	if tc == nil || tc.Costing == nil || len(tc.Colorways) == 0 {
+	if tc == nil || tc.Costing == nil {
+		return entity.CostBreakdown{}, false
+	}
+	if len(tc.Colorways) == 0 {
+		// An auxiliary card's one recipe is its BOM, the same root the unit cost is computed on.
+		if recipe := entity.AuxRecipe(&tc.TechCardInsert); recipe != nil {
+			return techCardCostBreakdownBase(tc, recipe, fx)
+		}
 		return entity.CostBreakdown{}, false
 	}
 	return techCardCostBreakdownBase(tc, &tc.Colorways[0], fx)
@@ -2065,6 +2089,9 @@ func colorwayMaterialsSource(tc *entity.TechCard, cw *entity.TechCardColorway) *
 
 // colorwayCostOf is colorwayCost with the materials of cw and the packaging of packagingOf.
 func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorway, bomItems []entity.TechCardBomItem, linked map[int]entity.MaterialWithPrice, costingCcy string, basis entity.CostingBasis, fx CostingFx) colorwayCostResult {
+	// An auxiliary card's packaging-section BOM lines are inputs of the item it makes, costed by their
+	// norms like any line; it ships no packaging of its own, so its packaging items are not priced.
+	aux := tc != nil && tc.IsAuxiliary()
 	byCcy := map[string]decimal.Decimal{}
 	order := make([]string, 0)
 	hasUnconverted := false
@@ -2079,7 +2106,7 @@ func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorwa
 		}
 		// Packaging is priced from the card's packaging items below and written off at shipment; a
 		// usage on a packaging line would charge it twice.
-		if usageIsPackagingLine(bomItems, u) {
+		if !aux && usageIsPackagingLine(bomItems, u) {
 			continue
 		}
 		// resolveUsageBom, not bomItemAtIndex: a usage authored via bom_line_key carries no
@@ -2147,6 +2174,9 @@ func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorwa
 		}
 	}
 
+	if aux {
+		packagingOf = nil
+	}
 	for _, line := range colorwayPackagingLines(tc, packagingOf, linked, costingCcy, fx.Base) {
 		if !line.priced {
 			hasUnpriced = true

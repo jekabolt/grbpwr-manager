@@ -173,6 +173,17 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
+	var points []entity.StyleSizeChartPoint
+	if req.PointsSet {
+		points, err = dto.StyleSizeChartPointsFromPb(req.Points)
+		if err != nil {
+			return nil, techCardConvertErr(err)
+		}
+	}
+	shrinkage, err := dto.StyleSizeChartShrinkageFromPb(req.ShrinkagePct)
+	if err != nil {
+		return nil, techCardConvertErr(err)
+	}
 	// A step for a measurement the chart does not carry cannot be applied to anything, and would
 	// resurface as a phantom column the next time the grid is opened. Reject it here rather than
 	// storing a rule that grades nothing.
@@ -206,7 +217,8 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 				"grade_base_size_id %d is not one of the chart's sizes", req.GradeBaseSizeId)
 		}
 	}
-	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion), cells, int(req.GradeBaseSizeId), steps)
+	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion),
+		cells, int(req.GradeBaseSizeId), steps, points, req.PointsSet, shrinkage)
 	if err != nil {
 		var ve *entity.ValidationError
 		switch {

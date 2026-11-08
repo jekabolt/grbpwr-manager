@@ -144,6 +144,12 @@ func (r *tcimpResolver) resolveSeams() error {
 	for _, s := range r.out.Insert.GetCutStrips() {
 		pieces[entity.CutStripLineKey(s.GetLineKey())] = true
 	}
+	// A pose row may place a garment label by the label's stable line key (0454).
+	for _, label := range r.out.Insert.GetGarmentLabels() {
+		if k := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); k != "" {
+			pieces[k] = true
+		}
+	}
 
 	kept := make(map[string]bool, len(rows))
 	seen := make(map[string]bool, len(rows))

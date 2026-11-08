@@ -33,7 +33,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
 
-	var sizeA, sizeB int
+	var sizeA int
 	rows, err := testDB.QueryContext(ctx, `SELECT id FROM size WHERE sku_system = 'apparel' ORDER BY sku_ord LIMIT 2`)
 	require.NoError(t, err)
 	ids := []int{}
@@ -44,7 +44,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 	}
 	rows.Close()
 	require.GreaterOrEqual(t, len(ids), 2)
-	sizeA, sizeB = ids[0], ids[1]
+	sizeA = ids[0]
 	var measA, measB int
 	mrows, err := testDB.QueryContext(ctx, `SELECT id FROM measurement_name ORDER BY id LIMIT 2`)
 	require.NoError(t, err)
@@ -99,29 +99,75 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 
 	// Full-replace with two cells; the lock bumps.
 	cells := []entity.StyleSizeChartCell{
-		{SizeID: sizeA, MeasurementNameID: measA, Value: decimal.NewFromInt(50)},
-		{SizeID: sizeB, MeasurementNameID: measB, Value: decimal.RequireFromString("51.5")},
+		{SizeID: sizeA, MeasurementNameID: measA, Value: decimal.NewFromInt(50), Source: entity.StyleSizeChartCellSourcePattern},
+		{SizeID: sizeA, MeasurementNameID: measB, Value: decimal.RequireFromString("51.5")},
 	}
-	updated, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil)
+	shrinkage := decimal.RequireFromString("2.5")
+	updated, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil,
+		[]entity.StyleSizeChartPoint{{MeasurementNameID: measA, PomCode: "length-cb", Position: 2,
+			TolMinusCm: decimal.RequireFromString("0.5"), TolPlusCm: decimal.RequireFromString("0.75"), InShop: true},
+			{MeasurementNameID: measB, Position: 1, TolMinusCm: decimal.NewFromInt(1), TolPlusCm: decimal.NewFromInt(1), InShop: true}},
+		true, &shrinkage)
 	require.NoError(t, err)
 	require.Equal(t, v0+1, updated.LockVersion)
 	require.Len(t, updated.Cells, 2)
+	require.Equal(t, entity.StyleSizeChartCellSourcePattern, updated.Cells[0].Source)
+	require.Equal(t, entity.StyleSizeChartCellSourceManual, updated.Cells[1].Source, "empty input source defaults to manual")
+	require.Len(t, updated.Points, 2, "a missing point row is added for every charted measurement")
+	require.Equal(t, measB, updated.Points[0].MeasurementNameID, "points return in schematic position order")
+	require.True(t, updated.ShrinkagePct.Valid)
+	require.True(t, updated.ShrinkagePct.Decimal.Equal(shrinkage))
+	public, err := s.Products().GetProductByIdShowHidden(ctx, prodID, false)
+	require.NoError(t, err)
+	require.Len(t, public.Measurements, 2)
+	publicMeasurementIDs := []int{public.Measurements[0].MeasurementNameId, public.Measurements[1].MeasurementNameId}
+	require.ElementsMatch(t, []int{measA, measB}, publicMeasurementIDs)
+
+	// The storefront suppresses a point row marked private while the admin chart keeps its cells.
+	hiddenPoints := append([]entity.StyleSizeChartPoint(nil), updated.Points...)
+	for i := range hiddenPoints {
+		if hiddenPoints[i].MeasurementNameID == measB {
+			hiddenPoints[i].InShop = false
+		}
+	}
+	updated, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, cells, 0, nil, hiddenPoints, true, &shrinkage)
+	require.NoError(t, err)
+	public, err = s.Products().GetProductByIdShowHidden(ctx, prodID, false)
+	require.NoError(t, err)
+	require.Len(t, public.Measurements, 1)
+	require.Equal(t, measA, public.Measurements[0].MeasurementNameId)
 
 	// A stale version is a conflict (ABORTED upstream).
-	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil)
+	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil, nil, false, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 
 	// Re-read returns the stored cells at the bumped version.
 	chart1, err := s.TechCards().GetStyleSizeChart(ctx, styleID)
 	require.NoError(t, err)
-	require.Equal(t, v0+1, chart1.LockVersion)
+	require.Equal(t, v0+2, chart1.LockVersion)
 	require.Len(t, chart1.Cells, 2)
+	require.Len(t, chart1.Points, 2)
+
+	// An old client keeps authored point rows, removes obsolete typed rows, and never needs to send
+	// points_set merely to edit the grid.
+	oldClient, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+2, cells[:1], 0, nil, nil, false, nil)
+	require.NoError(t, err)
+	require.Len(t, oldClient.Points, 1)
+	require.Equal(t, measA, oldClient.Points[0].MeasurementNameID)
+	require.Equal(t, "length-cb", oldClient.Points[0].PomCode)
+	autoAdded, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+3, cells, 0, nil, nil, false, nil)
+	require.NoError(t, err)
+	require.Len(t, autoAdded.Points, 2)
+	require.Equal(t, measB, autoAdded.Points[1].MeasurementNameID)
+	require.Empty(t, autoAdded.Points[1].PomCode)
+	require.True(t, autoAdded.Points[1].InShop)
 
 	// An empty full-replace clears the chart (full-replace semantics, not upsert).
-	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, nil, 0, nil)
+	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+4, nil, 0, nil, nil, false, nil)
 	require.NoError(t, err)
 	require.Empty(t, cleared.Cells)
-	require.Equal(t, v0+2, cleared.LockVersion)
+	require.Equal(t, v0+5, cleared.LockVersion)
+	require.Len(t, cleared.Points, 1, "coded rows survive an old-client grid clear")
 
 	// An unknown style is sql.ErrNoRows.
 	_, err = s.TechCards().GetStyleSizeChart(ctx, 999999999)

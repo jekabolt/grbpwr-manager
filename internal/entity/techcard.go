@@ -2015,6 +2015,15 @@ type TechCardBomItem struct {
 	// ТОЛЬКО явный Decimal{value:""}. Нулевое значение флага = «пиши как обычно», значит любой
 	// внутренний конструктор (тесты, сидер, клон) работает как писал.
 	EstUsageOmitted bool `db:"-"`
+	// ConsumptionPerUnit is the measured norm of an AUXILIARY card's line per one output unit, in the
+	// line's unit, net of wastage (0456). An aux card has no colourways, so its BOM is its recipe:
+	// AuxRecipe reads this for measured sections, and costing and the run plan read it through that
+	// recipe. Counted sections keep QtyPerGarment + SpareQty; a strip line takes its strips' norm.
+	// NULL = no norm (unpriced, a plan blocker), never zero. Inert on a sellable card.
+	ConsumptionPerUnit decimal.NullDecimal `db:"consumption_per_unit"`
+	// ConsumptionPerUnitOmitted: the field was absent on the wire, so the save keeps the stored value
+	// (the EstUsageOmitted protocol).
+	ConsumptionPerUnitOmitted bool `db:"-"`
 	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
 	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
 	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится
@@ -3574,6 +3583,10 @@ type TechCardOperation struct {
 	// The rule over the whole card is CheckTechCardFoldLinks; outside every section digest.
 	FoldKeys []string `db:"-"`
 
+	// LabelKeys are the garment labels this step attaches or hangs. They are picture/link metadata,
+	// not assembly inputs, and therefore never enter the assembly graph or a section digest.
+	LabelKeys []string `db:"-"`
+
 	// LayerOrder — the order the owner set for this step's inputs, bottom to top, in the vocabulary
 	// of InputKeys (0445). Empty is NULL: no order set. Stale keys are the reader's to skip, so it is
 	// never checked against the inputs. Outside every section digest.
@@ -3951,7 +3964,13 @@ type TechCardCareLabelFiber struct {
 // TechCardGarmentLabel is a garment label other than the composition label (tech_card_garment_label).
 // Key is freeform like TechCardDetail.Key: known-ness is the client's constant.
 type TechCardGarmentLabel struct {
-	Key           string
+	Key string
+	// LineKey is the stable, card-scoped address shared with pieces and cut strips. It is soft because
+	// garment labels are deleted and inserted again on every whole-card save.
+	LineKey       string
+	WidthMm       decimal.NullDecimal
+	HeightMm      decimal.NullDecimal
+	Fold          sql.NullString
 	Placement     sql.NullString
 	Attachment    sql.NullString
 	Folding       sql.NullString
@@ -4726,8 +4745,13 @@ type TechCardInsert struct {
 	// cards and for unclassified auxiliary ones. Only meaningful when Purpose == auxiliary (DB gate
 	// chk_tech_card_aux_subtype_purpose). Additive (WS7); the sellable path never reads it.
 	AuxSubtype sql.NullString `db:"aux_subtype"`
-	Name       string         `db:"name"`
-	Brand      sql.NullString `db:"brand"`
+	// AuxMadeBy says who makes an auxiliary card's item: us (from the BOM) or supplier (bought
+	// finished, nothing reserved or issued) — 0456. NULL on sellable cards; NULL on an aux card reads
+	// as us. AuxMadeByOmitted: the wire said nothing, keep the stored value.
+	AuxMadeBy        sql.NullString `db:"aux_made_by"`
+	AuxMadeByOmitted bool           `db:"-"`
+	Name             string         `db:"name"`
+	Brand            sql.NullString `db:"brand"`
 	// SeasonLabel is a DB-only canonical projection (e.g. SS26), derived from the normalized pair.
 	// It is never accepted from the public contract.
 	SeasonLabel  sql.NullString `db:"season"`

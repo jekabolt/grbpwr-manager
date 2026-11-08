@@ -123,6 +123,10 @@ func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx Costi
 	for _, cell := range cellOrder {
 		unit, ccy := runCellUnitCost(tc, fx, wastageOverride, cell)
 		if !unit.Valid {
+			if isAuxRecipeCard(tc) {
+				// An aux card has one recipe, its BOM (0456): no colourway or size to name.
+				return decimal.NullDecimal{}, "", "the card's recipe does not compute: a BOM line has no norm per unit or no price"
+			}
 			// Edges 2, 4 and 5. НАЗЫВАЕТСЯ ИМЕННО ЯЧЕЙКА: «партия не считается» на партии из двадцати
 			// строк — это приглашение перебирать их руками.
 			return decimal.NullDecimal{}, "", fmt.Sprintf(
@@ -159,7 +163,7 @@ func ComputeProductionRunPlannedUnitCostWithReason(tc *entity.TechCard, fx Costi
 // The product-less branch is edge 5 of ComputeProductionRunPlannedUnitCost: the card's own figure
 // when there is at most one colourway to take it from, nothing at all otherwise.
 func runCellUnitCost(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.NullDecimal, cell runMixKey) (decimal.NullDecimal, string) {
-	if cell.productID <= 0 {
+	if cell.productID <= 0 || isAuxRecipeCard(tc) {
 		if tc != nil && len(tc.Colorways) > 1 {
 			return decimal.NullDecimal{}, ""
 		}
@@ -167,4 +171,10 @@ func runCellUnitCost(tc *entity.TechCard, fx CostingFx, wastageOverride decimal.
 	}
 	return ComputeColorwayUnitCost(
 		cardCostedOnSize(cardWithRunWastage(tc, wastageOverride), cell.sizeID), cell.productID, fx)
+}
+
+// isAuxRecipeCard says the card's one recipe is its BOM (entity.AuxRecipe, 0456): an auxiliary card
+// with no colourways. Every line of its run, whichever output it names, costs on that recipe.
+func isAuxRecipeCard(tc *entity.TechCard) bool {
+	return tc != nil && tc.IsAuxiliary() && len(tc.Colorways) == 0
 }

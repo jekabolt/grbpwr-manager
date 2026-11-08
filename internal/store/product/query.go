@@ -618,9 +618,12 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 			FROM tech_card_size_measurement ssm
 			JOIN product p ON p.id = :id AND ssm.tech_card_id = p.style_id
 			JOIN product_size ps ON ps.product_id = p.id AND ps.size_id = ssm.size_id AND ps.grade = 'A'
-			WHERE EXISTS (SELECT 1 FROM tech_card_size z
-			              WHERE z.tech_card_id = ssm.tech_card_id AND z.size_id = ssm.size_id)
-			   OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = ssm.tech_card_id)`
+			LEFT JOIN tech_card_size_chart_point pt
+			  ON pt.tech_card_id = ssm.tech_card_id AND pt.measurement_name_id = ssm.measurement_name_id
+			WHERE (EXISTS (SELECT 1 FROM tech_card_size z
+			               WHERE z.tech_card_id = ssm.tech_card_id AND z.size_id = ssm.size_id)
+			       OR NOT EXISTS (SELECT 1 FROM tech_card_size z WHERE z.tech_card_id = ssm.tech_card_id))
+			  AND COALESCE(pt.in_shop, 1) = 1`
 		if measurements, e = storeutil.QueryListNamed[entity.ProductMeasurement](gctx, s.DB, measurementQuery, idParams); e != nil {
 			return fmt.Errorf("can't get measurements: %w", e)
 		}

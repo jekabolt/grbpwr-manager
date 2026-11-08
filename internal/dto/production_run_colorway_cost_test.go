@@ -143,21 +143,27 @@ func TestRunPlannedCostProductlessLineDependsOnHowManyRecipesExist(t *testing.T)
 		[]entity.ProductionRunLine{cwLine(55, 4, 100), cwLine(0, 4, 100)})
 	require.False(t, unit.Valid)
 
-	// Aux-карточка: один рецепт, безразмерная линия, норма на изделие (не по размерам) — считается,
-	// и ровно в ту же цену, что и стилевая.
+	// Aux-карточка (0456): колорвеев нет, рецепт — её BOM, норма на единицу лежит на строке.
+	// Безразмерная линия без продукта считается, и ровно в ту же цену, что и стилевая: 2 м × 10.
 	aux := colorwayMixCard()
-	aux.Colorways = aux.Colorways[:1]
-	aux.Colorways[0].ProductId = sql.NullInt32{}
-	aux.Colorways[0].Usages = []entity.TechCardColorwayUsage{
-		{BomItemId: sql.NullInt64{Int64: 1, Valid: true}, Consumption: nd("2")},
-	}
+	aux.Purpose = entity.TechCardPurposeAuxiliary
+	aux.Colorways = nil
+	aux.BomItems[0].ConsumptionPerUnit = nd("2")
 	style, styleCcy := ComputeTechCardUnitCost(aux, fx)
 	require.True(t, style.Valid)
+	require.Equal(t, "20", style.Decimal.String())
 	unit, ccy = ComputeProductionRunPlannedUnitCost(aux, fx, decimal.NullDecimal{},
 		[]entity.ProductionRunLine{cwLine(0, 0, 200)})
 	require.True(t, unit.Valid, "единственный рецепт карточки — не чужой цвет")
 	require.Equal(t, style.Decimal.String(), unit.Decimal.String())
 	require.Equal(t, styleCcy, ccy)
+
+	// Нормы нет — партия не считается, и причина называет рецепт карточки, а не колорвей.
+	aux.BomItems[0].ConsumptionPerUnit = decimal.NullDecimal{}
+	unit, _, reason := ComputeProductionRunPlannedUnitCostWithReason(aux, fx, decimal.NullDecimal{},
+		[]entity.ProductionRunLine{cwLine(0, 0, 200)})
+	require.False(t, unit.Valid)
+	require.Contains(t, reason, "no norm per unit")
 }
 
 // Фактическая раскройная потеря прогона остаётся общей для всех клеток и применяется к цене КАЖДОГО

@@ -73,6 +73,17 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			colorwayByProduct[int(cw.ProductId.Int32)] = cw
 		}
 	}
+	// An auxiliary card (0456) has no colourways: its BOM is its one recipe (entity.AuxRecipe), taken
+	// by every run line whichever output variant it names. It sits under key 0, so the run's lines
+	// pool into one quantity and the blockers name the card.
+	var auxRecipe *entity.TechCardColorway
+	if len(card.Colorways) == 0 {
+		auxRecipe = entity.AuxRecipe(&card.TechCardInsert)
+	}
+	aux := auxRecipe != nil
+	if aux {
+		colorwayByProduct[0] = auxRecipe
+	}
 	// bom item id → its index in card.BomItems (the BOM's display order, used for stable output).
 	bomOrder := make(map[int]int, len(card.BomItems))
 	for i := range card.BomItems {
@@ -341,14 +352,26 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		if ln.PlannedQty <= 0 {
 			continue
 		}
-		if !ln.ProductId.Valid {
+		if aux && card.AuxBoughtFinished() {
+			// Bought finished: the supplier's price is the cost, and nothing is reserved or issued,
+			// even when norms are filled. No usages, no rows, no blockers.
+			if !noProductNoted {
+				caveats = append(caveats, "bought from a supplier — no materials planned")
+				noProductNoted = true
+			}
+			continue
+		}
+		if !aux && !ln.ProductId.Valid {
 			if !noProductNoted {
 				caveats = append(caveats, "a planned line has no product — not counted")
 				noProductNoted = true
 			}
 			continue
 		}
-		pid := int(ln.ProductId.Int32)
+		pid := 0 // an aux card's one recipe
+		if !aux {
+			pid = int(ln.ProductId.Int32)
+		}
 		cw := colorwayByProduct[pid]
 		if cw == nil {
 			if !noColorwayNoted {
@@ -373,8 +396,8 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			}
 			bom := planBomLine(u, card.BomItems)
 			// Packaging leaves the stock at shipment, per order; a run reserving it too would take
-			// the same bag twice.
-			if bom != nil && bom.Section == entity.BomSectionPackaging {
+			// the same bag twice. On an aux card a packaging line is an input of the item it makes.
+			if !aux && bom != nil && bom.Section == entity.BomSectionPackaging {
 				continue
 			}
 			if bom == nil {

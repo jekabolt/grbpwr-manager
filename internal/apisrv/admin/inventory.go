@@ -225,6 +225,7 @@ func (s *Server) ListMaterialMovements(ctx context.Context, req *pb_admin.ListMa
 		ProductionRunId: int(req.GetProductionRunId()),
 		SampleId:        int(req.GetSampleId()),
 		MovementType:    dto.MaterialMovementTypeFromPb(req.GetMovementType()),
+		ConversionId:    int(req.GetConversionId()),
 		OccurredFrom:    req.GetOccurredFrom(),
 		OccurredTo:      req.GetOccurredTo(),
 	})
@@ -241,7 +242,88 @@ func (s *Server) ListMaterialMovements(ctx context.Context, req *pb_admin.ListMa
 		}
 		out = append(out, pb)
 	}
-	return &pb_admin.ListMaterialMovementsResponse{Movements: out, Total: int32(total)}, nil
+	conversionIDs := make([]int, 0)
+	seenConversions := make(map[int]bool)
+	for _, m := range movements {
+		if m.ConversionId.Valid && !seenConversions[int(m.ConversionId.Int32)] {
+			id := int(m.ConversionId.Int32)
+			seenConversions[id] = true
+			conversionIDs = append(conversionIDs, id)
+		}
+	}
+	conversions, err := s.repo.MaterialStock().GetMaterialConversionsByIds(ctx, conversionIDs)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "can't load material movement conversions", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list material movements")
+	}
+	pbConversions := make([]*pb_common.MaterialConversion, 0, len(conversions))
+	for _, conversion := range conversions {
+		pb := dto.ConvertEntityMaterialConversionToPb(conversion)
+		if !read {
+			stripMaterialConversionCosting(pb)
+		}
+		pbConversions = append(pbConversions, pb)
+	}
+	return &pb_admin.ListMaterialMovementsResponse{Movements: out, Total: int32(total), Conversions: pbConversions}, nil
+}
+
+// ConvertMaterialStock consumes materials and produces one existing material atomically.
+func (s *Server) ConvertMaterialStock(ctx context.Context, req *pb_admin.ConvertMaterialStockRequest) (*pb_admin.ConvertMaterialStockResponse, error) {
+	ins, err := dto.ConvertPbMaterialConversion(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ins.AdminUsername = authsrv.GetAdminUsername(ctx)
+	conversion, err := s.repo.MaterialStock().ConvertMaterialStock(ctx, ins)
+	if err != nil {
+		return nil, mapInventoryErr(ctx, "convert material stock", err)
+	}
+	pb := dto.ConvertEntityMaterialConversionToPb(*conversion)
+	if read, _ := s.costingAccess(ctx); !read {
+		stripMaterialConversionCosting(pb)
+	}
+	return &pb_admin.ConvertMaterialStockResponse{Conversion: pb}, nil
+}
+
+// ShrinkMaterialLot records one physical shrink measurement.
+func (s *Server) ShrinkMaterialLot(ctx context.Context, req *pb_admin.ShrinkMaterialLotRequest) (*pb_admin.ShrinkMaterialLotResponse, error) {
+	ins, err := dto.ConvertPbMaterialLotShrink(req)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ins.AdminUsername = authsrv.GetAdminUsername(ctx)
+	result, err := s.repo.MaterialStock().ShrinkMaterialLot(ctx, ins)
+	if err != nil {
+		return nil, mapInventoryErr(ctx, "shrink material lot", err)
+	}
+	lot := dto.MaterialLotToPb(result.Lot)
+	if read, _ := s.costingAccess(ctx); !read {
+		lot.UnitCost = nil
+	}
+	return &pb_admin.ShrinkMaterialLotResponse{
+		Movement: s.movementToPb(ctx, result.Movement), Lot: lot,
+		MaterialShrinkagePct: dto.DecimalToPb(result.MaterialShrinkagePct),
+	}, nil
+}
+
+// GetMaterialConversion returns one conversion operation with all movement sides.
+func (s *Server) GetMaterialConversion(ctx context.Context, req *pb_admin.GetMaterialConversionRequest) (*pb_admin.GetMaterialConversionResponse, error) {
+	if req.GetId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+	conversion, err := s.repo.MaterialStock().GetMaterialConversion(ctx, int(req.GetId()))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, status.Error(codes.NotFound, "material conversion not found")
+		}
+		slog.Default().ErrorContext(ctx, "can't get material conversion", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get material conversion")
+	}
+	pb := dto.ConvertEntityMaterialConversionToPb(*conversion)
+	if read, _ := s.costingAccess(ctx); !read {
+		stripMaterialConversionCosting(pb)
+	}
+	return &pb_admin.GetMaterialConversionResponse{Conversion: pb}, nil
 }
 
 // UpsertPackagingBom full-replaces the global packaging recipe consumed on ship (gap-07 v2 B).
@@ -357,6 +439,19 @@ func mapInventoryErr(ctx context.Context, what string, err error) error {
 	case errors.Is(err, entity.ErrPackagingRecipeInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, entity.ErrMaterialReserved):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, entity.ErrMaterialConversionUncosted),
+		errors.Is(err, entity.ErrMaterialConversionNoFxRate),
+		errors.Is(err, entity.ErrConversionOutputPurchased),
+		errors.Is(err, entity.ErrMaterialMadeNotPurchasable):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, entity.ErrMaterialConversionPrecision),
+		errors.Is(err, entity.ErrMaterialConversionInvalid),
+		errors.Is(err, entity.ErrMaterialLotMismatch):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, entity.ErrMaterialLotStale):
+		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, entity.ErrInsufficientMaterialLot):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	slog.Default().ErrorContext(ctx, "can't "+what, slog.String("err", err.Error()))

@@ -576,6 +576,8 @@ type SizeChart struct {
 	// cell, which is what every pre-existing chart is.
 	GradeBaseSizeName string               `json:"grade_base_size_name,omitempty"`
 	GradeSteps        []SizeChartGradeStep `json:"grade_steps,omitempty"`
+	Points            []SizeChartPoint     `json:"points,omitempty"`
+	ShrinkagePct      string               `json:"shrinkage_pct,omitempty"`
 }
 
 // SizeChartCell is one measurement of one size. Value is a decimal as a string.
@@ -583,10 +585,22 @@ type SizeChartCell struct {
 	SizeName    string `json:"size_name"`
 	Measurement string `json:"measurement"`
 	Value       string `json:"value"`
+	Source      string `json:"source,omitempty"`
 }
 
 // SizeChartGradeStep is one measurement's grade increment per size position; may be negative.
 type SizeChartGradeStep struct {
 	Measurement string `json:"measurement"`
 	Step        string `json:"step"`
+}
+
+type SizeChartPoint struct {
+	Measurement        string   `json:"measurement"`
+	PomCode            string   `json:"pom_code,omitempty"`
+	Position           int      `json:"position"`
+	TolMinusCm         string   `json:"tol_minus_cm"`
+	TolPlusCm          string   `json:"tol_plus_cm"`
+	InShop             bool     `json:"in_shop"`
+	BasisPieceLineKeys []string `json:"basis_piece_line_keys,omitempty"`
+	Stale              bool     `json:"stale,omitempty"`
 }

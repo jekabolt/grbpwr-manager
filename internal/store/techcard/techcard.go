@@ -83,12 +83,13 @@ func normalizeLegacyComposition(cards []entity.TechCard) {
 const techCardHeaderColumns = `style_number, style_number_source, name, brand, season, season_code, season_year, collection, category_id,
 	target_gender, stage, status, approval_state, approved_at, released_at, target_drop_date,
 	required_seam_allowance_mm, base_model_id, base_sample_size_id,
-	measurement_unit, concept, notes, mood_note, garment_description, flat_words, callout_seq, purpose, output_material_id, aux_subtype, created_by, updated_by`
+	measurement_unit, concept, notes, mood_note, garment_description, flat_words, callout_seq, purpose, output_material_id, aux_subtype, aux_made_by, created_by, updated_by`
 
 const techCardHeaderValues = `:style_number, :style_number_source, :name, :brand, :season, :season_code, :season_year, :collection, :category_id,
 	:target_gender, :stage, :status, :approval_state, :approved_at, :released_at, :target_drop_date,
 	:required_seam_allowance_mm, :base_model_id, :base_sample_size_id,
-	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :flat_words, :callout_seq, :purpose, :output_material_id, :aux_subtype, :created_by, :updated_by`
+	:measurement_unit, :concept, :notes, :mood_note, :garment_description, :flat_words, :callout_seq, :purpose, :output_material_id, :aux_subtype,
+	CASE WHEN :purpose = 'auxiliary' THEN COALESCE(:aux_made_by, 'us') END, :created_by, :updated_by`
 
 // techCardUpdateHeaderSQL is UpdateTechCard's explicit SET list (the reasons for each clause are on
 // its call site). A package constant so a test can pin what it never names: guided and
@@ -109,7 +110,12 @@ const techCardUpdateHeaderSQL = `
 			garment_description = IF(:garment_description_omitted, garment_description, :garment_description),
 			flat_words = IF(:flat_words_omitted, flat_words, :flat_words),
 			callout_seq = GREATEST(callout_seq, :callout_seq),
-				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype
+				purpose = :purpose, output_material_id = :output_material_id, aux_subtype = :aux_subtype,
+			aux_made_by = CASE
+				WHEN :purpose <> 'auxiliary' THEN NULL
+				WHEN :aux_made_by_omitted THEN COALESCE(aux_made_by, 'us')
+				ELSE :aux_made_by
+			END
 		WHERE id = :id AND lock_version = :expected_lock_version`
 
 func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
@@ -133,6 +139,10 @@ func techCardHeaderParams(tc *entity.TechCardInsert) map[string]any {
 		"purpose":             string(purpose),
 		"output_material_id":  tc.OutputMaterialId,
 		"aux_subtype":         tc.AuxSubtype,
+		// 0456: who makes an aux card's item. NULL on a sellable card; an aux card with none gets 'us'.
+		// On UPDATE an omitted value keeps the stored one (aux_made_by_omitted).
+		"aux_made_by":         tc.AuxMadeBy,
+		"aux_made_by_omitted": tc.AuxMadeByOmitted,
 		"name":                tc.Name,
 		"brand":               tc.Brand,
 		"season":              tc.SeasonLabel,
@@ -761,6 +771,9 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// it knows them (labels_aware): an older bundle's payload cannot tell «none» from «never heard of
 	// them», so without the flag both stored lists are kept and nothing of them is inserted.
 	preserveLabelLists := !tc.LabelsAware
+	if err := reconcileRemovedGarmentLabelSeams(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
 	// Read from the labels stored now, so before they are cleared below.
 	if err := product.ReleasePickedLines(ctx, rep.DB(), id, tc); err != nil {
 		return nil, err
@@ -1664,6 +1677,9 @@ func (s *Store) GetStylePipeline(ctx context.Context, cardsPerStage int) ([]enti
 // its id is stamped on every pattern row the save archives. Create/import callers pass nil because
 // a new card has no outgoing pattern state.
 func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *entity.TechCardInsert, snapshotIDForArchive func(string) (int64, error)) error {
+	if err := prepareGarmentLabelKeys(tc); err != nil {
+		return err
+	}
 	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
@@ -1741,7 +1757,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := upsertTechCardCutStrips(ctx, db, id, tc, bomRes); err != nil {
 		return err
 	}
-	if err := insertTechCardOperations(ctx, db, id, tc.Operations, bomRes); err != nil {
+	if err := insertTechCardOperations(ctx, db, id, tc.Operations, tc.GarmentLabels, bomRes); err != nil {
 		return err
 	}
 	// The seams each step sews (0434). After the operations (ids re-read by display_order), checked

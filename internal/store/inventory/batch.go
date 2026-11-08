@@ -33,7 +33,7 @@ func (s *Store) BatchIssueMaterialStock(ctx context.Context, ins entity.Material
 				AdminUsername:   ins.AdminUsername,
 			}, s.Now())
 			if err != nil {
-				return fmt.Errorf("line %d (material %d): %w", i+1, line.MaterialId, err)
+				return fmt.Errorf("line %d: %w", i+1, err)
 			}
 			movements = append(movements, mv)
 		}
@@ -69,13 +69,13 @@ func validateBatchIssue(ins entity.MaterialBatchIssueInsert) error {
 			return fmt.Errorf("line %d: material_id is required", i+1)
 		}
 		if line.Quantity.LessThanOrEqual(decimal.Zero) {
-			return fmt.Errorf("line %d (material %d): issue quantity must be positive", i+1, line.MaterialId)
+			return fmt.Errorf("line %d: issue quantity must be positive", i+1)
 		}
 		if line.LotId.Valid && line.LotId.Int32 <= 0 {
-			return fmt.Errorf("line %d (material %d): lot_id must be positive", i+1, line.MaterialId)
+			return fmt.Errorf("line %d: lot must be set", i+1)
 		}
 		if first, ok := seen[line.MaterialId]; ok {
-			return fmt.Errorf("line %d (material %d): duplicate material_id (first used on line %d)", i+1, line.MaterialId, first)
+			return fmt.Errorf("line %d: same material as line %d", i+1, first)
 		}
 		seen[line.MaterialId] = i + 1
 	}
