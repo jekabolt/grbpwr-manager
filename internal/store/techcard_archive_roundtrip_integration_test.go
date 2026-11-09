@@ -33,6 +33,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/jmoiron/sqlx"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -81,9 +82,10 @@ const rtMediaFolder = "media"
 // rtObjects — содержимое «бакета»: ключ объекта → байты. Заведено отдельной структурой, а не
 // полями мока, потому что мок здесь — только диспетчер вызовов; состояние живёт тут.
 type rtObjects struct {
-	mu sync.Mutex
-	m  map[string][]byte
-	n  int
+	mu    sync.Mutex
+	m     map[string][]byte
+	n     int
+	media []int // строки media, заведённые вокруг объектов этого бакета (rtStoreMedia, rtSeedMedia)
 }
 
 func newRTObjects() *rtObjects { return &rtObjects{m: map[string][]byte{}} }
@@ -117,6 +119,18 @@ func (o *rtObjects) next() int {
 }
 
 func (o *rtObjects) url(key string) string { return "https://" + rtBucketHost + "/" + key }
+
+func (o *rtObjects) ownMedia(id int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.media = append(o.media, id)
+}
+
+func (o *rtObjects) ownedMedia() []int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]int(nil), o.media...)
+}
 
 // rtKeyFromURL — обратная операция; повторяет archiveObjectKeyFromURL экспорта.
 func rtKeyFromURL(raw string) string {
@@ -255,6 +269,7 @@ func rtStoreMedia(ctx context.Context, media dependency.Media, objs *rtObjects,
 	if err != nil {
 		return nil, err
 	}
+	objs.ownMedia(id)
 	info := &pb_common.MediaInfo{MediaUrl: url, Width: rtMediaW, Height: rtMediaH}
 	return &pb_common.MediaFull{
 		Id:    int32(id),
@@ -344,6 +359,26 @@ func newRTRig(t *testing.T, ctx context.Context) *rtRig {
 
 	objs := newRTObjects()
 	fs := newRTBucket(t, s.Media(), objs)
+	// БАКЕТ У КАЖДОГО СТЕНДА СВОЙ, А БАЗА ОДНА НА ВЕСЬ ПАКЕТ. Строки media, заведённые этим стендом,
+	// переживают его с content_hash, а их объекты умирают вместе с objs. Следующий стенд, импортируя
+	// те же байты, находит по хешу (FindMediaByContentHash, наименьший id) чужую строку, объекта
+	// которой в его бакете нет, — и экспорт новой карточки падает с media_object_missing
+	// (TestTechCardArchiveRoundtrip после TestTechCardArchiveImportDropsMissingMedia). Уходя, стенд
+	// забывает хеши своих строк: они становятся тем, чем является любая строка до 0336, — ни с чем
+	// не совпадают. Так же вручную поступает последний подтест missing-media внутри своего прогона.
+	t.Cleanup(func() {
+		ids := objs.ownedMedia()
+		if len(ids) == 0 {
+			return
+		}
+		q, args, qerr := sqlx.In(`UPDATE media SET content_hash = NULL WHERE id IN (?)`, ids)
+		if qerr == nil {
+			_, qerr = testDB.ExecContext(context.Background(), q, args...)
+		}
+		if qerr != nil {
+			t.Errorf("стенд не забыл хеши своих media %v: %v", ids, qerr)
+		}
+	})
 	srv, err := admin.New(s, fs, nil, nil, nil, nil, nil, nil, nil, nil,
 		entity.LabelAddress{}, "", "", jpk.Taxpayer{}, decimal.Zero)
 	require.NoError(t, err)
@@ -843,6 +878,7 @@ func rtSeedMedia(t *testing.T, ctx context.Context, s *MYSQLStore, objs *rtObjec
 	}
 	id, err := s.Media().AddMedia(ctx, item)
 	require.NoError(t, err)
+	objs.ownMedia(id)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM media WHERE id = ?", id) })
 	return id
 }

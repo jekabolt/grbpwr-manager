@@ -86,17 +86,17 @@ func TestBGradeManualPriceSale(t *testing.T) {
 	aVarID := exec(`INSERT INTO product_size (product_id, size_id, quantity, sku) VALUES (?, ?, 10, ?)`, pid, sizeID, aSKU)
 	bVarID := exec(`INSERT INTO product_size (product_id, size_id, quantity, sku, grade) VALUES (?, ?, 3, ?, 'B')`, pid, sizeID, bSKU)
 
+	// The paid orders below hold the product, its variants and its size by RESTRICT keys, so plain
+	// deletes no-op; and the paid product keeps sku_locked_at with the non-canonical "BGRD-" SKU,
+	// which fails the SKU readiness gate of every store.New after this test (TestMigrate, TestNew,
+	// TestGetDictionaryInfo, TestSKUBackfillRepairsAndBlocksReadiness) and, through its thumbnail,
+	// TestMedia's DELETE FROM media. Purge the orders with the product.
 	t.Cleanup(func() {
-		cctx := context.Background()
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM product_size_price WHERE product_size_id IN (?, ?)", aVarID, bVarID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM product_size WHERE product_id = ?", pid)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM product_price WHERE product_id = ?", pid)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM product WHERE id = ?", pid)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card WHERE id = ?", styleID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM size WHERE id = ?", sizeID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier_price WHERE shipment_carrier_id = ?", carrierID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier WHERE id = ?", carrierID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM media WHERE id = ?", mediaID)
+		purgeTestProducts(t, pid)
+		purgeTestRows(t, "tech_card", styleID)
+		purgeTestRows(t, "size", sizeID)
+		purgeTestRows(t, "shipment_carrier", carrierID)
+		purgeTestRows(t, "media", mediaID)
 	})
 
 	price := func(cur string, v float64) entity.ColorwayPriceInsert {
