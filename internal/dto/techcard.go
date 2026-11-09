@@ -1445,7 +1445,8 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			Version:       int(p.Version),
 		})
 	}
-	if err := patternslot.Validate(out); err != nil {
+	// No BOM here: the raw-binding pre-check. The store repeats it by cloth identity.
+	if err := patternslot.Validate(out, nil); err != nil {
 		return nil, err
 	}
 	return out, nil

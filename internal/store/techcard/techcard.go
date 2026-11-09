@@ -1911,8 +1911,14 @@ func patternObjectIdentity(raw string) string {
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotIDForArchive func(string) (int64, error), bindingsCopied bool) error {
 	// The API has already checked explicit bindings, but this is the single write funnel for creates,
 	// updates, restores, clones and archive imports. Keep the guard here for every direct store caller.
-	if err := patternslot.Validate(patterns); err != nil {
-		return err
+	if patternslot.Bound(patterns) > 1 {
+		lines, err := loadRollGoodsLines(ctx, db, id)
+		if err != nil {
+			return err
+		}
+		if err := patternslot.Validate(patterns, lines); err != nil {
+			return err
+		}
 	}
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
@@ -2197,8 +2203,14 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		resolvedPatterns = append(resolvedPatterns, entity.TechCardSizePattern{
 			BomLineKey: bomLineKey, FabricPurpose: fabricPurpose,
 		})
-		if err := patternslot.Validate(resolvedPatterns); err != nil {
-			return err
+		if patternslot.Bound(resolvedPatterns) > 1 {
+			lines, err := loadRollGoods()
+			if err != nil {
+				return err
+			}
+			if err := patternslot.Validate(resolvedPatterns, lines); err != nil {
+				return err
+			}
 		}
 		// A present, non-empty value that CHANGES the binding must name something live; an unchanged
 		// round-trip passes even when the target has gone away since.

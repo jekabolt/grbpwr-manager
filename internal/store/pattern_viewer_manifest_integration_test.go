@@ -51,8 +51,7 @@ func TestPatternViewerManifest(t *testing.T) {
 	}
 	sheets := func() []entity.TechCardSizePattern {
 		return []entity.TechCardSizePattern{
-			{LineKey: "01PVSHEETA0000000000000001", URL: urlBase + "a.pdf", Name: ns("перед"),
-				FabricPurpose: ns("main")},
+			{LineKey: "01PVSHEETA0000000000000001", URL: urlBase + "a.pdf", Name: ns("перед")},
 			{LineKey: "01PVSHEETB0000000000000002", URL: urlBase + "b.dxf", BomLineKey: ns(lineMain)},
 			{LineKey: "01PVSHEETC0000000000000003", URL: urlBase + "c.pdf", BomLineKey: ns(linePocket)},
 			{LineKey: "01PVSHEETD0000000000000004", URL: urlBase + "d.pdf", FabricPurpose: ns("contrast")},
@@ -89,6 +88,11 @@ func TestPatternViewerManifest(t *testing.T) {
 	_, err = testDB.ExecContext(ctx, "UPDATE tech_card_bom_item SET purpose = NULL WHERE tech_card_id = ? AND line_key = ?", id, lineContrast)
 	require.NoError(t, err)
 	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?", id, lineGone)
+	require.NoError(t, err)
+	// Sheet A on «main» beside sheet B on the legacy line of «main»: two sheets on one cloth, which the
+	// save path refuses since №203 — older cards may still hold it, so it is written directly.
+	_, err = testDB.ExecContext(ctx, "UPDATE tech_card_size_pattern SET fabric_purpose = 'main' WHERE tech_card_id = ? AND line_key = ?",
+		id, "01PVSHEETA0000000000000001")
 	require.NoError(t, err)
 
 	m, err := T.GetPatternViewerManifest(ctx, id)
