@@ -19,7 +19,8 @@ import (
 // piece's id survives a save (was full-replaced, recreating ids every save), which is what lets a
 // colourway recipe usage hold a real usage.piece_id FK RESTRICT. It proves (1) a recipe reference to
 // a piece SURVIVES saving the tech card (the piece id does not churn), and (2) deleting a still-
-// referenced piece is refused with a field-tagged error, not a silent dangle.
+// referenced piece removes exactly that piece's recipe lines in the same save, never a silent dangle
+// (since 7243ee6 the delete no longer refuses: a re-drawn card was locked one piece at a time).
 func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -115,18 +116,36 @@ func TestPiecesStableLinesRecipeReferenceSurvives(t *testing.T) {
 	}
 	require.Equal(t, usagePieceID, requireUsagePieceID(t, c3, cwID), "recipe reference survived the piece save")
 
-	// Deleting the still-referenced piece PK1 (submit only PK2) is refused with a field-tagged error
-	// (the usage.piece_id RESTRICT guard), and the whole save rolls back.
-	err = T.UpdateTechCard(ctx, tcID, card(piece("PK2", "Back")), c3.LockVersion)
-	require.Error(t, err, "deleting a piece a recipe usage references must be refused")
+	// Deleting a still-referenced piece TAKES ITS RECIPE LINES WITH IT, in the same transaction
+	// (7243ee6, techcard/materials.go). It used to be refused by the usage.piece_id RESTRICT guard, but
+	// the recipe is edited by another RPC, so a re-drawn card (new block names → new pieces) was
+	// refused on every save, one piece at a time. A recipe line says «THIS piece is cut from this
+	// fabric»; without the piece it has no subject. A second line on PK2 shows that exactly the doomed
+	// piece's line goes and the surviving piece's line is untouched.
+	_, err = T.UpdateColorwayRecipe(ctx, cwID, c3.LockVersion, []entity.TechCardColorwayUsage{
+		{BomLineKey: "FK1", PieceLineKey: "PK1", Placement: ns("outer"),
+			Consumption: decimal.NewNullDecimal(decimal.RequireFromString("1.0"))},
+		{BomLineKey: "FK1", PieceLineKey: "PK2", Placement: ns("outer"),
+			Consumption: decimal.NewNullDecimal(decimal.RequireFromString("0.8"))},
+	})
+	require.NoError(t, err)
+	c3b, err := T.GetTechCardById(ctx, tcID)
+	require.NoError(t, err)
+	err = T.UpdateTechCard(ctx, tcID, card(piece("PK2", "Back")), c3b.LockVersion)
+	require.NoError(t, err, "deleting a piece a recipe usage references drops those lines (7243ee6), not the save")
 	var ve *entity.ValidationError
-	require.True(t, errors.As(err, &ve), "the refusal must be a field-tagged validation error, got %v", err)
 
-	// The rollback left PK1 in place — the reference is intact, nothing was orphaned.
 	c4, err := T.GetTechCardById(ctx, tcID)
 	require.NoError(t, err)
-	require.Len(t, c4.Pieces, 2, "the failed delete rolled back; both pieces remain")
-	require.Equal(t, usagePieceID, requireUsagePieceID(t, c4, cwID), "the recipe reference is still intact")
+	require.Len(t, c4.Pieces, 1, "PK1 is gone")
+	require.Equal(t, "PK2", c4.Pieces[0].LineKey)
+	require.Equal(t, idByKey["PK2"], c4.Pieces[0].Id, "the surviving piece keeps its id")
+	require.Equal(t, int64(idByKey["PK2"]), requireUsagePieceID(t, c4, cwID),
+		"only PK1's recipe line went with it; PK2's line survives")
+	var dangling int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tech_card_colorway_usage WHERE piece_id = ?`, usagePieceID).Scan(&dangling))
+	require.Zero(t, dangling, "no recipe line still points at the deleted piece")
 
 	// A NON-EXISTENT bom_line_key on an operation or a piece material is a field-tagged validation
 	// error, never a silently-NULL link (no-silent-no-op norm; the beta A–L acceptance run caught the
