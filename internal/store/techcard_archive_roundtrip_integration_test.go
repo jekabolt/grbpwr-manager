@@ -657,6 +657,17 @@ func rtCompareSidecars(t *testing.T, a, b *techcardarchive.Archive, canonA, cano
 	okA := rtSidecar(t, a, techcardarchive.FileSizeChart, &scA)
 	okB := rtSidecar(t, b, techcardarchive.FileSizeChart, &scB)
 	require.Equal(t, okA, okB, "sizechart.json есть у одного архива и нет у другого")
+	// media_ref картинки — чужой id, как слоты card.json: сравнивается его каноническим номером.
+	for _, side := range []struct {
+		sc    *techcardarchive.SizeChart
+		canon map[int64]int64
+	}{{&scA, canonA}, {&scB, canonB}} {
+		if pic := side.sc.Picture; pic != nil && pic.MediaRef > 0 {
+			canon, ok := side.canon[int64(pic.MediaRef)]
+			require.True(t, ok, "media_ref картинки таблицы не найден в media/index.json — байты не уехали")
+			pic.MediaRef = int32(canon)
+		}
+	}
 	require.Equal(t, scA, scB, "размерная таблица разошлась: обе оси едут ИМЕНАМИ (§5.1), "+
 		"так что совпадать она обязана до ячейки")
 
@@ -789,6 +800,9 @@ type rtFixture struct {
 	zipperMat   int
 	mediaIDs    []int // все медиа карточки, в порядке заведения
 	reusedMedia int   // единственная строка media с проставленным content_hash
+	// pictureMedia — загрузка картинки размерной таблицы; pictureLines — её свободные линии.
+	pictureMedia int
+	pictureLines []entity.StyleSizeChartLine
 }
 
 // rtPNG рисует крошечный настоящий PNG. Байты обязаны быть НАСТОЯЩИМИ: маршрутизатор импорта
@@ -912,8 +926,12 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 	mCallout := rtSeedMedia(t, ctx, s, rig.objs, "rt-callout", rtPNG(t, 10, 10, 250), false)
 	mOp := rtSeedMedia(t, ctx, s, rig.objs, "rt-operation", rtPNG(t, 200, 200, 10), false)
 	mDetail := rtSeedMedia(t, ctx, s, rig.objs, "rt-detail", rtPNG(t, 10, 200, 200), true)
-	fx.mediaIDs = []int{mTech, mMood, mCallout, mOp, mDetail}
+	// Шестая — загрузка картинки размерной таблицы (0459): её не называет ни один слот card.json,
+	// и в архив она попадает только как media_ref в sizechart.json.
+	mPicture := rtSeedMedia(t, ctx, s, rig.objs, "rt-size-chart", rtPNG(t, 120, 60, 30), false)
+	fx.mediaIDs = []int{mTech, mMood, mCallout, mOp, mDetail, mPicture}
 	fx.reusedMedia = mDetail
+	fx.pictureMedia = mPicture
 
 	// ── файлы выкроек ──
 	// Ключ обязан лежать под сегментом tech-card-patterns: конвертер отказывает всему остальному, и
@@ -1256,8 +1274,18 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 		}, []entity.StyleSizeChartPoint{
 			{MeasurementNameID: meas1, PomCode: "length-cb", Position: 2, TolMinusCm: d("0.7"), TolPlusCm: d("0.9"), InShop: true, BasisPieceLineKeys: []string{rtPieceBack}},
 			{MeasurementNameID: meas2, Position: 1, TolMinusCm: d("1"), TolPlusCm: d("1.2"), InShop: false},
-		}, true, func() *decimal.Decimal { v := d("2.5"); return &v }(), nil)
+		}, true, func() *decimal.Decimal { v := d("2.5"); return &v }(), &entity.StyleSizeChartPicture{
+			Source: entity.StyleSizeChartPictureSourceUpload, MediaID: fx.pictureMedia,
+			Lines: []entity.StyleSizeChartLine{
+				{MeasurementNameID: meas1, X1: 0.1, Y1: 0.25, X2: 0.9, Y2: 0.25, Position: 1},
+				{MeasurementNameID: 0, X1: 0.5, Y1: 0.05, X2: 0.5, Y2: 0.95, Position: 2},
+			},
+		})
 	require.NoError(t, err)
+	fx.pictureLines = []entity.StyleSizeChartLine{
+		{MeasurementNameID: meas1, X1: 0.1, Y1: 0.25, X2: 0.9, Y2: 0.25, Position: 1},
+		{MeasurementNameID: 0, X1: 0.5, Y1: 0.05, X2: 0.5, Y2: 0.95, Position: 2},
+	}
 
 	// ── связь сборки: компонент едет НОМЕРОМ СТИЛЯ, не id (§5.2) ──
 	require.NoError(t, T.UpsertStyleAssembly(ctx, fx.cardID, []entity.StyleAssemblyInsert{{
@@ -1451,6 +1479,21 @@ func TestTechCardArchiveRoundtrip(t *testing.T) {
 
 	rtCompareSidecars(t, archA, archB, canonA, canonB)
 
+	// ── картинка размерной таблицы (0459): загрузка доехала байтами, линии — мерками ──
+	var scA techcardarchive.SizeChart
+	require.True(t, rtSidecar(t, archA, techcardarchive.FileSizeChart, &scA))
+	require.NotNil(t, scA.Picture, "архив A обязан нести картинку таблицы")
+	require.EqualValues(t, fx.pictureMedia, scA.Picture.MediaRef)
+	chartB, err := rig.store.TechCards().GetStyleSizeChart(ctx, cardB)
+	require.NoError(t, err)
+	require.NotNil(t, chartB.Picture, "импорт обязан записать картинку таблицы")
+	require.Equal(t, entity.StyleSizeChartPictureSourceUpload, chartB.Picture.Source)
+	require.Positive(t, chartB.Picture.MediaID)
+	require.NotEqual(t, fx.pictureMedia, chartB.Picture.MediaID,
+		"загрузка без content_hash не узнаётся: импорт заводит новую строку media")
+	require.NotEmpty(t, chartB.Picture.MediaURL)
+	require.Equal(t, fx.pictureLines, chartB.Picture.Lines, "свободные линии обязаны пережить круг")
+
 	// ── БОНУС 1: строки медиа у двух карточек РАЗНЫЕ там, где содержимое базе не было известно ──
 	slotsA := rtCardMediaIDs(cardJSONA)
 	slotsB := rtCardMediaIDs(cardJSONB)
@@ -1479,6 +1522,34 @@ func TestTechCardArchiveRoundtrip(t *testing.T) {
 	require.Equal(t, mediaAfterFirst, rtCountMedia(t, ctx),
 		"переиспользование по content_hash: второй импорт того же архива не имеет права завести "+
 			"ни одной новой строки media — байты уже лежат в базе, и их sha равна sha архива")
+
+	// ── картинка-иконка: байтов нет, ключ и линии обязаны доехать ──
+	t.Run("картинка таблицы иконкой", func(t *testing.T) {
+		chart, err := rig.store.TechCards().GetStyleSizeChart(ctx, cardB)
+		require.NoError(t, err)
+		var shrinkage *decimal.Decimal
+		if chart.ShrinkagePct.Valid {
+			shrinkage = &chart.ShrinkagePct.Decimal
+		}
+		lines := []entity.StyleSizeChartLine{
+			{MeasurementNameID: fx.pictureLines[0].MeasurementNameID, X1: 0.2, Y1: 0.3, X2: 0.8, Y2: 0.3, Position: 1},
+			{X1: 0, Y1: 0, X2: 1, Y2: 1, Position: 2},
+		}
+		_, err = rig.store.TechCards().UpdateStyleSizeChart(ctx, cardB, chart.LockVersion, chart.Cells,
+			chart.GradeBaseSizeID, chart.GradeSteps, chart.Points, true, shrinkage,
+			&entity.StyleSizeChartPicture{Source: entity.StyleSizeChartPictureSourceIcon, IconKey: "tee", Lines: lines})
+		require.NoError(t, err)
+
+		zipIcon, _ := rig.export(t, cardB)
+		iconCopy, _ := rig.importArchive(t, zipIcon)
+		got, err := rig.store.TechCards().GetStyleSizeChart(ctx, iconCopy)
+		require.NoError(t, err)
+		require.NotNil(t, got.Picture)
+		require.Equal(t, entity.StyleSizeChartPictureSourceIcon, got.Picture.Source)
+		require.Equal(t, "tee", got.Picture.IconKey)
+		require.Zero(t, got.Picture.MediaID)
+		require.Equal(t, lines, got.Picture.Lines)
+	})
 
 	// ── ВТОРАЯ ветка перенумерации: кандидата нет вовсе ──
 	//

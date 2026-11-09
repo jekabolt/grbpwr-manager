@@ -304,6 +304,11 @@ type tcimpResolver struct {
 
 	measurementIDByName map[string]int
 
+	// mediaMapping is resolveMedia's source media id → this base's id (or the NEGATIVE placeholder of
+	// an upload), kept for the one media reference that does not live in the proto tree: the size
+	// chart picture (resolveSizeChart). A source id absent from it has no bytes in the archive.
+	mediaMapping map[int64]int64
+
 	// holeSeen dedupes by (entity, ref, reason). One missing size is referenced by ten fields of the
 	// card and would otherwise produce ten identical lines; the tally still counts the rows.
 	holeSeen map[string]bool
@@ -726,6 +731,8 @@ func (r *tcimpResolver) resolveMedia(ctx context.Context) error {
 		}
 		r.out.MediaPlan = append(r.out.MediaPlan, plan)
 	}
+
+	r.mediaMapping = mapping
 
 	missing := map[int64]bool{}
 	techcardarchive.RemapIntFieldsDeep(r.out.Insert.ProtoReflect(), techcardarchive.MediaFieldNames, mapping,
@@ -1498,8 +1505,66 @@ func (r *tcimpResolver) resolveSizeChart() error {
 	if out.GradeBaseSizeID == 0 || len(out.GradeSteps) == 0 {
 		out.GradeBaseSizeID, out.GradeSteps = 0, nil
 	}
+	out.Picture = r.resolveSizeChartPicture(chart.Picture)
 	r.out.SizeChartPlan = out
 	return nil
+}
+
+// resolveSizeChartPicture rebuilds the drawing next to the chart (0459) against this base.
+//
+// The image is a media ref resolved through the SAME mapping resolveMedia built for the card's own
+// slots, so a reuse carries its final id and an upload its negative placeholder — substituted after
+// the bytes move (tcflApplyMediaPlaceholders), cleared if a reused picture vanishes
+// (tcciDropVanishedMedia). A sketch or upload whose bytes are not in the archive has nothing to draw
+// on, so the picture is dropped with a media_missing line; an icon needs no bytes and always survives.
+//
+// A line whose measurement this base does not know keeps its geometry and loses its point: it is a
+// line the user drew, and the point can be picked again; dropping it would lose the drawing.
+func (r *tcimpResolver) resolveSizeChartPicture(p *techcardarchive.SizeChartPicture) *entity.StyleSizeChartPicture {
+	if p == nil || strings.TrimSpace(p.Source) == "" {
+		return nil
+	}
+	out := &entity.StyleSizeChartPicture{Source: strings.TrimSpace(p.Source), IconKey: p.IconKey}
+	if out.Source == entity.StyleSizeChartPictureSourceSketch || out.Source == entity.StyleSizeChartPictureSourceUpload {
+		target, ok := r.mediaMapping[int64(p.MediaRef)]
+		if p.MediaRef <= 0 || !ok || target == 0 {
+			r.hole(techcardarchive.EntityMedia, fmt.Sprintf("media_id=%d", p.MediaRef), techcardarchive.StatusSkipped,
+				techcardarchive.ReasonMediaMissing,
+				"the archive carries no file for the size chart picture; the chart imported without its picture")
+			return nil
+		}
+		out.MediaID = int(target)
+	}
+	for _, l := range p.Lines {
+		line := entity.StyleSizeChartLine{X1: l.X1, Y1: l.Y1, X2: l.X2, Y2: l.Y2, Position: l.Position}
+		if name := strings.TrimSpace(l.Measurement); name != "" {
+			if id, ok := r.measurementIDByName[tcimpKey(name)]; ok {
+				line.MeasurementNameID = id
+			} else {
+				r.hole(techcardarchive.EntityMeasurement, fmt.Sprintf("measurement=%s", name),
+					techcardarchive.StatusDegraded, techcardarchive.ReasonMeasurementUnknown,
+					"the size chart picture's line names a measurement this base's dictionary does not have; "+
+						"the line imported without its point")
+			}
+		}
+		out.Lines = append(out.Lines, line)
+	}
+	// The placeholder is negative until the upload, and the validator wants a positive image id:
+	// it is checked as if placed and handed back as the placeholder.
+	media := out.MediaID
+	if media < 0 {
+		out.MediaID = 1
+	}
+	if err := entity.ValidateStyleSizeChartPicture(out); err != nil {
+		r.hole(techcardarchive.EntityCard, "size_chart.picture", techcardarchive.StatusSkipped,
+			techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the size chart picture is invalid (%s); the chart imported without it", err.Error()))
+		return nil
+	}
+	if out.MediaID != 0 {
+		out.MediaID = media
+	}
+	return out
 }
 
 func archiveChartCellSource(source string) string {

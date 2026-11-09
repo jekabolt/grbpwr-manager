@@ -398,6 +398,19 @@ func tcflApplyMediaPlaceholders(res *resolvedTechCardImport, p *tcflPlacement) {
 	// The same gesture, not a second copy of it: a row whose media FK is now 0 is unwritable, and
 	// there must be exactly one answer in this package to what happens to it.
 	(&tcimpResolver{out: res}).dropEmptyMediaRows()
+
+	// The size chart picture is an entity beside the proto, so the walk above does not see it. Same
+	// rule: a placeholder becomes the minted id, and one whose upload failed takes the picture with it
+	// (a sketch or upload with no image is no picture); the failure line is already written.
+	if pic := res.SizeChartPlan.Picture; pic != nil && pic.MediaID < 0 {
+		if id, ok := p.mediaByPlaceholder[int32(pic.MediaID)]; ok && id > 0 {
+			pic.MediaID = int(id)
+		} else {
+			slog.Default().Warn("tech card import: size chart picture placeholder left unplaced",
+				slog.Int("placeholder", pic.MediaID))
+			res.SizeChartPlan.Picture = nil
+		}
+	}
 }
 
 // tcflApplyPatternObjects writes the new url onto every sheet that was re-uploaded and drops the
