@@ -170,7 +170,7 @@ func TestFlattenMeasuresTheKeyBeforeTheTransaction(t *testing.T) {
 	s := &Store{txFunc: func(context.Context, func(context.Context, dependency.Repository) error) error {
 		reached = true
 		return nil
-	}}
+	}, readTxFunc: flattenNoReadTx}
 	flatten := func(key string) error {
 		reached = false
 		_, err := s.FlattenEditLayer(context.Background(), entity.DesignEditLayerFlatten{
@@ -205,7 +205,7 @@ func TestFlattenRefusesANegativeReplaceTargetBeforeTheTransaction(t *testing.T) 
 	s := &Store{txFunc: func(context.Context, func(context.Context, dependency.Repository) error) error {
 		reached = true
 		return nil
-	}}
+	}, readTxFunc: flattenNoReadTx}
 	_, err := s.FlattenEditLayer(context.Background(), entity.DesignEditLayerFlatten{
 		TechCardId: 1, LayerId: 5, ExpectedRev: 2, MediaId: 9, ReplacePictureId: -1,
 	})
@@ -232,4 +232,10 @@ func requireNamedQueryBinds(t *testing.T, q string, params map[string]any) {
 	require.NoError(t, err, "named-parameter expansion must succeed")
 	require.Equal(t, strings.Count(expanded, "?"), len(args))
 	require.Len(t, args, len(params), "every parameter is bound exactly once")
+}
+
+// flattenNoReadTx — снимок чтения, в котором флэттен собирает файл и углы кадра после коммита:
+// фейковая запись в пробах выше замыкание не исполняет, кадра нет, читать нечего.
+func flattenNoReadTx(context.Context, func(context.Context, dependency.Repository) error) error {
+	return nil
 }
