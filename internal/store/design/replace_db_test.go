@@ -802,9 +802,15 @@ func TestDesignDBOverwriteDoesNotLockTheRestOfTheCard(t *testing.T) {
 	colleague, err := raw.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = colleague.Rollback() }()
-	_, err = colleague.ExecContext(ctx,
-		`UPDATE design_picture SET selected = 1 WHERE id IN (?`+strings.Repeat(", ?", len(roots)-1)+`)`, roots...)
-	require.NoError(t, err)
+	// По строке на UPDATE, точным равенством по PRIMARY: так коллега держит ровно свои двадцать четыре
+	// корня. Один UPDATE … WHERE id IN (двадцать четыре id) на таблице в несколько десятков строк
+	// оптимизатор ведёт полным сканом, и под REPEATABLE READ сканирующий UPDATE ставит next-key X на
+	// КАЖДУЮ просмотренную строку — включая сам лист и его кусок. Тогда перезапись ждала замка
+	// фикстуры, а не своего чтения, и тест падал по таймауту при любом сторе.
+	for _, id := range roots {
+		_, err = colleague.ExecContext(ctx, `UPDATE design_picture SET selected = 1 WHERE id = ?`, id)
+		require.NoError(t, err)
+	}
 
 	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

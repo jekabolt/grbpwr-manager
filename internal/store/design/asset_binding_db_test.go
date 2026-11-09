@@ -669,7 +669,11 @@ func TestDesignDBAFullShelfTakesAReplacementThatFreesARow(t *testing.T) {
 	require.NoError(t, raw.QueryRow(`SELECT MAX(id) FROM design_asset WHERE tech_card_id = ?`, card).Scan(&prev))
 
 	// Второй пары у cw2 нет: её посадка на полной полке ничего не освобождает.
-	replace, fresh := start(cw, "button 2"), start(cw2, "button 3")
+	//
+	// fresh заводится ПЕРВЫМ, потому что первым и садится: landPatternRun берёт одно задание и требует,
+	// чтобы это было названное, а ClaimRuns отдаёт наименьший id (ORDER BY id — так было уже тогда,
+	// когда 527c677 завёл этот тест с обратным порядком, и тест с рождения падал на сверке id).
+	fresh, replace := start(cw2, "button 3"), start(cw, "button 2")
 	for i := len(shelfOf(t, raw, card)); i < entity.MaxDesignAssetsPerCard; i++ {
 		_, err := rep.Design().UpsertAsset(ctx, entity.DesignAssetUpsert{
 			TechCardId: card, Kind: entity.DesignAssetKindFabric,
