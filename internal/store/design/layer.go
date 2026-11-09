@@ -706,9 +706,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 	// чтение, которое раунд 4 O-53 (012292f) из перезаписи убрал: перезапись снова ждала любую чужую
 	// транзакцию, державшую любой кадр той же карточки (TestDesignDBOverwriteDoesNotLockTheRestOfTheCard).
 	// Ответ ничего не теряет: снимок после коммита видит и поданную правку, и штамп replaced_by.
-	if err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
-	}); err != nil {
+	if err := s.resolveMediaAfterCommit(ctx, []*entity.DesignPicture{&out}); err != nil {
 		return nil, err
 	}
 	return &out, nil

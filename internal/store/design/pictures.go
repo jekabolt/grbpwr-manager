@@ -234,13 +234,7 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 		if err != nil {
 			return fmt.Errorf("failed to read design batch pictures: %w", err)
 		}
-		flat := make([]*entity.DesignPicture, 0, len(pics))
-		for i := range pics {
-			flat = append(flat, &pics[i])
-		}
-		if err := resolveMedia(ctx, rep, flat); err != nil {
-			return err
-		}
+		// Файлы и углы кадров — после коммита (ниже), не здесь: см. resolveMediaAfterCommit.
 		batch.Pictures = pics
 		out.Batch, out.Pictures = batch, pics
 
@@ -287,7 +281,7 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 			if err != nil {
 				return err
 			}
-			if err := attachSlotPictures(ctx, rep, []*entity.DesignBenchSlot{slot}); err != nil {
+			if err := attachSlotPlates(ctx, rep, []*entity.DesignBenchSlot{slot}); err != nil {
 				return err
 			}
 			// ⚠ УСЫНОВЛЕНИЕ, СЛУЧИВШЕЕСЯ ПРИ ПОСТАНОВКЕ, ОБЯЗАНО ДОЕХАТЬ И ДО СПИСКА КАДРОВ (B7).
@@ -295,12 +289,31 @@ func (s *Store) RegisterBatch(ctx context.Context, req entity.DesignBatchRegiste
 			// плите (adoptPictureIntoColorway), а `pics` здесь прочитан ДО неё: без этой строки
 			// составная дверь отвечала бы «загружено, колорвея нет» про кадр, который в базе уже
 			// несёт N, — и клиент, рисующий пилюлю по ответу, показал бы семпл там, где стоит
-			// колорвей. Слот при этом сказал бы правду: attachSlotPictures перечитывает плиту.
+			// колорвей. Слот при этом сказал бы правду: attachSlotPlates перечитывает плиту.
 			// Расхождение двух половин ОДНОГО ответа молчаливо по построению.
 			if slot.Picture != nil && slot.Picture.Id == pics[0].Id {
 				pics[0].ColorwayId = slot.Picture.ColorwayId
 			}
 			out.Slot = slot
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// ФАЙЛЫ И УГЛЫ — ПОСЛЕ КОММИТА, В СНИМКЕ ЧТЕНИЯ. Повтор пачки, чей кадр с тех пор перезаписан, —
+	// звено цепочки, и resolveMedia читал бы цепочки всей карточки внутри SERIALIZABLE-транзакции:
+	// S на каждом её кадре. out.Batch.Pictures и out.Pictures — один массив, разметка доходит до обоих.
+	err = s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		flat := make([]*entity.DesignPicture, 0, len(out.Pictures))
+		for i := range out.Pictures {
+			flat = append(flat, &out.Pictures[i])
+		}
+		if err := resolveMedia(ctx, rep, flat); err != nil {
+			return err
+		}
+		if out.Slot != nil {
+			return resolveSlotMedia(ctx, rep, []*entity.DesignBenchSlot{out.Slot})
 		}
 		return nil
 	})
@@ -343,12 +356,12 @@ func (s *Store) HidePicture(ctx context.Context, pictureID int, hidden bool, act
 			return fmt.Errorf("failed to set design picture visibility: %w", err)
 		}
 		out, err = pictureByID(ctx, db, pictureID)
-		if err != nil {
-			return err
-		}
-		return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveMediaAfterCommit(ctx, []*entity.DesignPicture{&out}); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -388,12 +401,12 @@ func (s *Store) SetPictureSelected(ctx context.Context, pictureID int, selected 
 		}
 		var err error
 		out, err = pictureByID(ctx, db, pictureID)
-		if err != nil {
-			return err
-		}
-		return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveMediaAfterCommit(ctx, []*entity.DesignPicture{&out}); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -628,11 +641,7 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		}
 		if len(existing) > 0 {
 			out = existing
-			flat := make([]*entity.DesignPicture, 0, len(out))
-			for i := range out {
-				flat = append(flat, &out[i])
-			}
-			return resolveMedia(ctx, rep, flat)
+			return nil
 		}
 
 		// Ordinals continue after whatever already hangs under the parent's row, so the crops sort
@@ -782,13 +791,17 @@ func (s *Store) SplitPicture(ctx context.Context, req entity.DesignSplitRequest)
 		if err != nil {
 			return fmt.Errorf("failed to read crops of picture %d: %w", parent.Id, err)
 		}
-		flat := make([]*entity.DesignPicture, 0, len(out))
-		for i := range out {
-			flat = append(flat, &out[i])
-		}
-		return resolveMedia(ctx, rep, flat)
+		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	// Файлы и углы кусков — после коммита: стоящий кусок повтора бывает заменённым (звено цепочки).
+	flat := make([]*entity.DesignPicture, 0, len(out))
+	for i := range out {
+		flat = append(flat, &out[i])
+	}
+	if err := s.resolveMediaAfterCommit(ctx, flat); err != nil {
 		return nil, err
 	}
 	return out, nil
