@@ -42,8 +42,8 @@ func (tc *TechCardInsert) AuxBoughtFinished() bool {
 //     unpriced and as a NoNorm blocker, never as zero.
 //   - Counted section: the usage carries no number, and the slot's qty_per_garment + spare_qty
 //     answer through the countable pair resolver, exactly as on a colourway row.
-//   - A line cut to length takes its strips' norm through ResolveCutStripUsages, as colourways do.
-//     Aux is size-less, so only a one-length strip gives a norm; a graded strip gives none.
+//   - A geometry-derived line takes its composed norm through ResolveDerivedLineUsages.
+//     Aux is size-less, so only size-independent contributors give a norm.
 //
 // The recipe is built fresh and never written; tc is not modified. Usage Id 0 = not persisted.
 func AuxRecipe(tc *TechCardInsert) *TechCardColorway {
@@ -69,9 +69,10 @@ func AuxRecipe(tc *TechCardInsert) *TechCardColorway {
 		}
 		usages = append(usages, u)
 	}
-	usages = ResolveCutStripUsages(usages, tc.BomItems, CutStripLineNorms(tc.BomItems, tc.CutStrips, nil))
+	topstitch := TopstitchLines(tc.Operations)
+	usages = ResolveDerivedLineUsages(usages, tc.BomItems, DerivedLineNorms(tc.BomItems, tc.CutStrips, topstitch, nil))
 	for i := range usages {
-		// Aux is size-less: a per-size strip norm has no size to answer for.
+		// Aux is size-less: a per-size derived norm has no size to answer for.
 		usages[i].SizeConsumptions = nil
 	}
 	recipe.Usages = usages
@@ -79,8 +80,8 @@ func AuxRecipe(tc *TechCardInsert) *TechCardColorway {
 }
 
 // ValidateAuxBomNorms holds the write rules of consumption_per_unit that need the whole card: it is
-// for auxiliary cards only, for measured sections only, and never on a line cut to length (the
-// strips give that norm). Only a value present on the wire is judged; an omitted one keeps the
+// for auxiliary cards only, for measured sections only, and never on a geometry-derived line.
+// Only a value present on the wire is judged; an omitted one keeps the
 // stored value and is inert wherever AuxRecipe does not read it. Range and scale are checked at
 // parse time.
 func ValidateAuxBomNorms(tc *TechCardInsert) error {
@@ -157,16 +158,19 @@ func AuxBomLinesMissingNorm(tc *TechCardInsert) []int {
 	return out
 }
 
-// auxCutStripLines is the set of BOM lines that have strips, by their strip line key.
+// auxCutStripLines is the set of BOM lines with any geometry-derived contributor.
 func auxCutStripLines(tc *TechCardInsert) map[string]bool {
-	stripLines := make(map[string]bool, len(tc.CutStrips))
+	stripLines := make(map[string]bool, len(tc.CutStrips)+len(TopstitchLines(tc.Operations)))
 	for i := range tc.CutStrips {
 		stripLines[CutStripLineKey(tc.CutStrips[i].BomLineKey)] = true
+	}
+	for _, line := range TopstitchLines(tc.Operations) {
+		stripLines[CutStripLineKey(line.BomLineKey)] = true
 	}
 	return stripLines
 }
 
-// auxLineCutToLength reports a line whose norm comes from its strips.
+// auxLineCutToLength reports a line whose norm comes from measured geometry.
 func auxLineCutToLength(b *TechCardBomItem, stripLines map[string]bool) bool {
 	return b.CutToLength || (b.LineKey != "" && stripLines[CutStripLineKey(b.LineKey)])
 }

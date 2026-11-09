@@ -181,6 +181,7 @@ func reimportProbe(insert *pb_common.TechCardInsert, card *entity.TechCard) []te
 		probe.CutStrips = dto.TechCardCutStripsToPb(card.CutStrips, card.SizeIds)
 	}
 	probe.CutStripsAware = true
+	probe.TopstitchLinesAware = true
 
 	if _, err := dto.ConvertPbTechCardInsertToEntity(probe); err != nil {
 		return []techcardarchive.ExportHole{{

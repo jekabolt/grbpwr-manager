@@ -1189,9 +1189,53 @@ func materialsProjection(tc *entity.TechCardInsert) any {
 		// Strip rules change what is bought, so they sign with the line. A line with no strip gets no
 		// tail and every existing card hashes as before.
 		row = append(row, cutStripTails(tc.BomItems[i].LineKey, tc.CutStrips)...)
+		row = append(row, topstitchLineTails(&tc.BomItems[i], tc.Operations)...)
 		items = append(items, row)
 	}
 	return items
+}
+
+// topstitchLineTails signs the inputs that change thread consumption. Anchors and ownership by an
+// operation are drawing/source facts and stay out; moving an unchanged measured run does not change
+// what the card buys.
+func topstitchLineTails(bom *entity.TechCardBomItem, ops []entity.TechCardOperation) []any {
+	var onLine []*entity.TechCardTopstitchLine
+	for i := range ops {
+		for j := range ops[i].TopstitchLines {
+			line := &ops[i].TopstitchLines[j]
+			if entity.CutStripLineKey(line.BomLineKey) == entity.CutStripLineKey(bom.LineKey) {
+				onLine = append(onLine, line)
+			}
+		}
+	}
+	if len(onLine) == 0 {
+		return nil
+	}
+	sort.SliceStable(onLine, func(i, j int) bool { return onLine[i].LineKey < onLine[j].LineKey })
+	out := make([]any, 0, len(onLine))
+	for _, line := range onLine {
+		out = append(out, operationKindTail("topstitch_line",
+			operationKindPair{key: "line_key", value: line.LineKey, valid: true},
+			operationKindPair{key: "rows", value: line.Rows, valid: true},
+			operationKindPair{key: "sizes", value: topstitchSizePairs(line.Sizes), valid: len(line.Sizes) > 0},
+			opKindDec("thread_per_mm", bom.ThreadPerMm),
+		))
+	}
+	return out
+}
+
+func topstitchSizePairs(sizes []entity.TechCardTopstitchLineSize) []any {
+	ordered := append([]entity.TechCardTopstitchLineSize(nil), sizes...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].SizeId < ordered[j].SizeId })
+	out := make([]any, 0, len(ordered))
+	for _, row := range ordered {
+		var mm any
+		if row.LineMm.Valid {
+			mm = row.LineMm.Decimal.String()
+		}
+		out = append(out, []any{row.SizeId, mm})
+	}
+	return out
 }
 
 // cutStripTails is one tagged tail per strip of the BOM line, ordered by the strip's key. display_order

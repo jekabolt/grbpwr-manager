@@ -129,6 +129,7 @@ func TestSnapshotWithEmptySeamsDecodesAsTheCard(t *testing.T) {
 	var got pb_common.TechCard
 	require.NoError(t, protojson.Unmarshal([]byte(blob), &got))
 	want := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{})
+	nameSnapshotThreadPerMm(want)
 	wantJSON, err := protojson.Marshal(want)
 	require.NoError(t, err)
 	gotJSON, err := protojson.Marshal(&got)

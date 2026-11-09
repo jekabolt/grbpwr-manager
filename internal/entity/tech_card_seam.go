@@ -368,10 +368,10 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 			return NewFieldViolation(f+".note", "too_long", "",
 				fmt.Sprintf("at most %d characters", TechCardSeamNoteMaxRunes))
 		}
-		if err := validateTechCardSeamSide(f+".side_a", s.SideA); err != nil {
+		if err := ValidateTechCardSeamSide(f+".side_a", s.SideA, TechCardSeamMaxAnchorsPerSide); err != nil {
 			return err
 		}
-		if err := validateTechCardSeamSide(f+".side_b", s.SideB); err != nil {
+		if err := ValidateTechCardSeamSide(f+".side_b", s.SideB, TechCardSeamMaxAnchorsPerSide); err != nil {
 			return err
 		}
 		if s.Kind == TechCardSeamKindPose {
@@ -400,13 +400,15 @@ func seamAnchorRangesOverlap(x, y TechCardSeamAnchor) bool {
 	return xFrom < yTo && yFrom < xTo
 }
 
-func validateTechCardSeamSide(f string, side []TechCardSeamAnchor) error {
+// ValidateTechCardSeamSide validates an anchor list using the seam-side geometry rules. maxParts
+// lets a caller reuse the shape while owning a different cardinality bound.
+func ValidateTechCardSeamSide(f string, side []TechCardSeamAnchor, maxParts int) error {
 	if len(side) == 0 {
 		return NewFieldViolation(f+".parts", "empty", "", "a seam side names at least one anchor")
 	}
-	if len(side) > TechCardSeamMaxAnchorsPerSide {
+	if len(side) > maxParts {
 		return NewFieldViolation(f+".parts", "too_many", "",
-			fmt.Sprintf("at most %d anchors per side", TechCardSeamMaxAnchorsPerSide))
+			fmt.Sprintf("at most %d anchors per side", maxParts))
 	}
 	seen := map[string][]int{}
 	for j := range side {

@@ -848,6 +848,7 @@ const bomItemUpdateQuery = `
 		spare_qty=IF(:countable_omitted, spare_qty, :spare_qty),
 		est_usage=IF(:est_usage_omitted, est_usage, :est_usage),
 		consumption_per_unit=IF(:consumption_per_unit_omitted, consumption_per_unit, :consumption_per_unit),
+		thread_per_mm=IF(:thread_per_mm_omitted, thread_per_mm, :thread_per_mm),
 		price_source=:price_source, price_snapshot_at=:price_snapshot_at
 	WHERE id=:id`
 
@@ -856,11 +857,11 @@ const bomItemInsertQuery = `
 		(tech_card_id, material_id, section, purpose, purpose_note, kind, kind_note, label_part, is_sample, name, supplier, supplier_ref,
 		 color, pantone, composition, spec, unit, unit_price, currency, comment, display_order, fabric_width,
 		 fabric_weight_gsm, fabric_direction, wastage_percent, wastage_source, wastage_lay_count, wastage_applied_at,
-		 wastage_applied_percent, qty_per_garment, spare_qty, est_usage, consumption_per_unit, line_key, price_source, price_snapshot_at)
+		 wastage_applied_percent, qty_per_garment, spare_qty, est_usage, consumption_per_unit, thread_per_mm, line_key, price_source, price_snapshot_at)
 	VALUES (:tech_card_id, :material_id, :section, :purpose, :purpose_note, :kind, :kind_note, :label_part, :is_sample, :name, :supplier, :supplier_ref,
 		 :color, :pantone, :composition, :spec, :unit, :unit_price, :currency, :comment, :display_order, :fabric_width,
 		 :fabric_weight_gsm, :fabric_direction, :wastage_percent, :wastage_source, :wastage_lay_count, :wastage_applied_at,
-		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :est_usage, :consumption_per_unit, :line_key, :price_source, :price_snapshot_at)`
+		 :wastage_applied_percent, :qty_per_garment, :spare_qty, :est_usage, :consumption_per_unit, :thread_per_mm, :line_key, :price_source, :price_snapshot_at)`
 
 // validateBomKindSection enforces the kind↔section pairing (0278) the DB CHECK deliberately does not:
 // a kind is legal only on a kind-eligible section, and within that, only in its own HOME section —
@@ -1162,16 +1163,20 @@ func bomItemParams(tcID int, b *entity.TechCardBomItem, displayOrder int, lineKe
 		// a stale value on a line that no longer qualifies is inert because AuxRecipe never reads it.
 		"consumption_per_unit":         b.ConsumptionPerUnit,
 		"consumption_per_unit_omitted": b.ConsumptionPerUnitOmitted,
+		"thread_per_mm":                b.ThreadPerMm,
+		"thread_per_mm_omitted":        b.ThreadPerMmOmitted,
 		"line_key":                     lineKey,
 	}
 }
 
-// newLineKey mints a stable 26-char CHAR(26) key (ULID-shaped: base32 of 128 random bits) for a
+var storeTechCardLineKeyEncoding = base32.NewEncoding("0123456789ABCDEFGHJKMNPQRSTVWXYZ").WithPadding(base32.NoPadding)
+
+// newLineKey mints a stable 26-char CHAR(26) key (ULID-shaped: Crockford base32 of 128 random bits) for a
 // legacy/keyless BOM line so the upsert-diff has a durable handle even before clients send one.
 func newLineKey() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:])
+	return storeTechCardLineKeyEncoding.EncodeToString(b[:])
 }
 
 // insertTechCardDetails inserts the construction-description aspects and, for each, its
@@ -1448,7 +1453,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
 		       bi.wastage_source, bi.wastage_lay_count, bi.wastage_applied_at, bi.wastage_applied_percent,
 		       bi.qty_per_garment, bi.spare_qty,
-		       bi.est_usage, bi.consumption_per_unit,
+		       bi.est_usage, bi.consumption_per_unit, bi.thread_per_mm,
 		       COALESCE(bi.line_key, '') AS line_key, bi.price_source, bi.price_snapshot_at,
 		       COALESCE(bi.fabric_width, NULLIF(mfa.width_cm, 0), m.fabric_width) AS effective_fabric_width_cm,
 		       mfa.selvedge_cm AS selvedge_cm

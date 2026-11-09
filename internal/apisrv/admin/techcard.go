@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -134,6 +135,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 		return nil, err
 	}
 	if err := operationSeamsWireGate(req.TechCard); err != nil {
+		return nil, err
+	}
+	if err := topstitchLinesWireGate(req.TechCard); err != nil {
 		return nil, err
 	}
 	if err := operationSeamToleranceWireGate(req.TechCard); err != nil {
@@ -416,6 +420,12 @@ type techCardWriteSource struct {
 	// readdress runs right after the conversion, before anything reads the entity: it may only
 	// re-express references (an id the payload cannot keep → the stable key the store resolves).
 	readdress func(tc *entity.TechCardInsert)
+	// carryStoredTopstitchLines is true only for a pre-0464 restore whose operation list is unchanged
+	// after ignoring topstitch children. No public or other internal writer may carry by slice index.
+	carryStoredTopstitchLines bool
+	// restoreTopstitchLines makes every snapshot line carry its frozen fresh/stale provenance.
+	restoreTopstitchLines bool
+	topstitchStale        map[string]bool
 }
 
 func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_common.TechCardInsert, snapshotReason string, src techCardWriteSource) (*entity.TechCardInsert, error) {
@@ -442,6 +452,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		return nil, err
 	}
 	if err := operationSeamsWireGate(in); err != nil {
+		return nil, err
+	}
+	if err := topstitchLinesWireGate(in); err != nil {
 		return nil, err
 	}
 	if err := operationSeamToleranceWireGate(in); err != nil {
@@ -498,6 +511,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	if err := cutStripsStoredGate(in, stored); err != nil {
 		return nil, err
 	}
+	if err := topstitchLinesStoredGate(in, stored); err != nil && !src.carryStoredTopstitchLines {
+		return nil, err
+	}
 	tc, err := dto.ConvertPbTechCardInsertToEntityPrepared(in, func(tc *entity.TechCardInsert) {
 		// Private keys are absent from protobuf. Restore them before the converter's first assembly
 		// pass so a keyed FUSING echo cannot make deletion of its piece fail on a stale input.
@@ -507,6 +523,10 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 		// A client that does not know about strips echoes their keys in the step inputs. The stored
 		// strips are what makes those keys strips and not dangling units.
 		entity.CarryStoredCutStrips(tc, &stored.TechCardInsert)
+		if src.carryStoredTopstitchLines {
+			entity.CarryStoredTopstitchLines(tc, &stored.TechCardInsert)
+		}
+		entity.CarryStoredThreadPerMm(tc, &stored.TechCardInsert)
 		// A pre-0454 client cannot echo label geometry or step links. Carry them before the converter
 		// mints missing label keys and validates operation membership.
 		dto.CarryStoredGarmentLabelGeometry(&stored.TechCardInsert, tc)
@@ -516,6 +536,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	}
 	if src.readdress != nil {
 		src.readdress(tc)
+	}
+	if src.restoreTopstitchLines {
+		markRestoredTopstitchLines(tc, src.topstitchStale)
 	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
@@ -875,22 +898,29 @@ func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, e
 // marshalTechCardPbSnapshot is marshalTechCardSnapshot for an already converted card, so the release
 // snapshot can add what only a release freezes (the size chart) before it is written.
 func marshalTechCardPbSnapshot(pb *pb_common.TechCard) (string, error) {
-	blob, err := protojson.Marshal(pb)
+	snapshot := proto.Clone(pb).(*pb_common.TechCard)
+	nameSnapshotThreadPerMm(snapshot)
+	blob, err := protojson.Marshal(snapshot)
 	if err != nil {
 		return "", err
 	}
-	if len(pb.GetSeams()) == 0 {
+	if len(snapshot.GetSeams()) == 0 {
 		// protojson omits an empty repeated field, and then «the card had no seams» would read like a
 		// snapshot older than the seams (which a restore must not touch). Say the empty list.
 		if blob, err = withEmptySnapshotSeams(blob); err != nil {
 			return "", err
 		}
 	}
-	if len(pb.GetCutStrips()) == 0 {
+	if len(snapshot.GetCutStrips()) == 0 {
 		// The same for strips: only a list that is there may replace what the card has.
 		if blob, err = withEmptySnapshotList(blob, snapshotCutStripsField); err != nil {
 			return "", err
 		}
+	}
+	// Topstitch lines are nested in full-replaced operations. Name every empty child list so a
+	// restore can distinguish "this operation had none" from a snapshot written before the field.
+	if blob, err = withSnapshotTopstitchLists(blob); err != nil {
+		return "", err
 	}
 	return string(blob), nil
 }
@@ -900,6 +930,12 @@ const snapshotSeamsField = "seams"
 
 // snapshotCutStripsField is TechCard.cut_strips' JSON name, as protojson writes it.
 const snapshotCutStripsField = "cutStrips"
+
+// snapshotTopstitchLinesField is TechCardOperation.topstitch_lines' JSON name.
+const snapshotTopstitchLinesField = "topstitchLines"
+
+// snapshotThreadPerMmField is TechCardBomItem.thread_per_mm's protojson name.
+const snapshotThreadPerMmField = "threadPerMm"
 
 func withEmptySnapshotSeams(blob []byte) ([]byte, error) {
 	return withEmptySnapshotList(blob, snapshotSeamsField)
@@ -912,6 +948,55 @@ func withEmptySnapshotList(blob []byte, field string) ([]byte, error) {
 	}
 	top[field] = json.RawMessage(`[]`)
 	return json.Marshal(top)
+}
+
+func withSnapshotTopstitchLists(blob []byte) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &top); err != nil {
+		return nil, err
+	}
+	var insert map[string]json.RawMessage
+	if err := json.Unmarshal(top["techCard"], &insert); err != nil {
+		return nil, err
+	}
+	var operations []map[string]json.RawMessage
+	if raw, ok := insert["operations"]; ok {
+		if err := json.Unmarshal(raw, &operations); err != nil {
+			return nil, err
+		}
+	}
+	for i := range operations {
+		if operations[i] == nil {
+			operations[i] = map[string]json.RawMessage{}
+		}
+		if _, ok := operations[i][snapshotTopstitchLinesField]; !ok {
+			operations[i][snapshotTopstitchLinesField] = json.RawMessage(`[]`)
+		}
+	}
+	rawOperations, err := json.Marshal(operations)
+	if err != nil {
+		return nil, err
+	}
+	insert["operations"] = rawOperations
+	rawInsert, err := json.Marshal(insert)
+	if err != nil {
+		return nil, err
+	}
+	top["techCard"] = rawInsert
+	return json.Marshal(top)
+}
+
+// nameSnapshotThreadPerMm makes NULL explicit in new snapshots. Its absence then uniquely means
+// "this snapshot predates thread_per_mm", which restore treats as preserve rather than clear.
+func nameSnapshotThreadPerMm(pb *pb_common.TechCard) {
+	if pb == nil || pb.GetTechCard() == nil {
+		return
+	}
+	for _, bom := range pb.GetTechCard().GetBomItems() {
+		if bom != nil && bom.ThreadPerMm == nil {
+			bom.ThreadPerMm = &pb_decimal.Decimal{}
+		}
+	}
 }
 
 // restampFreshSignoffDigests re-fingerprints the sections THIS save is approving from the content the

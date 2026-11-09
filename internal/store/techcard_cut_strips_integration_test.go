@@ -167,6 +167,7 @@ func (r *cutRig) save(edit func(in *pb_common.TechCardInsert)) error {
 	cutsEveryOtherFlag(in)
 	in.CutStrips = full.GetCutStrips()
 	in.CutStripsAware = true
+	in.TopstitchLinesAware = true
 	if edit != nil {
 		edit(in)
 	}
@@ -180,6 +181,13 @@ func (r *cutRig) saveOlder(edit func(in *pb_common.TechCardInsert)) error {
 	in := dto.ConvertEntityTechCardToPb(card, dto.CostingFx{}).GetTechCard()
 	cutsEveryOtherFlag(in)
 	in.CutStrips, in.CutStripsAware = nil, false
+	in.TopstitchLinesAware = false
+	for _, op := range in.GetOperations() {
+		op.TopstitchLines = nil
+	}
+	for _, line := range in.GetBomItems() {
+		line.ThreadPerMm = nil
+	}
 	if edit != nil {
 		edit(in)
 	}

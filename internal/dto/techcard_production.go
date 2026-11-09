@@ -983,6 +983,7 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 			SeamKeys:              o.SeamKeys,
 			FoldKeys:              o.FoldKeys,
 			LabelKeys:             o.LabelKeys,
+			TopstitchLines:        topstitchLinesToPb(o.TopstitchLines),
 			LayerOrder:            o.LayerOrder,
 			SeamToleranceMm:       pbDecimalFromNull(o.SeamToleranceMm),
 

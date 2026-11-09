@@ -1299,8 +1299,8 @@ const (
 	// decomposition and no norm stamp (a раскладка id would be a claim about a layout that never
 	// happened) — normalized() in the store clears both for every non-marker source.
 	ConsumptionSourceDxf = "dxf"
-	// ConsumptionSourceCutLength is a norm computed on read from a BOM line's cut-to-length strips
-	// (ApplyCutStripNorms). It is never written to the database, so it is deliberately not a member of
+	// ConsumptionSourceCutLength is a norm computed on read from cut strips and measured topstitch
+	// lines (ApplyDerivedLineNorms). It is never written to the database, so it is not a member of
 	// ValidConsumptionSources, which mirrors chk_tccu_consumption_source. It grosses up like a manual
 	// norm: a cut length is one garment's piece, and roll-end loss is what wastage is for.
 	ConsumptionSourceCutLength = "cut_length"
@@ -1857,9 +1857,9 @@ func (u *TechCardColorwayUsage) NormGrossUp(bom *TechCardBomItem, wastageOverrid
 // TechCardColorwayUsage; the BOM line is a pure material-article catalog entry.
 type TechCardBomItem struct {
 	Id int `db:"id"`
-	// CutToLength is the in-memory mark of a line with strips, set by the read-time resolver
-	// (ApplyCutStripNorms). The line's norm then comes only from its strips, so the countable path of
-	// a hardware line stays silent. Never stored and outside every digest.
+	// CutToLength is the in-memory mark of a geometry-derived line, set by the read-time resolver.
+	// The line's norm then comes from strips and/or topstitch runs, so the countable path stays silent.
+	// Never stored and outside every digest.
 	CutToLength bool `db:"-"`
 	// LineKey is the BOM line's stable wire identity (S2/S3): a client-generated ULID assigned when
 	// the line is first created in the UI (before the first save), immutable thereafter. The server
@@ -2025,6 +2025,11 @@ type TechCardBomItem struct {
 	// ConsumptionPerUnitOmitted: the field was absent on the wire, so the save keeps the stored value
 	// (the EstUsageOmitted protocol).
 	ConsumptionPerUnitOmitted bool `db:"-"`
+	// ThreadPerMm is the net millimetres of thread consumed per sewn millimetre. Topstitch-line norms
+	// multiply their measured millimetres by this factor. NULL leaves those derived norms incomplete.
+	ThreadPerMm decimal.NullDecimal `db:"thread_per_mm"`
+	// ThreadPerMmOmitted follows the whole-card stale-client protocol: absent keeps the stored value.
+	ThreadPerMmOmitted bool `db:"-"`
 	// WastageClaimVerified — СЕРВЕРНЫЙ вердикт, никогда не провод: обработчик (verifyBomWastageClaims)
 	// пересчитал предложение для артикула строки и подтвердил, что присланная пара (процент, счётчик)
 	// и есть текущая медиана. Это ЕДИНСТВЕННАЯ дверь, через которую свежая заявка 'lays' становится
@@ -3589,6 +3594,9 @@ type TechCardOperation struct {
 	// not assembly inputs, and therefore never enter the assembly graph or a section digest.
 	LabelKeys []string `db:"-"`
 
+	// TopstitchLines are the measured decorative stitch runs owned by this operation (0464).
+	TopstitchLines []TechCardTopstitchLine `db:"-"`
+
 	// LayerOrder — the order the owner set for this step's inputs, bottom to top, in the vocabulary
 	// of InputKeys (0445). Empty is NULL: no order set. Stale keys are the reader's to skip, so it is
 	// never checked against the inputs. Outside every section digest.
@@ -3984,12 +3992,12 @@ type TechCardGarmentLabel struct {
 	StitchLinesMm string
 	// StitchLinesOmitted is the presence bit of stitch_lines_mm. Parse only.
 	StitchLinesOmitted bool
-	Placement        sql.NullString
-	Attachment       sql.NullString
-	Folding          sql.NullString
-	Size             sql.NullString
-	QtyPerGarment    int           // ≥ 1
-	BomItemId        sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
+	Placement          sql.NullString
+	Attachment         sql.NullString
+	Folding            sql.NullString
+	Size               sql.NullString
+	QtyPerGarment      int           // ≥ 1
+	BomItemId          sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
 	// BomLineKey names the BOM line by its stable key: a client links a line born in the same save
 	// this way, and a server-built payload (the season clone) moves a link across cards. A non-empty
 	// key wins over BomItemId in the store. Read back through the link, never hashed: BomItemId is
@@ -4746,6 +4754,11 @@ type TechCardInsert struct {
 	// strip input classifies as a strip and the write hashes like the read, and the store leaves them.
 	CutStrips      []TechCardCutStrip `db:"-"`
 	CutStripsAware bool               `db:"-"`
+	// TopstitchLinesAware protects the operation-owned list on full-replace writes.
+	TopstitchLinesAware bool `db:"-"`
+	// StoredTopstitchLines is store-private pre-delete state used to carry source fingerprints while
+	// operations and their child lines are reinserted. Keyed by normalised line_key.
+	StoredTopstitchLines map[string]TechCardTopstitchLine `db:"-" json:"-"`
 	// DisplacedFoldKeys is write-command metadata from fusingops.ReconcileTechCard: the fold links of
 	// the steps it removed or split, which insertTechCardOperationFolds places on their new steps.
 	DisplacedFoldKeys []TechCardDisplacedFoldKey `db:"-"`

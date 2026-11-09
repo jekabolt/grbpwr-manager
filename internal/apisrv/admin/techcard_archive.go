@@ -875,6 +875,7 @@ func tcciWireGates(in *pb_common.TechCardInsert) error {
 		assemblyCapabilityWireGate,
 		operationBlockMembershipWireGate,
 		operationSeamsWireGate,
+		topstitchLinesWireGate,
 		operationFoldsWireGate,
 		operationLayerOrderWireGate,
 		operationSeamToleranceWireGate,

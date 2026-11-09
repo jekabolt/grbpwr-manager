@@ -18,8 +18,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
-	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
+	"github.com/jekabolt/grbpwr-manager/internal/store/product"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/shopspring/decimal"
 )
@@ -737,6 +737,9 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		if err := carryStoredAutoFusingKeys(ctx, rep.DB(), id, tc.Operations); err != nil {
 			return nil, err
 		}
+	}
+	if err := captureStoredTopstitchLines(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
 	}
 
 	// Full-replace: clear all child rows by tech_card_id. Grandchildren cascade from their
@@ -1680,6 +1683,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := prepareGarmentLabelKeys(tc); err != nil {
 		return err
 	}
+	if err := prepareTopstitchLineKeys(tc); err != nil {
+		return err
+	}
 	if err := validateTechCardSizeIDs(ctx, db, id, tc.SizeIds); err != nil {
 		return err
 	}
@@ -1758,6 +1764,9 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	if err := insertTechCardOperations(ctx, db, id, tc.Operations, tc.GarmentLabels, bomRes); err != nil {
+		return err
+	}
+	if err := insertTechCardOperationTopstitchLines(ctx, db, id, tc, bomRes); err != nil {
 		return err
 	}
 	// The seams each step sews (0434). After the operations (ids re-read by display_order), checked

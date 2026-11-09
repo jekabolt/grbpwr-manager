@@ -92,11 +92,12 @@ func (s *Store) enrich(ctx context.Context, cards []entity.TechCard) error {
 	if err := s.enrichMaterials(ctx, cards); err != nil {
 		return err
 	}
-	// Right after the recipe rows and the size range exist: everything below reads finished norms.
-	if err := s.enrichCutStrips(ctx, cards); err != nil {
+	if err := s.enrichProduction(ctx, cards); err != nil {
 		return err
 	}
-	if err := s.enrichProduction(ctx, cards); err != nil {
+	// After operations are loaded: derived norms compose cut strips with operation-owned topstitch
+	// lines. Everything below reads the finished numbers.
+	if err := s.enrichCutStrips(ctx, cards); err != nil {
 		return err
 	}
 	if err := s.enrichLabelsRework(ctx, cards); err != nil {
