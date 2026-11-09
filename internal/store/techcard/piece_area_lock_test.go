@@ -43,8 +43,13 @@ func TestUngradedRaceIsClosedByCardRowLock(t *testing.T) {
 	// Вторая половина пары. Замок карточки — побочный эффект её собственного оптимистичного апдейта,
 	// поэтому он ничего не стоит, но и держится ровно на том, что апдейт стоит РАНЬШЕ детей.
 	t.Run("the card save bumps lock_version before it writes children", func(t *testing.T) {
-		body := funcBody(t, "techcard.go", "func (s *Store) updateTechCardAndListOrphanedPatternURLs")
-		bump := strings.Index(body, "lock_version = lock_version + 1")
+		// The save's body lives in UpdateTechCardTx; its header UPDATE is the techCardUpdateHeaderSQL
+		// constant, so the bump is pinned there and its position by the constant's use.
+		if !strings.Contains(techCardUpdateHeaderSQL, "lock_version = lock_version + 1") {
+			t.Fatal("the card save's header UPDATE stopped bumping lock_version, so it no longer locks the row")
+		}
+		body := funcBody(t, "techcard.go", "func (s *Store) UpdateTechCardTx")
+		bump := strings.Index(body, "techCardUpdateHeaderSQL")
 		children := strings.Index(body, "insertTechCardChildren(")
 		if bump < 0 || children < 0 {
 			t.Fatalf("update path changed shape: bump=%d children=%d", bump, children)

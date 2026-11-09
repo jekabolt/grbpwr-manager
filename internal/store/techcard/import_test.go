@@ -44,8 +44,8 @@ func TestArchiveImportQueriesBind(t *testing.T) {
 		{"style facts", archiveImportStyleFactsQuery, map[string]any{
 			"id": 7, "fit": sql.NullString{}, "composition": sql.NullString{},
 			"care_instructions": sql.NullString{}, "model_wears_height_cm": sql.NullInt32{},
-			"model_wears_size_id": sql.NullInt32{},
-		}, 6},
+			"model_wears_size_id": sql.NullInt32{}, "age_group": "",
+		}, 7},
 		{"grade base", archiveImportGradeBaseQuery, map[string]any{"id": 7, "base": sql.NullInt32{}}, 2},
 		{"bom lines", archiveImportBomLinesQuery, map[string]any{"card": 7}, 1},
 		{"labels", archiveImportLabelsQuery, map[string]any{"card": 7}, 1},

@@ -219,7 +219,7 @@ func TestTechCardOperationKindsRoundTrip(t *testing.T) {
 			"residual_tail_max_mm":  o.ResidualTailMaxMm, "cut_length_mm": o.CutLengthMm,
 			"bartack_length_mm": o.BartackLengthMm,
 		}
-		require.Equal(t, 34, len(strs)+len(ints)+len(decs), "все 34 колонки (32 волны 0324 + 2 ВТО 0325) обязаны быть перечислены здесь")
+		require.Equal(t, 33, len(strs)+len(ints)+len(decs), "все 33 колонки (32 волны 0324 + 2 ВТО 0325 минус pressure_scale, снятая 0327) обязаны быть перечислены здесь")
 		for name, v := range strs {
 			require.False(t, v.Valid, "%s: %s должен остаться НЕ УКАЗАН, а не пустой строкой", what, name)
 			require.Empty(t, v.String, "%s: %s", what, name)
