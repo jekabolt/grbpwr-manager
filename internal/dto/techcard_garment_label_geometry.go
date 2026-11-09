@@ -2,9 +2,11 @@ package dto
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 )
 
 // CarryStoredGarmentLabelGeometry protects geometry and operation links from an older whole-card
@@ -52,6 +54,10 @@ func CarryStoredGarmentLabelGeometry(stored, in *entity.TechCardInsert) {
 			row.HeightMm = matches[0].HeightMm
 			row.Fold = matches[0].Fold
 		}
+	}
+
+	if in.LabelsAware {
+		carryOmittedGarmentLabelFoldLines(stored, in)
 	}
 
 	if !allLabelsOmittedKeys || !allOperationsOmittedKeys {
@@ -154,4 +160,72 @@ func finalizeGarmentLabelGeometry(in *entity.TechCardInsert) error {
 		}
 	}
 	return nil
+}
+
+// carryOmittedGarmentLabelFoldLines keeps the stored fold lines of a row whose client sent no
+// fold_lines_mm. The row is found by its line key; a pre-0454 row got that key from the unique
+// label-key match above. The carried lines are cut to the row's height again, since that client can
+// still change the height.
+func carryOmittedGarmentLabelFoldLines(stored, in *entity.TechCardInsert) {
+	byLineKey := make(map[string]*entity.TechCardGarmentLabel, len(stored.GarmentLabels))
+	for i := range stored.GarmentLabels {
+		if key := normalizeGarmentLabelLineKey(stored.GarmentLabels[i].LineKey); key != "" {
+			byLineKey[key] = &stored.GarmentLabels[i]
+		}
+	}
+	for i := range in.GarmentLabels {
+		row := &in.GarmentLabels[i]
+		if !row.FoldLinesOmitted {
+			continue
+		}
+		if prev := byLineKey[normalizeGarmentLabelLineKey(row.LineKey)]; prev != nil {
+			row.FoldLinesMm = NormalizeGarmentLabelFoldLines(prev.FoldLinesMm, row.HeightMm)
+		}
+	}
+}
+
+// maxGarmentLabelFoldLines caps the fold lines of one label. Eight lines of "99999.9" with commas
+// fit the VARCHAR(255) column many times over.
+const maxGarmentLabelFoldLines = 8
+
+var garmentLabelFoldLineMax = decimal.RequireFromString("99999.9")
+
+// NormalizeGarmentLabelFoldLines puts a fold_lines_mm CSV in its stored form: every item that is a
+// number, rounded to 0.1 mm, inside 0 < mm < height (mm > 0 when the height is unknown), deduped,
+// ascending, at most maxGarmentLabelFoldLines, joined by "," with no spaces. A bad item is dropped,
+// never an error: the lines are a drawing aid and must not block a save.
+func NormalizeGarmentLabelFoldLines(raw string, heightMm decimal.NullDecimal) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	seen := make(map[string]bool)
+	var lines []decimal.Decimal
+	for _, item := range strings.Split(raw, ",") {
+		v, err := decimal.NewFromString(strings.TrimSpace(item))
+		if err != nil {
+			continue
+		}
+		v = v.Round(1)
+		if !v.IsPositive() || v.GreaterThan(garmentLabelFoldLineMax) {
+			continue
+		}
+		if heightMm.Valid && !v.LessThan(heightMm.Decimal) {
+			continue
+		}
+		key := v.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		lines = append(lines, v)
+	}
+	slices.SortFunc(lines, func(a, b decimal.Decimal) int { return a.Cmp(b) })
+	if len(lines) > maxGarmentLabelFoldLines {
+		lines = lines[:maxGarmentLabelFoldLines]
+	}
+	parts := make([]string, len(lines))
+	for i, v := range lines {
+		parts[i] = v.String()
+	}
+	return strings.Join(parts, ",")
 }

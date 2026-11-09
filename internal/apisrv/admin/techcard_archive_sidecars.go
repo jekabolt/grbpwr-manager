@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -310,7 +311,13 @@ func (s *Server) collectArchiveSidecars(ctx context.Context, card *entity.TechCa
 	sc.Materials = materials
 	sc.Holes = append(sc.Holes, holes...)
 
-	media, holes, err := s.collectArchiveMedia(ctx, card, sc.spool)
+	// ПОСЛЕ таблицы размеров: картинка таблицы (загрузка) не лежит ни в одном слоте card.json, и её
+	// байты попадают в media/ только как дополнительный слот.
+	var extraMedia []int
+	if pic := sc.SizeChart.Picture; pic != nil && pic.MediaRef > 0 {
+		extraMedia = append(extraMedia, int(pic.MediaRef))
+	}
+	media, holes, err := s.collectArchiveMedia(ctx, card, sc.spool, extraMedia...)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +432,53 @@ func (s *Server) collectArchiveSizeChart(ctx context.Context, card *entity.TechC
 	if chart.ShrinkagePct.Valid {
 		out.ShrinkagePct = chart.ShrinkagePct.Decimal.String()
 	}
+	picture, pictureHoles := archiveSizeChartPicture(chart.Picture, measurements)
+	out.Picture = picture
+	holes = append(holes, pictureHoles...)
 	return out, holes, nil
+}
+
+// archiveSizeChartPicture переводит картинку таблицы (0459) в формат: изображение едет ссылкой
+// media_ref на media/index.json (collectArchiveMedia кладёт его байты отдельным слотом), мерка линии —
+// именем. Линия с меркой, которой нет в словаре, едет без точки, а не теряется: геометрия ценнее, и
+// дыра называет потерю.
+func archiveSizeChartPicture(p *entity.StyleSizeChartPicture, measurements map[int]string,
+) (*techcardarchive.SizeChartPicture, []techcardarchive.ExportHole) {
+	if p == nil || p.Source == "" {
+		return nil, nil
+	}
+	var holes []techcardarchive.ExportHole
+	out := &techcardarchive.SizeChartPicture{Source: p.Source}
+	switch p.Source {
+	case entity.StyleSizeChartPictureSourceIcon:
+		out.IconKey = p.IconKey
+	default:
+		if p.MediaID > 0 {
+			out.MediaRef = int32(p.MediaID)
+		} else {
+			// Картинку удалили из библиотеки (media_id SET NULL): ехать нечему, импорт отчитается
+			// второй раз (media_missing) и положит таблицу без картинки.
+			holes = append(holes, archiveHole(techcardarchive.EntityMedia, "size_chart.picture",
+				techcardarchive.ReasonMediaObjectMissing,
+				"the size chart picture's image is gone from the library; the picture travels without it"))
+		}
+	}
+	for _, l := range p.Lines {
+		line := techcardarchive.SizeChartLine{X1: l.X1, Y1: l.Y1, X2: l.X2, Y2: l.Y2, Position: l.Position}
+		if l.MeasurementNameID > 0 {
+			name, ok := measurements[l.MeasurementNameID]
+			if ok {
+				line.Measurement = name
+			} else {
+				holes = append(holes, archiveHole(techcardarchive.EntityMeasurement,
+					fmt.Sprintf("measurement_name_id=%d", l.MeasurementNameID),
+					techcardarchive.ReasonMeasurementUnknown,
+					"the measurement is not in the exporting instance's dictionary; the picture line travels without its point"))
+			}
+		}
+		out.Lines = append(out.Lines, line)
+	}
+	return out, holes
 }
 
 // ────────────────────────────── assembly.json ──────────────────────────────
@@ -847,9 +900,18 @@ type archiveMediaSlot struct {
 // Объект не читается — дыра media_object_missing, слот остаётся в card.json, и импорт отчитается о
 // нём второй раз (media_missing). Это не дубль, а две разные новости: здесь байты не уехали, там —
 // их нечем положить.
-func (s *Server) collectArchiveMedia(ctx context.Context, card *entity.TechCard, sp *archiveSpool,
+//
+// extra — медиа вне карточки, которые всё равно едут: картинка таблицы размеров (0459). Эскиз уже
+// встретился слотом карты и не дублируется; загрузка добавляется в конец без подписи.
+func (s *Server) collectArchiveMedia(ctx context.Context, card *entity.TechCard, sp *archiveSpool, extra ...int,
 ) ([]techcardarchive.MediaIndexEntry, []techcardarchive.ExportHole, error) {
 	slots := archiveCardMediaSlots(card)
+	for _, id := range extra {
+		if id <= 0 || slices.ContainsFunc(slots, func(sl archiveMediaSlot) bool { return sl.id == id }) {
+			continue
+		}
+		slots = append(slots, archiveMediaSlot{id: id})
+	}
 	if len(slots) == 0 {
 		return []techcardarchive.MediaIndexEntry{}, nil, nil
 	}

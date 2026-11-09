@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -816,6 +817,35 @@ func insertImportedSizeChart(ctx context.Context, db dependency.DB, id int,
 	}
 	if err := replaceStyleSizeChartPoints(ctx, db, id, points); err != nil {
 		return err
+	}
+	return insertImportedSizeChartPicture(ctx, db, id, chart.Picture, lost)
+}
+
+// insertImportedSizeChartPicture writes the drawing next to the chart (0459) through the same helper
+// the chart's Update path uses. The resolver already placed the image and the names; what still
+// fails here (an image deleted between the resolve and this transaction, a malformed picture from a
+// direct caller) costs the picture and a report line, never the import.
+func insertImportedSizeChartPicture(ctx context.Context, db dependency.DB, id int,
+	picture *entity.StyleSizeChartPicture, lost *importLosses) error {
+	if picture == nil || picture.Source == "" {
+		return nil
+	}
+	p := *picture
+	p.Lines = append([]entity.StyleSizeChartLine(nil), picture.Lines...)
+	err := entity.ValidateStyleSizeChartPicture(&p)
+	if err == nil {
+		err = replaceStyleSizeChartPicture(ctx, db, id, &p)
+	}
+	var violation *entity.ValidationError
+	if errors.As(err, &violation) {
+		// requireStyleSizeChartPictureRefs runs before any write, so nothing of the picture landed.
+		lost.drop(techcardarchive.EntityCard, "size_chart.picture", techcardarchive.StatusSkipped,
+			techcardarchive.ReasonArchiveRowInvalid,
+			fmt.Sprintf("the size chart picture could not be written (%s); the chart imported without it", violation.Error()))
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("write imported size chart picture of tech card %d: %w", id, err)
 	}
 	return nil
 }

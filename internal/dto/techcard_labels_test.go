@@ -138,6 +138,7 @@ func TestParseCareLabelNormalises(t *testing.T) {
 func TestLabelsReworkRoundTrip(t *testing.T) {
 	perSize := true
 	source := "make"
+	foldLines := "4,11"
 	in := &pb_common.TechCardInsert{
 		CareLabel: &pb_common.TechCardCareLabel{
 			LogoMediaId: 44, CareProseLines: []string{"MACHINE WASH COLD"}, QrPreset: "fixed",
@@ -151,7 +152,7 @@ func TestLabelsReworkRoundTrip(t *testing.T) {
 			BomLineKey: "k1", CalloutNumber: 4, ArtworkPerSize: &perSize, ArtworkPerColorway: true,
 			Source: &source, Kind: "brand", MadeBy: "printed", PrintMethod: "screen", LengthCm: &pb_decimal.Decimal{Value: "6.5"},
 			LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", WidthMm: &pb_decimal.Decimal{Value: "60.25"},
-			HeightMm: &pb_decimal.Decimal{Value: "15"}, Fold: "ends",
+			HeightMm: &pb_decimal.Decimal{Value: "15"}, Fold: "ends", FoldLinesMm: &foldLines,
 			Files: []*pb_common.TechCardGarmentLabelFile{{ColorwayId: 7, SizeId: 2, LibraryFileId: 9, SourceHash: "h"}}}},
 		PackagingItems: []*pb_common.TechCardPackagingItem{{Key: "polybag", Usage: "each", Packing: "folded", Size: "30x40",
 			QtyPerGarment: 2, BomItemId: 4, Note: "m", MediaIds: []int32{6}, BomLineKey: "k2"}},

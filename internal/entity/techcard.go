@@ -3969,16 +3969,22 @@ type TechCardGarmentLabel struct {
 	Key string
 	// LineKey is the stable, card-scoped address shared with pieces and cut strips. It is soft because
 	// garment labels are deleted and inserted again on every whole-card save.
-	LineKey       string
-	WidthMm       decimal.NullDecimal
-	HeightMm      decimal.NullDecimal
-	Fold          sql.NullString
-	Placement     sql.NullString
-	Attachment    sql.NullString
-	Folding       sql.NullString
-	Size          sql.NullString
-	QtyPerGarment int           // ≥ 1
-	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
+	LineKey  string
+	WidthMm  decimal.NullDecimal
+	HeightMm decimal.NullDecimal
+	Fold     sql.NullString
+	// FoldLinesMm is the CSV of fold line positions in mm from the label's top edge, normalised on
+	// parse (ascending, 0.1 mm, at most 8); "" = no lines, the client derives them from Fold.
+	FoldLinesMm string
+	// FoldLinesOmitted is the presence bit of fold_lines_mm: the payload came from a client that
+	// knows nothing of the lines, and the stored ones are carried. Parse only.
+	FoldLinesOmitted bool
+	Placement        sql.NullString
+	Attachment       sql.NullString
+	Folding          sql.NullString
+	Size             sql.NullString
+	QtyPerGarment    int           // ≥ 1
+	BomItemId        sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
 	// BomLineKey names the BOM line by its stable key: a client links a line born in the same save
 	// this way, and a server-built payload (the season clone) moves a link across cards. A non-empty
 	// key wins over BomItemId in the store. Read back through the link, never hashed: BomItemId is

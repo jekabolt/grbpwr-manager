@@ -578,6 +578,33 @@ type SizeChart struct {
 	GradeSteps        []SizeChartGradeStep `json:"grade_steps,omitempty"`
 	Points            []SizeChartPoint     `json:"points,omitempty"`
 	ShrinkagePct      string               `json:"shrinkage_pct,omitempty"`
+	// Picture is the drawing next to the table with its free lines (0459). Absent = no picture,
+	// which is what every older archive reads as.
+	Picture *SizeChartPicture `json:"picture,omitempty"`
+}
+
+// SizeChartPicture mirrors common.StyleSizeChartPicture with the same two differences as the chart:
+// the image travels as MediaRef — the source media id, a key into media/index.json like every other
+// media slot of the card — and a line names its measurement instead of an id.
+type SizeChartPicture struct {
+	// Source is icon, sketch or upload.
+	Source string `json:"source"`
+	// IconKey is set only for an icon: the key into the client icon library, valid in any instance.
+	IconKey string `json:"icon_key,omitempty"`
+	// MediaRef is set only for a sketch or an upload; 0 = the image was gone on export.
+	MediaRef int32           `json:"media_ref,omitempty"`
+	Lines    []SizeChartLine `json:"lines,omitempty"`
+}
+
+// SizeChartLine is one free line on the picture, coordinates normalised to the picture box (0..1).
+// Measurement "" = no point picked yet.
+type SizeChartLine struct {
+	Measurement string  `json:"measurement"`
+	X1          float64 `json:"x1"`
+	Y1          float64 `json:"y1"`
+	X2          float64 `json:"x2"`
+	Y2          float64 `json:"y2"`
+	Position    int     `json:"position"`
 }
 
 // SizeChartCell is one measurement of one size. Value is a decimal as a string.

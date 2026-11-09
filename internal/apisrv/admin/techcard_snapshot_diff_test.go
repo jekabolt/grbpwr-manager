@@ -157,3 +157,41 @@ func TestTechCardChangedSectionsCarriesGeometryForOldClient(t *testing.T) {
 		}
 	}
 }
+
+func TestTechCardChangedSectionsSeesFoldLines(t *testing.T) {
+	before := snapshotDiffCard()
+	before.LabelsAware = true
+	stored := "12,88"
+	before.GarmentLabels = []*pb_common.TechCardGarmentLabel{{
+		Key: "size", LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", HeightMm: &pb_decimal.Decimal{Value: "100"}, FoldLinesMm: &stored,
+	}}
+
+	moved := proto.Clone(before).(*pb_common.TechCardInsert)
+	lines := "12,80"
+	moved.GarmentLabels[0].FoldLinesMm = &lines
+	if got := techCardChangedSections(before, moved); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("fold line change = %#v, want labels", got)
+	}
+
+	same := proto.Clone(before).(*pb_common.TechCardInsert)
+	unsorted := " 88, 12, 300"
+	same.GarmentLabels[0].FoldLinesMm = &unsorted
+	if got := techCardChangedSections(before, same); len(got) != 0 {
+		t.Fatalf("the same lines in another spelling produced changes: %#v", got)
+	}
+
+	omitted := proto.Clone(before).(*pb_common.TechCardInsert)
+	omitted.GarmentLabels[0].FoldLinesMm = nil
+	if got := techCardChangedSections(before, omitted); len(got) != 0 {
+		t.Fatalf("an older client omitting the lines produced changes: %#v", got)
+	}
+
+	old := proto.Clone(before).(*pb_common.TechCardInsert)
+	old.GarmentLabels[0].FoldLinesMm = nil
+	cleared := proto.Clone(old).(*pb_common.TechCardInsert)
+	empty := ""
+	cleared.GarmentLabels[0].FoldLinesMm = &empty
+	if got := techCardChangedSections(old, cleared); len(got) != 0 {
+		t.Fatalf("a pre-0460 snapshot against no lines produced changes: %#v", got)
+	}
+}

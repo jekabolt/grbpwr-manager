@@ -440,7 +440,14 @@ size names (`size.name`, UNIQUE) and measurement names (`measurement_name.name`,
      "tol_minus_cm": "1", "tol_plus_cm": "1", "in_shop": true,
      "basis_piece_line_keys": ["01JPIECE00000000000000001"]}
   ],
-  "shrinkage_pct": "2.5"
+  "shrinkage_pct": "2.5",
+  "picture": {
+    "source": "upload", "media_ref": 4211,
+    "lines": [
+      {"measurement": "chest", "x1": 0.1, "y1": 0.42, "x2": 0.9, "y2": 0.42, "position": 1},
+      {"measurement": "", "x1": 0.5, "y1": 0.05, "x2": 0.5, "y2": 0.95, "position": 2}
+    ]
+  }
 }
 ```
 
@@ -455,6 +462,16 @@ is what every pre-existing chart is.
 `source` defaults to `manual` when absent. Point rows address the measurement dictionary by name.
 Old archives without points or shrinkage import with default point rows derived from their cells
 and grade steps.
+
+`picture` (0459, in `1.3` without a bump: one optional object inside an existing file, no
+`contents.*` claim) is the drawing next to the table. `source` is `icon`, `sketch` or `upload`;
+`icon_key` names the client icon for an icon, `media_ref` is the source media id of a sketch or an
+upload and resolves through `media/index.json` like every other media slot (an upload is listed there
+even though no slot of `card.json` names it). A line's `measurement` is the measurement NAME, `""`
+for a line whose point is not picked; coordinates are 0..1 of the picture box. On import an unknown
+measurement name keeps the line without its point (`measurement_unknown`); a sketch or upload whose
+file is not in the archive drops the picture (`media_missing`) — an icon picture always survives.
+An archive without `picture` imports a chart without one.
 
 ### 5.2 `assembly.json`
 

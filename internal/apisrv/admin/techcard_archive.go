@@ -1532,6 +1532,10 @@ func (s *Server) tcciDropVanishedMedia(ctx context.Context, c *tcciCommit) []tec
 	// The same gesture the resolver and Ф3.1 both use for a slot whose picture is gone — one answer
 	// in this package to what happens to a row with no media behind it.
 	(&tcimpResolver{out: res}).dropEmptyMediaRows()
+	// The size chart picture rides beside the proto: a vanished image takes the picture with it.
+	if pic := res.SizeChartPlan.Picture; pic != nil && pic.MediaID > 0 && gone[int32(pic.MediaID)] {
+		res.SizeChartPlan.Picture = nil
+	}
 
 	holes := make([]techcardarchive.ImportHole, 0, len(gone))
 	for _, plan := range res.MediaPlan {

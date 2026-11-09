@@ -6,8 +6,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
+	"github.com/shopspring/decimal"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -195,6 +197,7 @@ func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardI
 		label.HeightMm = cloneMessage(matches[0].GetHeightMm())
 		label.Fold = matches[0].GetFold()
 	}
+	materializeGarmentLabelFoldLines(before, after)
 	if !allLabelsOmitted || !allOperationsOmitted {
 		return
 	}
@@ -226,6 +229,42 @@ func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardI
 				op.LabelKeys = append(op.LabelKeys, key)
 			}
 		}
+	}
+}
+
+// materializeGarmentLabelFoldLines mirrors dto.CarryStoredGarmentLabelGeometry for fold_lines_mm:
+// an absent field takes the stored lines of the label with the same line key, and every list is put
+// in the form the save writes, so only a real change of lines reads as a labels change.
+func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
+	byLineKey := make(map[string]*pb_common.TechCardGarmentLabel, len(before.GetGarmentLabels()))
+	for _, label := range before.GetGarmentLabels() {
+		if label == nil {
+			continue
+		}
+		// A snapshot taken before 0460 has no field: it had no lines.
+		if label.FoldLinesMm == nil {
+			label.FoldLinesMm = new(string)
+		}
+		if key := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); key != "" {
+			byLineKey[key] = label
+		}
+	}
+	for _, label := range after.GetGarmentLabels() {
+		if label == nil {
+			continue
+		}
+		raw := label.GetFoldLinesMm()
+		if label.FoldLinesMm == nil {
+			if prev := byLineKey[strings.ToUpper(strings.TrimSpace(label.GetLineKey()))]; prev != nil {
+				raw = prev.GetFoldLinesMm()
+			}
+		}
+		var height decimal.NullDecimal
+		if h, err := decimal.NewFromString(strings.TrimSpace(label.GetHeightMm().GetValue())); err == nil {
+			height = decimal.NewNullDecimal(h)
+		}
+		normalized := dto.NormalizeGarmentLabelFoldLines(raw, height)
+		label.FoldLinesMm = &normalized
 	}
 }
 
