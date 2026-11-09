@@ -10608,7 +10608,8 @@ message TechCardReadinessRequirement {
 message TechCardReadinessAdvice {
   // key — стабильное машинное имя, по которому клиент ветвится:
   // spare_kit_missing | spare_kit_empty | assembly_component_not_in_bom | countable_slot_unused |
-  // countable_slot_sized | countable_spare_without_quantity
+  // countable_slot_sized | countable_spare_without_quantity | countable_slot_steps_mismatch |
+  // countable_colorway_steps_mismatch
   //
   // Список обязан совпадать с константами Advice* в internal/dto/techcard_advisories.go: клиент
   // ветвится по нему, а ключ, до перечисления не доехавший, выглядит как «замечание не поднялось».

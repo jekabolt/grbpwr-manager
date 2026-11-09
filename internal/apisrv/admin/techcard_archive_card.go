@@ -407,8 +407,16 @@ func sanitizeCardForArchive(pb *pb_common.TechCard) {
 // blankResolvedMediaURLs empties the three MediaInfo urls of every resolved media item, keeping
 // their width/height and the blurhash: those describe the picture, not where this instance keeps
 // it, and a reader that has the bytes still wants the dimensions.
+//
+// content_hash goes with the urls. It is a fact about the SOURCE's media row, not about the
+// picture: a row older than 0336 has none, while the target hashes every object it re-uploads, so
+// the same bytes would read "" in one archive and a sha in the next. The picture's sha travels in
+// media/index.json, keyed by this media_id, and that is what import dedup reads.
 func blankResolvedMediaURLs(items []*pb_common.TechCardMediaFull) {
 	for _, it := range items {
+		if m := it.GetMedia(); m != nil {
+			m.ContentHash = ""
+		}
 		mi := it.GetMedia().GetMedia()
 		if mi == nil {
 			continue

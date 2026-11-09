@@ -45,6 +45,8 @@ const (
 	AdviceCountableSpareWithoutQty = "countable_spare_without_quantity"
 	// AdviceCountableSlotOpsMismatch — ручное число слота расходится с суммой связанных шагов.
 	AdviceCountableSlotOpsMismatch = "countable_slot_steps_mismatch"
+	// AdviceCountableColorwayOpsMismatch — явное число колорвея расходится с суммой связанных шагов.
+	AdviceCountableColorwayOpsMismatch = "countable_colorway_steps_mismatch"
 )
 
 // TechCardAdvice — одно замечание: машинный ключ и фраза словами оператора, готовая к показу как
@@ -233,8 +235,8 @@ func cardKnownMaterialIds(tc *entity.TechCard) map[int]bool {
 	return ids
 }
 
-// countableSlotAdvisories — два состояния, в которых счётное число слота НЕ ДЕЙСТВУЕТ, хотя
-// оператор его написал.
+// countableSlotAdvisories — состояния, в которых счётное число НЕ ДЕЙСТВУЕТ или спорит с более
+// слабым основанием, хотя оператор написал оба.
 //
 // Д3 («не входит ни в один рецепт»): деньги считаются обходом колорвеев → их строк рецепта. Слот,
 // которого не поминает ни одна строка, не даёт ни денег, ни потребности цеха — это дословно записано
@@ -259,15 +261,45 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 		if !entity.IsCountableSection(b.Section) {
 			continue
 		}
-		if b.QtyPerGarment.Valid && opsQty.Valid && !b.QtyPerGarment.Decimal.Equal(opsQty.Decimal) {
+
+		// Сверяем только основания, которые действительно читает хотя бы одна живая пара. Явное
+		// число строки сильнее и шагов, и слота: если ВСЕ пары его несут, спор нижних оснований не
+		// влияет ни на деньги, ни на потребность. При этом своё явное число пары обязано совпадать со
+		// шагами — иначе поздняя правка маршрута молча оставляет рецепт на старом количестве.
+		pairAdvisories := make([]TechCardAdvice, 0, len(tc.Colorways))
+		usesOpsOrSlot := len(tc.Colorways) == 0
+		if opsQty.Valid {
+			for j := range tc.Colorways {
+				cw := &tc.Colorways[j]
+				if cw.Status == entity.ColorwayStatusArchived {
+					continue
+				}
+				qty, basis := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b, opsQty)
+				switch basis {
+				case entity.CountableBasisRows:
+					if !qty.Decimal.Equal(opsQty.Decimal) {
+						pairAdvisories = append(pairAdvisories, TechCardAdvice{
+							Key: AdviceCountableColorwayOpsMismatch,
+							Text: fmt.Sprintf("%s: quantity differs — colourway %s %s, steps %s",
+								bomSlotLabel(b), cw.Name, qty.Decimal.String(), opsQty.Decimal.String()),
+						})
+					}
+				case entity.CountableBasisOps, entity.CountableBasisSlot:
+					usesOpsOrSlot = true
+				}
+			}
+		}
+		if usesOpsOrSlot && b.QtyPerGarment.Valid && opsQty.Valid &&
+			!b.QtyPerGarment.Decimal.Equal(opsQty.Decimal) {
 			out = append(out, TechCardAdvice{
 				Key: AdviceCountableSlotOpsMismatch,
 				Text: fmt.Sprintf("%s: quantity differs — slot %s, steps %s", bomSlotLabel(b),
 					b.QtyPerGarment.Decimal.String(), opsQty.Decimal.String()),
 			})
 		}
+		out = append(out, pairAdvisories...)
 		// Рецептов нет вовсе — для оставшихся проверок сравнивать не с чем: они говорят о том,
-		// поминает ли слот СТРОКА РЕЦЕПТА. Расхождение слота с шагами выше от рецепта не зависит.
+		// поминает ли слот СТРОКА РЕЦЕПТА. Расхождения оснований выше уже разобраны.
 		if len(tc.Colorways) == 0 || !entity.SlotCarriesCountableNorm(b, opsQty) {
 			continue
 		}

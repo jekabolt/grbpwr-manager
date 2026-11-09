@@ -3,7 +3,6 @@ package inventory
 import (
 	"testing"
 
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +26,7 @@ func TestComputeConversionCost(t *testing.T) {
 		avg := blendIntoAvg(stockState{OnHand: cd("100"), Avg: decimal.NullDecimal{Decimal: cd("0.50"), Valid: true}},
 			cd("200"), decimal.NullDecimal{Decimal: cost.OutputUnitCostBase, Valid: true})
 		require.True(t, avg.Valid)
-		assert.True(t, avg.Decimal.Equal(cd("0.4733")), avg.Decimal.String())
+		assert.True(t, avg.Decimal.Equal(cd("0.473333333333")), avg.Decimal.String())
 	})
 
 	t.Run("residual", func(t *testing.T) {
@@ -36,13 +35,17 @@ func TestComputeConversionCost(t *testing.T) {
 		assert.True(t, got.InputsCostBase.Equal(cd("29.6415")))
 		assert.True(t, got.InputsValueBase.Equal(cd("29.64")))
 		assert.True(t, got.TotalCostBase.Equal(cd("49.6315")))
-		assert.True(t, got.OutputUnitCostBase.Equal(cd("0.1490")))
-		assert.True(t, cd("333").Mul(got.OutputUnitCostBase).Round(2).Sub(got.InputsValueBase).Sub(cd("19.99")).Equal(cd("-0.01")))
+		assert.True(t, got.OutputUnitCostBase.Equal(cd("0.149043543544")))
+		// At 12 places the output values back to the money that went in (w1107 №221).
+		assert.True(t, cd("333").Mul(got.OutputUnitCostBase).Round(2).Sub(got.InputsValueBase).Sub(cd("19.99")).IsZero())
 	})
 
-	t.Run("precision guard", func(t *testing.T) {
-		_, err := computeConversionCost([]conversionCostInput{{Quantity: cd("10"), Avg: cd("1")}}, decimal.Zero, cd("30000"))
-		assert.ErrorIs(t, err, entity.ErrMaterialConversionPrecision)
+	t.Run("large output keeps the money", func(t *testing.T) {
+		// 10 € over 30 000 pcs was refused at 4 places (0.0003 × 30 000 = 9 €); 12 places hold it.
+		got, err := computeConversionCost([]conversionCostInput{{Quantity: cd("10"), Avg: cd("1")}}, decimal.Zero, cd("30000"))
+		require.NoError(t, err)
+		assert.True(t, got.OutputUnitCostBase.Equal(cd("0.000333333333")), got.OutputUnitCostBase.String())
+		assert.True(t, cd("30000").Mul(got.OutputUnitCostBase).Round(2).Equal(cd("10.00")))
 	})
 
 	t.Run("multi input", func(t *testing.T) {

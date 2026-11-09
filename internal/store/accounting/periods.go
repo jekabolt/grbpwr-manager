@@ -212,11 +212,22 @@ func (s *Store) ClosePeriod(ctx context.Context, month time.Time, adminUsername 
 	//
 	//     (review pass 3: the gate used to check PLN journal days only, so a late-dated opex invoice
 	//     or a missing GBP series still surfaced at the filing deadline.)
+	//     A material_receipt entry needs a rate only when its movement carries an input VAT regime:
+	//     every filing read of receipts filters on it, while conversions (convert_in), our own
+	//     production receipts and VAT-less purchases post under the same source type and never reach
+	//     a return (w1107 №222 — those used to block the close on a rate nobody reads).
 	plnDays, err := s.fxRequiredDays(ctx, `
 		SELECT DISTINCT DATE(occurred_at) AS day
 		FROM acct_journal_entry
 		WHERE occurred_at >= :from AND occurred_at < :to
-		  AND source_type IN ('order_sale','order_prepayment','order_refund','material_receipt')
+		  AND source_type IN ('order_sale','order_prepayment','order_refund')
+		UNION
+		SELECT DISTINCT DATE(e.occurred_at) AS day
+		FROM acct_journal_entry e
+		JOIN material_stock_movement m ON `+movementKeyMatch+`
+		WHERE e.occurred_at >= :from AND e.occurred_at < :to
+		  AND e.source_type = 'material_receipt'
+		  AND m.input_vat_regime IS NOT NULL
 		UNION
 		SELECT DISTINCT COALESCE(doc_date, LAST_DAY(:from)) AS day
 		FROM opex_line

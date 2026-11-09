@@ -503,20 +503,147 @@ func TestTechCardAdvisoriesCountableSlotText(t *testing.T) {
 		got[0].Text)
 }
 
-func TestTechCardAdvisoriesCountableSlotStepsMismatch(t *testing.T) {
-	card := advCard([]entity.TechCardBomItem{{
-		Id: 10, LineKey: "BTN11", Name: "buttons",
-		Section: entity.BomSectionHardware, QtyPerGarment: advDec("15"),
-	}}, entity.TechCardColorwayUsage{BomItemId: advI64(10)})
-	card.Operations = []entity.TechCardOperation{{
-		OperationType:  entity.OpTypeHardwareSet,
-		PlacementCount: advI32(12),
-		BomLineKeys:    []string{"BTN11"},
-	}}
+func TestTechCardAdvisoriesCountableQuantityMismatches(t *testing.T) {
+	colourway := func(id int, name string, status entity.ColorwayStatus, quantities ...string) entity.TechCardColorway {
+		usages := make([]entity.TechCardColorwayUsage, 0, max(1, len(quantities)))
+		if len(quantities) == 0 {
+			usages = append(usages, entity.TechCardColorwayUsage{BomItemId: advI64(10)})
+		}
+		for _, qty := range quantities {
+			usages = append(usages, entity.TechCardColorwayUsage{
+				BomItemId: advI64(10),
+				Quantity:  advDec(qty),
+			})
+		}
+		return entity.TechCardColorway{Id: id, Name: name, Status: status, Usages: usages}
+	}
 
-	got := TechCardAdvisories(card, nil, nil)
-	require.Equal(t, []string{AdviceCountableSlotOpsMismatch}, advKeys(got))
-	require.Equal(t, "buttons: quantity differs — slot 15, steps 12", got[0].Text)
+	tests := []struct {
+		name        string
+		section     entity.TechCardBomSection
+		cutToLength bool
+		slotQty     decimal.NullDecimal
+		steps       int32
+		colorways   []entity.TechCardColorway
+		wantKeys    []string
+		wantTexts   []string
+	}{
+		{
+			name:    "all colourways override so the slot mismatch is unused",
+			section: entity.BomSectionHardware,
+			slotQty: advDec("6"),
+			steps:   7,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "7"),
+				colourway(2, "white", entity.ColorwayStatusHidden, "7"),
+			},
+		},
+		{
+			name:    "one colourway falls through so the slot mismatch applies",
+			section: entity.BomSectionHardware,
+			slotQty: advDec("6"),
+			steps:   7,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "7"),
+				colourway(2, "white", entity.ColorwayStatusActive),
+			},
+			wantKeys:  []string{AdviceCountableSlotOpsMismatch},
+			wantTexts: []string{"buttons: quantity differs — slot 6, steps 7"},
+		},
+		{
+			name:    "colourway row sum differs from steps",
+			section: entity.BomSectionHardware,
+			steps:   6,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "1.5", "2.5"),
+			},
+			wantKeys:  []string{AdviceCountableColorwayOpsMismatch},
+			wantTexts: []string{"buttons: quantity differs — colourway black 4, steps 6"},
+		},
+		{
+			name:    "colourway row sum matches steps",
+			section: entity.BomSectionHardware,
+			steps:   6,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "2", "4"),
+			},
+		},
+		{
+			name:    "archived colourway is ignored",
+			section: entity.BomSectionHardware,
+			steps:   6,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "6"),
+				colourway(2, "retired", entity.ColorwayStatusArchived, "4"),
+			},
+		},
+		{
+			name:     "no colourways keeps the slot mismatch",
+			section:  entity.BomSectionHardware,
+			slotQty:  advDec("6"),
+			steps:    7,
+			wantKeys: []string{AdviceCountableSlotOpsMismatch},
+			wantTexts: []string{
+				"buttons: quantity differs — slot 6, steps 7",
+			},
+		},
+		{
+			name:    "explicit zero is compared with steps",
+			section: entity.BomSectionHardware,
+			steps:   6,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "0"),
+			},
+			wantKeys:  []string{AdviceCountableColorwayOpsMismatch},
+			wantTexts: []string{"buttons: quantity differs — colourway black 0, steps 6"},
+		},
+		{
+			name:        "cut-to-length slot is ignored",
+			section:     entity.BomSectionHardware,
+			cutToLength: true,
+			slotQty:     advDec("6"),
+			steps:       7,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "4"),
+			},
+		},
+		{
+			name:    "measured slot is ignored",
+			section: entity.BomSectionFabric,
+			slotQty: advDec("6"),
+			steps:   7,
+			colorways: []entity.TechCardColorway{
+				colourway(1, "black", entity.ColorwayStatusActive, "4"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			card := &entity.TechCard{TechCardInsert: entity.TechCardInsert{
+				BomItems: []entity.TechCardBomItem{{
+					Id: 10, LineKey: "BTN11", Name: "buttons", Section: tt.section,
+					CutToLength: tt.cutToLength, QtyPerGarment: tt.slotQty,
+				}},
+				Colorways: tt.colorways,
+				Operations: []entity.TechCardOperation{{
+					OperationType:  entity.OpTypeHardwareSet,
+					PlacementCount: advI32(tt.steps),
+					BomLineKeys:    []string{"BTN11"},
+				}},
+			}}
+
+			got := TechCardAdvisories(card, nil, nil)
+			require.Equal(t, tt.wantKeys, advKeys(got))
+			if tt.wantTexts != nil {
+				texts := make([]string, 0, len(got))
+				for _, advice := range got {
+					texts = append(texts, advice.Text)
+				}
+				require.Equal(t, tt.wantTexts, texts)
+			}
+		})
+	}
 }
 
 // TestTechCardAdvisoriesNoColorways — на карточке без колорвеев проверки 3-5 молчат: рецепта нет

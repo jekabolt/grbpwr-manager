@@ -24,8 +24,8 @@ import (
 const (
 	defaultPageLimit = 50
 	maxPageLimit     = 100
-	// avgScale is the decimal scale of the moving average (matches DECIMAL(12,4)).
-	avgScale = 4
+	// avgScale is the decimal scale of unit costs and the moving average (matches DECIMAL(24,12), 0463).
+	avgScale = 12
 	// qtyScale is the decimal scale of quantities (matches DECIMAL(12,3)).
 	qtyScale = 3
 )

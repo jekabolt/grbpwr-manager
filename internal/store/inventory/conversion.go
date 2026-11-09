@@ -30,7 +30,7 @@ type conversionCost struct {
 
 // computeConversionCost is the exact, side-effect-free money path. Input cost stays unrounded for
 // total/unit-cost arithmetic; InputsValueBase independently sums each movement builder's round-2
-// value so the conversion's 1120 postings net exactly. Only the final output unit cost is round-4.
+// value so the conversion's 1120 postings net exactly. Only the final output unit cost is rounded, to avgScale.
 func computeConversionCost(inputs []conversionCostInput, workBase, outputQty decimal.Decimal) (conversionCost, error) {
 	if len(inputs) == 0 || outputQty.LessThanOrEqual(decimal.Zero) || workBase.IsNegative() {
 		return conversionCost{}, entity.ErrMaterialConversionInvalid
