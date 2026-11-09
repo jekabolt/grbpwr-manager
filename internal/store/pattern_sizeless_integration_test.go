@@ -35,14 +35,19 @@ func TestPatternSizeless(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size WHERE id > ?", szA).Scan(&szB))
 
 	const (
-		fabKey  = "01SIZELESSFABRIC0000000001"
-		sheetK  = "01SIZELESSSHEET00000000001"
-		urlG1   = "https://cdn.example/base/tech-card-patterns/2026/august/graded1.dxf"
-		urlG2   = "https://cdn.example/base/tech-card-patterns/2026/august/graded2.dxf"
-		urlFlat = "https://cdn.example/base/tech-card-patterns/2026/august/flat.dxf"
+		fabKey      = "01SIZELESSFABRIC0000000001"
+		contrastKey = "01SIZELESSFABRIC0000000002"
+		sheetK      = "01SIZELESSSHEET00000000001"
+		urlG1       = "https://cdn.example/base/tech-card-patterns/2026/august/graded1.dxf"
+		urlG2       = "https://cdn.example/base/tech-card-patterns/2026/august/graded2.dxf"
+		urlFlat     = "https://cdn.example/base/tech-card-patterns/2026/august/flat.dxf"
 	)
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
 	fabric := entity.TechCardBomItem{LineKey: fabKey, Section: entity.BomSectionFabric, Name: "Основная"}
+	// The flat sheet needs a material slot of its own: a new DXF must bind a live fabric scope
+	// (6131292), and one material slot holds at most one pattern file (f626b0c), so it cannot share
+	// the graded sheet's slot.
+	contrast := entity.TechCardBomItem{LineKey: contrastKey, Section: entity.BomSectionFabric, Name: "Отделочная"}
 
 	mkTC := func(sizes []int, patterns ...entity.TechCardSizePattern) *entity.TechCardInsert {
 		return &entity.TechCardInsert{
@@ -50,7 +55,7 @@ func TestPatternSizeless(t *testing.T) {
 			Stage: entity.TechCardStageProto, ApprovalState: entity.TechCardApprovalDraft,
 			MeasurementUnit: entity.TechCardUnitMm,
 			SizeIds:         sizes,
-			BomItems:        []entity.TechCardBomItem{fabric},
+			BomItems:        []entity.TechCardBomItem{fabric, contrast},
 			Patterns:        patterns,
 		}
 	}
@@ -113,7 +118,7 @@ func TestPatternSizeless(t *testing.T) {
 	// --- sizeless and size-filed sheets coexist, and their revisions are numbered apart ---
 	_, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC([]int{szA, szB},
 		entity.TechCardSizePattern{URL: urlG1, LineKey: sheetK},
-		entity.TechCardSizePattern{SizeId: szA, URL: urlFlat},
+		entity.TechCardSizePattern{SizeId: szA, URL: urlFlat, BomLineKey: ns(contrastKey)},
 	), lock())
 	require.NoError(t, err)
 	mixed := read()
@@ -124,12 +129,18 @@ func TestPatternSizeless(t *testing.T) {
 	require.Equal(t, 1, mixed[1].Version, "a size's numbering starts at 1 regardless of the sizeless bucket")
 
 	// --- replacing the sizeless FILE: same key, new url, name/binding absent → all survive, MAX+1 ---
+	// The replaced urlG1 is archived as the previous revision and the history keeps its object
+	// (c6483a3, 0423), so the save orphans nothing.
 	orphans, err := T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC([]int{szA, szB},
 		entity.TechCardSizePattern{URL: urlG2, LineKey: sheetK},
 		entity.TechCardSizePattern{SizeId: szA, URL: urlFlat},
 	), lock())
 	require.NoError(t, err)
-	require.Equal(t, []string{urlG1}, orphans)
+	require.Empty(t, orphans, "the replaced graded sheet lives on in the pattern history")
+	var archivedG1 int
+	require.NoError(t, testDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM tech_card_size_pattern_history WHERE tech_card_id = ? AND url = ?", id, urlG1).Scan(&archivedG1))
+	require.Equal(t, 1, archivedG1, "the replaced graded sheet is archived")
 	replaced := read()[0]
 	require.Equal(t, sheetK, replaced.LineKey)
 	require.Equal(t, urlG2, replaced.URL)
@@ -211,15 +222,22 @@ func TestPatternSizelessAdoptionIsOrderIndependent(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT MIN(id) FROM size WHERE id > ?", szA).Scan(&szB))
 
 	const url = "https://cdn.example/base/tech-card-patterns/2026/august/combined.dxf"
-	const fabKey = "01SLAMBIGFABRIC00000000001"
+	const (
+		fabKeyA = "01SLAMBIGFABRIC00000000001"
+		fabKeyB = "01SLAMBIGFABRIC00000000002"
+	)
 	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: v != ""} }
+	// A new DXF sheet must name a live fabric scope (6131292), and one material slot holds at most one
+	// pattern file (f626b0c). So the combined sheet hangs on size A in one fabric's slot and on size B
+	// in the other's, and every row names its slot explicitly.
+	inA := func(p entity.TechCardSizePattern) entity.TechCardSizePattern { p.BomLineKey = ns(fabKeyA); return p }
+	inB := func(p entity.TechCardSizePattern) entity.TechCardSizePattern { p.BomLineKey = ns(fabKeyB); return p }
 	mkTC := func(patterns ...entity.TechCardSizePattern) *entity.TechCardInsert {
-		// A new DXF sheet must name a live fabric scope; every row binds the one fabric line.
-		for i := range patterns {
-			patterns[i].BomLineKey = ns(fabKey)
-		}
 		return &entity.TechCardInsert{
-			BomItems:    []entity.TechCardBomItem{{LineKey: fabKey, Section: entity.BomSectionFabric, Name: "Основная"}},
+			BomItems: []entity.TechCardBomItem{
+				{LineKey: fabKeyA, Section: entity.BomSectionFabric, Name: "Основная"},
+				{LineKey: fabKeyB, Section: entity.BomSectionFabric, Name: "Отделочная"},
+			},
 			StyleNumber: ns("SL-AMBIG"), Name: "AMB",
 			Stage: entity.TechCardStageProto, ApprovalState: entity.TechCardApprovalDraft,
 			MeasurementUnit: entity.TechCardUnitMm,
@@ -230,8 +248,8 @@ func TestPatternSizelessAdoptionIsOrderIndependent(t *testing.T) {
 
 	// One combined sheet hung on BOTH sizes — two stored rows, one url.
 	id, err := T.AddTechCard(ctx, mkTC(
-		entity.TechCardSizePattern{SizeId: szA, URL: url, Name: ns("на A")},
-		entity.TechCardSizePattern{SizeId: szB, URL: url, Name: ns("на B")},
+		inA(entity.TechCardSizePattern{SizeId: szA, URL: url, Name: ns("на A")}),
+		inB(entity.TechCardSizePattern{SizeId: szB, URL: url, Name: ns("на B")}),
 	))
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), "DELETE FROM tech_card WHERE id = ?", id) })
@@ -253,8 +271,8 @@ func TestPatternSizelessAdoptionIsOrderIndependent(t *testing.T) {
 	// adopt anything (two candidates carry this url), and the size-A row keeps its stored identity.
 	for _, order := range []string{"sizeless first", "sized first"} {
 		payload := []entity.TechCardSizePattern{
-			{URL: url},
-			{SizeId: szA, URL: url},
+			inB(entity.TechCardSizePattern{URL: url}),
+			inA(entity.TechCardSizePattern{SizeId: szA, URL: url}),
 		}
 		if order == "sized first" {
 			payload[0], payload[1] = payload[1], payload[0]
