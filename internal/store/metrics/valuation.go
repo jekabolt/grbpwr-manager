@@ -158,14 +158,8 @@ func (s *Store) addMaterialValuation(ctx context.Context, out *entity.InventoryV
 	// Work-in-progress: net (issued − returned) value on movements whose run is still open. A NULL
 	// unit_cost_base (issued from uncosted stock) contributes 0 — a known undervaluation, acceptable
 	// for v1 and consistent with how uncosted stock is treated elsewhere.
-	wip, err := storeutil.QueryNamedOne[struct {
-		Value decimal.Decimal `db:"value"`
-	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(
-			CASE mv.movement_type
-				WHEN :issue  THEN mv.quantity * COALESCE(mv.unit_cost_base, 0)
-				WHEN :return THEN -mv.quantity * COALESCE(mv.unit_cost_base, 0)
-				ELSE 0 END), 0) AS value
+	wipMovements, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT mv.movement_type, mv.quantity, mv.unit_cost_base
 		FROM material_stock_movement mv
 		JOIN production_run pr ON pr.id = mv.production_run_id
 		WHERE pr.status IN (:planned, :inprogress)
@@ -178,13 +172,21 @@ func (s *Store) addMaterialValuation(ctx context.Context, out *entity.InventoryV
 	if err != nil {
 		return fmt.Errorf("get material wip: %w", err)
 	}
-	out.WipValue = wip.Value.Round(2)
+	for _, movement := range wipMovements {
+		if !movement.UnitCostBase.Valid {
+			continue
+		}
+		value := entity.MovementValueCents(movement.Quantity, movement.UnitCostBase.Decimal)
+		if movement.MovementType == entity.MaterialMovementIssueProduction {
+			out.WipValue = out.WipValue.Add(value)
+		} else {
+			out.WipValue = out.WipValue.Sub(value)
+		}
+	}
 
 	// Material write-offs (damage/loss/defect) in the period, valued at the frozen movement cost.
-	matWriteOff, err := storeutil.QueryNamedOne[struct {
-		Value decimal.Decimal `db:"value"`
-	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(mv.quantity * COALESCE(mv.unit_cost_base, 0)), 0) AS value
+	matWriteOffs, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT mv.quantity, mv.unit_cost_base
 		FROM material_stock_movement mv
 		WHERE mv.movement_type = :writeoff
 			AND COALESCE(mv.occurred_at, mv.created_at) >= :from
@@ -196,7 +198,13 @@ func (s *Store) addMaterialValuation(ctx context.Context, out *entity.InventoryV
 	if err != nil {
 		return fmt.Errorf("get material write-offs: %w", err)
 	}
-	out.WriteOffsMaterialsValue = matWriteOff.Value.Round(2)
+	for _, movement := range matWriteOffs {
+		if movement.UnitCostBase.Valid {
+			out.WriteOffsMaterialsValue = out.WriteOffsMaterialsValue.Add(
+				entity.MovementValueCents(movement.Quantity, movement.UnitCostBase.Decimal),
+			)
+		}
+	}
 
 	limitClause := ""
 	params := map[string]any{}

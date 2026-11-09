@@ -108,6 +108,21 @@ func TestComputeProductionRunActualsByColorway(t *testing.T) {
 	require.True(t, c2.HasUncosted, "the uncosted issue for 102 flags it")
 }
 
+func TestComputeProductionRunActualsSumsBookedMovementCents(t *testing.T) {
+	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
+		Lines: []entity.ProductionRunLine{{SizeId: 1, PlannedQty: 1, ReceivedQty: ni(1)}},
+	}}
+	run.MaterialMovements = []entity.MaterialMovement{
+		{MovementType: entity.MaterialMovementIssueProduction, Quantity: d("1"), UnitCostBase: nd2("0.005")},
+		{MovementType: entity.MaterialMovementIssueProduction, Quantity: d("1"), UnitCostBase: nd2("0.005")},
+	}
+
+	actuals := ConvertEntityProductionRunToPb(run).Actuals
+	require.Equal(t, "0.02", actuals.MaterialsFromStockBase.Value)
+	require.Equal(t, "0.02", actuals.ActualTotalBase.Value)
+	require.Equal(t, "0.02", actuals.UnattributedMaterialsBase.Value)
+}
+
 // A legacy single-colour run (no product_id on issues or lines) emits no per-colourway rows.
 func TestComputeProductionRunActualsNoColorway(t *testing.T) {
 	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{

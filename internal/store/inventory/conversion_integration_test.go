@@ -509,7 +509,9 @@ func TestMaterialShrinkageDBReturnCapAndGuards(t *testing.T) {
 		MaterialId: materialID, Quantity: d("4"), SampleId: ni(sampleID), LotId: receipt.LotId, IsReturn: true,
 	})
 	require.NoError(t, err)
-	assertStock(t, f.rep, materialID, "9.5", "4.421052631579")
+	// The return relieves exactly the booked cents (round2(4 × 4.421052631579) = 17.68), so the
+	// sub-cent gap the issue left between raw stock value and the journal stays in the average.
+	assertStock(t, f.rep, materialID, "9.5", "4.420609418283")
 }
 
 func TestMaterialShrinkageDBUncosted(t *testing.T) {

@@ -196,6 +196,13 @@ type MaterialMovement struct {
 	LossQty      decimal.NullDecimal `db:"loss_qty"`
 }
 
+// MovementValueCents is the canonical booked value of one material movement. Material movement
+// journal entries post one rounded amount per row, so every operational fold must use the same
+// per-row rounding before it sums.
+func MovementValueCents(qty, unitCost decimal.Decimal) decimal.Decimal {
+	return qty.Mul(unitCost).Round(2)
+}
+
 // MaterialConversionInput is one source stock bucket consumed by a conversion.
 type MaterialConversionInput struct {
 	MaterialId int

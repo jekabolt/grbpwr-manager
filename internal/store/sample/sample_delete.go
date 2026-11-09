@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	"github.com/shopspring/decimal"
 )
 
 // УДАЛЕНИЕ СЕМПЛА. Довод, границу и три категории вердикта см. в internal/entity/sample_deletion.go
@@ -133,23 +134,26 @@ func readSampleDeletionFacts(ctx context.Context, db dependency.DB, id int) (*en
 	//
 	// Материалы с нулевым остатком отсюда НЕ отфильтрованы: ноль — это не «ничего не было», а
 	// «всё вернулось», и классификация должна видеть разницу. Строк на семпл единицы.
-	materials, err := storeutil.QueryListNamed[entity.SampleOutstandingMaterial](ctx, db, `
+	type materialMovementRow struct {
+		MaterialID   int                         `db:"material_id"`
+		Name         string                      `db:"name"`
+		Unit         string                      `db:"unit"`
+		MovementType entity.MaterialMovementType `db:"movement_type"`
+		Quantity     decimal.Decimal             `db:"quantity"`
+		UnitCostBase decimal.NullDecimal         `db:"unit_cost_base"`
+	}
+	rows, err := storeutil.QueryListNamed[materialMovementRow](ctx, db, `
 		SELECT
 			mv.material_id AS material_id,
 			COALESCE(mt.name, '') AS name,
 			COALESCE(mt.unit, '') AS unit,
-			COALESCE(SUM(CASE mv.movement_type
-				WHEN :issue  THEN mv.quantity
-				WHEN :return THEN -mv.quantity ELSE 0 END), 0) AS qty,
-			COALESCE(SUM(CASE
-				WHEN mv.unit_cost_base IS NULL THEN 0
-				WHEN mv.movement_type = :issue  THEN mv.quantity * mv.unit_cost_base
-				WHEN mv.movement_type = :return THEN -mv.quantity * mv.unit_cost_base ELSE 0 END), 0) AS costed_value
+			mv.movement_type,
+			mv.quantity,
+			mv.unit_cost_base
 		FROM material_stock_movement mv
 		LEFT JOIN material mt ON mt.id = mv.material_id
-		WHERE mv.sample_id = :id
-		GROUP BY mv.material_id, mt.name, mt.unit
-		ORDER BY mt.name, mv.material_id`, map[string]any{
+		WHERE mv.sample_id = :id AND mv.movement_type IN (:issue, :return)
+		ORDER BY mt.name, mv.material_id, mv.id`, map[string]any{
 		"id":     id,
 		"issue":  string(entity.MaterialMovementIssueSample),
 		"return": string(entity.MaterialMovementReturnSample),
@@ -157,7 +161,35 @@ func readSampleDeletionFacts(ctx context.Context, db dependency.DB, id int) (*en
 	if err != nil {
 		return nil, fmt.Errorf("read sample %d material balance: %w", id, err)
 	}
-	f.Materials = materials
+	byMaterial := make(map[int]int)
+	for _, row := range rows {
+		idx, ok := byMaterial[row.MaterialID]
+		if !ok {
+			idx = len(f.Materials)
+			byMaterial[row.MaterialID] = idx
+			f.Materials = append(f.Materials, entity.SampleOutstandingMaterial{
+				MaterialID: row.MaterialID,
+				Name:       row.Name,
+				Unit:       row.Unit,
+			})
+		}
+		material := &f.Materials[idx]
+		isIssue := row.MovementType == entity.MaterialMovementIssueSample
+		if isIssue {
+			material.Qty = material.Qty.Add(row.Quantity)
+		} else {
+			material.Qty = material.Qty.Sub(row.Quantity)
+		}
+		if !row.UnitCostBase.Valid {
+			continue
+		}
+		value := entity.MovementValueCents(row.Quantity, row.UnitCostBase.Decimal)
+		if isIssue {
+			material.CostedValue = material.CostedValue.Add(value)
+		} else {
+			material.CostedValue = material.CostedValue.Sub(value)
+		}
+	}
 
 	counts := []struct {
 		dst   *int

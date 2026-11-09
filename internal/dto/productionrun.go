@@ -624,7 +624,7 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 		case entity.MaterialMovementIssueProduction:
 			hasStockIssues = true
 			if m.UnitCostBase.Valid {
-				v := m.Quantity.Mul(m.UnitCostBase.Decimal)
+				v := entity.MovementValueCents(m.Quantity, m.UnitCostBase.Decimal)
 				materialsFromStock = materialsFromStock.Add(v)
 				addColorway(m.ProductId, v, true)
 			} else {
@@ -633,7 +633,7 @@ func computeProductionRunActuals(r *entity.ProductionRun) *pb_common.ProductionR
 			}
 		case entity.MaterialMovementReturnProduction:
 			if m.UnitCostBase.Valid {
-				v := m.Quantity.Mul(m.UnitCostBase.Decimal)
+				v := entity.MovementValueCents(m.Quantity, m.UnitCostBase.Decimal)
 				materialsFromStock = materialsFromStock.Sub(v)
 				addColorway(m.ProductId, v.Neg(), true)
 			}

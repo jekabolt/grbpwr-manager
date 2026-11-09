@@ -243,7 +243,8 @@ func checkSampleOpen(ctx context.Context, db dependency.DB, sampleID int) error 
 
 // outstandingIssued returns the net quantity of a material still out on a target (issues minus
 // prior returns) — the cap for a return — plus the same net over COSTED movements only (quantity +
-// value), which price the return: costedVal/costedQty is what those units actually left stock at.
+// booked cent value), which price the return: costedVal/costedQty is what those units actually left
+// stock at.
 // Pricing over costed movements only stops an uncosted issue from diluting the return price toward
 // zero (g25-14); the cap still counts every movement. When productID is set, all three sums are
 // scoped to that colourway's movements, so a per-colourway return can neither exceed nor mis-price
@@ -262,25 +263,30 @@ func outstandingIssued(ctx context.Context, db dependency.DB, materialID int, ru
 		where += " AND product_id = :product"
 		params["product"] = productID.Int32
 	}
-	row, err := storeutil.QueryNamedOne[struct {
-		Qty       decimal.Decimal `db:"qty"`
-		CostedQty decimal.Decimal `db:"costed_qty"`
-		CostedVal decimal.Decimal `db:"costed_val"`
-	}](ctx, db, fmt.Sprintf(`
-		SELECT
-			COALESCE(SUM(CASE WHEN movement_type IN ('issue_production','issue_sample')   THEN quantity
-			                  WHEN movement_type IN ('return_production','return_sample') THEN -quantity ELSE 0 END), 0) AS qty,
-			COALESCE(SUM(CASE WHEN unit_cost_base IS NULL THEN 0
-			                  WHEN movement_type IN ('issue_production','issue_sample')   THEN quantity
-			                  WHEN movement_type IN ('return_production','return_sample') THEN -quantity ELSE 0 END), 0) AS costed_qty,
-			COALESCE(SUM(CASE WHEN unit_cost_base IS NULL THEN 0
-			                  WHEN movement_type IN ('issue_production','issue_sample')   THEN quantity * unit_cost_base
-			                  WHEN movement_type IN ('return_production','return_sample') THEN -quantity * unit_cost_base ELSE 0 END), 0) AS costed_val
+	rows, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, db, fmt.Sprintf(`
+		SELECT movement_type, quantity, unit_cost_base
 		FROM material_stock_movement WHERE %s`, where), params)
 	if err != nil {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("read outstanding issued for material %d: %w", materialID, err)
 	}
-	return row.Qty, row.CostedQty, row.CostedVal, nil
+	for _, row := range rows {
+		var sign decimal.Decimal
+		switch row.MovementType {
+		case entity.MaterialMovementIssueProduction, entity.MaterialMovementIssueSample:
+			sign = decimal.NewFromInt(1)
+		case entity.MaterialMovementReturnProduction, entity.MaterialMovementReturnSample:
+			sign = decimal.NewFromInt(-1)
+		default:
+			continue
+		}
+		qty = qty.Add(row.Quantity.Mul(sign))
+		if !row.UnitCostBase.Valid {
+			continue
+		}
+		costedQty = costedQty.Add(row.Quantity.Mul(sign))
+		costedVal = costedVal.Add(entity.MovementValueCents(row.Quantity, row.UnitCostBase.Decimal).Mul(sign))
+	}
+	return qty, costedQty, costedVal, nil
 }
 
 // checkRunProduct validates the colourway attribution of a run issue (g25-03): the product the
@@ -605,12 +611,22 @@ func issueInTx(ctx context.Context, db dependency.DB, ins entity.MaterialIssueIn
 			}
 			return entity.MaterialMovement{}, fmt.Errorf("%w: %s has %s outstanding on this target", entity.ErrExcessiveMaterialReturn, quoteMaterial(meta.Name), outQty.String())
 		}
-		// Price the return at the costed outstanding average — but only when the returned quantity
-		// is covered by costed issues. A return that includes units which left UNPRICED cannot be
-		// honestly priced: valuing them at the costed average would mint stock value out of thin
-		// air, so such a return books uncosted (conservative — the average stays put).
-		if costedQty.GreaterThanOrEqual(ins.Quantity) && costedVal.GreaterThan(decimal.Zero) {
-			movementCost = decimal.NullDecimal{Decimal: costedVal.Div(costedQty).Round(avgScale), Valid: true}
+		// Allocate the outstanding booked cents over the remaining costed quantity. A partial return
+		// takes its rounded proportional share; the final covered return takes every residual cent.
+		// A return that includes units which left UNPRICED cannot be honestly priced, so the existing
+		// conservative path still books it uncosted and leaves the average unchanged.
+		if costedQty.GreaterThanOrEqual(ins.Quantity) && costedQty.GreaterThan(decimal.Zero) && !costedVal.IsNegative() {
+			allocated := costedVal
+			if !ins.Quantity.Equal(costedQty) {
+				allocated = costedVal.Mul(ins.Quantity).Div(costedQty).Round(2)
+			}
+			movementCost = decimal.NullDecimal{
+				Decimal: allocated.Div(ins.Quantity).Round(avgScale),
+				Valid:   true,
+			}
+			if got := entity.MovementValueCents(ins.Quantity, movementCost.Decimal); !got.Equal(allocated) {
+				return entity.MaterialMovement{}, fmt.Errorf("material return cent allocation: persisted value %s, want %s", got, allocated)
+			}
 		}
 		newOnHand = before.OnHand.Add(ins.Quantity)
 		newAvg = blendIntoAvg(before, ins.Quantity, movementCost)

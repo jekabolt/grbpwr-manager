@@ -29,7 +29,7 @@ func BuildMaterialMovementEntry(m entity.AcctMovementFacts, startDate time.Time)
 	if !m.UnitCostBase.Valid {
 		return entity.AcctJournalEntryInsert{}, ErrSkipUncosted
 	}
-	v := m.Quantity.Mul(m.UnitCostBase.Decimal).Round(2)
+	v := entity.MovementValueCents(m.Quantity, m.UnitCostBase.Decimal)
 	if m.MovementType == entity.MaterialMovementConvertIn {
 		return buildMaterialConversionIn(m, v, movementOccurredAt(m, startDate))
 	}
