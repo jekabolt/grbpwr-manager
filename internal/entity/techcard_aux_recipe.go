@@ -47,6 +47,11 @@ func (tc *TechCardInsert) AuxBoughtFinished() bool {
 //
 // The recipe is built fresh and never written; tc is not modified. Usage Id 0 = not persisted.
 func AuxRecipe(tc *TechCardInsert) *TechCardColorway {
+	return AuxRecipeWithMaterials(tc, nil)
+}
+
+// AuxRecipeWithMaterials is AuxRecipe with the loaded catalog needed by roll-basis strip norms.
+func AuxRecipeWithMaterials(tc *TechCardInsert, linked map[int]MaterialWithPrice) *TechCardColorway {
 	if !tc.IsAuxiliary() {
 		return nil
 	}
@@ -64,13 +69,14 @@ func AuxRecipe(tc *TechCardInsert) *TechCardColorway {
 		if b.Id > 0 {
 			u.BomItemId = sql.NullInt64{Int64: int64(b.Id), Valid: true}
 		}
-		if !IsCountableSection(b.Section) {
+		if !IsCountableSection(b.Section) || b.CutToLength {
 			u.Consumption = b.ConsumptionPerUnit
 		}
 		usages = append(usages, u)
 	}
 	topstitch := TopstitchLines(tc.Operations)
-	usages = ResolveDerivedLineUsages(usages, tc.BomItems, DerivedLineNorms(tc.BomItems, tc.CutStrips, topstitch, nil))
+	norms := DerivedLineNormsForRecipe(tc.BomItems, tc.CutStrips, topstitch, nil, linked, nil)
+	usages = ResolveDerivedLineUsages(usages, tc.BomItems, norms)
 	for i := range usages {
 		// Aux is size-less: a per-size derived norm has no size to answer for.
 		usages[i].SizeConsumptions = nil
@@ -117,10 +123,16 @@ func ValidateAuxBomNorms(tc *TechCardInsert) error {
 // measured line with no consumption_per_unit. A counted line that is not cut to length is skipped:
 // its qty_per_garment answers. nil for a sellable or a bought card.
 func AuxBomLinesMissingNorm(tc *TechCardInsert) []int {
+	return AuxBomLinesMissingNormWithMaterials(tc, nil)
+}
+
+// AuxBomLinesMissingNormWithMaterials judges roll-basis strips with the same loaded catalog as the
+// recipe readers.
+func AuxBomLinesMissingNormWithMaterials(tc *TechCardInsert, linked map[int]MaterialWithPrice) []int {
 	if tc.AuxBoughtFinished() {
 		return nil
 	}
-	recipe := AuxRecipe(tc)
+	recipe := AuxRecipeWithMaterials(tc, linked)
 	if recipe == nil {
 		return nil
 	}

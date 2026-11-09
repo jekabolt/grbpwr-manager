@@ -1403,7 +1403,7 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 	// root is that recipe's cost. ColorwayCosts stays empty. A line with no norm marks the root
 	// unpriced, never zero; an item bought from a supplier has no material usages at all.
 	if len(tc.Colorways) == 0 {
-		if recipe := entity.AuxRecipe(&tc.TechCardInsert); recipe != nil {
+		if recipe := entity.AuxRecipeWithMaterials(&tc.TechCardInsert, tc.LinkedMaterials); recipe != nil {
 			root = colorwayCostOf(tc, recipe, recipe, tc.BomItems, tc.LinkedMaterials, costingCcy, basis, fx)
 		}
 	}
@@ -1886,7 +1886,7 @@ func ComputeTechCardCostBreakdownBase(tc *entity.TechCard, fx CostingFx) (entity
 	}
 	if len(tc.Colorways) == 0 {
 		// An auxiliary card's one recipe is its BOM, the same root the unit cost is computed on.
-		if recipe := entity.AuxRecipe(&tc.TechCardInsert); recipe != nil {
+		if recipe := entity.AuxRecipeWithMaterials(&tc.TechCardInsert, tc.LinkedMaterials); recipe != nil {
 			return techCardCostBreakdownBase(tc, recipe, fx)
 		}
 		return entity.CostBreakdown{}, false

@@ -81,7 +81,7 @@ func AuxRunReadinessFindings(card *TechCard, runVariants []int, supplierPrices m
 		return rows
 	}
 
-	missing := AuxBomLinesMissingNorm(&card.TechCardInsert)
+	missing := AuxBomLinesMissingNormWithMaterials(&card.TechCardInsert, card.LinkedMaterials)
 	for _, i := range missing {
 		b := &card.BomItems[i]
 		t := RunReadinessTarget{TechCardId: card.Id, BomLineKey: b.LineKey}

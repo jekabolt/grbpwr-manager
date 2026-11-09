@@ -84,7 +84,8 @@ func newCutRig(t *testing.T, ctx context.Context) *cutRig {
 			{LineKey: cutsLineRubber, Section: entity.BomSectionHardware, Name: "rubber", Unit: ns("m")},
 			{LineKey: cutsLineTape, Section: entity.BomSectionTrim, Name: "tape", Unit: ns("m")},
 			{LineKey: cutsLineButton, Section: entity.BomSectionHardware, Name: "button", Unit: ns("pcs")},
-			{LineKey: cutsLineLining, Section: entity.BomSectionLining, Name: "lining", Unit: ns("m")},
+			{LineKey: cutsLineLining, Section: entity.BomSectionLining, Name: "lining", Unit: ns("m"),
+				FabricWidth: decimal.NewNullDecimal(decimal.RequireFromString("140"))},
 		},
 		Pieces:     []entity.TechCardPiece{{LineKey: cutsPieceFront, Name: "front", PiecesPerGarment: 1, Grainline: "lengthwise"}},
 		Operations: []entity.TechCardOperation{step("a"), step("b")},
@@ -755,6 +756,111 @@ func TestTechCardCutStripNormOnRead(t *testing.T) {
 	require.Empty(t, rubber.SizeConsumptions)
 }
 
+// TestTechCardCutStripRollWidthPinsAndDirectRead keeps the two store readers on the same width
+// resolver: the card-level projection uses the slot article, while this colourway uses its pin.
+func TestTechCardCutStripRollWidthPinsAndDirectRead(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	r.addColourway()
+
+	article := func(name, width string) int {
+		in := &entity.MaterialInsert{
+			Name: name, Section: string(entity.BomSectionLining), Unit: sql.NullString{String: "m", Valid: true},
+			MaterialClass: string(entity.MaterialClassFabric),
+		}
+		if width != "" {
+			in.FabricAttr = &entity.MaterialFabricAttr{
+				WidthCm:    decimal.NewNullDecimal(decimal.RequireFromString(width)),
+				SelvedgeCm: decimal.RequireFromString("5"),
+			}
+		}
+		id, err := r.T.CreateMaterial(ctx, in)
+		require.NoError(t, err)
+		return id
+	}
+	defaultArticle := article("binding default", "110") // 100 cm usable
+	pinnedArticle := article("binding pinned", "210")   // 200 cm usable
+	widthlessArticle := article("binding widthless", "")
+	t.Cleanup(func() {
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM product WHERE id = ?", r.cwID)
+		_, _ = testDB.ExecContext(context.Background(), `DELETE i FROM tech_card_operation_input i
+			JOIN tech_card_operation o ON o.id = i.operation_id WHERE o.tech_card_id = ?`, r.cardID)
+		_ = r.T.DeleteTechCard(context.Background(), r.cardID)
+		_, _ = testDB.ExecContext(context.Background(), "DELETE FROM material WHERE id IN (?, ?, ?)",
+			defaultArticle, pinnedArticle, widthlessArticle)
+	})
+
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		for _, line := range in.GetBomItems() {
+			if line.GetLineKey() == cutsLineLining {
+				line.MaterialId = int64(defaultArticle)
+			}
+		}
+		in.CutStrips = []*pb_common.TechCardCutStrip{r.onRoll()}
+	}))
+
+	card := r.read()
+	version, err := r.T.UpdateColorwayRecipe(ctx, r.cwID, card.LockVersion, []entity.TechCardColorwayUsage{{
+		BomLineKey: cutsLineLining,
+		MaterialId: sql.NullInt64{Int64: int64(pinnedArticle), Valid: true}, MaterialIdSet: true,
+	}})
+	require.NoError(t, err)
+
+	lineID := int64(0)
+	for _, line := range card.BomItems {
+		if line.LineKey == cutsLineLining {
+			lineID = int64(line.Id)
+		}
+	}
+	usageOf := func(rows []entity.TechCardColorwayUsage) *entity.TechCardColorwayUsage {
+		for i := range rows {
+			if rows[i].BomItemId.Valid && rows[i].BomItemId.Int64 == lineID {
+				return &rows[i]
+			}
+		}
+		return nil
+	}
+	full := r.read()
+	var fullRows []entity.TechCardColorwayUsage
+	for i := range full.Colorways {
+		if full.Colorways[i].Id == r.cwID {
+			fullRows = full.Colorways[i].Usages
+		}
+	}
+	direct, err := r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	require.Equal(t, "0.003", usageOf(fullRows).Consumption.Decimal.String(), "500 / 200 lanes")
+	require.Equal(t, usageOf(fullRows).Consumption, usageOf(direct).Consumption,
+		"direct recipe and full card use the same pinned width")
+
+	flat := ""
+	for _, norm := range r.wire().GetCutStripNorms() {
+		if norm.GetBomLineKey() == cutsLineLining {
+			flat = norm.GetNorm().GetValue()
+		}
+	}
+	require.Equal(t, "0.005", flat, "card-level norm uses the default article's 100 cm usable width")
+
+	_, err = r.T.UpdateColorwayRecipe(ctx, r.cwID, version, []entity.TechCardColorwayUsage{{
+		BomLineKey: cutsLineLining,
+		MaterialId: sql.NullInt64{Int64: int64(widthlessArticle), Valid: true}, MaterialIdSet: true,
+	}})
+	require.NoError(t, err)
+	full = r.read()
+	for i := range full.Colorways {
+		if full.Colorways[i].Id == r.cwID {
+			fullRows = full.Colorways[i].Usages
+		}
+	}
+	direct, err = r.T.GetColorwayRecipe(ctx, r.cwID)
+	require.NoError(t, err)
+	require.False(t, usageOf(fullRows).Consumption.Valid, "a widthless pin cannot borrow the default or line width")
+	require.False(t, usageOf(direct).Consumption.Valid)
+	require.Equal(t, entity.ConsumptionSourceCutLength, usageOf(direct).ConsumptionSource.String)
+}
+
 // TestTechCardCutStripsOnACardWithNoColourways: the BOM line's norm has no recipe to ride.
 func TestTechCardCutStripsOnACardWithNoColourways(t *testing.T) {
 	requireCutStripIntegrationDB(t)
@@ -1151,7 +1257,7 @@ func TestTechCardArchiveStriplessCardIsUnchanged(t *testing.T) {
 	require.Zero(t, cutsCount(t, ctx, "SELECT COUNT(*) FROM tech_card_cut_strip WHERE tech_card_id = ?", newID))
 }
 
-// onRoll is a strip of 0.50 m on the lining: a roll line, so its recipe row can have a marker norm.
+// onRoll is a 10 mm × 0.50 m strip on the lining: its norm is metres of the 140 cm roll.
 func (r *cutRig) onRoll() *pb_common.TechCardCutStrip {
 	return &pb_common.TechCardCutStrip{
 		LineKey: cutsStripRoll, BomLineKey: cutsLineLining, LengthMode: entity.CutStripModeOneLength,
@@ -1260,7 +1366,7 @@ func TestTechCardCutStripLeavesTheStoredNormAlone(t *testing.T) {
 	recipe, err = r.T.GetColorwayRecipe(ctx, r.cwID)
 	require.NoError(t, err)
 	resolved := liningOf(recipe)
-	require.True(t, resolved.Consumption.Decimal.Equal(decimal.RequireFromString("0.5")))
+	require.True(t, resolved.Consumption.Decimal.Equal(decimal.RequireFromString("0.004")))
 	require.Equal(t, entity.ConsumptionSourceCutLength, resolved.ConsumptionSource.String)
 	require.False(t, resolved.WasteCutPct.Valid)
 	require.False(t, resolved.NormMarkerId.Valid)

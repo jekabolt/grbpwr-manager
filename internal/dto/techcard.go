@@ -1681,8 +1681,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		PieceFolds: TechCardPieceFoldsToPb(tc.PieceFolds),
 		// Strips and their norms. The norm sits here too, because the recipe rows that carry it exist
 		// only under a colourway, and a card with no colourways still shows it on the BOM line.
-		CutStrips:     TechCardCutStripsToPb(tc.CutStrips, tc.SizeIds),
-		CutStripNorms: TechCardCutStripNormsToPb(tc.BomItems, tc.CutStrips, entity.TopstitchLines(tc.Operations), tc.SizeIds),
+		CutStrips: TechCardCutStripsToPb(tc.CutStrips, tc.SizeIds),
+		CutStripNorms: TechCardCutStripNormsToPb(tc.BomItems, tc.CutStrips,
+			entity.TopstitchLines(tc.Operations), tc.SizeIds, tc.LinkedMaterials),
 	}
 }
 

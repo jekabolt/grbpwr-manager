@@ -218,9 +218,9 @@ func cutStripWireSizes(s *entity.TechCardCutStrip, sizeIDs []int) []int {
 
 // TechCardCutStripNormsToPb emits the shared derived-line projection, including topstitch thread.
 func TechCardCutStripNormsToPb(bomItems []entity.TechCardBomItem, strips []entity.TechCardCutStrip,
-	topstitch []entity.TechCardTopstitchLine, sizeIDs []int,
+	topstitch []entity.TechCardTopstitchLine, sizeIDs []int, linked map[int]entity.MaterialWithPrice,
 ) []*pb_common.TechCardCutStripNorm {
-	norms := entity.DerivedLineNorms(bomItems, strips, topstitch, sizeIDs)
+	norms := entity.DerivedLineNormsForRecipe(bomItems, strips, topstitch, sizeIDs, linked, nil)
 	if len(norms) == 0 {
 		return nil
 	}

@@ -325,6 +325,41 @@ func (m *Material) UsableFabricWidthCm() decimal.NullDecimal {
 	return decimal.NullDecimal{Decimal: usable, Valid: true}
 }
 
+// CuttingWidthCm resolves the cutting width used by every roll-length derivation. A colourway pin
+// names a different physical roll, so its usable article width is authoritative and an article with
+// no width is incomplete: it must not borrow either the slot default's width or the BOM snapshot.
+// Without a real pin, the slot article's usable width wins and the BOM snapshot is the fallback.
+func CuttingWidthCm(bom *TechCardBomItem, pinned int64, linked map[int]MaterialWithPrice) decimal.NullDecimal {
+	if bom == nil {
+		return decimal.NullDecimal{}
+	}
+	defaultID := int64(0)
+	if bom.MaterialId.Valid && bom.MaterialId.Int64 > 0 {
+		defaultID = bom.MaterialId.Int64
+	}
+	realPin := pinned > 0 && pinned != defaultID
+	id := pinned
+	if !realPin {
+		id = defaultID
+	}
+	if id > 0 {
+		if material, ok := linked[int(id)]; ok {
+			if width := material.UsableFabricWidthCm(); width.Valid && width.Decimal.IsPositive() {
+				return width
+			}
+			if realPin {
+				return decimal.NullDecimal{}
+			}
+		} else if realPin {
+			return decimal.NullDecimal{}
+		}
+	}
+	if bom.FabricWidth.Valid && bom.FabricWidth.Decimal.IsPositive() {
+		return bom.FabricWidth
+	}
+	return decimal.NullDecimal{}
+}
+
 // fabricKgPerMetreDivisor folds the two unit conversions of the length→weight formula into one
 // constant: cm→m (÷100) and g→kg (÷1000).
 var fabricKgPerMetreDivisor = decimal.NewFromInt(100000)

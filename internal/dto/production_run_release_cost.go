@@ -256,18 +256,24 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		}
 		card.BomItems = append(card.BomItems, item)
 	}
-	// Geometry-derived norms must be frozen with the release just like prices. Historical malformed
-	// rows are skipped; an absent contributor then makes the norm incomplete instead of pricing low.
-	strips := snap.GetCutStrips()
-	if len(strips) == 0 {
-		strips = ins.GetCutStrips()
-	}
-	for i, p := range strips {
-		if p == nil {
-			continue
+	// A sellable card freezes derived norms on its cut_length recipe rows. An auxiliary card has no
+	// colourways, so its authoritative frozen value is the outer cut_strip_norms projection. Never
+	// rebuild either from today's article width (or even from the frozen strip geometry): old releases
+	// keep the number they approved.
+	if card.IsAuxiliary() {
+		byKey := make(map[string]*entity.TechCardBomItem, len(card.BomItems))
+		for i := range card.BomItems {
+			byKey[entity.CutStripLineKey(card.BomItems[i].LineKey)] = &card.BomItems[i]
 		}
-		if strip, err := cutStripFromPb(p, p.GetLineKey(), i, "cut_strips"); err == nil {
-			card.CutStrips = append(card.CutStrips, strip)
+		for _, frozen := range snap.GetCutStripNorms() {
+			line := byKey[entity.CutStripLineKey(frozen.GetBomLineKey())]
+			if line == nil {
+				continue
+			}
+			line.CutToLength = true
+			if frozen.GetComplete() {
+				line.ConsumptionPerUnit = frozenDecimal(frozen.GetNorm())
+			}
 		}
 	}
 	for _, op := range ins.GetOperations() {
@@ -314,12 +320,6 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			}
 		}
 		card.Colorways = append(card.Colorways, out)
-	}
-	topstitch := entity.TopstitchLines(card.Operations)
-	norms := entity.DerivedLineNorms(card.BomItems, card.CutStrips, topstitch, card.SizeIds)
-	entity.MarkDerivedLines(card.BomItems, norms)
-	for i := range card.Colorways {
-		card.Colorways[i].Usages = entity.ResolveDerivedLineUsages(card.Colorways[i].Usages, card.BomItems, norms)
 	}
 	return card
 }

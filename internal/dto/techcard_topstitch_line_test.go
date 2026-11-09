@@ -162,7 +162,7 @@ func TestThreadPerMmCarryUsesOmittedProtocol(t *testing.T) {
 	require.Equal(t, "3", explicit.BomItems[0].ThreadPerMm.Decimal.String())
 }
 
-func TestReleaseCostRebuildsTopstitchNormFromFrozenInputs(t *testing.T) {
+func TestReleaseCostKeepsFrozenTopstitchCutLengthUsage(t *testing.T) {
 	card := &entity.TechCard{Id: 7}
 	card.SizeIds = []int{4, 6}
 	card.BomItems = []entity.TechCardBomItem{{
@@ -184,8 +184,17 @@ func TestReleaseCostRebuildsTopstitchNormFromFrozenInputs(t *testing.T) {
 		}},
 	}}
 	card.Costing = &entity.TechCardCosting{Currency: nstr("EUR")}
+	entity.ApplyDerivedLineNorms(card.BomItems, nil, entity.TopstitchLines(card.Operations), card.SizeIds, card.Colorways)
 
-	frozen := releaseCostingCardFromSnapshot(releaseBlob(t, card))
+	snap := releaseBlob(t, card)
+	for _, op := range snap.GetTechCard().GetOperations() {
+		for _, line := range op.GetTopstitchLines() {
+			for _, size := range line.GetSizes() {
+				size.LineMm = &pb_decimal.Decimal{Value: "999"}
+			}
+		}
+	}
+	frozen := releaseCostingCardFromSnapshot(snap)
 	require.NotNil(t, frozen)
 	require.True(t, frozen.BomItems[0].CutToLength)
 	require.Len(t, frozen.Colorways, 1)
@@ -194,6 +203,5 @@ func TestReleaseCostRebuildsTopstitchNormFromFrozenInputs(t *testing.T) {
 	require.True(t, usage.IsCutLengthNorm())
 	require.Equal(t, []string{"0.5", "1"}, []string{
 		usage.SizeConsumptions[0].Consumption.String(), usage.SizeConsumptions[1].Consumption.String(),
-	})
-	require.Equal(t, "9", usage.StoredRow().Consumption.Decimal.String())
+	}, "the frozen usage wins over changed geometry")
 }
