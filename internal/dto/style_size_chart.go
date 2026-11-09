@@ -45,7 +45,49 @@ func StyleSizeChartToPb(c entity.StyleSizeChart) *pb_common.StyleSizeChart {
 		GradeSteps:      steps,
 		Points:          points,
 		ShrinkagePct:    pbDecimalFromNull(c.ShrinkagePct),
+		Picture:         StyleSizeChartPictureToPb(c.Picture),
 	}
+}
+
+// StyleSizeChartPictureToPb projects the size chart picture; nil (no picture) stays absent.
+func StyleSizeChartPictureToPb(p *entity.StyleSizeChartPicture) *pb_common.StyleSizeChartPicture {
+	if p == nil {
+		return nil
+	}
+	lines := make([]*pb_common.StyleSizeChartLine, 0, len(p.Lines))
+	for _, l := range p.Lines {
+		lines = append(lines, &pb_common.StyleSizeChartLine{
+			MeasurementNameId: int32(l.MeasurementNameID),
+			X1:                l.X1, Y1: l.Y1, X2: l.X2, Y2: l.Y2,
+			Position: int32(l.Position),
+		})
+	}
+	return &pb_common.StyleSizeChartPicture{
+		Source: p.Source, IconKey: p.IconKey, MediaId: int32(p.MediaID),
+		Lines: lines, MediaUrl: p.MediaURL,
+	}
+}
+
+// StyleSizeChartPictureFromPb reads the picture of a request that set picture_set. An absent picture
+// is the empty one, which removes the stored picture and its lines. media_url is output-only and
+// ignored; the store validates and normalises the rest.
+func StyleSizeChartPictureFromPb(in *pb_common.StyleSizeChartPicture) *entity.StyleSizeChartPicture {
+	out := &entity.StyleSizeChartPicture{}
+	if in == nil {
+		return out
+	}
+	out.Source, out.IconKey, out.MediaID = in.GetSource(), in.GetIconKey(), int(in.GetMediaId())
+	for _, l := range in.GetLines() {
+		if l == nil {
+			continue
+		}
+		out.Lines = append(out.Lines, entity.StyleSizeChartLine{
+			MeasurementNameID: int(l.GetMeasurementNameId()),
+			X1:                l.GetX1(), Y1: l.GetY1(), X2: l.GetX2(), Y2: l.GetY2(),
+			Position: int(l.GetPosition()),
+		})
+	}
+	return out
 }
 
 func styleSizeChartCellSourceToPb(source string) pb_common.StyleSizeChartCellSource {

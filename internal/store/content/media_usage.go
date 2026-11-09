@@ -198,6 +198,12 @@ var mediaRefRegistry = []mediaRefSource{
 		entityExpr: "tc.id", labelExpr: techCardLabel,
 		slotExpr: `CONCAT_WS(' ', 'packaging', NULLIF(tcpi.item_key, ''))`,
 	},
+	{
+		// The picture next to the size chart when it is a sketch or an upload (0459).
+		kind: "tech_card", table: "tech_card_size_chart_picture tcscpic", column: "tcscpic.media_id",
+		joins:      `JOIN tech_card tc ON tc.id = tcscpic.tech_card_id`,
+		entityExpr: "tc.id", labelExpr: techCardLabel, slot: "size chart picture",
+	},
 
 	// fitting — a fitting has no name of its own, so it borrows the style's and adds its round.
 	{

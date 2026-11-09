@@ -588,6 +588,33 @@ message StyleSizeChartPoint {
   bool stale = 8; // output only
 }
 
+// StyleSizeChartLine is one free line the user drew on the size chart picture: a straight segment in
+// coordinates normalised to the picture box (0..1, origin top-left), stored with 5 decimals. Lines
+// predrawn by an icon are not stored (they come from the icon library). A line with a picked point
+// names it by measurement_name_id; 0 = the point is not picked yet. Its values live in the chart's
+// cells and points under the same measurement_name_id.
+message StyleSizeChartLine {
+  int32 measurement_name_id = 1; // FK measurement_name(id); 0 = not picked
+  double x1 = 2;
+  double y1 = 3;
+  double x2 = 4;
+  double y2 = 5;
+  int32 position = 6; // draw/list order; lines are returned ordered by it
+}
+
+// StyleSizeChartPicture is the drawing next to the size chart table. source is "icon" (icon_key names
+// a drawing in the client icon library), "sketch" (media_id is one of the card's technical images) or
+// "upload" (media_id is an uploaded image). Only the field of the chosen source is kept: icon_key is
+// cleared for sketch/upload, media_id for icon. media_url is output-only, the full-size url of
+// media_id ("" when the image was deleted from the library).
+message StyleSizeChartPicture {
+  string source = 1;
+  string icon_key = 2;
+  int32 media_id = 3; // FK media(id)
+  repeated StyleSizeChartLine lines = 4;
+  string media_url = 5; // output only
+}
+
 message StyleSizeChart {
   int32 style_id = 1;
   int32 lock_version = 2;
@@ -605,6 +632,8 @@ message StyleSizeChart {
   repeated StyleSizeChartGradeStep grade_steps = 5; // one per graded measurement; absent = ungraded
   repeated StyleSizeChartPoint points = 6;
   google.type.Decimal shrinkage_pct = 7;
+  // The picture next to the table and the user's free lines on it; absent = no picture chosen.
+  StyleSizeChartPicture picture = 8;
 }
 
 // AdminColorwayRef is a derived, output-only reference to a colourway from its style (R1: GetStyle may

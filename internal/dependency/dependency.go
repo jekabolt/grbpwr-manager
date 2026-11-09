@@ -1085,8 +1085,9 @@ type (
 		// UpdateStyleSizeChart replaces a style's ENTIRE size chart in one versioned request (R5,
 		// full-replace) under the shared optimistic lock; entity.ErrTechCardConflict on a stale version.
 		// gradeBaseSizeID + gradeSteps are the authoring grade rule behind the expanded cells and are
-		// replaced in the same transaction (0 / empty clears the rule).
-		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell, gradeBaseSizeID int, gradeSteps []entity.StyleSizeChartGradeStep, points []entity.StyleSizeChartPoint, pointsSet bool, shrinkage *decimal.Decimal) (entity.StyleSizeChart, error)
+		// replaced in the same transaction (0 / empty clears the rule). picture nil keeps the stored
+		// size chart picture; an empty-source picture removes it; any other replaces it with its lines.
+		UpdateStyleSizeChart(ctx context.Context, styleID, expectedLockVersion int, cells []entity.StyleSizeChartCell, gradeBaseSizeID int, gradeSteps []entity.StyleSizeChartGradeStep, points []entity.StyleSizeChartPoint, pointsSet bool, shrinkage *decimal.Decimal, picture *entity.StyleSizeChartPicture) (entity.StyleSizeChart, error)
 		// GetCostingFxRatesToBase returns the effective manual FX rate per currency (UPPERCASE
 		// ISO → base-currency units per 1 unit), used to fold multi-currency costing into base.
 		GetCostingFxRatesToBase(ctx context.Context) (map[string]decimal.Decimal, error)

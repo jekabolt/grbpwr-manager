@@ -124,7 +124,7 @@ func TestStyleGradeRulePersists(t *testing.T) {
 	}
 	steps := []entity.StyleSizeChartGradeStep{{MeasurementNameID: f.measA, Step: decimal.NewFromInt(4)}}
 
-	saved, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, chart0.LockVersion, cells, f.sizeA, steps, nil, false, nil)
+	saved, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, chart0.LockVersion, cells, f.sizeA, steps, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, f.sizeA, saved.GradeBaseSizeID)
 	require.Len(t, saved.GradeSteps, 1)
@@ -139,14 +139,14 @@ func TestStyleGradeRulePersists(t *testing.T) {
 
 	// A negative step is a real grade direction, not an error.
 	negative := []entity.StyleSizeChartGradeStep{{MeasurementNameID: f.measA, Step: decimal.NewFromInt(-2)}}
-	saved2, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, saved.LockVersion, cells, f.sizeB, negative, nil, false, nil)
+	saved2, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, saved.LockVersion, cells, f.sizeB, negative, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, f.sizeB, saved2.GradeBaseSizeID)
 	require.True(t, saved2.GradeSteps[0].Step.Equal(decimal.NewFromInt(-2)))
 
 	// Clearing the rule leaves the expanded chart alone: the grid is the source of truth, the rule is
 	// only how it was authored.
-	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, saved2.LockVersion, cells, 0, nil, nil, false, nil)
+	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, f.styleID, saved2.LockVersion, cells, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Zero(t, cleared.GradeBaseSizeID)
 	require.Empty(t, cleared.GradeSteps)

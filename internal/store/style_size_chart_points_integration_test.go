@@ -36,7 +36,7 @@ func TestStyleSizeChartPatternProvenance(t *testing.T) {
 		Position: 1, TolMinusCm: decimal.RequireFromString("0.5"), TolPlusCm: decimal.RequireFromString("0.5"),
 		InShop: true, BasisPieceLineKeys: []string{rtPieceFront}}
 	chart, err := T.UpdateStyleSizeChart(ctx, fx.cardID, chart0.LockVersion,
-		[]entity.StyleSizeChartCell{cell}, 0, nil, []entity.StyleSizeChartPoint{point}, true, nil)
+		[]entity.StyleSizeChartCell{cell}, 0, nil, []entity.StyleSizeChartPoint{point}, true, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, chart.Points, 1)
 	require.False(t, chart.Points[0].Stale)
@@ -50,16 +50,16 @@ func TestStyleSizeChartPatternProvenance(t *testing.T) {
 	require.True(t, moved.Points[0].Stale)
 
 	restamped, err := T.UpdateStyleSizeChart(ctx, fx.cardID, moved.LockVersion,
-		[]entity.StyleSizeChartCell{cell}, 0, nil, nil, false, nil)
+		[]entity.StyleSizeChartCell{cell}, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.False(t, restamped.Points[0].Stale, "the next chart save stamps current pattern provenance")
 
 	shrink := decimal.RequireFromString("3")
 	withShrink, err := T.UpdateStyleSizeChart(ctx, fx.cardID, restamped.LockVersion,
-		[]entity.StyleSizeChartCell{cell}, 0, nil, restamped.Points, true, &shrink)
+		[]entity.StyleSizeChartCell{cell}, 0, nil, restamped.Points, true, &shrink, nil)
 	require.NoError(t, err)
 	legacy, err := T.UpdateStyleSizeChart(ctx, fx.cardID, withShrink.LockVersion,
-		[]entity.StyleSizeChartCell{cell}, 0, nil, nil, false, nil)
+		[]entity.StyleSizeChartCell{cell}, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.True(t, legacy.ShrinkagePct.Valid, "a save without points keeps the card shrinkage override")
 	require.True(t, legacy.ShrinkagePct.Decimal.Equal(shrink))
@@ -80,14 +80,14 @@ func TestStyleSizeChartPatternProvenance(t *testing.T) {
 		return false
 	}
 	fresh, err := T.UpdateStyleSizeChart(ctx, fx.cardID, legacy.LockVersion,
-		[]entity.StyleSizeChartCell{cell, other}, 0, nil, legacy.Points[:1], true, nil)
+		[]entity.StyleSizeChartCell{cell, other}, 0, nil, legacy.Points[:1], true, nil, nil)
 	require.NoError(t, err)
 	require.False(t, inShopOf(fresh, otherID), "a new client's unsent row stays off the shop")
 	cleared, err := T.UpdateStyleSizeChart(ctx, fx.cardID, fresh.LockVersion,
-		[]entity.StyleSizeChartCell{cell}, 0, nil, fresh.Points[:1], true, nil)
+		[]entity.StyleSizeChartCell{cell}, 0, nil, fresh.Points[:1], true, nil, nil)
 	require.NoError(t, err)
 	old, err := T.UpdateStyleSizeChart(ctx, fx.cardID, cleared.LockVersion,
-		[]entity.StyleSizeChartCell{cell, other}, 0, nil, nil, false, nil)
+		[]entity.StyleSizeChartCell{cell, other}, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.True(t, inShopOf(old, otherID), "an old client's row stays public, as before points")
 }

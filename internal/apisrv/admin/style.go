@@ -184,6 +184,11 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
+	// picture_set = false is a client that has never seen the picture: the stored one stays.
+	var picture *entity.StyleSizeChartPicture
+	if req.PictureSet {
+		picture = dto.StyleSizeChartPictureFromPb(req.Picture)
+	}
 	// A step for a measurement the chart does not carry cannot be applied to anything, and would
 	// resurface as a phantom column the next time the grid is opened. Reject it here rather than
 	// storing a rule that grades nothing.
@@ -218,7 +223,7 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 		}
 	}
 	chart, err := s.repo.TechCards().UpdateStyleSizeChart(ctx, int(req.StyleId), int(req.ExpectedLockVersion),
-		cells, int(req.GradeBaseSizeId), steps, points, req.PointsSet, shrinkage)
+		cells, int(req.GradeBaseSizeId), steps, points, req.PointsSet, shrinkage, picture)
 	if err != nil {
 		var ve *entity.ValidationError
 		switch {
@@ -232,7 +237,7 @@ func (s *Server) UpdateStyleSizeChart(ctx context.Context, req *pb_admin.UpdateS
 		case errors.Is(err, entity.ErrTechCardReleased):
 			return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
 		case s.repo.IsErrForeignKeyViolation(err):
-			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name or grade base size")
+			return nil, status.Error(codes.InvalidArgument, "size chart references an unknown size, measurement name, grade base size or picture image")
 		case s.repo.IsErrUniqueViolation(err):
 			// Backstop for uniq_tech_card_size_measurement / uniq_tcgr_card_name. The parsers reject a
 			// repeated cell or grade step first, so reaching here means a direct/legacy caller — still

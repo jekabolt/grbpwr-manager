@@ -100,6 +100,24 @@ func copySeasonCloneCarryover(ctx context.Context, db dependency.DB, sourceID, t
 		WHERE tech_card_id = :source`, params); err != nil {
 		return fmt.Errorf("copy cloned style size chart points: %w", err)
 	}
+	// The size chart picture and its free lines (0459). Media and measurement names are global ids,
+	// so they copy as they are.
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_size_chart_picture (tech_card_id, source, icon_key, media_id)
+		SELECT :target, source, icon_key, media_id
+		FROM tech_card_size_chart_picture
+		WHERE tech_card_id = :source`, params); err != nil {
+		return fmt.Errorf("copy cloned style size chart picture: %w", err)
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_size_chart_line
+			(tech_card_id, measurement_name_id, x1, y1, x2, y2, position)
+		SELECT :target, measurement_name_id, x1, y1, x2, y2, position
+		FROM tech_card_size_chart_line
+		WHERE tech_card_id = :source
+		ORDER BY position, id`, params); err != nil {
+		return fmt.Errorf("copy cloned style size chart lines: %w", err)
+	}
 	// The age group (0366) rides the same statement: like target_gender it is a fact about the
 	// garment, not the season, but unlike target_gender it is not on TechCardInsert (UpdateStyle
 	// owns it), so the converted payload cannot carry it — without this a kids style re-cut for

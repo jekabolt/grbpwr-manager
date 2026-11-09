@@ -236,6 +236,10 @@ func TestReleaseSnapshotCarriesEquipmentParkAndMachineFields(t *testing.T) {
 		Cells: []entity.StyleSizeChartCell{
 			{SizeID: 3, MeasurementNameID: 11, Value: decimal.RequireFromString("50")},
 		},
+		Picture: &entity.StyleSizeChartPicture{
+			Source: entity.StyleSizeChartPictureSourceUpload, MediaID: 21, MediaURL: "https://x/chart.jpg",
+			Lines: []entity.StyleSizeChartLine{{MeasurementNameID: 11, X1: 0.1, Y1: 0.2, X2: 0.9, Y2: 0.2, Position: 1}},
+		},
 	}, nil)
 	var blob string
 	tc.EXPECT().SaveTechCardRelease(mock.Anything, mock.AnythingOfType("entity.TechCardRelease")).
@@ -251,6 +255,15 @@ func TestReleaseSnapshotCarriesEquipmentParkAndMachineFields(t *testing.T) {
 	require.NotNil(t, chart, "a release must freeze the size chart it was released with")
 	require.Len(t, chart.Cells, 1)
 	require.Equal(t, "50", chart.Cells[0].Value.GetValue())
+	// The picture with its free lines rides the same frozen chart (0459).
+	pic := chart.GetPicture()
+	require.NotNil(t, pic, "a release must freeze the size chart picture too")
+	require.Equal(t, "upload", pic.GetSource())
+	require.Equal(t, int32(21), pic.GetMediaId())
+	require.Equal(t, "https://x/chart.jpg", pic.GetMediaUrl())
+	require.Len(t, pic.GetLines(), 1)
+	require.Equal(t, int32(11), pic.GetLines()[0].GetMeasurementNameId())
+	require.InDelta(t, 0.9, pic.GetLines()[0].GetX2(), 1e-9)
 	require.NotNil(t, resp.Snapshot.TechCard.Construction)
 	park := resp.Snapshot.TechCard.Construction.EquipmentDefaults
 	require.NotNil(t, park, "a frozen release without the wrapper is a card whose park was never captured")
