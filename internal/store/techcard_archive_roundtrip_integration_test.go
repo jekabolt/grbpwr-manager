@@ -1256,7 +1256,7 @@ func rtBuildMaximalCard(t *testing.T, rig *rtRig) rtFixture {
 		}, []entity.StyleSizeChartPoint{
 			{MeasurementNameID: meas1, PomCode: "length-cb", Position: 2, TolMinusCm: d("0.7"), TolPlusCm: d("0.9"), InShop: true, BasisPieceLineKeys: []string{rtPieceBack}},
 			{MeasurementNameID: meas2, Position: 1, TolMinusCm: d("1"), TolPlusCm: d("1.2"), InShop: false},
-		}, true, func() *decimal.Decimal { v := d("2.5"); return &v }())
+		}, true, func() *decimal.Decimal { v := d("2.5"); return &v }(), nil)
 	require.NoError(t, err)
 
 	// ── связь сборки: компонент едет НОМЕРОМ СТИЛЯ, не id (§5.2) ──

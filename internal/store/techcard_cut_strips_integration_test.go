@@ -788,7 +788,7 @@ func TestTechCardCutStripsClone(t *testing.T) {
 			Value: decimal.RequireFromString("50"), Source: entity.StyleSizeChartCellSourcePattern}},
 		0, nil, []entity.StyleSizeChartPoint{{MeasurementNameID: measurementID, PomCode: "length-cb",
 			Position: 1, TolMinusCm: decimal.RequireFromString("0.5"), TolPlusCm: decimal.RequireFromString("0.8"),
-			InShop: true, BasisPieceLineKeys: []string{cutsPieceFront}}}, true, &shrinkage)
+			InShop: true, BasisPieceLineKeys: []string{cutsPieceFront}}}, true, &shrinkage, nil)
 	require.NoError(t, err)
 	src := r.read()
 	resp, err := r.rt.srv.CloneStyleForSeason(r.rt.adminCtx("cut.owner@example.com"), &pb_admin.CloneStyleForSeasonRequest{

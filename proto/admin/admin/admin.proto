@@ -5101,6 +5101,10 @@ message UpdateStyleSizeChartRequest {
   repeated common.StyleSizeChartPoint points = 6;
   bool points_set = 7;
   google.type.Decimal shrinkage_pct = 8;
+  // The size chart picture with its free lines, full-replace when picture_set. picture_set = false
+  // (an older client) keeps the stored picture; picture_set with no picture removes it and its lines.
+  common.StyleSizeChartPicture picture = 9;
+  bool picture_set = 10;
 }
 
 message UpdateStyleSizeChartResponse {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -21,6 +22,8 @@ func (s *Store) GetStyleSizeChart(ctx context.Context, styleID int) (entity.Styl
 // UpdateStyleSizeChart replaces the expanded grid and grade rule under tech_card.lock_version.
 // pointsSet distinguishes a new client doing a full point-row replace from an old client that has
 // never seen point metadata: the latter keeps authored rows and only reconciles default typed rows.
+// picture nil keeps the stored picture (a client that has never seen it); a picture with an empty
+// source removes the picture and its lines; any other picture replaces both, in the same transaction.
 func (s *Store) UpdateStyleSizeChart(
 	ctx context.Context,
 	styleID, expectedLockVersion int,
@@ -30,6 +33,7 @@ func (s *Store) UpdateStyleSizeChart(
 	points []entity.StyleSizeChartPoint,
 	pointsSet bool,
 	shrinkage *decimal.Decimal,
+	picture *entity.StyleSizeChartPicture,
 ) (entity.StyleSizeChart, error) {
 	for i := range cells {
 		cell := &cells[i]
@@ -55,6 +59,9 @@ func (s *Store) UpdateStyleSizeChart(
 		if err := entity.ValidateStyleSizeChartPoints(points); err != nil {
 			return entity.StyleSizeChart{}, err
 		}
+	}
+	if err := entity.ValidateStyleSizeChartPicture(picture); err != nil {
+		return entity.StyleSizeChart{}, err
 	}
 
 	var out entity.StyleSizeChart
@@ -141,6 +148,11 @@ func (s *Store) UpdateStyleSizeChart(
 		}
 		if err := replaceStyleSizeChartPoints(ctx, db, styleID, finalPoints); err != nil {
 			return err
+		}
+		if picture != nil {
+			if err := replaceStyleSizeChartPicture(ctx, db, styleID, picture); err != nil {
+				return err
+			}
 		}
 
 		affected, err := storeutil.ExecNamedRows(ctx, db, `
@@ -290,6 +302,153 @@ func replaceStyleSizeChartPoints(ctx context.Context, db dependency.DB, styleID 
 	return nil
 }
 
+// requireStyleSizeChartPictureRefs checks what the picture points at, so a missing image or point
+// name comes back pinned to its field instead of as a bare foreign-key error.
+func requireStyleSizeChartPictureRefs(ctx context.Context, db dependency.DB, picture *entity.StyleSizeChartPicture) error {
+	if picture.MediaID > 0 {
+		found, err := storeutil.QueryNamedOne[struct {
+			N int `db:"n"`
+		}](ctx, db, `SELECT COUNT(*) AS n FROM media WHERE id = :id`, map[string]any{"id": picture.MediaID})
+		if err != nil {
+			return fmt.Errorf("check size chart picture media %d: %w", picture.MediaID, err)
+		}
+		if found.N == 0 {
+			return entity.NewFieldViolation("picture.media_id", "not_found", strconv.Itoa(picture.MediaID), "pick an image from the library")
+		}
+	}
+	wanted := make(map[int]bool, len(picture.Lines))
+	for _, line := range picture.Lines {
+		if line.MeasurementNameID > 0 {
+			wanted[line.MeasurementNameID] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(wanted))
+	for id := range wanted {
+		ids = append(ids, id)
+	}
+	rows, err := storeutil.QueryListNamed[struct {
+		ID int `db:"id"`
+	}](ctx, db, `SELECT id FROM measurement_name WHERE id IN (:ids)`, map[string]any{"ids": ids})
+	if err != nil {
+		return fmt.Errorf("check size chart line measurement names: %w", err)
+	}
+	known := make(map[int]bool, len(rows))
+	for _, row := range rows {
+		known[row.ID] = true
+	}
+	for i, line := range picture.Lines {
+		if line.MeasurementNameID > 0 && !known[line.MeasurementNameID] {
+			return entity.NewFieldViolation(fmt.Sprintf("picture.lines[%d].measurement_name_id", i), "not_found",
+				strconv.Itoa(line.MeasurementNameID), "pick a point from the dictionary")
+		}
+	}
+	return nil
+}
+
+// replaceStyleSizeChartPicture swaps the picture row and all its lines. The picture is already
+// validated and normalised (entity.ValidateStyleSizeChartPicture); an empty source leaves none.
+func replaceStyleSizeChartPicture(ctx context.Context, db dependency.DB, styleID int, picture *entity.StyleSizeChartPicture) error {
+	if err := requireStyleSizeChartPictureRefs(ctx, db, picture); err != nil {
+		return err
+	}
+	params := map[string]any{"id": styleID}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM tech_card_size_chart_line WHERE tech_card_id = :id`, params); err != nil {
+		return fmt.Errorf("clear style %d size chart lines: %w", styleID, err)
+	}
+	if err := storeutil.ExecNamed(ctx, db,
+		`DELETE FROM tech_card_size_chart_picture WHERE tech_card_id = :id`, params); err != nil {
+		return fmt.Errorf("clear style %d size chart picture: %w", styleID, err)
+	}
+	if picture.Source == "" {
+		return nil
+	}
+	if err := storeutil.ExecNamed(ctx, db, `
+		INSERT INTO tech_card_size_chart_picture (tech_card_id, source, icon_key, media_id)
+		VALUES (:id, :source, :icon_key, :media_id)`, map[string]any{
+		"id": styleID, "source": picture.Source, "icon_key": picture.IconKey,
+		"media_id": nullableID(picture.MediaID),
+	}); err != nil {
+		return fmt.Errorf("insert style %d size chart picture: %w", styleID, err)
+	}
+	rows := make([]map[string]any, 0, len(picture.Lines))
+	for _, line := range picture.Lines {
+		rows = append(rows, map[string]any{
+			"tech_card_id": styleID, "measurement_name_id": nullableID(line.MeasurementNameID),
+			"x1": lineCoord(line.X1), "y1": lineCoord(line.Y1),
+			"x2": lineCoord(line.X2), "y2": lineCoord(line.Y2),
+			"position": line.Position,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_size_chart_line", rows); err != nil {
+		return fmt.Errorf("insert style %d size chart lines: %w", styleID, err)
+	}
+	return nil
+}
+
+// lineCoord sends a coordinate as its exact five-decimal text: a float64 parameter would reach the
+// DECIMAL(6,5) column through MySQL's own double conversion.
+func lineCoord(v float64) string {
+	return strconv.FormatFloat(v, 'f', 5, 64)
+}
+
+type styleSizeChartPictureRow struct {
+	Source   string        `db:"source"`
+	IconKey  string        `db:"icon_key"`
+	MediaID  sql.NullInt32 `db:"media_id"`
+	MediaURL string        `db:"media_url"`
+}
+
+type styleSizeChartLineRow struct {
+	MeasurementNameID sql.NullInt32 `db:"measurement_name_id"`
+	X1                float64       `db:"x1"`
+	Y1                float64       `db:"y1"`
+	X2                float64       `db:"x2"`
+	Y2                float64       `db:"y2"`
+	Position          int           `db:"position"`
+}
+
+// loadStyleSizeChartPicture returns the picture with its lines and the image url, nil when the card
+// has none.
+func loadStyleSizeChartPicture(ctx context.Context, db dependency.DB, styleID int) (*entity.StyleSizeChartPicture, error) {
+	params := map[string]any{"id": styleID}
+	pictures, err := storeutil.QueryListNamed[styleSizeChartPictureRow](ctx, db, `
+		SELECT p.source, p.icon_key, p.media_id, COALESCE(m.full_size, '') AS media_url
+		FROM tech_card_size_chart_picture p
+		LEFT JOIN media m ON m.id = p.media_id
+		WHERE p.tech_card_id = :id`, params)
+	if err != nil {
+		return nil, fmt.Errorf("load style %d size chart picture: %w", styleID, err)
+	}
+	if len(pictures) == 0 {
+		return nil, nil
+	}
+	lines, err := storeutil.QueryListNamed[styleSizeChartLineRow](ctx, db, `
+		SELECT measurement_name_id, x1, y1, x2, y2, position
+		FROM tech_card_size_chart_line
+		WHERE tech_card_id = :id
+		ORDER BY position, id`, params)
+	if err != nil {
+		return nil, fmt.Errorf("load style %d size chart lines: %w", styleID, err)
+	}
+	row := pictures[0]
+	out := &entity.StyleSizeChartPicture{
+		Source: row.Source, IconKey: row.IconKey, MediaID: int(row.MediaID.Int32), MediaURL: row.MediaURL,
+		Lines: make([]entity.StyleSizeChartLine, 0, len(lines)),
+	}
+	for _, line := range lines {
+		out.Lines = append(out.Lines, entity.StyleSizeChartLine{
+			MeasurementNameID: int(line.MeasurementNameID.Int32),
+			X1:                line.X1, Y1: line.Y1, X2: line.X2, Y2: line.Y2,
+			Position: line.Position,
+		})
+	}
+	return out, nil
+}
+
 // resolveStyleSizeChartPointFingerprints is the one provenance implementation for writes and reads.
 // stamp=true records the current projection; stamp=false compares it with what was stored.
 func resolveStyleSizeChartPointFingerprints(
@@ -376,9 +535,13 @@ func loadStyleSizeChart(ctx context.Context, db dependency.DB, styleID int) (ent
 	if err := resolveStyleSizeChartPointFingerprints(ctx, db, styleID, points, cur.ShrinkagePct, false); err != nil {
 		return entity.StyleSizeChart{}, err
 	}
+	picture, err := loadStyleSizeChartPicture(ctx, db, styleID)
+	if err != nil {
+		return entity.StyleSizeChart{}, err
+	}
 	return entity.StyleSizeChart{
 		StyleID: styleID, LockVersion: cur.LockVersion, Cells: cells,
 		GradeBaseSizeID: int(cur.GradeBaseSizeID.Int32), GradeSteps: steps,
-		Points: points, ShrinkagePct: cur.ShrinkagePct,
+		Points: points, ShrinkagePct: cur.ShrinkagePct, Picture: picture,
 	}, nil
 }

@@ -107,7 +107,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 		[]entity.StyleSizeChartPoint{{MeasurementNameID: measA, PomCode: "length-cb", Position: 2,
 			TolMinusCm: decimal.RequireFromString("0.5"), TolPlusCm: decimal.RequireFromString("0.75"), InShop: true},
 			{MeasurementNameID: measB, Position: 1, TolMinusCm: decimal.NewFromInt(1), TolPlusCm: decimal.NewFromInt(1), InShop: true}},
-		true, &shrinkage)
+		true, &shrinkage, nil)
 	require.NoError(t, err)
 	require.Equal(t, v0+1, updated.LockVersion)
 	require.Len(t, updated.Cells, 2)
@@ -130,7 +130,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 			hiddenPoints[i].InShop = false
 		}
 	}
-	updated, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, cells, 0, nil, hiddenPoints, true, &shrinkage)
+	updated, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+1, cells, 0, nil, hiddenPoints, true, &shrinkage, nil)
 	require.NoError(t, err)
 	public, err = s.Products().GetProductByIdShowHidden(ctx, prodID, false)
 	require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 	require.Equal(t, measA, public.Measurements[0].MeasurementNameId)
 
 	// A stale version is a conflict (ABORTED upstream).
-	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil, nil, false, nil)
+	_, err = s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0, cells, 0, nil, nil, false, nil, nil)
 	require.ErrorIs(t, err, entity.ErrTechCardConflict)
 
 	// Re-read returns the stored cells at the bumped version.
@@ -150,12 +150,12 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 
 	// An old client keeps authored point rows, removes obsolete typed rows, and never needs to send
 	// points_set merely to edit the grid.
-	oldClient, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+2, cells[:1], 0, nil, nil, false, nil)
+	oldClient, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+2, cells[:1], 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, oldClient.Points, 1)
 	require.Equal(t, measA, oldClient.Points[0].MeasurementNameID)
 	require.Equal(t, "length-cb", oldClient.Points[0].PomCode)
-	autoAdded, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+3, cells, 0, nil, nil, false, nil)
+	autoAdded, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+3, cells, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, autoAdded.Points, 2)
 	require.Equal(t, measB, autoAdded.Points[1].MeasurementNameID)
@@ -163,7 +163,7 @@ func TestStyleSizeChartFullReplace(t *testing.T) {
 	require.True(t, autoAdded.Points[1].InShop)
 
 	// An empty full-replace clears the chart (full-replace semantics, not upsert).
-	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+4, nil, 0, nil, nil, false, nil)
+	cleared, err := s.TechCards().UpdateStyleSizeChart(ctx, styleID, v0+4, nil, 0, nil, nil, false, nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, cleared.Cells)
 	require.Equal(t, v0+5, cleared.LockVersion)

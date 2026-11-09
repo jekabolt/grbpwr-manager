@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -13,6 +14,20 @@ import (
 const (
 	StyleSizeChartCellSourceManual  = "manual"
 	StyleSizeChartCellSourcePattern = "pattern"
+)
+
+// Sources of the size chart picture (tech_card_size_chart_picture.source, 0459).
+const (
+	StyleSizeChartPictureSourceIcon   = "icon"
+	StyleSizeChartPictureSourceSketch = "sketch"
+	StyleSizeChartPictureSourceUpload = "upload"
+
+	// StyleSizeChartPictureMaxLines caps the free lines of one picture.
+	StyleSizeChartPictureMaxLines = 200
+	// styleSizeChartIconKeyMaxLen is tech_card_size_chart_picture.icon_key VARCHAR(64).
+	styleSizeChartIconKeyMaxLen = 64
+	// styleSizeChartLineScale is the stored scale of a line coordinate, DECIMAL(6,5).
+	styleSizeChartLineScale = 1e5
 )
 
 // StyleSizeChartCell is one measurement value in a style's size chart (R5): the value of a named
@@ -46,6 +61,99 @@ type StyleSizeChartGradeStep struct {
 	Step              decimal.Decimal `db:"step"`
 }
 
+// StyleSizeChartLine is one free line drawn on the size chart picture, in coordinates normalised to
+// the picture box (0..1). MeasurementNameID 0 = the user has not picked the point yet (stored NULL).
+// Lines predrawn by an icon are not stored: they come from the client icon library.
+type StyleSizeChartLine struct {
+	MeasurementNameID int
+	X1, Y1, X2, Y2    float64
+	Position          int
+}
+
+// StyleSizeChartPicture is the drawing next to the size chart table (0459). Source "" means no picture.
+// IconKey is kept only for an icon, MediaID only for a sketch or an upload. MediaURL is read-only:
+// the full-size url of MediaID, "" when the image was deleted from the library (media_id SET NULL).
+type StyleSizeChartPicture struct {
+	Source   string
+	IconKey  string
+	MediaID  int
+	MediaURL string
+	Lines    []StyleSizeChartLine
+}
+
+// ValidateStyleSizeChartPicture checks the picture rules that need no database and normalises the
+// picture in place, so what is stored and what is returned agree: the source and icon key are
+// trimmed, the field of the other source is cleared, coordinates are rounded to the stored five
+// decimals, and positions become 1..n in the sent order (stable by position). A picture with an
+// empty source is "no picture" and may carry nothing else. Whether media_id and the lines'
+// measurement names exist is the store's check.
+func ValidateStyleSizeChartPicture(p *StyleSizeChartPicture) error {
+	if p == nil {
+		return nil
+	}
+	p.Source = strings.TrimSpace(p.Source)
+	p.IconKey = strings.TrimSpace(p.IconKey)
+	p.MediaURL = ""
+	switch p.Source {
+	case "":
+		if p.IconKey != "" || p.MediaID != 0 || len(p.Lines) > 0 {
+			return NewFieldViolation("picture.source", "required", "", "icon, sketch or upload")
+		}
+		return nil
+	case StyleSizeChartPictureSourceIcon:
+		p.MediaID = 0
+		if p.IconKey == "" {
+			return NewFieldViolation("picture.icon_key", "required", "", "an icon picture names its icon")
+		}
+		if len(p.IconKey) > styleSizeChartIconKeyMaxLen || !iconKeyValid(p.IconKey) {
+			return NewFieldViolation("picture.icon_key", "invalid", p.IconKey,
+				"up to 64 lowercase letters, digits, hyphens or underscores")
+		}
+	case StyleSizeChartPictureSourceSketch, StyleSizeChartPictureSourceUpload:
+		p.IconKey = ""
+		if p.MediaID <= 0 {
+			return NewFieldViolation("picture.media_id", "required", "", "a sketch or an upload names its image")
+		}
+	default:
+		return NewFieldViolation("picture.source", "invalid", p.Source, "icon, sketch or upload")
+	}
+	if len(p.Lines) > StyleSizeChartPictureMaxLines {
+		return NewFieldViolation("picture.lines", "too_many", fmt.Sprintf("%d lines", len(p.Lines)),
+			fmt.Sprintf("at most %d lines", StyleSizeChartPictureMaxLines))
+	}
+	for i := range p.Lines {
+		l := &p.Lines[i]
+		at := fmt.Sprintf("picture.lines[%d]", i)
+		if l.MeasurementNameID < 0 {
+			return NewFieldViolation(at+".measurement_name_id", "invalid", "", "a measurement name id, or 0 while not picked")
+		}
+		for _, c := range []struct {
+			name string
+			v    *float64
+		}{{"x1", &l.X1}, {"y1", &l.Y1}, {"x2", &l.X2}, {"y2", &l.Y2}} {
+			// NaN fails both comparisons, so it is rejected here too.
+			if !(*c.v >= 0 && *c.v <= 1) {
+				return NewFieldViolation(at+"."+c.name, "out_of_range", "", "between 0 and 1")
+			}
+			*c.v = math.Round(*c.v*styleSizeChartLineScale) / styleSizeChartLineScale
+		}
+	}
+	sort.SliceStable(p.Lines, func(i, j int) bool { return p.Lines[i].Position < p.Lines[j].Position })
+	for i := range p.Lines {
+		p.Lines[i].Position = i + 1
+	}
+	return nil
+}
+
+func iconKeyValid(key string) bool {
+	for _, r := range key {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 // StyleSizeChart is a style's full size chart plus the shared optimistic-lock token (R5). It is written
 // full-replace under tech_card.lock_version; there is no separate chart version.
 //
@@ -61,6 +169,8 @@ type StyleSizeChart struct {
 	GradeSteps      []StyleSizeChartGradeStep
 	Points          []StyleSizeChartPoint
 	ShrinkagePct    decimal.NullDecimal
+	// Picture is the drawing next to the table with its free lines; nil = no picture chosen.
+	Picture *StyleSizeChartPicture
 }
 
 // ValidateStyleSizeChartPoints checks the point-list rules that need no database. It normalises
