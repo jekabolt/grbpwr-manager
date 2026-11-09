@@ -309,12 +309,12 @@ func nonZeroOf(counts ...int) int {
 // установки больше закупленной счётной нормы — error.
 //
 // СЧЁТНУЮ НОРМУ СОБИРАЕТ ПАРА (КОЛОРВЕЙ × СЛОТ), И СПРАШИВАТЬ ЕЁ НАДО ТАМ, А НЕ У СТРОКИ РЕЦЕПТА.
-// Число живёт на слоте (`tech_card_bom_item.qty_per_garment`, 0333) и может быть переопределено
-// строками рецепта (`tech_card_colorway_usage.quantity`); 0295 дословно разрешает НЕСКОЛЬКИМ
-// строкам одного колорвея поминать один слот с разными placement («планка» / «манжета»). Правило
-// целиком — в entity.CountablePairQty, и B4 его не переписывает: своё чтение по строкам врало бы
-// дважды — молчало бы на карточке, где число стоит на слоте, и на паре «4 + 2» брало бы 2 вместо
-// 6, печатая ошибку про недостачу там, где карточка сходится.
+// Число дают связанные шаги, ручное `tech_card_bom_item.qty_per_garment` (0333) остаётся фолбэком,
+// а строки рецепта (`tech_card_colorway_usage.quantity`) переопределяют оба; 0295 дословно
+// разрешает НЕСКОЛЬКИМ строкам одного колорвея поминать один слот с разными placement («планка» /
+// «манжета»). Правило целиком — в entity.CountablePairQty, и B4 его не переписывает: своё чтение
+// по строкам врало бы дважды — молчало бы на карточке, где число стоит вне строки, и на паре
+// «4 + 2» брало бы 2 вместо 6, печатая ошибку про недостачу там, где карточка сходится.
 //
 // СВЕРКА ИДЁТ С ПРИШИВАЕМЫМ, А НЕ С ЗАКУПАЕМЫМ (CountablePairQty, не CountablePairTotal): запас
 // слота уезжает в пакетик покупателю, и ставить из него — значит отдать пакетик пустым. Слот,
@@ -324,13 +324,11 @@ func nonZeroOf(counts ...int) int {
 // пуговиц, а другой шесть, при шести установках законна, а при семи — нет, и назвать надо тот
 // колорвей, который не сходится.
 //
-// СКОЛЬКО ШАГ ТРАТИТ — СПРАШИВАЕТСЯ У СВЯЗИ, А НЕ У ПОВТОРОВ. 0334 завела на связи «шаг × артикул»
-// число «сколько единиц ЭТОГО артикула шаг тратит на изделие», и оно здесь главнее: повторы шага и
-// потраченные штуки — РАЗНЫЕ утверждения, и вывод одного из другого врёт на живых примерах,
-// перечисленных в шапке самой миграции («обметать 6 петель» — повторов шесть, пуговиц ноль;
-// «поставить 4 хольнитена» — повторов четыре, а артикула два, у каждого своё число). Пока числа на
-// связи нет, остаётся прежняя эвристика по placement_count — она старше 0334 и на карточках без
-// проставленных количеств единственная, что есть.
+// СКОЛЬКО ШАГ ТРАТИТ — сначала спрашивается у связи. 0334 завела на связи «шаг × артикул» число
+// «сколько единиц ЭТОГО артикула шаг тратит на изделие», и оно здесь главнее. Без него повторы
+// читаются только у attach-шага: «обметать 6 петель» не тратит пуговиц, а «поставить 4
+// хольнитена» без явных чисел ставит четыре единицы каждого связанного артикула. Это то же узкое
+// исключение, которое собирает базис ops в entity.CountableOpsQty.
 //
 // Подавители: у шага нет НИ числа на связи, НИ `placement_count` (пустой счёт повторов — это уже
 // находка A2, «как написано, изделие однопуговичное», и вторая находка о том же числе была бы
@@ -1000,6 +998,7 @@ func (v *cardView) linkedBomLines(op *entity.TechCardOperation) []*entity.TechCa
 func (v *cardView) tightestCountNorm(line *entity.TechCardBomItem) (decimal.Decimal, string, entity.CountableBasis, bool) {
 	var best decimal.Decimal
 	name, basis, found := "", entity.CountableBasisNone, false
+	opsQty := entity.CountableOpsQty(v.card.Operations, line)
 	consider := func(q decimal.Decimal, cw string, b entity.CountableBasis) {
 		if !found || q.LessThan(best) {
 			best, name, basis, found = q, cw, b, true
@@ -1007,7 +1006,7 @@ func (v *cardView) tightestCountNorm(line *entity.TechCardBomItem) (decimal.Deci
 	}
 	for i := range v.card.Colorways {
 		cw := &v.card.Colorways[i]
-		if qty, b := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, line), line); b != entity.CountableBasisNone {
+		if qty, b := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, line), line, opsQty); b != entity.CountableBasisNone {
 			consider(qty.Decimal, cw.Name, b)
 		}
 		for j := range cw.Usages {
@@ -1075,8 +1074,11 @@ func operationSpendSource(fromLink bool) string {
 // украшение: «слот покупает шесть» чинится на строке BOM, а «рецепт колорвея покупает шесть» — в
 // рецепте, и отправить читателя не в тот экран значит отправить его чинить не то.
 func countNormPhrase(qty decimal.Decimal, colorway string, basis entity.CountableBasis) string {
-	if basis == entity.CountableBasisSlot {
+	switch basis {
+	case entity.CountableBasisSlot:
 		return fmt.Sprintf("the BOM line sews %s per garment (tech_card_bom_item.qty_per_garment)", qty.String())
+	case entity.CountableBasisOps:
+		return fmt.Sprintf("the linked steps sew %s per garment (operation quantities / placement_count)", qty.String())
 	}
 	return fmt.Sprintf("the recipe of colourway %q sews %s per garment (tech_card_colorway_usage.quantity)",
 		colorway, qty.String())

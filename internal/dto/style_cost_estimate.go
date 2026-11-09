@@ -114,6 +114,11 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 	if materialsCw != nil {
 		authoredSlots = colorwayAuthoredSlots(materialsCw, tc.BomItems)
 	}
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(tc.BomItems))
+	for i := range tc.BomItems {
+		b := &tc.BomItems[i]
+		opsQtyByLine[b.LineKey] = entity.CountableOpsQty(tc.Operations, b)
+	}
 	hasAreaEstimate := false
 	if materialsCw != nil {
 		for i := range materialsCw.Usages {
@@ -159,7 +164,11 @@ func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[i
 
 			// Пара — из ТОГО ЖЕ среза materialsCw.Usages, по которому идёт цикл (носитель итога опознаётся
 			// по указателю, см. entity/countable.go).
-			qty, applyWaste, ok := usagePerGarmentQty(u, basis, entity.CountablePairUsages(materialsCw.Usages, bom), bom)
+			opsQty := decimal.NullDecimal{}
+			if bom != nil {
+				opsQty = opsQtyByLine[bom.LineKey]
+			}
+			qty, applyWaste, ok := usagePerGarmentQty(u, basis, entity.CountablePairUsages(materialsCw.Usages, bom), bom, opsQty)
 			if ok {
 				line.Consumption = pbDecimalFromDecimal(qty)
 			}
@@ -433,13 +442,13 @@ func resolveUsageBom(bomItems []entity.TechCardBomItem, u *entity.TechCardColorw
 // declared range, the card declares no range, or the basis is a size this usage carries no norm
 // for. The estimate must then show the line WITHOUT a consumption and say so in the caveat —
 // averaging whatever subset happens to be graded is the forbidden fallback.
-func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBasis, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (decimal.Decimal, bool, bool) {
+func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBasis, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, opsQty decimal.NullDecimal) (decimal.Decimal, bool, bool) {
 	if len(u.SizeConsumptions) == 0 {
 		// СЧЁТНОЕ ЧИСЛО — У ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ У СТРОКИ (0333), и берётся оно тем же
 		// резолвером, что в entity.LineTotal: итог слота и запас лежат на ПЕРВОЙ строке пары,
 		// остальные её строки дают валидный НОЛЬ. Ноль здесь несущий: INVALID означал бы «нормы
 		// нет» и поднял бы has_no_norm на втором размещении полностью заполненной пары.
-		if q := entity.CountablePairRowTotal(pair, u, bom); q.Valid {
+		if q := entity.CountablePairRowTotal(pair, u, bom, opsQty); q.Valid {
 			return q.Decimal, false, true
 		}
 		if u.Consumption.Valid {

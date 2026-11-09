@@ -1,13 +1,18 @@
 package entity
 
-import "github.com/shopspring/decimal"
+import (
+	"strings"
+
+	"github.com/shopspring/decimal"
+)
 
 // СЧЁТНАЯ НОРМА — сколько ШТУК артикула на изделии, и ЕДИНСТВЕННОЕ место, где это число собирается.
 //
-// Число живёт на СЛОТЕ спецификации (tech_card_bom_item.qty_per_garment, 0333), потому что оно не
-// меняется ни по размеру, ни по колорвею; строка рецепта колорвея может его ПЕРЕОПРЕДЕЛИТЬ своим
-// quantity (0079), и переопределение НИКОГДА не записывается обратно в строку — ровно та же
-// дисциплина, что у блока машинки на шаге и у пина артикула 0221.
+// Число живёт на ШАГАХ сборки: placement_count attach-шагов и явные OperationBomQty говорят,
+// сколько единиц артикула ставит маршрут. Ручное qty_per_garment слота (0333) остаётся фолбэком,
+// а строка рецепта колорвея может ПЕРЕОПРЕДЕЛИТЬ оба своим quantity (0079). Переопределение
+// НИКОГДА не записывается обратно — ровно та же дисциплина, что у блока машинки на шаге и у пина
+// артикула 0221.
 //
 // ЕДИНИЦА СЧЁТА — ПАРА (КОЛОРВЕЙ × СЛОТ), А НЕ СТРОКА РЕЦЕПТА. Это не оформление, это защита от
 // умножения денег: 0295 дословно разрешает строкам «на изделие» (piece_id NULL) ПОВТОРЯТЬ слот с
@@ -20,10 +25,12 @@ import "github.com/shopspring/decimal"
 // которому существуют grossNorm/NormGrossUp — см. их шапки):
 //
 //   - итог пары применяется ОДИН РАЗ;
-//   - если хоть одна строка пары несёт ЯВНОЕ quantity, итог = Σ явных, а значение слота не
-//     читается вовсе (человек уже сказал число на этой паре — слот не спорит с ним и не
-//     добавляется к нему);
-//   - запас (spare_qty) прибавляется ОДИН РАЗ на пару, поверх любого из двух базисов;
+//   - если хоть одна строка пары несёт ЯВНОЕ quantity, итог = Σ явных, а шаги и значение слота не
+//     читаются вовсе (человек уже сказал число на этой паре — остальные основания не спорят с ним
+//     и не добавляются к нему);
+//   - иначе итог = Σ количеств связанных шагов, когда хотя бы один шаг его даёт;
+//   - иначе итог = qty_per_garment слота, когда он задан;
+//   - запас (spare_qty) прибавляется ОДИН РАЗ на пару, поверх любого из трёх базисов;
 //   - пара, которую не поминает ни одна строка рецепта, НЕ СТОИТ НИЧЕГО: слот с количеством, не
 //     вошедший в рецепт колорвея, не покупается и не считается (об этом обязан сказать чек-лист
 //     готовности, а не деньги);
@@ -66,17 +73,90 @@ func IsCountableSection(s TechCardBomSection) bool { return !measuredSectionSet[
 type CountableBasis string
 
 const (
-	// CountableBasisNone — числа нет ни на строках пары, ни на слоте. Не ноль: ноль — утверждение.
+	// CountableBasisNone — числа нет ни на строках пары, ни в шагах, ни на слоте. Не ноль: ноль — утверждение.
 	CountableBasisNone CountableBasis = ""
 	// CountableBasisRows — итог собран из ЯВНЫХ quantity строк пары; значение слота не читалось.
 	CountableBasisRows CountableBasis = "rows"
-	// CountableBasisSlot — итог взят со слота: ни одна строка пары числа не несёт.
+	// CountableBasisOps — итог собран из шагов: ни одна строка пары числа не несёт.
+	CountableBasisOps CountableBasis = "ops"
+	// CountableBasisSlot — итог взят со слота: ни строка пары, ни шаги числа не несут.
 	CountableBasisSlot CountableBasis = "slot"
 )
 
+// CountableOpsQty — сколько штук ОДНОЙ счётной строки BOM ставят все связанные с ней шаги.
+// INVALID означает «ни один шаг числа не дал», а валидный ноль — явное утверждение шага.
+//
+// Членство определяет ТОЛЬКО BomLineKeys. На связанном шаге явный OperationBomQty побеждает
+// всегда; без него placement_count читается только у шага УСТАНОВКИ: hardware_set, легаси
+// button_attach или machine + button_attach. У остальных шагов повторы не расходуют артикул —
+// шесть обмётанных петель не означают шесть потраченных пуговиц. NULL / 0 placement_count attach-
+// шага читается как один повтор.
+//
+// Мерные и cut-to-length строки сюда не допускаются: их норма остаётся в единице длины/веса и
+// никогда не получает счётный базис от маршрута.
+func CountableOpsQty(operations []TechCardOperation, bom *TechCardBomItem) decimal.NullDecimal {
+	if bom == nil || bom.CutToLength || !IsCountableSection(bom.Section) {
+		return decimal.NullDecimal{}
+	}
+	lineKey := strings.TrimSpace(bom.LineKey)
+	if lineKey == "" {
+		return decimal.NullDecimal{}
+	}
+
+	sum := decimal.Zero
+	contributed := false
+	for i := range operations {
+		op := &operations[i]
+		linked := false
+		for _, key := range op.BomLineKeys {
+			if strings.TrimSpace(key) == lineKey {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			continue
+		}
+
+		explicit := false
+		for _, qty := range op.BomQuantities {
+			if strings.TrimSpace(qty.LineKey) != lineKey {
+				continue
+			}
+			sum = sum.Add(qty.QtyPerGarment)
+			contributed, explicit = true, true
+			break
+		}
+		if explicit || !isCountableAttachStep(op) {
+			continue
+		}
+		count := int64(1)
+		if op.PlacementCount.Valid && op.PlacementCount.Int32 > 0 {
+			count = int64(op.PlacementCount.Int32)
+		}
+		sum = sum.Add(decimal.NewFromInt(count))
+		contributed = true
+	}
+	return decimal.NullDecimal{Decimal: sum, Valid: contributed}
+}
+
+func isCountableAttachStep(op *TechCardOperation) bool {
+	if op == nil {
+		return false
+	}
+	if op.OperationType == OpTypeHardwareSet {
+		return true
+	}
+	if legacyMachine, legacy := LegacyOperationMachineType[op.OperationType]; legacy {
+		return legacyMachine == "button_attach"
+	}
+	return op.OperationType == OpTypeMachine && op.MachineType.Valid &&
+		strings.TrimSpace(op.MachineType.String) == "button_attach"
+}
+
 // SlotCarriesCountableNorm — СКАЗАЛ ЛИ СЛОТ ХОТЬ ЧТО-ТО СЧЁТНОЕ. Один предикат на весь проект, и
-// он несущий: пока обе колонки пусты, вся конструкция пары обязана молчать и НЕ вмешиваться —
-// деньги и потребность считаются ровно как до 0333.
+// он несущий: пока шаги не дали числа и обе колонки пусты, вся конструкция пары обязана молчать и
+// НЕ вмешиваться — деньги и потребность считаются ровно как до 0333.
 //
 // Отдельной функцией, а не двумя `.Valid` по месту, потому что читателей у границы двое и они
 // устроены по-разному. CountablePairRowTotal возвращает в этом случае собственное число строки, но
@@ -84,8 +164,8 @@ const (
 // usageNormForSize обязан различать: у него счётная ветвь стоит ПЕРЕД Consumption, и включённая
 // впустую она молча превращает расход в штуки (0.5 → 6). Предикат и есть то, чем эти два случая
 // различаются.
-func SlotCarriesCountableNorm(bom *TechCardBomItem) bool {
-	return bom != nil && !bom.CutToLength && (bom.QtyPerGarment.Valid || bom.SpareQty.Valid)
+func SlotCarriesCountableNorm(bom *TechCardBomItem, opsQty decimal.NullDecimal) bool {
+	return bom != nil && !bom.CutToLength && (opsQty.Valid || bom.QtyPerGarment.Valid || bom.SpareQty.Valid)
 }
 
 // CountablePairUsages — строки рецепта, составляющие ПАРУ (этот колорвей × этот слот).
@@ -121,10 +201,10 @@ func CountablePairUsages(usages []TechCardColorwayUsage, bom *TechCardBomItem) [
 }
 
 // CountablePairQty — сколько штук ПРИШИВАЕТСЯ на изделие на паре (колорвей × слот), и на каком
-// основании. INVALID + CountableBasisNone, когда числа нет ни у строк, ни у слота, когда слот
-// мерный или когда пары нет вовсе (см. шапку файла — все четыре случая разные и ни один из них не
-// ноль).
-func CountablePairQty(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (decimal.NullDecimal, CountableBasis) {
+// основании. INVALID + CountableBasisNone, когда числа нет ни у строк, ни у шагов, ни у слота,
+// когда слот мерный или когда пары нет вовсе (см. шапку файла — все случаи разные и ни один из них
+// не ноль).
+func CountablePairQty(pair []*TechCardColorwayUsage, bom *TechCardBomItem, opsQty decimal.NullDecimal) (decimal.NullDecimal, CountableBasis) {
 	if bom == nil || bom.CutToLength || !IsCountableSection(bom.Section) || len(pair) == 0 {
 		return decimal.NullDecimal{}, CountableBasisNone
 	}
@@ -140,6 +220,9 @@ func CountablePairQty(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (deci
 	if explicit {
 		return decimal.NullDecimal{Decimal: sum, Valid: true}, CountableBasisRows
 	}
+	if opsQty.Valid {
+		return opsQty, CountableBasisOps
+	}
 	if bom.QtyPerGarment.Valid {
 		return decimal.NullDecimal{Decimal: bom.QtyPerGarment.Decimal, Valid: true}, CountableBasisSlot
 	}
@@ -151,11 +234,11 @@ func CountablePairQty(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (deci
 // сторону (шапка NormGrossUp описывает этот класс дефекта дословно: цех получает не то количество,
 // которое оплачено).
 //
-// Запас БЕЗ пришиваемого количества (spare_qty есть, а числа нет ни на строках, ни на слоте) не
-// становится закупкой: «положить в пакетик запасную к ничему» — недописанное утверждение, а не
-// число. Назвать его обязан чек-лист готовности, а не молча посчитать деньги.
-func CountablePairTotal(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (decimal.NullDecimal, CountableBasis) {
-	qty, basis := CountablePairQty(pair, bom)
+// Запас БЕЗ пришиваемого количества (spare_qty есть, а числа нет ни на строках, ни в шагах, ни на
+// слоте) не становится закупкой: «положить в пакетик запасную к ничему» — недописанное
+// утверждение, а не число. Назвать его обязан чек-лист готовности, а не молча посчитать деньги.
+func CountablePairTotal(pair []*TechCardColorwayUsage, bom *TechCardBomItem, opsQty decimal.NullDecimal) (decimal.NullDecimal, CountableBasis) {
+	qty, basis := CountablePairQty(pair, bom, opsQty)
 	if basis == CountableBasisNone {
 		return qty, basis
 	}
@@ -170,7 +253,7 @@ func CountablePairTotal(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (de
 //
 // ИНВАРИАНТ, РАДИ КОТОРОГО ФУНКЦИЯ СУЩЕСТВУЕТ И КОТОРЫЙ ЗАКРЫТ ТЕСТОМ:
 //
-//	Σ CountablePairRowTotal(pair, u, bom) по всем строкам пары == CountablePairTotal(pair, bom)
+//	Σ CountablePairRowTotal(pair, u, bom, opsQty) по всем строкам пары == CountablePairTotal(pair, bom, opsQty)
 //
 // ровно, без остатка и без повтора. Всё, чего строки не несут сами (итог слота и/или запас),
 // лежит на ПЕРВОЙ строке пары — носителе; остальные строки пары получают ноль, а не «ничего»:
@@ -183,7 +266,7 @@ func CountablePairTotal(pair []*TechCardColorwayUsage, bom *TechCardBomItem) (de
 //
 // МЕРНАЯ СЕКЦИЯ СЮДА НЕ ДОХОДИТ: на ней возвращается собственное quantity строки, как и до 0333 —
 // легаси-строка ткани, на которой когда-то набрали «штуки», продолжает считаться ровно так же.
-func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsage, bom *TechCardBomItem) decimal.NullDecimal {
+func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsage, bom *TechCardBomItem, opsQty decimal.NullDecimal) decimal.NullDecimal {
 	if u == nil {
 		return decimal.NullDecimal{}
 	}
@@ -194,7 +277,7 @@ func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsa
 	if bom == nil || !IsCountableSection(bom.Section) {
 		return u.Quantity
 	}
-	if !SlotCarriesCountableNorm(bom) {
+	if !SlotCarriesCountableNorm(bom, opsQty) {
 		// СЛОТУ НЕЧЕГО СКАЗАТЬ — ЗНАЧИТ ПАРА НЕ ВМЕШИВАЕТСЯ, и строка считается ровно как до 0333.
 		//
 		// Это граница, а не оптимизация. Без неё правило пары молча переписывало ИСТОРИЮ: на
@@ -217,7 +300,7 @@ func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsa
 		// деньги, а готовность увидела бы норму там, где строка её не несёт.
 		return u.Quantity
 	}
-	total, basis := CountablePairTotal(pair, bom)
+	total, basis := CountablePairTotal(pair, bom, opsQty)
 	if basis == CountableBasisNone {
 		// Ни слот, ни строки числа не дают: строка отвечает ровно тем, что на ней есть (обычно
 		// INVALID — «нормы нет», и читатель обязан это заметить).
@@ -234,8 +317,8 @@ func CountablePairRowTotal(pair []*TechCardColorwayUsage, u *TechCardColorwayUsa
 }
 
 // countablePairResidual — та часть закупаемого итога пары, которой не несёт НИ ОДНА строка:
-// на базисе «слот» это весь итог слота плюс запас, на базисе «строки» — только запас (Σ явных уже
-// лежит на самих строках). Отдельной публичной функцией не выносится намеренно: единственный
+// на базисах «шаги» / «слот» это весь итог плюс запас, на базисе «строки» — только запас (Σ явных
+// уже лежит на самих строках). Отдельной публичной функцией не выносится намеренно: единственный
 // законный способ применить остаток — через CountablePairRowTotal, который знает, КОМУ его отдать.
 func countablePairResidual(pair []*TechCardColorwayUsage, total decimal.Decimal, basis CountableBasis) decimal.Decimal {
 	if basis != CountableBasisRows {

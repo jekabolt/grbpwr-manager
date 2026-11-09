@@ -16,8 +16,9 @@ import (
 // которой законно. Строка UNKNOWN тоже не подходит: она означает «сервер не смог ответить», а
 // здесь сервер отвечает уверенно — он видит и слот, и рецепт, и сборочную ведомость.
 //
-// ВСЕ ПЯТЬ ГОВОРЯТ ОБ ОДНОМ КЛАССЕ ДЕФЕКТА: заполненное поле, которое НИКТО НЕ ЧИТАЕТ. Число на
-// слоте, не вошедшем в рецепт; счётная норма на строке, считающейся по размерам; компонент
+// ЗАМЕЧАНИЯ ГОВОРЯТ ОБ ОДНОМ КЛАССЕ ДЕФЕКТА: заполненное поле, которое никто не читает или которое
+// спорит с более сильным источником. Число на слоте, не вошедшем в рецепт; счётная норма на строке,
+// считающейся по размерам; компонент
 // сборочной ведомости, которого нет в спецификации. Ни один из них не ошибка данных — каждый
 // молча стоит ноль, и до этого списка сказать об этом было негде.
 //
@@ -42,6 +43,8 @@ const (
 	// AdviceCountableSpareWithoutQty — запас есть, а пришиваемого количества нет ни на слоте, ни на
 	// строках: запас не закупается вовсе.
 	AdviceCountableSpareWithoutQty = "countable_spare_without_quantity"
+	// AdviceCountableSlotOpsMismatch — ручное число слота расходится с суммой связанных шагов.
+	AdviceCountableSlotOpsMismatch = "countable_slot_steps_mismatch"
 )
 
 // TechCardAdvice — одно замечание: машинный ключ и фраза словами оператора, готовая к показу как
@@ -52,7 +55,7 @@ type TechCardAdvice struct {
 	Text string
 }
 
-// TechCardAdvisories — все пять замечаний по карточке, в устойчивом порядке (пакетик, сборочная
+// TechCardAdvisories — все замечания по карточке, в устойчивом порядке (пакетик, сборочная
 // ведомость, слоты в порядке спецификации). Пустой результат = сказать нечего.
 //
 // assembly и variantsByComponent приходят СНАРУЖИ, потому что сборочная ведомость не лежит на
@@ -110,7 +113,7 @@ func spareKitAdvisories(tc *entity.TechCard) []TechCardAdvice {
 	return nil
 }
 
-// assemblyComponentAdvisories — САМОЕ ДОРОГОЕ ИЗ ПЯТИ. Сборочная ведомость до костинга не доходит
+// assemblyComponentAdvisories — самое дорогое из замечаний. Сборочная ведомость до костинга не доходит
 // вовсе (style_assembly не читают ни style_cost_estimate, ни techcard_production), поэтому строка
 // BOM — ЕДИНСТВЕННОЕ место, где вспомогательный компонент стоит денег. Своя бирка, свой кофр, свой
 // пакетик, названные только в ведомости, молча стоят ноль и не попадают в закупку.
@@ -246,18 +249,26 @@ func cardKnownMaterialIds(tc *entity.TechCard) map[int]bool {
 // переключение сдвинуло бы числа на карточках, которых волна не касалась. Поэтому — сказать вслух.
 //
 // МЕРНЫЙ СЛОТ СЮДА НЕ ДОХОДИТ (IsCountableSection): у ткани и нитки количество на изделие не
-// заявляется вовсе, и обе проверки на ней были бы разговором ни о чём. Граница берётся тем же
+// заявляется вовсе, и проверки на ней были бы разговором ни о чём. Граница берётся тем же
 // предикатом, что и деньги, — второй копии этого списка секций в проекте быть не должно.
 func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
-	// Рецептов нет вовсе — сравнивать не с чем: обе проверки говорят о том, поминает ли слот СТРОКА
-	// РЕЦЕПТА, а на карточке без колорвеев их нет ни одной. См. довод о colorway_linked выше.
-	if len(tc.Colorways) == 0 {
-		return nil
-	}
-	out := make([]TechCardAdvice, 0, 2)
+	out := make([]TechCardAdvice, 0, 3)
 	for i := range tc.BomItems {
 		b := &tc.BomItems[i]
-		if !entity.IsCountableSection(b.Section) || !entity.SlotCarriesCountableNorm(b) {
+		opsQty := entity.CountableOpsQty(tc.Operations, b)
+		if !entity.IsCountableSection(b.Section) {
+			continue
+		}
+		if b.QtyPerGarment.Valid && opsQty.Valid && !b.QtyPerGarment.Decimal.Equal(opsQty.Decimal) {
+			out = append(out, TechCardAdvice{
+				Key: AdviceCountableSlotOpsMismatch,
+				Text: fmt.Sprintf("%s: quantity differs — slot %s, steps %s", bomSlotLabel(b),
+					b.QtyPerGarment.Decimal.String(), opsQty.Decimal.String()),
+			})
+		}
+		// Рецептов нет вовсе — для оставшихся проверок сравнивать не с чем: они говорят о том,
+		// поминает ли слот СТРОКА РЕЦЕПТА. Расхождение слота с шагами выше от рецепта не зависит.
+		if len(tc.Colorways) == 0 || !entity.SlotCarriesCountableNorm(b, opsQty) {
 			continue
 		}
 		used, sized := false, false
@@ -308,7 +319,7 @@ func countableSlotAdvisories(tc *entity.TechCard) []TechCardAdvice {
 			// Запас прибавляется РОВНО ОДИН РАЗ и РОВНО К ПАРЕ, и только когда у пары есть базис.
 			// Пустая пара (слот поминает лишь легаси-строка) базиса не имеет — значит запас этого
 			// колорвея не покупает никто.
-			if _, basis := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b); basis == entity.CountableBasisNone {
+			if _, basis := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b, opsQty); basis == entity.CountableBasisNone {
 				spareLost = true
 				if !buysOwn {
 					unitsLost = true

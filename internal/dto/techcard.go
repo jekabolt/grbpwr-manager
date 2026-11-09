@@ -3871,7 +3871,7 @@ func techCardColorwayRefsToPb(tc *entity.TechCard, orderQtyBySize map[int]int, f
 			BaseSku:            c.BaseSku.String,
 			ColorCode:          c.ColorCode,
 			Status:             pb_common.ColorwayLifecycleStatus(c.Status),
-			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, pieces, orderQtyBySize, tc.LinkedMaterials),
+			Usages:             ConvertRecipeUsagesToPb(c.Usages, bomItems, pieces, orderQtyBySize, tc.LinkedMaterials, tc.Operations),
 			LabDipStatus:       pbLabDipStatus(c.LabDipStatus),
 			LabDipRound:        c.LabDipRound.Int32,
 			LabDipDecidedBy:    c.LabDipDecidedBy.String,
@@ -4021,7 +4021,7 @@ func optionalStringFromNull(value sql.NullString) *string {
 // тогда как костинг (colorwayCost → pinShadowBom) берёт цену пина. Не тронуто здесь сознательно —
 // починка меняет видимые числа у пинов (у непроценённого пина строка обязана остаться БЕЗ денег,
 // как в костинге), и это отдельное решение. Авторитетная цифра — colorwayCost.
-func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, linked map[int]entity.MaterialWithPrice) []*pb_common.TechCardColorwayUsage {
+func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []entity.TechCardBomItem, pieces []entity.TechCardPiece, orderQtyBySize map[int]int, linked map[int]entity.MaterialWithPrice, operations []entity.TechCardOperation) []*pb_common.TechCardColorwayUsage {
 	// piece_id → line_key: the write-path accepts piece_line_key and resolves it to the FK, but
 	// the read previously emitted ONLY the resolved id — the editor keys piece binding by
 	// line_key, so every piece-bound usage read back as unbound.
@@ -4041,6 +4041,11 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 		if bomItems[i].Id > 0 && bomItems[i].LineKey != "" {
 			bomKeyByID[int64(bomItems[i].Id)] = bomItems[i].LineKey
 		}
+	}
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(bomItems))
+	for i := range bomItems {
+		b := &bomItems[i]
+		opsQtyByLine[b.LineKey] = entity.CountableOpsQty(operations, b)
 	}
 	out := make([]*pb_common.TechCardColorwayUsage, 0, len(usages))
 	for i := range usages {
@@ -4085,6 +4090,10 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 				Consumption: pbDecimalFromDecimal(sc.Consumption),
 			})
 		}
+		opsQty := decimal.NullDecimal{}
+		if bom != nil {
+			opsQty = opsQtyByLine[bom.LineKey]
+		}
 		out = append(out, &pb_common.TechCardColorwayUsage{
 			BomItemIndex:     bomItemIndex,
 			BomItemId:        u.BomItemId.Int64, // OUTPUT: resolved FK (S2/S3); 0 = unset
@@ -4102,7 +4111,7 @@ func ConvertRecipeUsagesToPb(usages []entity.TechCardColorwayUsage, bomItems []e
 			// ПАРА (КОЛОРВЕЙ × СЛОТ) СТРОИТСЯ ИЗ ТОГО ЖЕ СРЕЗА, ПО КОТОРОМУ ИДЁТ ЦИКЛ (0333):
 			// счётный итог слота и запас — свойство пары, а не строки, и лежат они на ПЕРВОЙ строке
 			// пары; остальные её строки отдают 0. Копия среза здесь молча лишила бы носителя денег.
-			LineTotal:         pbMoneyFromNull(u.LineTotal(bom, entity.CountablePairUsages(usages, bom))),
+			LineTotal:         pbMoneyFromNull(u.LineTotal(bom, entity.CountablePairUsages(usages, bom), opsQty)),
 			SizeRunTotal:      pbMoneyFromNull(u.SizeRunTotal(bom, orderQtyBySize)),
 			ConsumptionSource: pbOptStringFromNull(u.ConsumptionSource),
 			WasteSelvedgePct:  pbDecimalFromNull(u.WasteSelvedgePct),

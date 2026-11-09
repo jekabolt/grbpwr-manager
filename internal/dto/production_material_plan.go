@@ -95,6 +95,11 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		}
 		return nil
 	}
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(card.BomItems))
+	for i := range card.BomItems {
+		b := &card.BomItems[i]
+		opsQtyByLine[b.LineKey] = entity.CountableOpsQty(card.Operations, b)
+	}
 	colorwayName := func(pid int) string {
 		if cw := colorwayByProduct[pid]; cw != nil {
 			return cw.Name
@@ -438,7 +443,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, по которому идёт этот цикл:
 			// счётная норма слота и запас применяются ОДИН РАЗ на пару (0333), иначе слот с двумя
 			// размещениями заказал бы двойное количество и двойной запас.
-			norm, sizeGraded, counted, ok := usageNormForSize(u, ln.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
+			norm, sizeGraded, counted, ok := usageNormForSize(u, ln.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom, opsQtyByLine[bom.LineKey])
 			if !ok {
 				blockAdd(bom.Id, pid, ln.PlannedQty, entity.MaterialPlanBlockerNoNorm, entity.MaterialPlanReasonNoNorm)
 				continue
@@ -1184,7 +1189,7 @@ func planBomLine(u *entity.TechCardColorwayUsage, items []entity.TechCardBomItem
 // расхождение с костингом, который на мерной строке с обоими заполненными полями берёт quantity, —
 // ДОСУЩЕСТВУЮЩЕЕ, и менять его этой волной значило бы молча передвинуть числа на строках, которых
 // счётная норма не касается вовсе.
-func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) (norm decimal.Decimal, sizeGraded, counted, ok bool) {
+func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, opsQty decimal.NullDecimal) (norm decimal.Decimal, sizeGraded, counted, ok bool) {
 	for _, sc := range u.SizeConsumptions {
 		if sc.SizeId == sizeID {
 			return sc.Consumption, true, false, true
@@ -1197,8 +1202,8 @@ func usageNormForSize(u *entity.TechCardColorwayUsage, sizeID int, pair []*entit
 	// несущей ОБА числа (состояние легальное и в истории встречается), включённая впустую она
 	// молча превращала 0.5 расхода в 6 штук, вшестеро завышая требование цеха на данных, которых
 	// волна не касается. В деньгах этого видно не было: там quantity и до 0333 стоял впереди.
-	if bom != nil && entity.IsCountableSection(bom.Section) && entity.SlotCarriesCountableNorm(bom) {
-		if q := entity.CountablePairRowTotal(pair, u, bom); q.Valid {
+	if bom != nil && entity.IsCountableSection(bom.Section) && entity.SlotCarriesCountableNorm(bom, opsQty) {
+		if q := entity.CountablePairRowTotal(pair, u, bom, opsQty); q.Valid {
 			return q.Decimal, false, true, true
 		}
 	}

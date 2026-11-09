@@ -53,30 +53,123 @@ func cnRow(slotID int64, mut func(*TechCardColorwayUsage)) TechCardColorwayUsage
 	return u
 }
 
-// TestCountableBasisPicksTheOwner — четыре состояния пары и ни одно из них не ноль.
+// TestCountableBasisPicksTheOwner — пять состояний пары и ни одно из них не ноль.
 func TestCountableBasisPicksTheOwner(t *testing.T) {
 	slotOnly := cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("6") })
 	rec := cnRecipe(cnRow(77, nil))
-	qty, basis := CountablePairQty(CountablePairUsages(rec, slotOnly), slotOnly)
+	qty, basis := CountablePairQty(CountablePairUsages(rec, slotOnly), slotOnly, decimal.NullDecimal{})
 	require.Equal(t, CountableBasisSlot, basis)
 	require.Equal(t, "6", qty.Decimal.String())
 
+	// Шаги сильнее ручного числа слота.
+	qty, basis = CountablePairQty(CountablePairUsages(rec, slotOnly), slotOnly, cnDec("5"))
+	require.Equal(t, CountableBasisOps, basis)
+	require.Equal(t, "5", qty.Decimal.String())
+
 	// Явное число строки — переопределение: значение слота не читается вовсе, а не складывается.
 	rec = cnRecipe(cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("4") }))
-	qty, basis = CountablePairQty(CountablePairUsages(rec, slotOnly), slotOnly)
+	qty, basis = CountablePairQty(CountablePairUsages(rec, slotOnly), slotOnly, cnDec("5"))
 	require.Equal(t, CountableBasisRows, basis)
 	require.Equal(t, "4", qty.Decimal.String(), "6 слота не участвует в арифметике переопределения")
 
 	// Ни там, ни там — INVALID, а не ноль: ноль это утверждение «ни одной».
 	bare := cnSlot(nil)
-	qty, basis = CountablePairQty(CountablePairUsages(cnRecipe(cnRow(77, nil)), bare), bare)
+	qty, basis = CountablePairQty(CountablePairUsages(cnRecipe(cnRow(77, nil)), bare), bare, decimal.NullDecimal{})
 	require.False(t, qty.Valid)
 	require.Equal(t, CountableBasisNone, basis)
 
 	// Слот с числом, который не поминает ни одна строка рецепта, не считается: пары нет.
-	qty, basis = CountablePairQty(CountablePairUsages(nil, slotOnly), slotOnly)
+	qty, basis = CountablePairQty(CountablePairUsages(nil, slotOnly), slotOnly, decimal.NullDecimal{})
 	require.False(t, qty.Valid)
 	require.Equal(t, CountableBasisNone, basis)
+}
+
+// TestCountableOpsQtyFromAttachRepeats — карточка владельца: четыре шага установки дают 2+2+7+1,
+// а связанная петельная операция с семью повторами не тратит ни одной пуговицы.
+func TestCountableOpsQtyFromAttachRepeats(t *testing.T) {
+	button := cnSlot(func(b *TechCardBomItem) {
+		b.LineKey = "BTN11"
+		b.QtyPerGarment = cnDec("15")
+		b.SpareQty = cnDec("1")
+	})
+	attach := func(n int32) TechCardOperation {
+		return TechCardOperation{
+			OperationType:  OpTypeMachine,
+			MachineType:    sql.NullString{String: "button_attach", Valid: true},
+			PlacementCount: sql.NullInt32{Int32: n, Valid: n > 0},
+			BomLineKeys:    []string{"BTN11"},
+		}
+	}
+	ops := []TechCardOperation{
+		attach(2),
+		{OperationType: TechCardOperationType("button_attach"), PlacementCount: sql.NullInt32{Int32: 2, Valid: true}, BomLineKeys: []string{"BTN11"}},
+		attach(7),
+		attach(0), // NULL reads as one.
+		{OperationType: OpTypeMachine, MachineType: sql.NullString{String: "buttonhole", Valid: true}, PlacementCount: sql.NullInt32{Int32: 7, Valid: true}, BomLineKeys: []string{"BTN11"}},
+	}
+	opsQty := CountableOpsQty(ops, button)
+	require.True(t, opsQty.Valid)
+	require.Equal(t, "12", opsQty.Decimal.String())
+	opsOnly := *button
+	opsOnly.QtyPerGarment = decimal.NullDecimal{}
+	opsOnly.SpareQty = decimal.NullDecimal{}
+	require.True(t, SlotCarriesCountableNorm(&opsOnly, opsQty),
+		"steps alone make the slot carry a countable norm")
+	zeroRepeats := attach(1)
+	zeroRepeats.PlacementCount = sql.NullInt32{Int32: 0, Valid: true}
+	require.Equal(t, "1", CountableOpsQty([]TechCardOperation{zeroRepeats}, button).Decimal.String(),
+		"an explicit zero placement count reads as one")
+
+	rec := cnRecipe(cnRow(77, nil))
+	pair := CountablePairUsages(rec, button)
+	total, basis := CountablePairTotal(pair, button, opsQty)
+	require.Equal(t, CountableBasisOps, basis)
+	require.Equal(t, "13", total.Decimal.String(), "12 steps + 1 spare")
+
+	rec[0].Quantity = cnDec("10")
+	pair = CountablePairUsages(rec, button)
+	total, basis = CountablePairTotal(pair, button, opsQty)
+	require.Equal(t, CountableBasisRows, basis)
+	require.Equal(t, "11", total.Decimal.String(), "10 row override + 1 spare")
+
+	rec[0].Quantity = decimal.NullDecimal{}
+	pair = CountablePairUsages(rec, button)
+	sewn, basis := CountablePairQty(pair, button, decimal.NullDecimal{})
+	require.Equal(t, CountableBasisSlot, basis)
+	require.Equal(t, "15", sewn.Decimal.String(), "no contributing steps falls back to slot 15")
+	total, basis = CountablePairTotal(pair, button, decimal.NullDecimal{})
+	require.Equal(t, CountableBasisSlot, basis)
+	require.Equal(t, "16", total.Decimal.String(), "no contributing steps falls back to slot 15 + 1")
+}
+
+func TestCountableOpsQtyHardwareSetAndExplicitOverride(t *testing.T) {
+	capLine := cnSlot(func(b *TechCardBomItem) { b.LineKey = "CAP" })
+	postLine := cnSlot(func(b *TechCardBomItem) { b.LineKey = "POST" })
+	rivet := TechCardOperation{
+		OperationType:  OpTypeHardwareSet,
+		PlacementCount: sql.NullInt32{Int32: 4, Valid: true},
+		BomLineKeys:    []string{"CAP", "POST"},
+	}
+	require.Equal(t, "4", CountableOpsQty([]TechCardOperation{rivet}, capLine).Decimal.String())
+	require.Equal(t, "4", CountableOpsQty([]TechCardOperation{rivet}, postLine).Decimal.String())
+
+	buttonhole := TechCardOperation{
+		OperationType:  OpTypeMachine,
+		MachineType:    sql.NullString{String: "buttonhole", Valid: true},
+		PlacementCount: sql.NullInt32{Int32: 7, Valid: true},
+		BomLineKeys:    []string{"CAP"},
+		BomQuantities:  []OperationBomQty{{LineKey: "CAP", QtyPerGarment: decimal.NewFromInt(3)}},
+	}
+	require.Equal(t, "3", CountableOpsQty([]TechCardOperation{buttonhole}, capLine).Decimal.String(),
+		"explicit quantity counts on a non-attach step")
+	buttonhole.BomLineKeys = []string{"POST"}
+	require.False(t, CountableOpsQty([]TechCardOperation{buttonhole}, capLine).Valid,
+		"an explicit quantity cannot contribute without membership in bom_line_keys")
+
+	measured := *capLine
+	measured.Section = BomSectionThread
+	require.False(t, CountableOpsQty([]TechCardOperation{rivet}, &measured).Valid,
+		"measured lines never get an ops basis")
 }
 
 // TestCountableSlotIsIgnoredOnAMeasuredSection — граница «счётное/мерное» держится в резолвере,
@@ -85,13 +178,13 @@ func TestCountableSlotIsIgnoredOnAMeasuredSection(t *testing.T) {
 	for _, s := range MeasuredSectionList {
 		b := cnSlot(func(b *TechCardBomItem) { b.Section = s; b.QtyPerGarment = cnDec("6") })
 		rec := cnRecipe(cnRow(77, nil))
-		qty, basis := CountablePairQty(CountablePairUsages(rec, b), b)
+		qty, basis := CountablePairQty(CountablePairUsages(rec, b), b, decimal.NullDecimal{})
 		require.False(t, qty.Valid, "section %q", s)
 		require.Equal(t, CountableBasisNone, basis, "section %q", s)
 
 		// Собственное число легаси-строки на мерной секции продолжает считаться, как считалось.
 		rec = cnRecipe(cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("3") }))
-		row := CountablePairRowTotal(CountablePairUsages(rec, b), &rec[0], b)
+		row := CountablePairRowTotal(CountablePairUsages(rec, b), &rec[0], b, decimal.NullDecimal{})
 		require.True(t, row.Valid, "section %q", s)
 		require.Equal(t, "3", row.Decimal.String(), "section %q", s)
 	}
@@ -103,14 +196,14 @@ func TestCountableSpareIsBoughtButNotSewn(t *testing.T) {
 	rec := cnRecipe(cnRow(77, nil))
 	pair := CountablePairUsages(rec, slot)
 
-	sewn, _ := CountablePairQty(pair, slot)
+	sewn, _ := CountablePairQty(pair, slot, decimal.NullDecimal{})
 	require.Equal(t, "6", sewn.Decimal.String(), "запас не пришивается")
-	bought, _ := CountablePairTotal(pair, slot)
+	bought, _ := CountablePairTotal(pair, slot, decimal.NullDecimal{})
 	require.Equal(t, "7", bought.Decimal.String(), "запас закупается")
 
 	// Запас БЕЗ количества — недописанное утверждение, а не закупка одной запасной ни к чему.
 	spareOnly := cnSlot(func(b *TechCardBomItem) { b.SpareQty = cnDec("1") })
-	bought, basis := CountablePairTotal(CountablePairUsages(cnRecipe(cnRow(77, nil)), spareOnly), spareOnly)
+	bought, basis := CountablePairTotal(CountablePairUsages(cnRecipe(cnRow(77, nil)), spareOnly), spareOnly, decimal.NullDecimal{})
 	require.False(t, bought.Valid)
 	require.Equal(t, CountableBasisNone, basis)
 }
@@ -129,14 +222,14 @@ func TestCountableSlotAppliesOnceAcrossPlacements(t *testing.T) {
 	pair := CountablePairUsages(rec, slot)
 	require.Len(t, pair, 2)
 
-	bought, basis := CountablePairTotal(pair, slot)
+	bought, basis := CountablePairTotal(pair, slot, decimal.NullDecimal{})
 	require.Equal(t, CountableBasisSlot, basis)
 	require.Equal(t, "7", bought.Decimal.String(), "6 + 1 ОДИН РАЗ на пару, не 12 + 2")
 
 	// Деньги: 7 × 2 = 14 на всю пару. Носитель — первая строка, вторая вносит валидный НОЛЬ
 	// (не INVALID: INVALID означал бы «нормы нет» и поднял бы ложное замечание в смете).
-	first := rec[0].LineTotal(slot, pair)
-	second := rec[1].LineTotal(slot, pair)
+	first := rec[0].LineTotal(slot, pair, decimal.NullDecimal{})
+	second := rec[1].LineTotal(slot, pair, decimal.NullDecimal{})
 	require.True(t, first.Valid)
 	require.True(t, second.Valid)
 	require.Equal(t, "14", first.Decimal.String())
@@ -155,11 +248,11 @@ func TestCountableExplicitRowsSumAndSlotStaysSilent(t *testing.T) {
 		cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("2") }),
 	)
 	pair := CountablePairUsages(rec, slot)
-	bought, basis := CountablePairTotal(pair, slot)
+	bought, basis := CountablePairTotal(pair, slot, decimal.NullDecimal{})
 	require.Equal(t, CountableBasisRows, basis)
 	require.Equal(t, "7", bought.Decimal.String())
-	require.Equal(t, "10", rec[0].LineTotal(slot, pair).Decimal.String(), "(4 + запас 1) × 2")
-	require.Equal(t, "4", rec[1].LineTotal(slot, pair).Decimal.String(), "2 × 2")
+	require.Equal(t, "10", rec[0].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String(), "(4 + запас 1) × 2")
+	require.Equal(t, "4", rec[1].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String(), "2 × 2")
 
 	// Одна явная 8 и одна пустая: итог = Σ ЯВНЫХ (8), а не 8 + 6. Пустая строка пары не
 	// «наследует» слот второй раз — иначе одно размещение оплачивалось бы дважды.
@@ -168,11 +261,11 @@ func TestCountableExplicitRowsSumAndSlotStaysSilent(t *testing.T) {
 		cnRow(77, nil),
 	)
 	pair = CountablePairUsages(rec, slot)
-	bought, basis = CountablePairTotal(pair, slot)
+	bought, basis = CountablePairTotal(pair, slot, decimal.NullDecimal{})
 	require.Equal(t, CountableBasisRows, basis)
 	require.Equal(t, "9", bought.Decimal.String(), "8 явных + 1 запас")
-	require.Equal(t, "18", rec[0].LineTotal(slot, pair).Decimal.String())
-	require.Equal(t, "0", rec[1].LineTotal(slot, pair).Decimal.String())
+	require.Equal(t, "18", rec[0].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String())
+	require.Equal(t, "0", rec[1].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String())
 }
 
 // TestCountableRowSharesSumToPair — ИНВАРИАНТ, ради которого CountablePairRowTotal существует:
@@ -180,16 +273,19 @@ func TestCountableExplicitRowsSumAndSlotStaysSilent(t *testing.T) {
 // читателям остаться построчными.
 func TestCountableRowSharesSumToPair(t *testing.T) {
 	cases := map[string]struct {
-		slot *TechCardBomItem
-		rec  []TechCardColorwayUsage
+		slot   *TechCardBomItem
+		rec    []TechCardColorwayUsage
+		opsQty decimal.NullDecimal
 	}{
 		"слот, одно размещение": {
 			cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("6"); b.SpareQty = cnDec("1") }),
 			cnRecipe(cnRow(77, nil)),
+			decimal.NullDecimal{},
 		},
 		"слот, три размещения": {
 			cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("6"); b.SpareQty = cnDec("1") }),
 			cnRecipe(cnRow(77, nil), cnRow(77, nil), cnRow(77, nil)),
+			decimal.NullDecimal{},
 		},
 		"строки, две явных": {
 			cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("6"); b.SpareQty = cnDec("2") }),
@@ -197,19 +293,26 @@ func TestCountableRowSharesSumToPair(t *testing.T) {
 				cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("4") }),
 				cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("2.5") }),
 			),
+			decimal.NullDecimal{},
 		},
 		"строки, явная и пустая": {
 			cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("6") }),
 			cnRecipe(cnRow(77, func(u *TechCardColorwayUsage) { u.Quantity = cnDec("8") }), cnRow(77, nil)),
+			decimal.NullDecimal{},
+		},
+		"шаги, три размещения": {
+			cnSlot(func(b *TechCardBomItem) { b.QtyPerGarment = cnDec("15"); b.SpareQty = cnDec("1") }),
+			cnRecipe(cnRow(77, nil), cnRow(77, nil), cnRow(77, nil)),
+			cnDec("12"),
 		},
 	}
 	for name, c := range cases {
 		pair := CountablePairUsages(c.rec, c.slot)
-		total, _ := CountablePairTotal(pair, c.slot)
+		total, _ := CountablePairTotal(pair, c.slot, c.opsQty)
 		require.True(t, total.Valid, name)
 		sum := decimal.Zero
 		for i := range c.rec {
-			share := CountablePairRowTotal(pair, &c.rec[i], c.slot)
+			share := CountablePairRowTotal(pair, &c.rec[i], c.slot, c.opsQty)
 			require.True(t, share.Valid, "%s: строка %d", name, i)
 			sum = sum.Add(share.Decimal)
 		}
@@ -228,8 +331,8 @@ func TestCountablePairExcludesPieceRowsAndLegacyRows(t *testing.T) {
 	)
 	pair := CountablePairUsages(rec, slot)
 	require.Len(t, pair, 1, "детальная строка в пару не входит")
-	require.False(t, CountablePairRowTotal(pair, &rec[0], slot).Valid, "детальная строка денег нормы не несёт")
-	require.Equal(t, "7", CountablePairRowTotal(pair, &rec[1], slot).Decimal.String())
+	require.False(t, CountablePairRowTotal(pair, &rec[0], slot, decimal.NullDecimal{}).Valid, "детальная строка денег нормы не несёт")
+	require.Equal(t, "7", CountablePairRowTotal(pair, &rec[1], slot, decimal.NullDecimal{}).Decimal.String())
 
 	// Легаси-строка адресует слот позиционным индексом: в пару не группируется (carve-out 0295),
 	// поэтому слотовое число к ней не применяется и она считается ровно как считалась.
@@ -239,8 +342,8 @@ func TestCountablePairExcludesPieceRowsAndLegacyRows(t *testing.T) {
 	})
 	pair = CountablePairUsages(legacy, slot)
 	require.Empty(t, pair, "строка без bom_item_id в пару не группируется")
-	require.Equal(t, "3", CountablePairRowTotal(pair, &legacy[0], slot).Decimal.String())
-	require.Equal(t, "6", legacy[0].LineTotal(slot, pair).Decimal.String(), "3 × 2, без слота и без запаса")
+	require.Equal(t, "3", CountablePairRowTotal(pair, &legacy[0], slot, decimal.NullDecimal{}).Decimal.String())
+	require.Equal(t, "6", legacy[0].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String(), "3 × 2, без слота и без запаса")
 }
 
 // TestCountableMoneyTakesNoGrossUp — граница обоих множителей. Процент раскроя и коэффициент
@@ -255,7 +358,7 @@ func TestCountableMoneyTakesNoGrossUp(t *testing.T) {
 	})
 	rec := cnRecipe(cnRow(77, nil))
 	pair := CountablePairUsages(rec, slot)
-	require.Equal(t, "14", rec[0].LineTotal(slot, pair).Decimal.String(), "7 × 2, без 1.5 и без +50%")
+	require.Equal(t, "14", rec[0].LineTotal(slot, pair, decimal.NullDecimal{}).Decimal.String(), "7 × 2, без 1.5 и без +50%")
 }
 
 // TestCountableSlotDoesNotShadowPerSizeConsumption — порядок ветвей в деньгах не изменился:
@@ -266,7 +369,7 @@ func TestCountableSlotDoesNotShadowPerSizeConsumption(t *testing.T) {
 		u.SizeConsumptions = []TechCardBomSizeConsumption{{SizeId: 4, Consumption: decimal.RequireFromString("2")}}
 	}))
 	pair := CountablePairUsages(rec, slot)
-	require.False(t, rec[0].LineTotal(slot, pair).Valid, "деньги пер-размерной строки живут в SizeRunTotal")
+	require.False(t, rec[0].LineTotal(slot, pair, decimal.NullDecimal{}).Valid, "деньги пер-размерной строки живут в SizeRunTotal")
 }
 
 // TestCountableRowOutsidePairKeepsItsOwnNumber — СТРОКА, НЕ ВХОДЯЩАЯ В ПАРУ, СЧИТАЕТСЯ КАК ДО 0333.
@@ -292,20 +395,20 @@ func TestCountableRowOutsidePairKeepsItsOwnNumber(t *testing.T) {
 	// Легаси-строка того же слота, адресующая его позицией: bom_item_id не заполнен, в пару она
 	// поэтому не входит — и не имеет права получить ни доли пары, ни валидного нуля вместо ответа.
 	legacy := &TechCardColorwayUsage{BomItemIndex: sql.NullInt32{Int32: 0, Valid: true}}
-	require.False(t, CountablePairRowTotal(pair, legacy, slot).Valid,
+	require.False(t, CountablePairRowTotal(pair, legacy, slot, decimal.NullDecimal{}).Valid,
 		"строка вне пары без своего количества обязана отвечать «нормы нет», а не нулём")
 
 	legacyWithQty := &TechCardColorwayUsage{
 		BomItemIndex: sql.NullInt32{Int32: 0, Valid: true},
 		Quantity:     cnDec("3"),
 	}
-	got := CountablePairRowTotal(pair, legacyWithQty, slot)
+	got := CountablePairRowTotal(pair, legacyWithQty, slot, decimal.NullDecimal{})
 	require.True(t, got.Valid)
 	require.Equal(t, "3", got.Decimal.String(),
 		"строка вне пары стоит ровно столько, сколько на ней написано — как до 0333")
 
 	// Носитель не пострадал: 6 слота + 1 запас по-прежнему на нём и ровно один раз.
-	require.Equal(t, "7", CountablePairRowTotal(pair, pair[0], slot).Decimal.String())
+	require.Equal(t, "7", CountablePairRowTotal(pair, pair[0], slot, decimal.NullDecimal{}).Decimal.String())
 }
 
 // TestCountableSlotWithoutColumnsChangesNothing — ГАРАНТИЯ ВОЛНЫ, выписанная как утверждение:
@@ -329,15 +432,15 @@ func TestCountableSlotWithoutColumnsChangesNothing(t *testing.T) {
 	pair := CountablePairUsages(rec, bare)
 	require.Len(t, pair, 2)
 
-	require.Equal(t, "6", CountablePairRowTotal(pair, pair[0], bare).Decimal.String(),
+	require.Equal(t, "6", CountablePairRowTotal(pair, pair[0], bare, decimal.NullDecimal{}).Decimal.String(),
 		"строка с явным количеством обязана стоить своим числом")
-	require.False(t, CountablePairRowTotal(pair, pair[1], bare).Valid,
+	require.False(t, CountablePairRowTotal(pair, pair[1], bare, decimal.NullDecimal{}).Valid,
 		"строка без quantity на слоте БЕЗ счётных колонок обязана вернуться к своему расходу "+
 			"(INVALID здесь и означает «числа на строке нет, читай Consumption»), а не к валидному нулю")
 
 	// И то же самое поимённо в деньгах — там, где ошибка и была бы видна цехом.
-	require.Equal(t, "12", pair[0].LineTotal(bare, pair).Decimal.String())
-	lt := pair[1].LineTotal(bare, pair)
+	require.Equal(t, "12", pair[0].LineTotal(bare, pair, decimal.NullDecimal{}).Decimal.String())
+	lt := pair[1].LineTotal(bare, pair, decimal.NullDecimal{})
 	require.True(t, lt.Valid, "строка с расходом обязана стоить денег")
 	require.Equal(t, "1", lt.Decimal.String(), "0.5 расхода × 2 цены — ровно как до 0333")
 
@@ -345,6 +448,6 @@ func TestCountableSlotWithoutColumnsChangesNothing(t *testing.T) {
 	// карточка, а не переписанная история.
 	withSpare := cnSlot(func(b *TechCardBomItem) { b.SpareQty = cnDec("1") })
 	pair2 := CountablePairUsages(rec, withSpare)
-	require.Equal(t, "7", CountablePairRowTotal(pair2, pair2[0], withSpare).Decimal.String(),
+	require.Equal(t, "7", CountablePairRowTotal(pair2, pair2[0], withSpare, decimal.NullDecimal{}).Decimal.String(),
 		"6 явных + 1 запас, один раз, на носителе")
 }
