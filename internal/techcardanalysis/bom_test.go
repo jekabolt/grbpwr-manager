@@ -328,10 +328,10 @@ func btMentionSlot(c *entity.TechCard, b *entity.TechCardBomItem) {
 	})
 }
 
-func TestB4ReadsTheNormOffTheSlot(t *testing.T) {
-	// Шов с волной счётных норм (0333): число стоит на слоте, строка рецепта его не повторяет.
-	// Чтение по строкам молчало бы здесь совсем — то есть проверка выключалась бы ровно на тех
-	// карточках, ради которых счётная норма и заводилась.
+func TestB4OpsBasisWinsTheManualSlot(t *testing.T) {
+	// Связанный attach-шаг теперь сам задаёт счётную норму. Семь повторов побеждают ручную шестёрку
+	// слота, поэтому B4 не вправе сравнить шаг с отвергнутым фолбэком; отдельный advisory называет
+	// расхождение «slot 6, steps 7».
 	c := card8()
 	line := btAddBom(c, entity.TechCardBomItem{
 		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
@@ -342,13 +342,7 @@ func TestB4ReadsTheNormOffTheSlot(t *testing.T) {
 	op.PlacementCount = sql.NullInt32{Int32: 7, Valid: true}
 	btLinkOpToBom(op, line)
 
-	f := rtOne(t, btFindings(c), "More пуговица set than bought")
-	if !strings.Contains(f.Detail, "qty_per_garment") {
-		t.Errorf("находка обязана отправить чинить на строку BOM, а не в рецепт: %s", f.Detail)
-	}
-	if !strings.Contains(f.Detail, "6") {
-		t.Errorf("напечатать надо норму слота: %s", f.Detail)
-	}
+	rtNone(t, btFindings(c), "set than bought")
 }
 
 func TestB4SumsThePairInsteadOfTakingItsSmallestRow(t *testing.T) {
@@ -368,10 +362,9 @@ func TestB4SumsThePairInsteadOfTakingItsSmallestRow(t *testing.T) {
 	rtNone(t, btFindings(c), "set than bought")
 }
 
-func TestB4DoesNotSetFromTheSpareKit(t *testing.T) {
-	// Запас слота уезжает в пакетик покупателю. Пять на изделие плюс три в запас — это восемь
-	// закупленных и ПЯТЬ пришиваемых: шесть установок недостачу имеют, и сверка с закупаемым
-	// итогом (CountablePairTotal) молча отдала бы пакетик пустым.
+func TestB4OpsBasisStillExcludesTheSpareKit(t *testing.T) {
+	// Шесть повторов шага задают шесть пришиваемых единиц; запас три прибавится только к закупке.
+	// Ручная пятёрка слота — отвергнутый фолбэк и проверяется advisory, а не B4.
 	c := card8()
 	line := btAddBom(c, entity.TechCardBomItem{
 		Section: entity.BomSectionHardware, Name: "пуговица", Unit: text("pc"),
@@ -382,10 +375,7 @@ func TestB4DoesNotSetFromTheSpareKit(t *testing.T) {
 	op.PlacementCount = sql.NullInt32{Int32: 6, Valid: true}
 	btLinkOpToBom(op, line)
 
-	f := rtOne(t, btFindings(c), "More пуговица set than bought")
-	if !strings.Contains(f.Detail, "5") {
-		t.Errorf("сверяться надо с пришиваемым числом, а не с закупаемым: %s", f.Detail)
-	}
+	rtNone(t, btFindings(c), "set than bought")
 }
 
 // btSetLinkQty ставит на связь шага с линией явное число 0334 — «сколько единиц ЭТОГО артикула шаг

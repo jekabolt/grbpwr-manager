@@ -234,16 +234,16 @@ func TestApplyCutStripNormsMarksTheLineOnACardWithNoColourways(t *testing.T) {
 // The mark silences the countable path of a hardware line, and only the mark does.
 func TestCutToLengthLeavesTheCountablePath(t *testing.T) {
 	line := TechCardBomItem{Section: BomSectionHardware, QtyPerGarment: decimal.NewNullDecimal(cutDec("5")), Unit: sql.NullString{String: "m", Valid: true}}
-	require.True(t, SlotCarriesCountableNorm(&line))
+	require.True(t, SlotCarriesCountableNorm(&line, decimal.NullDecimal{}))
 	line.CutToLength = true
-	require.False(t, SlotCarriesCountableNorm(&line))
+	require.False(t, SlotCarriesCountableNorm(&line, decimal.NullDecimal{}))
 	row := &TechCardColorwayUsage{Quantity: decimal.NewNullDecimal(cutDec("3"))}
-	qty, basis := CountablePairQty([]*TechCardColorwayUsage{row}, &line)
+	qty, basis := CountablePairQty([]*TechCardColorwayUsage{row}, &line, decimal.NullDecimal{})
 	require.False(t, qty.Valid)
 	require.Equal(t, CountableBasisNone, basis)
 
 	line.CutToLength = false
-	qty, basis = CountablePairQty([]*TechCardColorwayUsage{row}, &line)
+	qty, basis = CountablePairQty([]*TechCardColorwayUsage{row}, &line, decimal.NullDecimal{})
 	require.True(t, qty.Valid)
 	require.Equal(t, CountableBasisRows, basis)
 }

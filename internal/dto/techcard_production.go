@@ -2096,6 +2096,15 @@ func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorwa
 	order := make([]string, 0)
 	hasUnconverted := false
 	hasUnpriced := false
+	var operations []entity.TechCardOperation
+	if tc != nil {
+		operations = tc.Operations
+	}
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(bomItems))
+	for i := range bomItems {
+		b := &bomItems[i]
+		opsQtyByLine[b.LineKey] = entity.CountableOpsQty(operations, b)
+	}
 	for i := range cw.Usages {
 		u := &cw.Usages[i]
 		// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a cut-piece
@@ -2117,12 +2126,16 @@ func colorwayCostOf(tc *entity.TechCard, cw, packagingOf *entity.TechCardColorwa
 		// когда подменять цену нечего. Две функции, один артикул: EffectiveMaterialId у обеих.
 		bom := withCuttingCoefficient(
 			pinShadowBom(resolveUsageBom(bomItems, u), u, linked, costingCcy, fx.Base), u, linked)
+		opsQty := decimal.NullDecimal{}
+		if bom != nil {
+			opsQty = opsQtyByLine[bom.LineKey]
+		}
 		// СЧЁТНЫЙ ИТОГ — СВОЙСТВО ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ СТРОКИ (0333). Пара строится из ТОГО
 		// ЖЕ среза cw.Usages, по которому идёт этот цикл: норма слота и запас лежат на ПЕРВОЙ строке
 		// пары и добавляются ОДИН РАЗ, а остальные её строки вносят 0. Слот законно повторяется в
 		// одном колорвее несколькими размещениями (0295) — построчное чтение слотового числа
 		// умножило бы и количество, и запас на число размещений, молча и линейно.
-		ut := u.UnitTotal(bom, basis, entity.CountablePairUsages(cw.Usages, bom))
+		ut := u.UnitTotal(bom, basis, entity.CountablePairUsages(cw.Usages, bom), opsQty)
 		if !ut.Valid {
 			hasUnpriced = true
 			continue

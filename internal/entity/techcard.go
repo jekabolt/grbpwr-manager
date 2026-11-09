@@ -1544,11 +1544,12 @@ func (u *TechCardColorwayUsage) IsBareLineRow() bool {
 // Consumption × unit_price × grossNorm's two multipliers (slot geometry, roll reality).
 //
 // СЧЁТНОЕ ЧИСЛО БЕРЁТСЯ У ПАРЫ (КОЛОРВЕЙ × СЛОТ), А НЕ У СТРОКИ (0333). pair — все строки рецепта
-// этой пары (entity.CountablePairUsages, построенная из ТОГО ЖЕ среза, по которому идёт читатель):
-// слот законно повторяется в одном колорвее несколькими размещениями (0295), поэтому счётная норма
-// СЛОТА и запас применяются один раз на пару, а не на каждую строку. Правило целиком — в шапке
-// entity/countable.go; здесь оно только умножается на цену. nil pair законен и означает «пары нет»
-// — строка тогда стоит ровно столько, сколько на ней написано, как до 0333.
+// этой пары (entity.CountablePairUsages, построенная из ТОГО ЖЕ среза, по которому идёт читатель),
+// opsQty — один раз посчитанный entity.CountableOpsQty этого слота. Слот законно повторяется в
+// одном колорвее несколькими размещениями (0295), поэтому итог шагов / слота и запас применяются
+// один раз на пару, а не на каждую строку. Правило целиком — в шапке entity/countable.go; здесь
+// оно только умножается на цену. nil pair законен и означает «пары нет» — строка тогда стоит ровно
+// столько, сколько на ней написано, как до 0333.
 //
 // A PIECE-BOUND ROW HAS NO NORM-MONEY. IsPieceMaterialAssignment rows carry no norm (T8), so
 // the rollups skip them entirely — and the money methods must agree: a legacy number typed on
@@ -1558,14 +1559,14 @@ func (u *TechCardColorwayUsage) IsBareLineRow() bool {
 // SizeNormTotal / RangeAverageTotal) are the single definition of «this row's norm-money» —
 // EffectiveTotal and UnitTotal compose them — while the converter is just one reader, and a guard
 // there would leave every other (and every future) caller to rediscover the rule.
-func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem, pair []*TechCardColorwayUsage) decimal.NullDecimal {
+func (u *TechCardColorwayUsage) LineTotal(bom *TechCardBomItem, pair []*TechCardColorwayUsage, opsQty decimal.NullDecimal) decimal.NullDecimal {
 	if u.IsPieceMaterialAssignment() {
 		return decimal.NullDecimal{}
 	}
 	if len(u.SizeConsumptions) > 0 || bom == nil || !bom.UnitPrice.Valid {
 		return decimal.NullDecimal{}
 	}
-	if qty := CountablePairRowTotal(pair, u, bom); qty.Valid {
+	if qty := CountablePairRowTotal(pair, u, bom, opsQty); qty.Valid {
 		return decimal.NullDecimal{Decimal: qty.Decimal.Mul(bom.UnitPrice.Decimal), Valid: true}
 	}
 	if !u.Consumption.Valid {
@@ -1609,11 +1610,11 @@ func (u *TechCardColorwayUsage) SizeRunTotal(bom *TechCardBomItem, orderQtyBySiz
 // NOT the costing basis — that is UnitTotal, and since the base-size change the two no longer
 // share a denominator. This stays a display/whole-run helper for a caller that genuinely has a
 // quantity per size in hand (a real production run's lines), never for standard cost.
-func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int, pair []*TechCardColorwayUsage) decimal.NullDecimal {
+func (u *TechCardColorwayUsage) EffectiveTotal(bom *TechCardBomItem, orderQtyBySize map[int]int, pair []*TechCardColorwayUsage, opsQty decimal.NullDecimal) decimal.NullDecimal {
 	if rt := u.SizeRunTotal(bom, orderQtyBySize); rt.Valid {
 		return rt
 	}
-	return u.LineTotal(bom, pair)
+	return u.LineTotal(bom, pair, opsQty)
 }
 
 // SizeNormTotal is a size-graded usage's PER-GARMENT material cost AT ONE CONCRETE SIZE: the
@@ -1749,8 +1750,8 @@ func (u *TechCardColorwayUsage) MissingRangeNorms(rangeSizeIds []int) []int {
 // silent understatement both retired bases were caught committing), the typical-run weighted
 // denominator, and any fallback that turns «no basis» into a number. A missing basis is
 // answered with no number and the flag on the wire.
-func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis, pair []*TechCardColorwayUsage) decimal.NullDecimal {
-	if lt := u.LineTotal(bom, pair); lt.Valid {
+func (u *TechCardColorwayUsage) UnitTotal(bom *TechCardBomItem, basis CostingBasis, pair []*TechCardColorwayUsage, opsQty decimal.NullDecimal) decimal.NullDecimal {
+	if lt := u.LineTotal(bom, pair, opsQty); lt.Valid {
 		return lt
 	}
 	switch basis.Mode {
@@ -1964,11 +1965,11 @@ type TechCardBomItem struct {
 	// сохраняется целиком, и вкладка со старым бандлом пары не шлёт вовсе — без различения её сейв
 	// стёр бы аудит применения у всех строк. Пара живёт как одно целое (см. kind/kind_note).
 	WastageProvenanceOmitted bool `db:"-"`
-	// QtyPerGarment / SpareQty — СЧЁТНАЯ НОРМА СЛОТА (0333): сколько штук этого артикула
-	// ПРИШИВАЕТСЯ на изделие и сколько закупается СВЕРХ пришитых (запасная пуговица в пакетик —
-	// покупается, но не пришивается). Число style-level: оно не меняется ни по размеру, ни по
-	// колорвею, и до 0333 выражалось копированием строки рецепта по колорвеям, то есть тем, что
-	// расходится. NULL = не задано (ноль — реальное утверждение, «ни одной»).
+	// QtyPerGarment / SpareQty — РУЧНОЙ ФОЛБЭК СЧЁТНОЙ НОРМЫ СЛОТА (0333) и запас сверх выбранного
+	// базиса. Основное число дают связанные шаги (entity.CountableOpsQty); qty_per_garment читается,
+	// только когда ни строка рецепта, ни шаги числа не дали. Число style-level: оно не меняется ни по
+	// размеру, ни по колорвею, и до 0333 выражалось копированием строки рецепта по колорвеям, то есть
+	// тем, что расходится. NULL = не задано (ноль — реальное утверждение, «ни одной»).
 	//
 	// ЧИТАТЬ ТОЛЬКО ЧЕРЕЗ РЕЗОЛВЕР ПАРЫ — entity/countable.go, CountablePairQty /
 	// CountablePairTotal / CountablePairRowTotal. Прямое чтение этих двух полей рядом с
@@ -3320,10 +3321,11 @@ const (
 // завёл бы второе написание одного и того же состояния — запись с Valid=false рядом с отсутствием
 // записи, — и первый же читатель, забывший проверить .Valid, прочитал бы «не сказано» как ноль.
 //
-// ЧИСЛО НЕ ИМЕЕТ НИЧЕГО ОБЩЕГО С PlacementCount ШАГА, и выводить одно из другого запрещено в обе
-// стороны: «обметать 6 петель» повторяется шесть раз и не тратит НИ ОДНОЙ пуговицы (петля тратит
-// нитку), «поставить 4 хольнитена» тратит два разных артикула по своему числу каждый, «втачать
-// молнию» не повторяется вовсе и тратит одну молнию.
+// Обычно число НЕ ВЫВОДИТСЯ из PlacementCount: «обметать 6 петель» повторяется шесть раз и не
+// тратит НИ ОДНОЙ пуговицы (петля тратит нитку). Узкое исключение живёт только в
+// CountableOpsQty: связанный attach-шаг без явного OperationBomQty тратит свой placement_count,
+// потому что повторы такого шага и есть число установленных единиц. Явный OperationBomQty всегда
+// побеждает: «поставить 4 хольнитена» может тратить два разных артикула по своему числу каждый.
 type OperationBomQty struct {
 	// LineKey — ключ строки BOM, ОБЯЗАННЫЙ присутствовать в BomLineKeys того же шага.
 	LineKey string

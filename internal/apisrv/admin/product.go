@@ -681,6 +681,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 	}
 	var bomItems []entity.TechCardBomItem
 	var pieces []entity.TechCardPiece
+	var operations []entity.TechCardOperation
 	// linked — артикулы карточки: из них деньги строки берут коэффициент раскроя эффективного
 	// артикула (он входит в себестоимость, W3). Best-effort ровно как bomItems рядом: не
 	// загрузилась карточка — строки едут без денег вовсе, а не с деньгами без рулона.
@@ -693,13 +694,14 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 		} else {
 			bomItems = styleTC.BomItems
 			pieces = styleTC.Pieces
+			operations = styleTC.Operations
 			linked = styleTC.LinkedMaterials
 			for _, q := range styleTC.SizeQuantities {
 				orderQtyBySize[q.SizeId] = q.OrderQty
 			}
 		}
 	}
-	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, pieces, orderQtyBySize, linked)
+	usagesPb := dto.ConvertRecipeUsagesToPb(usages, bomItems, pieces, orderQtyBySize, linked, operations)
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardColorwayUsageCosting(usagesPb)
 	}

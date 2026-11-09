@@ -1304,16 +1304,16 @@ type coverageDemand struct {
 // строк мерного слота отвечает за норму» этой правкой НЕ трогается: он досуществующий, ответа в
 // данных на него нет (метраж двух размещений ткани не складывается сам собой), и счётной нормы он
 // не касается.
-func coverageDemands(rows []*entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem) ([]coverageDemand, bool) {
+func coverageDemands(rows []*entity.TechCardColorwayUsage, sizeID int, pair []*entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, opsQty decimal.NullDecimal) ([]coverageDemand, bool) {
 	if bom == nil || !entity.IsCountableSection(bom.Section) || len(rows) < 2 {
-		n, _, _, ok := usageNormForSize(rows[0], sizeID, pair, bom)
+		n, _, _, ok := usageNormForSize(rows[0], sizeID, pair, bom, opsQty)
 		mid, _ := rows[0].EffectiveMaterialId(bom)
 		return []coverageDemand{{materialID: mid, norm: n}}, ok
 	}
 	out := make([]coverageDemand, 0, 2)
 	at := map[int]int{}
 	for _, u := range rows {
-		n, _, _, ok := usageNormForSize(u, sizeID, pair, bom)
+		n, _, _, ok := usageNormForSize(u, sizeID, pair, bom, opsQty)
 		if !ok {
 			return nil, false
 		}
@@ -1335,6 +1335,11 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 		if cw.ProductId.Valid {
 			byProduct[int(cw.ProductId.Int32)] = cw
 		}
+	}
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(b.card.BomItems))
+	for i := range b.card.BomItems {
+		bom := &b.card.BomItems[i]
+		opsQtyByLine[bom.LineKey] = entity.CountableOpsQty(b.card.Operations, bom)
 	}
 	var out []*pb_admin.ProductionRunReadinessUnitCoverage
 	for _, cell := range entity.SortedCells(b.in.Cells) {
@@ -1395,7 +1400,7 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 			}
 			// Пара (колорвей × слот) — из ТОГО ЖЕ среза cw.Usages, по которому набран rowsByBom
 			// выше, поэтому носитель итога опознаётся по указателю (см. entity/countable.go).
-			demands, hasNorm := coverageDemands(rows, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom)
+			demands, hasNorm := coverageDemands(rows, cell.SizeId, entity.CountablePairUsages(cw.Usages, bom), bom, opsQtyByLine[bom.LineKey])
 			if !hasNorm {
 				ok = false
 				row.BlockingBomItemIds = append(row.BlockingBomItemIds, int64(bom.Id))

@@ -52,7 +52,7 @@ func TestAuxRecipeMeasuredTakesTheNormCountedTakesTheSlot(t *testing.T) {
 	// and a stray consumption_per_unit on it is never read.
 	require.False(t, r.Usages[3].Consumption.Valid)
 	bom := &tc.BomItems[3]
-	qty := CountablePairRowTotal(CountablePairUsages(r.Usages, bom), &r.Usages[3], bom)
+	qty := CountablePairRowTotal(CountablePairUsages(r.Usages, bom), &r.Usages[3], bom, decimal.NullDecimal{})
 	require.True(t, qty.Valid)
 	require.Equal(t, "2", qty.Decimal.String())
 

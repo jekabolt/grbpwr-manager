@@ -503,6 +503,22 @@ func TestTechCardAdvisoriesCountableSlotText(t *testing.T) {
 		got[0].Text)
 }
 
+func TestTechCardAdvisoriesCountableSlotStepsMismatch(t *testing.T) {
+	card := advCard([]entity.TechCardBomItem{{
+		Id: 10, LineKey: "BTN11", Name: "buttons",
+		Section: entity.BomSectionHardware, QtyPerGarment: advDec("15"),
+	}}, entity.TechCardColorwayUsage{BomItemId: advI64(10)})
+	card.Operations = []entity.TechCardOperation{{
+		OperationType:  entity.OpTypeHardwareSet,
+		PlacementCount: advI32(12),
+		BomLineKeys:    []string{"BTN11"},
+	}}
+
+	got := TechCardAdvisories(card, nil, nil)
+	require.Equal(t, []string{AdviceCountableSlotOpsMismatch}, advKeys(got))
+	require.Equal(t, "buttons: quantity differs — slot 15, steps 12", got[0].Text)
+}
+
 // TestTechCardAdvisoriesNoColorways — на карточке без колорвеев проверки 3-5 молчат: рецепта нет
 // ни одного, сравнивать не с чем, а «нет ни одного колорвея» уже сказано строкой colorway_linked.
 // Проверка пакетика при этом работает — она смотрит только в спецификацию.

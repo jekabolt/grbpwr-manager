@@ -120,7 +120,7 @@ func TestCountableSlotIsInTheReleaseSnapshot(t *testing.T) {
 func TestCountableInheritedValueIsNeverWrittenBackToTheRow(t *testing.T) {
 	card := countableCard()
 	cw := &card.Colorways[0]
-	usages := ConvertRecipeUsagesToPb(cw.Usages, card.BomItems, card.Pieces, nil, nil)
+	usages := ConvertRecipeUsagesToPb(cw.Usages, card.BomItems, card.Pieces, nil, nil, card.Operations)
 	require.Len(t, usages, 2)
 	for i, u := range usages {
 		require.Nil(t, u.Quantity, "строка %d: наследование не записывается в quantity", i)
@@ -146,6 +146,32 @@ func TestCountableDemandMatchesTheMoney(t *testing.T) {
 	require.Equal(t, "700", resp.Rows[0].Required.Value,
 		"(6 пришитых + 1 запасная) × 100 изделий, ОДИН раз на пару — не 600 и не 1400")
 	require.Empty(t, resp.Blockers, "слот со счётной нормой не является строкой без нормы")
+}
+
+func TestCountableOpsBasisMatchesMoneyAndDemand(t *testing.T) {
+	card := countableCard()
+	card.BomItems[0].LineKey = "BTN11"
+	card.BomItems[0].QtyPerGarment = cnNullDec("15")
+	card.Operations = []entity.TechCardOperation{{
+		OperationType:  entity.OpTypeHardwareSet,
+		PlacementCount: sql.NullInt32{Int32: 12, Valid: true},
+		BomLineKeys:    []string{"BTN11"},
+	}}
+
+	cw := &card.Colorways[0]
+	usages := ConvertRecipeUsagesToPb(cw.Usages, card.BomItems, card.Pieces, nil, nil, card.Operations)
+	require.Equal(t, "26", usages[0].LineTotal.Value, "(12 steps + 1 spare) × 2 EUR")
+	require.Equal(t, "0", usages[1].LineTotal.Value, "the pair total is carried once")
+
+	run := &entity.ProductionRun{ProductionRunInsert: entity.ProductionRunInsert{
+		TechCardId: card.Id,
+		Lines: []entity.ProductionRunLine{{
+			ProductId: sql.NullInt32{Int32: 55, Valid: true}, SizeId: 1, PlannedQty: 100,
+		}},
+	}}
+	plan := ComputeProductionRunMaterialPlan(run, card, nil, nil, nil, nil)
+	require.Len(t, plan.Rows, 1)
+	require.Equal(t, "1300", plan.Rows[0].Required.Value, "(12 steps + 1 spare) × 100 garments")
 }
 
 // TestCountableEstimateStopsCallingTheSlotUnnormed — смета: строка с ценой и без числа честно
@@ -215,7 +241,7 @@ func TestCountableNullColumnsKeepDemandBranchOrder(t *testing.T) {
 	}}
 	pair := entity.CountablePairUsages(rows, bare)
 
-	norm, _, counted, ok := usageNormForSize(&rows[0], 1, pair, bare)
+	norm, _, counted, ok := usageNormForSize(&rows[0], 1, pair, bare, decimal.NullDecimal{})
 	if !ok {
 		t.Fatalf("норма пропала вовсе")
 	}
@@ -229,7 +255,7 @@ func TestCountableNullColumnsKeepDemandBranchOrder(t *testing.T) {
 	withNorm := &entity.TechCardBomItem{
 		Id: 77, Section: entity.BomSectionHardware, QtyPerGarment: cnNullDec("6"),
 	}
-	norm, _, counted, ok = usageNormForSize(&rows[0], 1, entity.CountablePairUsages(rows, withNorm), withNorm)
+	norm, _, counted, ok = usageNormForSize(&rows[0], 1, entity.CountablePairUsages(rows, withNorm), withNorm, decimal.NullDecimal{})
 	if !ok || !counted || norm.String() != "6" {
 		t.Fatalf("на слоте СО счётной нормой потребность = %s (counted=%v, ok=%v), ожидалось 6 штук",
 			norm.String(), counted, ok)
@@ -272,18 +298,55 @@ func TestCountableSurvivesTheReleaseSnapshotRoundTrip(t *testing.T) {
 	// обязаны дать ОДНО число: цена релиза заморожена, а не пересчитана.
 	live := countableCard()
 	pairLive := entity.CountablePairUsages(live.Colorways[0].Usages, &live.BomItems[0])
-	want := live.Colorways[0].Usages[0].LineTotal(&live.BomItems[0], pairLive)
+	want := live.Colorways[0].Usages[0].LineTotal(&live.BomItems[0], pairLive, decimal.NullDecimal{})
 	require.Equal(t, "14", want.Decimal.String(), "живая пара: (6 + запас 1) × 2")
 
 	require.NotEmpty(t, card.Colorways, "снапшот обязан нести колорвеи")
 	restored := card.Colorways[0].Usages
 	pairBack := entity.CountablePairUsages(restored, slot)
 	require.Len(t, pairBack, 2, "оба размещения пары обязаны восстановиться")
-	got := pairBack[0].LineTotal(slot, pairBack)
+	got := pairBack[0].LineTotal(slot, pairBack, decimal.NullDecimal{})
 	require.True(t, got.Valid, "восстановленная счётная строка осталась без цены — колорвей "+
 		"станет непосчитанным, и пер-размерный расчёт релиза целиком уедет в фолбэк на скаляр")
 	require.Equal(t, want.Decimal.String(), got.Decimal.String(),
 		"восстановленная пара стоит не столько же, сколько живая")
-	require.Equal(t, "0", pairBack[1].LineTotal(slot, pairBack).Decimal.String(),
+	require.Equal(t, "0", pairBack[1].LineTotal(slot, pairBack, decimal.NullDecimal{}).Decimal.String(),
 		"второе размещение той же пары денег не добавляет и после восстановления")
+}
+
+func TestCountableOpsBasisUsesFrozenSnapshotOperations(t *testing.T) {
+	live := countableCard()
+	live.BomItems[0].LineKey = "BTN11"
+	live.BomItems[0].QtyPerGarment = cnNullDec("15")
+	attach := func(n int32) entity.TechCardOperation {
+		return entity.TechCardOperation{
+			OperationType:  entity.OpTypeMachine,
+			MachineType:    sql.NullString{String: "button_attach", Valid: true},
+			PlacementCount: sql.NullInt32{Int32: n, Valid: n > 0},
+			BomLineKeys:    []string{"BTN11"},
+		}
+	}
+	live.Operations = []entity.TechCardOperation{
+		attach(2), attach(2), attach(7), attach(0),
+		{
+			OperationType:  entity.OpTypeMachine,
+			MachineType:    sql.NullString{String: "buttonhole", Valid: true},
+			PlacementCount: sql.NullInt32{Int32: 7, Valid: true},
+			BomLineKeys:    []string{"BTN11"},
+		},
+	}
+	snap := ConvertEntityTechCardToPb(live, CostingFx{Base: "EUR"})
+
+	// The live route changes after the release was captured. Frozen readers must stay on 12.
+	live.Operations[0].PlacementCount = sql.NullInt32{Int32: 99, Valid: true}
+	frozen := releaseCostingCardFromSnapshot(snap)
+	require.NotNil(t, frozen)
+	require.Len(t, frozen.Operations, 5)
+	opsQty := entity.CountableOpsQty(frozen.Operations, &frozen.BomItems[0])
+	require.Equal(t, "12", opsQty.Decimal.String())
+
+	pair := entity.CountablePairUsages(frozen.Colorways[0].Usages, &frozen.BomItems[0])
+	total, basis := entity.CountablePairTotal(pair, &frozen.BomItems[0], opsQty)
+	require.Equal(t, entity.CountableBasisOps, basis)
+	require.Equal(t, "13", total.Decimal.String(), "12 frozen step repeats + 1 frozen spare")
 }

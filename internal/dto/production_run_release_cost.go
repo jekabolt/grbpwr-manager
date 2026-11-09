@@ -154,10 +154,12 @@ func ReleaseFrozenColorwayCosts(snap *pb_common.TechCard) *ReleaseFrozenCosts {
 // которые читает пер-размерная цена клетки (runCellUnitCost → ComputeColorwayUnitCost →
 // colorwayCost → entity.UnitTotal): размерный ряд, строки BOM с ценой/валютой/процентом кроя,
 // рецепты с нормами (в т.ч. по размерам), пины и привязки к деталям (предикат
-// IsPieceMaterialAssignment обязан узнать строку-назначение), ручные статьи и брак. Ни медиа, ни
-// операций, ни градации — частичный читатель с общим именем рано или поздно был бы вызван ради
-// поля, которого не заполняет (тот же довод, что у CutSpecCardFromReleaseSnapshot; читать блоб
-// через ConvertPbTechCardInsertToEntity нельзя по той же причине — тот валидирует историю).
+// IsPieceMaterialAssignment обязан узнать строку-назначение), операции в узкой проекции счётной
+// нормы (связи с BOM, явные количества, verb/machine и placement_count), ручные статьи и брак. Ни
+// медиа, ни остальных полей операций, ни градации — частичный читатель с общим именем рано или
+// поздно был бы вызван ради поля, которого не заполняет (тот же довод, что у
+// CutSpecCardFromReleaseSnapshot; читать блоб через ConvertPbTechCardInsertToEntity нельзя по той
+// же причине — тот валидирует историю).
 //
 // LinkedMaterials НЕ заполняются НАМЕРЕННО: цены пинов живут в каталоге материалов, в блобе их
 // нет, а подставить сегодняшний каталог значило бы разморозить цену релиза. Строка с пином,
@@ -279,6 +281,13 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			DefectPercent: frozenDecimal(c.GetDefectPercent()),
 		}
 	}
+	// СЧЁТНАЯ НОРМА ИЗ ШАГОВ обязана быть заморожена тем же блобом, что и остальные входы денег.
+	// Брать операции с живой карточки здесь означало бы переписать цену старого релиза сегодняшним
+	// маршрутом. Восстанавливается только узкая проекция, которую читает entity.CountableOpsQty;
+	// нечитаемая историческая запись количества пропускается, как остальные decimal-поля выше.
+	for _, op := range ins.GetOperations() {
+		card.Operations = append(card.Operations, frozenCountableOperation(op))
+	}
 	// The labels that hold a line go with the card: colorwayHasOwnRecipe reads them, and without them a
 	// recipe-less colourway would be costed here as one label.
 	for id := range pickedLabelLinesFromSnapshot(snap) {
@@ -308,6 +317,36 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		card.Colorways = append(card.Colorways, out)
 	}
 	return card
+}
+
+// frozenCountableOperation restores exactly the operation facts used by entity.CountableOpsQty.
+// Historical legacy verbs are canonicalised by the same table as live writes; an unknown/conflicting
+// verb still keeps its explicit BOM quantities, because those win on every kind of step.
+func frozenCountableOperation(o *pb_common.TechCardOperation) entity.TechCardOperation {
+	if o == nil {
+		return entity.TechCardOperation{}
+	}
+	op := entity.TechCardOperation{BomLineKeys: append([]string(nil), o.GetBomLineKeys()...)}
+	if opType, machineType, err := canonicaliseOperationType(o, "snapshot operation"); err == nil {
+		op.OperationType = opType
+		op.MachineType = machineType
+	}
+	if count := o.GetPlacementLayout().GetCount(); count > 0 {
+		op.PlacementCount = sql.NullInt32{Int32: count, Valid: true}
+	}
+	for _, q := range o.GetBomQuantities() {
+		if q == nil {
+			continue
+		}
+		qty := frozenDecimal(q.GetQtyPerGarment())
+		if !qty.Valid {
+			continue
+		}
+		op.BomQuantities = append(op.BomQuantities, entity.OperationBomQty{
+			LineKey: q.GetLineKey(), QtyPerGarment: qty.Decimal,
+		})
+	}
+	return op
 }
 
 // frozenDecimal читает decimal из замороженного блоба ТЕРПИМО: нечитаемое значение — отсутствующее

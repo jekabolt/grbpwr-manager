@@ -103,13 +103,13 @@ func TestUsageWastageGrossUpSkip(t *testing.T) {
 
 	manual := base
 	manual.ConsumptionSource = sql.NullString{String: entity.ConsumptionSourceManual, Valid: true}
-	got := manual.LineTotal(bom, nil)
+	got := manual.LineTotal(bom, nil, decimal.NullDecimal{})
 	require.True(t, got.Valid)
 	require.Equal(t, "27", got.Decimal.String(), "manual keeps the 8%% gross-up: 2.5×10×1.08")
 
 	marker := base
 	marker.ConsumptionSource = sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true}
-	got = marker.LineTotal(bom, nil)
+	got = marker.LineTotal(bom, nil, decimal.NullDecimal{})
 	require.True(t, got.Valid)
 	require.Equal(t, "25", got.Decimal.String(), "marker is never grossed: 2.5×10")
 

@@ -484,6 +484,11 @@ func buildColorway(card, old *entity.TechCard, cw *entity.TechCardColorway, idx 
 		(!cw.CostPrice.Valid || !cw.CostPrice.Decimal.Equal(newCost.Decimal))
 
 	baseSize := oldBaseSizeID(card)
+	opsQtyByLine := make(map[string]decimal.NullDecimal, len(card.BomItems))
+	for i := range card.BomItems {
+		b := &card.BomItems[i]
+		opsQtyByLine[b.LineKey] = entity.CountableOpsQty(card.Operations, b)
+	}
 	for i := range cw.Usages {
 		// A piece-bound row (entity.IsPieceMaterialAssignment) assigns a material to a cut-piece
 		// and carries no norm — BOTH costing sides skip it (T8), so a legacy number typed on one
@@ -500,7 +505,7 @@ func buildColorway(card, old *entity.TechCard, cw *entity.TechCardColorway, idx 
 				if !cw.Usages[i].BomItemId.Valid || int64(b.Id) != cw.Usages[i].BomItemId.Int64 {
 					continue
 				}
-				if qty, _ := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b); qty.Valid {
+				if qty, _ := entity.CountablePairQty(entity.CountablePairUsages(cw.Usages, b), b, opsQtyByLine[b.LineKey]); qty.Valid {
 					s := qty.Decimal.String()
 					row.PerGarment, row.Uncosted = &s, false
 				}
