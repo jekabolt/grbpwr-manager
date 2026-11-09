@@ -175,11 +175,16 @@ func carryOmittedGarmentLabelFoldLines(stored, in *entity.TechCardInsert) {
 	}
 	for i := range in.GarmentLabels {
 		row := &in.GarmentLabels[i]
-		if !row.FoldLinesOmitted {
+		if !row.FoldLinesOmitted && !row.StitchLinesOmitted {
 			continue
 		}
 		if prev := byLineKey[normalizeGarmentLabelLineKey(row.LineKey)]; prev != nil {
-			row.FoldLinesMm = NormalizeGarmentLabelFoldLines(prev.FoldLinesMm, row.HeightMm)
+			if row.FoldLinesOmitted {
+				row.FoldLinesMm = NormalizeGarmentLabelFoldLines(prev.FoldLinesMm, row.HeightMm)
+			}
+			if row.StitchLinesOmitted {
+				row.StitchLinesMm = NormalizeGarmentLabelStitchLines(prev.StitchLinesMm, row.HeightMm)
+			}
 		}
 	}
 }
@@ -195,6 +200,17 @@ var garmentLabelFoldLineMax = decimal.RequireFromString("99999.9")
 // ascending, at most maxGarmentLabelFoldLines, joined by "," with no spaces. A bad item is dropped,
 // never an error: the lines are a drawing aid and must not block a save.
 func NormalizeGarmentLabelFoldLines(raw string, heightMm decimal.NullDecimal) string {
+	return normalizeGarmentLabelLines(raw, heightMm, false)
+}
+
+// NormalizeGarmentLabelStitchLines is NormalizeGarmentLabelFoldLines for stitch_lines_mm, but both
+// edges are allowed: 0 <= mm <= height (mm >= 0 when the height is unknown), since a stitch on the
+// top or bottom edge sews that edge.
+func NormalizeGarmentLabelStitchLines(raw string, heightMm decimal.NullDecimal) string {
+	return normalizeGarmentLabelLines(raw, heightMm, true)
+}
+
+func normalizeGarmentLabelLines(raw string, heightMm decimal.NullDecimal, edgesAllowed bool) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
@@ -206,10 +222,10 @@ func NormalizeGarmentLabelFoldLines(raw string, heightMm decimal.NullDecimal) st
 			continue
 		}
 		v = v.Round(1)
-		if !v.IsPositive() || v.GreaterThan(garmentLabelFoldLineMax) {
+		if v.IsNegative() || v.GreaterThan(garmentLabelFoldLineMax) || (!edgesAllowed && v.IsZero()) {
 			continue
 		}
-		if heightMm.Valid && !v.LessThan(heightMm.Decimal) {
+		if heightMm.Valid && (v.GreaterThan(heightMm.Decimal) || (!edgesAllowed && v.Equal(heightMm.Decimal))) {
 			continue
 		}
 		key := v.String()

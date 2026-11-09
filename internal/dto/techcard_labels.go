@@ -346,6 +346,9 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			// A client that knows the lines always sends the field, "" included.
 			FoldLinesMm:      NormalizeGarmentLabelFoldLines(l.GetFoldLinesMm(), heightMm),
 			FoldLinesOmitted: l.FoldLinesMm == nil,
+
+			StitchLinesMm:      NormalizeGarmentLabelStitchLines(l.GetStitchLinesMm(), heightMm),
+			StitchLinesOmitted: l.StitchLinesMm == nil,
 		})
 	}
 	return out, nil
@@ -638,6 +641,7 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 		perSize := l.ArtworkPerSize
 		source := string(l.Source)
 		foldLines := l.FoldLinesMm // always present: "" says no lines, absent would say an older server
+		stitchLines := l.StitchLinesMm
 		out = append(out, &pb_common.TechCardGarmentLabel{
 			Key:           l.Key,
 			LineKey:       l.LineKey,
@@ -645,6 +649,7 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 			HeightMm:      pbDecimalFromNull(l.HeightMm),
 			Fold:          pbStringFromNull(l.Fold),
 			FoldLinesMm:   &foldLines,
+			StitchLinesMm: &stitchLines,
 			Placement:     pbStringFromNull(l.Placement),
 			Attachment:    pbStringFromNull(l.Attachment),
 			Folding:       pbStringFromNull(l.Folding),

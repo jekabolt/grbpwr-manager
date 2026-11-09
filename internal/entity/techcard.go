@@ -3979,6 +3979,11 @@ type TechCardGarmentLabel struct {
 	// FoldLinesOmitted is the presence bit of fold_lines_mm: the payload came from a client that
 	// knows nothing of the lines, and the stored ones are carried. Parse only.
 	FoldLinesOmitted bool
+	// StitchLinesMm is the CSV of stitch line positions in mm from the label's top edge, 0 and the
+	// height included (that edge is sewn); "" = none.
+	StitchLinesMm string
+	// StitchLinesOmitted is the presence bit of stitch_lines_mm. Parse only.
+	StitchLinesOmitted bool
 	Placement        sql.NullString
 	Attachment       sql.NullString
 	Folding          sql.NullString

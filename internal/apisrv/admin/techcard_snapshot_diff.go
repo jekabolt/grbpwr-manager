@@ -232,7 +232,7 @@ func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardI
 	}
 }
 
-// materializeGarmentLabelFoldLines mirrors dto.CarryStoredGarmentLabelGeometry for fold_lines_mm:
+// materializeGarmentLabelFoldLines mirrors dto.CarryStoredGarmentLabelGeometry for fold_lines_mm and stitch_lines_mm:
 // an absent field takes the stored lines of the label with the same line key, and every list is put
 // in the form the save writes, so only a real change of lines reads as a labels change.
 func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
@@ -245,6 +245,9 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		if label.FoldLinesMm == nil {
 			label.FoldLinesMm = new(string)
 		}
+		if label.StitchLinesMm == nil {
+			label.StitchLinesMm = new(string)
+		}
 		if key := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); key != "" {
 			byLineKey[key] = label
 		}
@@ -253,11 +256,13 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		if label == nil {
 			continue
 		}
-		raw := label.GetFoldLinesMm()
-		if label.FoldLinesMm == nil {
-			if prev := byLineKey[strings.ToUpper(strings.TrimSpace(label.GetLineKey()))]; prev != nil {
-				raw = prev.GetFoldLinesMm()
-			}
+		raw, rawStitch := label.GetFoldLinesMm(), label.GetStitchLinesMm()
+		prev := byLineKey[strings.ToUpper(strings.TrimSpace(label.GetLineKey()))]
+		if prev != nil && label.FoldLinesMm == nil {
+			raw = prev.GetFoldLinesMm()
+		}
+		if prev != nil && label.StitchLinesMm == nil {
+			rawStitch = prev.GetStitchLinesMm()
 		}
 		var height decimal.NullDecimal
 		if h, err := decimal.NewFromString(strings.TrimSpace(label.GetHeightMm().GetValue())); err == nil {
@@ -265,6 +270,8 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		}
 		normalized := dto.NormalizeGarmentLabelFoldLines(raw, height)
 		label.FoldLinesMm = &normalized
+		normalizedStitch := dto.NormalizeGarmentLabelStitchLines(rawStitch, height)
+		label.StitchLinesMm = &normalizedStitch
 	}
 }
 
