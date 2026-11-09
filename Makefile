@@ -13,8 +13,6 @@ generate: generate-resend-client generate-mocks
 
 generate-mocks:
 	mockery
-	find internal/dependency/mocks -name "*.go" -type f -exec sed -i.bak 's/^package dependency$$/package mocks/' {} \;
-	find internal/dependency/mocks -name "*.bak" -type f -delete
 
 proto: format-proto
 	buf generate 
