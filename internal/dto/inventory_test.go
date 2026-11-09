@@ -137,7 +137,7 @@ func TestAllocateMaterialReceiptBatchCosts_ExactTotalsAndLargestRemainder(t *tes
 	assert.True(t, alloc[0].InputVatShare.IsZero())
 	assert.True(t, alloc[1].InputVatShare.IsZero())
 	assert.True(t, alloc[2].InputVatShare.Equal(decimal.RequireFromString("0.02")))
-	assert.True(t, alloc[2].LandedUnitCost.Equal(decimal.RequireFromString("1.0001")))
+	assert.True(t, alloc[2].LandedUnitCost.Equal(decimal.RequireFromString("1.00005")), alloc[2].LandedUnitCost.String())
 }
 
 func TestConvertPbReceiveMaterialStockBatch_AllocationAndGuards(t *testing.T) {

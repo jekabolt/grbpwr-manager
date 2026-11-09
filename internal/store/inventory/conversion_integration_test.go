@@ -234,7 +234,7 @@ func TestMaterialConversionDBMoneyBlendIdempotencyAndHistory(t *testing.T) {
 	blend.WorkCost, blend.WorkCurrency = d("50"), "EUR"
 	_, err = f.rep.MaterialStock().ConvertMaterialStock(ctx, blend)
 	require.NoError(t, err)
-	assertStock(t, f.rep, blendOutput, "300", "0.4733")
+	assertStock(t, f.rep, blendOutput, "300", "0.473333333333")
 }
 
 func TestMaterialConversionDBGuardsRollback(t *testing.T) {
@@ -286,9 +286,6 @@ func TestMaterialConversionDBGuardsRollback(t *testing.T) {
 		}},
 		{"missing FX", entity.ErrMaterialConversionNoFxRate, func(_ *conversionFixture, in *entity.MaterialConversionInsert, _, _ int) {
 			in.WorkCost, in.WorkCurrency = d("1"), "ZZZ"
-		}},
-		{"precision", entity.ErrMaterialConversionPrecision, func(_ *conversionFixture, in *entity.MaterialConversionInsert, _, _ int) {
-			in.Output.Quantity = d("30000")
 		}},
 	}
 	for _, tc := range tests {
@@ -387,10 +384,10 @@ func TestMaterialShrinkageDBValuePercentWidthAndConflict(t *testing.T) {
 		WidthAfter: nd("146"), AdminUsername: "shrink-test",
 	})
 	require.NoError(t, err)
-	assertStock(t, f.rep, materialID, "9.5", "4.4211")
+	assertStock(t, f.rep, materialID, "9.5", "4.421052631579")
 	assert.True(t, result.Lot.RemainingQty.Equal(d("9.5")))
 	assert.True(t, result.Lot.ShrunkQty.Equal(d("0.5")))
-	assert.True(t, result.Lot.UnitCost.Decimal.Equal(d("4.4211")))
+	assert.True(t, result.Lot.UnitCost.Decimal.Equal(d("4.421052631579")))
 	assert.True(t, result.Lot.ShrinkagePct.Decimal.Equal(d("5")))
 	assert.True(t, result.Lot.MeasuredWidthCm.Decimal.Equal(d("150")))
 	assert.True(t, result.Lot.WashedWidthCm.Decimal.Equal(d("146")))
@@ -422,7 +419,7 @@ func TestMaterialShrinkageDBTwoLotsWeightingAndCompounding(t *testing.T) {
 			LotId: int(a.LotId.Int32), LengthAfter: d("9.5"),
 		})
 		require.NoError(t, err)
-		assertStock(t, f.rep, materialID, "29.5", "4.2712")
+		assertStock(t, f.rep, materialID, "29.5", "4.271186440678")
 	})
 
 	t.Run("weighted and compounded percent", func(t *testing.T) {
@@ -507,12 +504,12 @@ func TestMaterialShrinkageDBReturnCapAndGuards(t *testing.T) {
 		MaterialId: materialID, Quantity: d("4.5"), SampleId: ni(sampleID), LotId: receipt.LotId, IsReturn: true,
 	})
 	assert.True(t, errors.Is(err, entity.ErrExcessiveMaterialReturn))
-	assertStock(t, f.rep, materialID, "5.5", "4.4211")
+	assertStock(t, f.rep, materialID, "5.5", "4.421052631579")
 	_, err = f.rep.MaterialStock().IssueMaterialStock(ctx, entity.MaterialIssueInsert{
 		MaterialId: materialID, Quantity: d("4"), SampleId: ni(sampleID), LotId: receipt.LotId, IsReturn: true,
 	})
 	require.NoError(t, err)
-	assertStock(t, f.rep, materialID, "9.5", "4.4211")
+	assertStock(t, f.rep, materialID, "9.5", "4.421052631579")
 }
 
 func TestMaterialShrinkageDBUncosted(t *testing.T) {
@@ -605,4 +602,21 @@ func TestMaterialConversionDBLotlessDrawsLotsOldestFirst(t *testing.T) {
 	require.NoError(t, err)
 	assertStock(t, f.rep, mixed, "20", "2")
 	assert.True(t, lotRemaining(roll.LotId).IsZero())
+}
+
+// TestMaterialConversionDBLargeOutputKeepsPrice (w1107 №221): 10 € over 30 000 pcs was refused at four
+// places; at twelve both the stock average and the price history carry 0.000333333333 €, so a costing
+// of 30 000 pcs is 10 €, not 9 €.
+func TestMaterialConversionDBLargeOutputKeepsPrice(t *testing.T) {
+	f := newConversionFixture(t)
+	input := f.material("m", entity.MaterialClassFabric)
+	output := f.material("pcs", entity.MaterialClassOther)
+	f.receipt(input, "10", "1", "", decimal.NullDecimal{})
+	_, err := f.rep.MaterialStock().ConvertMaterialStock(context.Background(), f.convert(input, output, "10", "30000"))
+	require.NoError(t, err)
+	assertStock(t, f.rep, output, "30000", "0.000333333333")
+	var price decimal.Decimal
+	require.NoError(t, f.raw.QueryRow(`SELECT price FROM material_price WHERE material_id = ? ORDER BY valid_from DESC LIMIT 1`, output).Scan(&price))
+	assert.True(t, price.Equal(d("0.000333333333")), "price %s", price)
+	assert.True(t, price.Mul(d("30000")).Round(2).Equal(d("10")))
 }

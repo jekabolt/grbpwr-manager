@@ -199,7 +199,7 @@ func allocateMaterialReceiptBatchCosts(lines []materialReceiptCostLine, delivery
 			LineNet:        weights[i],
 			DeliveryShare:  deliveryShares[i],
 			InputVatShare:  vatShares[i],
-			LandedUnitCost: weights[i].Add(deliveryShares[i]).Div(line.Quantity).Round(4),
+			LandedUnitCost: weights[i].Add(deliveryShares[i]).Div(line.Quantity).Round(landedUnitCostScale),
 		}
 	}
 	return out, nil
@@ -529,9 +529,9 @@ func ConvertEntityMaterialMovementToPb(m entity.MaterialMovement) *pb_common.Mat
 		Quantity:        pbDecimalFromDecimal(m.Quantity),
 		OnHandBefore:    pbDecimalFromDecimal(m.OnHandBefore),
 		OnHandAfter:     pbDecimalFromDecimal(m.OnHandAfter),
-		UnitCost:        pbDecimalFromNull(m.UnitCost),
+		UnitCost:        pbUnitCostFromNull(m.UnitCost),
 		Currency:        m.Currency.String,
-		UnitCostBase:    pbDecimalFromNull(m.UnitCostBase),
+		UnitCostBase:    pbUnitCostFromNull(m.UnitCostBase),
 		ProductionRunId: nullInt32Value(m.ProductionRunId),
 		SampleId:        nullInt32Value(m.SampleId),
 		TechCardId:      nullInt32Value(m.TechCardId),
@@ -568,7 +568,7 @@ func ConvertEntityMaterialStockToPb(st entity.MaterialStock, baseCurrency string
 	return &pb_common.MaterialStock{
 		MaterialId:      int32(st.MaterialId),
 		OnHand:          pbDecimalFromDecimal(st.OnHand),
-		AvgUnitCostBase: pbDecimalFromNull(st.AvgUnitCostBase),
+		AvgUnitCostBase: pbUnitCostFromNull(st.AvgUnitCostBase),
 		BaseCurrency:    baseCurrency,
 		UpdatedAt:       timestamppb.New(st.UpdatedAt),
 	}
@@ -579,7 +579,7 @@ func ConvertEntityMaterialStockRowToPb(r entity.MaterialStockRow, baseCurrency s
 	return &pb_common.MaterialStockRow{
 		Material:        ConvertEntityMaterialToPb(entity.MaterialWithPrice{Material: r.Material}),
 		OnHand:          pbDecimalFromDecimal(r.OnHand),
-		AvgUnitCostBase: pbDecimalFromNull(r.AvgUnitCostBase),
+		AvgUnitCostBase: pbUnitCostFromNull(r.AvgUnitCostBase),
 		StockValueBase:  pbDecimalFromNull(r.StockValueBase),
 		MinStock:        pbDecimalFromNull(r.MinStock),
 		BelowMinStock:   r.BelowMinStock,
@@ -762,7 +762,7 @@ func ConvertEntityMaterialConversionToPb(c entity.MaterialConversion) *pb_common
 	out := &pb_common.MaterialConversion{
 		Id: int32(c.Id), WorkCost: pbDecimalFromDecimal(c.WorkCost), WorkCurrency: c.WorkCurrency.String,
 		WorkCostBase:       pbDecimalFromDecimal(c.WorkCostBase),
-		OutputUnitCostBase: pbDecimalFromDecimal(c.OutputUnitCostBase),
+		OutputUnitCostBase: pbUnitCostFromDecimal(c.OutputUnitCostBase),
 		TotalCostBase:      pbDecimalFromDecimal(c.TotalCostBase), SupplierId: nullInt32Value(c.SupplierId),
 		SupplierDoc: c.SupplierDoc.String, Comment: c.Comment.String, AdminUsername: c.AdminUsername,
 		CreatedAt: timestamppb.New(c.CreatedAt),
@@ -977,7 +977,7 @@ func MaterialLotToPb(l entity.MaterialLot) *pb_common.MaterialLot {
 		SupplierDoc:  l.SupplierDoc.String,
 		ReceivedQty:  pbDecimalFromDecimal(l.ReceivedQty),
 		RemainingQty: pbDecimalFromDecimal(l.RemainingQty),
-		UnitCost:     pbDecimalFromNull(l.UnitCost),
+		UnitCost:     pbUnitCostFromNull(l.UnitCost),
 		Currency:     l.Currency.String,
 		Note:         l.Note.String,
 		Archived:     l.Archived,
@@ -1002,4 +1002,25 @@ func MaterialLotListToPb(lots []entity.MaterialLot) []*pb_common.MaterialLot {
 		out = append(out, MaterialLotToPb(l))
 	}
 	return out
+}
+
+// unitCostDisplayScale is how many places a warehouse unit cost carries on the wire. The store keeps
+// twelve (0463) so on-hand value is exact; a person reads four, and every money total the API returns
+// is computed server-side from the full-precision figure, never from this rounded one.
+const unitCostDisplayScale = 4
+
+// landedUnitCostScale is the scale of a derived landed unit cost (net + delivery share) ÷ quantity.
+// It matches the warehouse's DECIMAL(24,12) (0463): 3000 @ 1 € + 1 € delivery is 1.000333333333,
+// so the stock and the AP posting carry 3001.00, not 3000.90 at 4 places (w1107 №221).
+const landedUnitCostScale = 12
+
+func pbUnitCostFromDecimal(d decimal.Decimal) *pb_decimal.Decimal {
+	return pbDecimalFromDecimal(d.Round(unitCostDisplayScale))
+}
+
+func pbUnitCostFromNull(nd decimal.NullDecimal) *pb_decimal.Decimal {
+	if !nd.Valid {
+		return nil
+	}
+	return pbUnitCostFromDecimal(nd.Decimal)
 }

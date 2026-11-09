@@ -1961,7 +1961,7 @@ func convertMaterialValuationRows(list []entity.MaterialValuationRow) []*pb_admi
 			Name:            r.Name,
 			Unit:            r.Unit,
 			OnHand:          &decimal.Decimal{Value: r.OnHand.String()},
-			AvgUnitCostBase: &decimal.Decimal{Value: r.AvgUnitCostBase.String()},
+			AvgUnitCostBase: pbUnitCostFromDecimal(r.AvgUnitCostBase),
 			Value:           &decimal.Decimal{Value: r.Value.String()},
 		}
 	}

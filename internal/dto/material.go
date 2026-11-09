@@ -576,10 +576,11 @@ func ConvertPbMaterialPriceToEntity(pb *pb_common.MaterialPrice) (entity.Materia
 func ConvertEntityMaterialPriceToPb(p entity.MaterialPrice) *pb_common.MaterialPrice {
 	return &pb_common.MaterialPrice{
 		MaterialId: int64(p.MaterialId),
-		Price:      &pb_decimal.Decimal{Value: p.Price.String()},
-		Currency:   p.Currency,
-		ValidFrom:  timestamppb.New(p.ValidFrom),
-		Source:     p.Source,
-		Note:       pbStringFromNull(p.Note),
+		// A conversion writes its 12-place unit cost into the history; the wire shows 4 places like every unit cost.
+		Price:     &pb_decimal.Decimal{Value: p.Price.Round(unitCostDisplayScale).String()},
+		Currency:  p.Currency,
+		ValidFrom: timestamppb.New(p.ValidFrom),
+		Source:    p.Source,
+		Note:      pbStringFromNull(p.Note),
 	}
 }
