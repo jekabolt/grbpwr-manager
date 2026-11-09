@@ -105,9 +105,10 @@ func TestTechCardMarkerSizeAreas(t *testing.T) {
 	require.Equal(t, got.UsedLengthCm.String(), sum.String(),
 		"the distributed lengths must add back up to the length that was measured")
 
-	// …и скалярный отказ на месте: пер-размерная норма — не безразмерная.
+	// …и скалярный отказ на месте: пер-размерная норма — не безразмерная. The refusal is English
+	// since 21936b8 («ПО РАЗМЕРАМ» → «PER SIZE», «Пересохраните» → «re-save the marker»).
 	require.NotEmpty(t, got.ScalarNormRefusal())
-	require.Contains(t, got.ScalarNormRefusal(), "ПО РАЗМЕРАМ")
+	require.Contains(t, got.ScalarNormRefusal(), "PER SIZE")
 
 	// The blob read carries the same basis — a per-size норма that differed between the card read and
 	// GetMarker would be a field whose value depends on which RPC you asked.
@@ -130,7 +131,7 @@ func TestTechCardMarkerSizeAreas(t *testing.T) {
 	for _, r := range stale.PerSizeConsumption() {
 		require.False(t, r.ConsumptionCm.Valid, "the mean must not stand in for a missing basis")
 	}
-	require.Contains(t, stale.ScalarNormRefusal(), "Пересохраните")
+	require.Contains(t, stale.ScalarNormRefusal(), "re-save the marker")
 
 	// (c) Full replace covers the areas too: the состав shrinks and re-grades, and the row does not
 	// keep distributing by the geometry of the раскладка it used to be.

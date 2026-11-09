@@ -110,10 +110,11 @@ func TestTechCardMarkerComposition(t *testing.T) {
 	// (f) …and that mean is nevertheless refused as a recipe norm. This fixture carries no per-size
 	// areas — it is the shape a mixed раскладка had between Ф2.1 and Ф2.4 — so the refusal is the one
 	// that names the action which creates them, not the one that offers «применить по размерам».
-	// Ф2.4's own round trip is TestTechCardMarkerSizeAreas.
+	// Ф2.4's own round trip is TestTechCardMarkerSizeAreas. The refusal is English since 21936b8
+	// (Ф2.4 → «phase 2.4», «Пересохраните» → «re-save the marker»), as in the dto unit tests.
 	require.NotEmpty(t, got.ScalarNormRefusal())
-	require.Contains(t, got.ScalarNormRefusal(), "Ф2.4")
-	require.Contains(t, got.ScalarNormRefusal(), "Пересохраните")
+	require.Contains(t, got.ScalarNormRefusal(), "phase 2.4")
+	require.Contains(t, got.ScalarNormRefusal(), "re-save the marker")
 
 	// The blob still travels alone on GetMarker, and it carries the состав too.
 	full, err := T.GetMarker(ctx, mixedID)
