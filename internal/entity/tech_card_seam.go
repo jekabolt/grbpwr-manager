@@ -506,3 +506,33 @@ func validateTechCardSeamPose(f string, s *TechCardSeamInput) error {
 func finite(x float64) bool { return !math.IsNaN(x) && !math.IsInf(x, 0) }
 
 func unitInterval(x float64) bool { return finite(x) && x >= 0 && x <= 1 }
+
+// WithoutInterliningScopes drops the INTERLINING scopes — each fusible line's own scope and its
+// legacy purpose bucket — from a card's per-scope sources, for the geometry fingerprints of seams,
+// folds and size-chart points.
+//
+// Interlining is cut FROM the shell pieces: fusing a piece generates an interlining sheet whose
+// blocks link back to that piece. Left in, those links pull the interlining scope into the piece's
+// scope union, so fusing a piece — or reshaping its fuse zone — staled every seam and fold on it
+// although the cloth piece did not move. A seam or fold sits on the shell outline only.
+func WithoutInterliningScopes[T any](byScope map[string][]T, lines []RollGoodsLine) map[string][]T {
+	drop := map[string]bool{}
+	for _, line := range lines {
+		if line.Section != BomSectionInterlining {
+			continue
+		}
+		for _, k := range FabricScopeReadKeys(line, lines) {
+			drop[k] = true
+		}
+	}
+	if len(drop) == 0 {
+		return byScope
+	}
+	out := make(map[string][]T, len(byScope))
+	for scope, refs := range byScope {
+		if !drop[scope] {
+			out[scope] = refs
+		}
+	}
+	return out
+}

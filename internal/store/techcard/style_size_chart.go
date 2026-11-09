@@ -487,7 +487,9 @@ func resolveStyleSizeChartPointFingerprints(
 		if stamp {
 			points[i].SourceFingerprint = current
 		} else {
-			points[i].Stale = points[i].SourceFingerprint != "" && points[i].SourceFingerprint != current
+			legacy := entity.StyleSizeChartPointFingerprint(basis, sources.legacyFingerprint(basis), shrinkage)
+			points[i].Stale = points[i].SourceFingerprint != "" && points[i].SourceFingerprint != current &&
+				points[i].SourceFingerprint != legacy
 		}
 	}
 	return nil

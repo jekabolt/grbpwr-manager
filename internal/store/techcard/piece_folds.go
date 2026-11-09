@@ -99,7 +99,7 @@ func listTechCardPieceFolds(ctx context.Context, db dependency.DB, techCardID in
 		errFlip := json.Unmarshal(r.FlipAt, &fold.FlipAt)
 		errEdge := json.Unmarshal(r.EdgeSamples, &fold.EdgeSamples)
 		fold.Stale = errLine != nil || errFlip != nil || errEdge != nil ||
-			src.fingerprint(pieceFoldKeys(fold.PieceLineKey)) != r.SourceFingerprint
+			!src.fresh(pieceFoldKeys(fold.PieceLineKey), r.SourceFingerprint)
 		out = append(out, fold)
 	}
 	return out, nil
