@@ -117,3 +117,34 @@ func TestRegeneratedFusingSheetKeepsLegacyStampFresh(t *testing.T) {
 	// A restore's stale stamp never reads fresh.
 	require.False(t, regenerated.fresh(wb, seamFingerprintStale))
 }
+
+// PROD SHAPE OF A GENERATED FUSING SHEET (prod cards 5, 6, 7, 11, 16 on 11.11): the sheet row has
+// fabric_purpose NULL, so it is bucketed under its BOM line key; the BOM line is section INTERLINING
+// with purpose "interfacing". WithoutInterliningScopes drops it by section, not by purpose, so a
+// regenerated fusing sheet never moves today's fingerprint, while a shell re-upload still does.
+func TestNullPurposeGeneratedFusingSheetIsOutOfTheFingerprint(t *testing.T) {
+	lines := []entity.RollGoodsLine{
+		{LineKey: "MAIN-LINE", Purpose: "main", Section: "fabric"},
+		{LineKey: "FUSE-LINE", Purpose: "interfacing", Section: entity.BomSectionInterlining},
+	}
+	main := []entity.PatternSheetRef{{LineKey: "S-MAIN", URL: "u/main.dxf", Version: 3}}
+	blocks := map[string][]entity.PieceAreaBlockRef{
+		"main":      {{BlockName: "WB", PieceLineKey: "PIECE-WB"}},
+		"FUSE-LINE": {{BlockName: "WB", PieceLineKey: "PIECE-WB"}},
+	}
+	sheetsAt := func(mainV, fuseV int) map[string][]entity.PatternSheetRef {
+		m := main[0]
+		m.Version = mainV
+		return map[string][]entity.PatternSheetRef{
+			"main":      {m},
+			"FUSE-LINE": {{LineKey: "S-FUSE", URL: "u/fuse-" + string(rune('0'+fuseV)) + ".dxf", Version: fuseV}},
+		}
+	}
+	wb := []string{"PIECE-WB"}
+	stamped := sourcesOf(lines, sheetsAt(3, 4), blocks).fingerprint(wb)
+
+	require.True(t, sourcesOf(lines, sheetsAt(3, 5), blocks).fresh(wb, stamped),
+		"a regenerated fusing sheet must not stale the waistband seams")
+	require.False(t, sourcesOf(lines, sheetsAt(4, 4), blocks).fresh(wb, stamped),
+		"a re-uploaded main-fabric sheet must stale them")
+}
