@@ -49,7 +49,7 @@ func TestGarmentLabelStitchLinesPresence(t *testing.T) {
 	require.False(t, labels[1].StitchLinesOmitted)
 	require.Equal(t, "", labels[1].StitchLinesMm)
 	require.False(t, labels[2].StitchLinesOmitted)
-	require.Equal(t, "0,100", labels[2].StitchLinesMm, "the edges stay, 200 lies past the height")
+	require.Equal(t, "0,100,200", labels[2].StitchLinesMm, "no fold_axis sent: the parse leaves the length open, the carry cuts to the effective axis")
 
 	pb := techCardGarmentLabelsToPb([]entity.TechCardGarmentLabel{{Key: "size"}, {Key: "care", StitchLinesMm: "0,40"}})
 	require.NotNil(t, pb[0].StitchLinesMm)

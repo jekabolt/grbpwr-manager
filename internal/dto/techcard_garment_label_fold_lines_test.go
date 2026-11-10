@@ -50,7 +50,7 @@ func TestGarmentLabelFoldLinesPresence(t *testing.T) {
 	require.False(t, labels[1].FoldLinesOmitted)
 	require.Equal(t, "", labels[1].FoldLinesMm)
 	require.False(t, labels[2].FoldLinesOmitted)
-	require.Equal(t, "12,88", labels[2].FoldLinesMm, "200 lies past the height and is dropped")
+	require.Equal(t, "12,88,200", labels[2].FoldLinesMm, "no fold_axis sent: the parse leaves the length open, the carry cuts to the effective axis")
 
 	pb := techCardGarmentLabelsToPb([]entity.TechCardGarmentLabel{{Key: "size"}, {Key: "care", FoldLinesMm: "12,88"}})
 	require.NotNil(t, pb[0].FoldLinesMm, "the read always sends the field, so a round trip never reads as an older client")

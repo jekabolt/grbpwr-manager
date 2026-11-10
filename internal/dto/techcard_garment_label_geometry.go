@@ -175,18 +175,62 @@ func carryOmittedGarmentLabelFoldLines(stored, in *entity.TechCardInsert) {
 	}
 	for i := range in.GarmentLabels {
 		row := &in.GarmentLabels[i]
-		if !row.FoldLinesOmitted && !row.StitchLinesOmitted {
+		if !row.FoldLinesOmitted && !row.StitchLinesOmitted && !row.FoldAxisOmitted && !row.PagesOmitted {
 			continue
 		}
-		if prev := byLineKey[normalizeGarmentLabelLineKey(row.LineKey)]; prev != nil {
+		prev := byLineKey[normalizeGarmentLabelLineKey(row.LineKey)]
+		if prev != nil {
+			if row.FoldAxisOmitted {
+				row.FoldAxis = prev.FoldAxis
+			}
+			if row.PagesOmitted {
+				row.Pages = prev.Pages
+			}
 			if row.FoldLinesOmitted {
-				row.FoldLinesMm = NormalizeGarmentLabelFoldLines(prev.FoldLinesMm, row.HeightMm)
+				row.FoldLinesMm = prev.FoldLinesMm
 			}
 			if row.StitchLinesOmitted {
-				row.StitchLinesMm = NormalizeGarmentLabelStitchLines(prev.StitchLinesMm, row.HeightMm)
+				row.StitchLinesMm = prev.StitchLinesMm
 			}
 		}
+		row.Pages = NormalizeGarmentLabelPages(row.Pages)
+		row.FoldAxis = NormalizeGarmentLabelFoldAxis(row.FoldAxis)
+		// The lines are cut to the length of the effective axis again: this client may have changed the
+		// size, and a line it sent was cut at parse without the stored axis.
+		limit := GarmentLabelLineLimit(row.FoldAxis, row.WidthMm, row.HeightMm)
+		row.FoldLinesMm = NormalizeGarmentLabelFoldLines(row.FoldLinesMm, limit)
+		row.StitchLinesMm = NormalizeGarmentLabelStitchLines(row.StitchLinesMm, limit)
 	}
+}
+
+// NormalizeGarmentLabelFoldAxis puts fold_axis in its stored form: "width" or "" (anything else).
+func NormalizeGarmentLabelFoldAxis(raw string) string {
+	if strings.ToLower(strings.TrimSpace(raw)) == "width" {
+		return "width"
+	}
+	return ""
+}
+
+const maxGarmentLabelPages = 12
+
+// NormalizeGarmentLabelPages clamps the pages of a booklet label to 1..12.
+func NormalizeGarmentLabelPages(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > maxGarmentLabelPages {
+		return maxGarmentLabelPages
+	}
+	return n
+}
+
+// GarmentLabelLineLimit is the length the fold and stitch lines are measured against: the width when
+// the (already normalised) axis is "width", else the height. Unset = unknown (no upper bound).
+func GarmentLabelLineLimit(axis string, width, height decimal.NullDecimal) decimal.NullDecimal {
+	if axis == "width" {
+		return width
+	}
+	return height
 }
 
 // maxGarmentLabelFoldLines caps the fold lines of one label. Eight lines of "99999.9" with commas
