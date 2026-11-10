@@ -233,6 +233,36 @@ func TestResolveImportSizeUnknownIsAHoleNotASilentZero(t *testing.T) {
 	require.Equal(t, 1, tally.Skipped, "the skipped column is the only place the lost size is a NUMBER")
 }
 
+func TestResolveImportDropsUnknownTopstitchSizeRowsButKeepsLines(t *testing.T) {
+	insert := &pb_common.TechCardInsert{Operations: []*pb_common.TechCardOperation{{
+		TopstitchLines: []*pb_common.TechCardTopstitchLine{
+			{LineKey: restoreTopFresh, Sizes: []*pb_common.TechCardTopstitchLineSize{
+				{SizeId: 3, LineMm: &pbdecimal.Decimal{Value: "200"}},
+				{SizeId: 9, LineMm: &pbdecimal.Decimal{Value: "220"}},
+			}},
+			{LineKey: restoreTopStale, Sizes: []*pb_common.TechCardTopstitchLineSize{
+				{SizeId: 9, LineMm: &pbdecimal.Decimal{Value: "180"}},
+			}},
+		},
+	}}}
+	r := &tcimpResolver{
+		out:                &resolvedTechCardImport{Insert: insert, Counters: techcardarchive.NewCounters()},
+		sizeMapping:        map[int64]int64{3: 30},
+		sizeNameBySourceID: map[int64]string{3: "s", 9: "xxl"},
+		sizeMissed:         map[int64]bool{},
+		holeSeen:           map[string]bool{},
+	}
+
+	r.resolveSizes()
+
+	lines := insert.GetOperations()[0].GetTopstitchLines()
+	require.Len(t, lines, 2, "a line remains as an incomplete run when its measurements do not survive")
+	require.Len(t, lines[0].GetSizes(), 1)
+	require.EqualValues(t, 30, lines[0].GetSizes()[0].GetSizeId())
+	require.Empty(t, lines[1].GetSizes())
+	require.Len(t, tcimpHoles(r.out, techcardarchive.ReasonSizeUnknown), 1)
+}
+
 // ────────────────────────────── 2. measurements (the SECOND axis) ──────────────────────────────
 
 // A measurement the target does not have must NOT be reported as a size problem: an operator told

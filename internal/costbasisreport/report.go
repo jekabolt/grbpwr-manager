@@ -406,7 +406,7 @@ func buildCard(card *entity.TechCard, fx dto.CostingFx, sizeNames map[int]string
 	if len(card.Colorways) == 0 {
 		// An aux card's one recipe is its BOM (entity.AuxRecipe, 0456). Its norms are flat, so the
 		// basis change cannot move them; the row keeps the card's materials in the report.
-		if recipe := entity.AuxRecipe(&card.TechCardInsert); recipe != nil {
+		if recipe := entity.AuxRecipeWithMaterials(&card.TechCardInsert, card.LinkedMaterials); recipe != nil {
 			cr.Colorways = append(cr.Colorways, buildColorway(card, old, recipe, 0, fx, sizeNames, false))
 		}
 	}

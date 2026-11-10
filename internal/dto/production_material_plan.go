@@ -78,7 +78,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	// pool into one quantity and the blockers name the card.
 	var auxRecipe *entity.TechCardColorway
 	if len(card.Colorways) == 0 {
-		auxRecipe = entity.AuxRecipe(&card.TechCardInsert)
+		auxRecipe = entity.AuxRecipeWithMaterials(&card.TechCardInsert, card.LinkedMaterials)
 	}
 	aux := auxRecipe != nil
 	if aux {

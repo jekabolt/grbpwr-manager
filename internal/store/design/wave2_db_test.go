@@ -1425,12 +1425,14 @@ func TestDesignDBCompleteRunClosingUpdateRefusesAForeignToken(t *testing.T) {
 func TestDesignDBFailRunClosingUpdatesRefuseAForeignToken(t *testing.T) {
 	rep, raw := probeRepository(t)
 	resetBudget(t, raw)
-	card := probeCard(t, raw)
 
 	stmts := designRunUpdatesOf(t, "FailRun")
 	require.Len(t, stmts, 2, "у FailRun две ветки записи: ретрай и терминальная")
 
 	for i, stmt := range stmts {
+		// Карточка на ветку: ретрай первой ветки возвращает прогон в pending, а с 737f77c у карточки
+		// один флэт-прогон за раз (flat_run_in_flight) — второй старт на той же карточке отказан.
+		card := probeCard(t, raw)
 		run := startProbeRun(t, rep, card, "0.10").Run.Id
 		mine := uuid.NewString()
 		heldProbeRun(t, raw, run, mine)
@@ -1441,6 +1443,9 @@ func TestDesignDBFailRunClosingUpdatesRefuseAForeignToken(t *testing.T) {
 			"code":   nil,
 			"err":    nil,
 			"status": entity.DesignRunFailed,
+			// Ретрай пишет attempt_count + :round с 7b19b4e (G-03 r2: оплаченный сбор, который ждёт,
+			// встаёт в очередь, не тратя раунда); без этого имени оператор не исполнить вовсе.
+			"round": 1,
 		}
 		foreign := map[string]any{"tok": uuid.NewString()}
 		for k, v := range base {

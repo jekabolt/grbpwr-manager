@@ -413,9 +413,28 @@ func TestSampleCost(t *testing.T) {
 	require.ErrorIs(t, err, sql.ErrNoRows)
 
 	// Лента склада пережила удаление целиком — стирать учёт задним числом удаление не имеет права.
+	//
+	// Лента ПО МАТЕРИАЛУ содержит и приход из подготовки (20 m по 10) — у него нет семпла, поэтому в
+	// `movements` (фильтр по семплу) его нет. Счёт в 677ea05 написан без него (+1 вместо +2) и красный
+	// с рождения: код ленту не терял, тест недосчитал приход.
 	after, _, err := s.MaterialStock().ListMaterialMovements(ctx, 50, 0, entity.MaterialMovementFilter{MaterialId: matID})
 	require.NoError(t, err)
-	require.Len(t, after, len(movements)+1, "issue + two returns all still in the ledger")
+	require.Len(t, after, len(movements)+2, "receipt + issue + two returns all still in the ledger")
+	byType := map[entity.MaterialMovementType]int{}
+	afterByID := make(map[int]entity.MaterialMovement, len(after))
+	for _, mv := range after {
+		byType[mv.MovementType]++
+		afterByID[mv.Id] = mv
+	}
+	require.Equal(t, 1, byType[entity.MaterialMovementReceipt], "the opening receipt")
+	require.Equal(t, 1, byType[entity.MaterialMovementIssueSample], "the issue")
+	require.Equal(t, 2, byType[entity.MaterialMovementReturnSample], "both returns")
+	for _, mv := range movements {
+		kept, ok := afterByID[mv.Id]
+		require.True(t, ok, "movement %d of the deleted sample is still in the ledger", mv.Id)
+		require.False(t, kept.SampleId.Valid, "the deleted sample's movement lost its sample (SET NULL)")
+		require.Equal(t, int32(tcID), kept.TechCardId.Int32, "and still names its style")
+	}
 }
 
 // atoiDay converts a 2-char day string ("01".."31") to its int day for building a deterministic

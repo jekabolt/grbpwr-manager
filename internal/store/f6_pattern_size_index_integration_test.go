@@ -56,15 +56,22 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	present := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
 	const (
 		lineShell = "01F6LINESHELL00000000000A1"
+		lineTrim  = "01F6LINETRIM000000000000A2"
 		sheetA    = "01F6SHEETA00000000000000S1"
 		sheetB    = "01F6SHEETB00000000000000S2"
 		urlBase   = "https://cdn.example/base/tech-card-patterns/2026/august/"
 	)
-	bom := []entity.TechCardBomItem{{LineKey: lineShell, Section: entity.BomSectionFabric, Name: "Твил"}}
-	pat := func(lineKey, file string) entity.TechCardSizePattern {
+	// One material slot holds at most one pattern file (f626b0c), so the shell scope carries ONE
+	// sheet and the second sheet sits in another fabric's slot on the same card: the scope's
+	// fingerprint and its sheet-set check must see sheetA alone, never the card's whole sheet list.
+	bom := []entity.TechCardBomItem{
+		{LineKey: lineShell, Section: entity.BomSectionFabric, Name: "Твил"},
+		{LineKey: lineTrim, Section: entity.BomSectionFabric, Name: "Отделка"},
+	}
+	pat := func(lineKey, slot, file string) entity.TechCardSizePattern {
 		return entity.TechCardSizePattern{
 			SizeId: sizeID, URL: urlBase + file, LineKey: lineKey,
-			BomLineKey: present(lineShell),
+			BomLineKey: present(slot),
 		}
 	}
 	card := func(patterns []entity.TechCardSizePattern) *entity.TechCardInsert {
@@ -79,7 +86,7 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	}
 
 	tcID, err := T.AddTechCard(ctx, card([]entity.TechCardSizePattern{
-		pat(sheetA, "f6-front.dxf"), pat(sheetB, "f6-back.dxf"),
+		pat(sheetA, lineShell, "f6-front.dxf"), pat(sheetB, lineTrim, "f6-back.dxf"),
 	}))
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -99,7 +106,7 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	res, err := T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
 		TechCardId:    tcID,
 		ScopeKey:      scope,
-		SheetLineKeys: []string{sheetA, sheetB},
+		SheetLineKeys: []string{sheetA},
 		SizeTokens:    []string{"XS", "<S>", "m"}, // normalisation happens on the way in
 		ParsedBy:      "tester",
 	})
@@ -135,7 +142,7 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	// This is the property that makes the index safe to trust: nobody has to remember to invalidate
 	// it. The url moves, the server's fingerprint moves with it, and the gate falls back to «no
 	// verdict» — which is UNKNOWN, so it blocks nothing either.
-	resave([]entity.TechCardSizePattern{pat(sheetA, "f6-front-v2.dxf"), pat(sheetB, "f6-back.dxf")})
+	resave([]entity.TechCardSizePattern{pat(sheetA, lineShell, "f6-front-v2.dxf"), pat(sheetB, lineTrim, "f6-back.dxf")})
 	idx, err = T.GetTechCardPatternSizeIndex(ctx, tcID)
 	require.NoError(t, err)
 	row = idx[scope]
@@ -148,17 +155,23 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	// sheets nobody parsed. And deriveBlockSizes is not compositional, so a PARTIAL parse is not a
 	// subset of a full one — it is a different answer.
 	_, err = T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
-		TechCardId: tcID, ScopeKey: scope, SheetLineKeys: []string{sheetA}, SizeTokens: []string{"m"},
+		TechCardId: tcID, ScopeKey: scope, SheetLineKeys: []string{}, SizeTokens: []string{"m"},
 	})
-	require.Error(t, err, "a parse that saw only half the scope is refused")
+	require.Error(t, err, "a parse that saw fewer sheets than the scope holds is refused")
 	require.Contains(t, err.Error(), "sheet_set_mismatch")
 
 	_, err = T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
 		TechCardId: tcID, ScopeKey: scope,
-		SheetLineKeys: []string{sheetA, sheetB, "01F6SHEETGHOST0000000000S9"},
+		SheetLineKeys: []string{sheetA, "01F6SHEETGHOST0000000000S9"},
 		SizeTokens:    []string{"m"},
 	})
 	require.Error(t, err, "a parse naming a sheet this scope does not hold is refused")
+	require.Contains(t, err.Error(), "sheet_set_mismatch")
+
+	_, err = T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
+		TechCardId: tcID, ScopeKey: scope, SheetLineKeys: []string{sheetA, sheetB}, SizeTokens: []string{"m"},
+	})
+	require.Error(t, err, "a sheet of another fabric's slot on the same card is not this scope's either")
 	require.Contains(t, err.Error(), "sheet_set_mismatch")
 
 	// A scope with no live BOM line cannot be indexed: an index under an unknown key would answer
@@ -175,7 +188,7 @@ func TestF6PatternSizeIndex(t *testing.T) {
 	// two different actions — and it must NEVER read as «no sizes are present», which would be a
 	// false blocker on every size at once.
 	res, err = T.PutTechCardPatternSizeIndex(ctx, entity.PatternSizeIndexWrite{
-		TechCardId: tcID, ScopeKey: scope, SheetLineKeys: []string{sheetA, sheetB},
+		TechCardId: tcID, ScopeKey: scope, SheetLineKeys: []string{sheetA},
 		SizeTokens: nil, ParsedBy: "tester",
 	})
 	require.NoError(t, err, "an empty parse is recorded, not refused")

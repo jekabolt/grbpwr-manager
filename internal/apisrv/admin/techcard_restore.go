@@ -106,6 +106,11 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	if err := restoreCutStripsFromSnapshot(snap.Snapshot, frozen); err != nil {
 		return nil, err
 	}
+	if err := restoreTopstitchLinesFromSnapshot(snap.Snapshot, frozen); err != nil {
+		return nil, err
+	}
+	carryStoredTopstitchLines := !frozen.GetTechCard().GetTopstitchLinesAware() &&
+		sameOperationsIgnoringTopstitch(frozen.GetTechCard(), current)
 	in, err := restoreTechCardPayload(frozen.GetTechCard(), stored, current)
 	if err != nil {
 		return nil, err
@@ -124,8 +129,11 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 		stripTechCardCosting(&pb_common.TechCard{TechCard: in})
 	}
 	tc, err := s.prepareTechCardWriteFrom(ctx, id, in, fmt.Sprintf("restore:%d", snap.Id), techCardWriteSource{
-		stored:    stored,
-		readdress: restoreLabelBomLinks(frozen.GetTechCard().GetBomItems()),
+		stored:                    stored,
+		readdress:                 restoreLabelBomLinks(frozen.GetTechCard().GetBomItems()),
+		carryStoredTopstitchLines: carryStoredTopstitchLines,
+		restoreTopstitchLines:     frozen.GetTechCard().GetTopstitchLinesAware(),
+		topstitchStale:            restoredTopstitchStale(frozen.GetTechCard()),
 	})
 	if err != nil {
 		return nil, err
@@ -217,6 +225,35 @@ func restoreCutStripsFromSnapshot(raw string, frozen *pb_common.TechCard) error 
 	}
 	frozen.TechCard.CutStrips = frozen.GetCutStrips()
 	frozen.TechCard.CutStripsAware = true
+	return nil
+}
+
+// restoreTopstitchLinesFromSnapshot declares nested operation lines only when the raw snapshot
+// names every child list. Older snapshots stay unaware and cannot silently erase newer lines.
+func restoreTopstitchLinesFromSnapshot(raw string, frozen *pb_common.TechCard) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return status.Error(codes.FailedPrecondition, "this snapshot cannot be restored: "+err.Error())
+	}
+	var insert map[string]json.RawMessage
+	if err := json.Unmarshal(top["techCard"], &insert); err != nil {
+		return status.Error(codes.FailedPrecondition, "this snapshot cannot be restored: "+err.Error())
+	}
+	var operations []map[string]json.RawMessage
+	if rawOps, ok := insert["operations"]; ok {
+		if err := json.Unmarshal(rawOps, &operations); err != nil {
+			return status.Error(codes.FailedPrecondition, "this snapshot cannot be restored: "+err.Error())
+		}
+	}
+	if len(operations) != len(frozen.GetTechCard().GetOperations()) {
+		return nil
+	}
+	for i := range operations {
+		if _, ok := operations[i][snapshotTopstitchLinesField]; !ok {
+			return nil
+		}
+	}
+	frozen.TechCard.TopstitchLinesAware = true
 	return nil
 }
 

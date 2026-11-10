@@ -378,6 +378,32 @@ func TestAuxReleaseRestorerCarriesTheNorms(t *testing.T) {
 		frozen, _ := ComputeTechCardUnitCost(restored, CostingFx{})
 		require.Equal(t, live.Decimal.String(), frozen.Decimal.String())
 	})
+	t.Run("a roll strip uses the frozen outer norm", func(t *testing.T) {
+		strip := auxReleaseCard()
+		strip.BomItems[2].Section = entity.BomSectionLining
+		strip.BomItems[2].FabricWidth = nd("140")
+		strip.BomItems[2].ConsumptionPerUnit = decimal.NullDecimal{}
+		strip.CutStrips = []entity.TechCardCutStrip{{
+			LineKey: auxStripKey, BomLineKey: auxRopeKey, LengthMode: entity.CutStripModeOneLength,
+			OneLengthMm: sql.NullInt32{Int32: 1200, Valid: true}, WidthMm: decimal.RequireFromString("30"), Qty: 1,
+		}}
+		snap := releaseBlob(t, strip)
+		require.Equal(t, "0.026", snap.GetCutStripNorms()[0].GetNorm().GetValue())
+		for _, raw := range snap.GetCutStrips() {
+			raw.WidthMm = auxPbDec("700")
+			raw.OneLengthMm = cutNormI32(9999)
+		}
+		for _, line := range snap.GetTechCard().GetBomItems() {
+			if line.GetLineKey() == auxRopeKey {
+				line.FabricWidth = auxPbDec("70")
+			}
+		}
+		restored := releaseCostingCardFromSnapshot(snap)
+		require.True(t, restored.BomItems[2].CutToLength)
+		require.Equal(t, "0.026", restored.BomItems[2].ConsumptionPerUnit.Decimal.String())
+		recipe := entity.AuxRecipe(&restored.TechCardInsert)
+		require.Equal(t, "0.026", recipe.Usages[2].Consumption.Decimal.String())
+	})
 	t.Run("a sellable blob carries no aux fields", func(t *testing.T) {
 		sell := releaseBlob(t, auxReleaseCard())
 		sell.GetTechCard().Purpose = pb_common.TechCardPurpose_TECH_CARD_PURPOSE_SELLABLE

@@ -42,7 +42,7 @@ func computeConversionCost(inputs []conversionCostInput, workBase, outputQty dec
 		}
 		value := input.Quantity.Mul(input.Avg)
 		out.InputsCostBase = out.InputsCostBase.Add(value)
-		out.InputsValueBase = out.InputsValueBase.Add(value.Round(2))
+		out.InputsValueBase = out.InputsValueBase.Add(entity.MovementValueCents(input.Quantity, input.Avg))
 	}
 	out.TotalCostBase = out.InputsCostBase.Add(workBase)
 	if out.TotalCostBase.IsZero() {

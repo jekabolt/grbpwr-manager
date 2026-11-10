@@ -525,7 +525,7 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 				return err
 			}
 			out = prior
-			return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+			return nil
 		}
 
 		layer, err := layerByID(ctx, db, req.LayerId)
@@ -695,12 +695,18 @@ func (s *Store) FlattenEditLayer(ctx context.Context, req entity.DesignEditLayer
 			}
 		}
 		out, err = pictureByID(ctx, db, id)
-		if err != nil {
-			return err
-		}
-		return resolveMedia(ctx, rep, []*entity.DesignPicture{&out})
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	// ФАЙЛ И УГЛЫ КАДРА — ПОСЛЕ КОММИТА, В СНИМКЕ ЧТЕНИЯ, А НЕ В ТРАНЗАКЦИИ ЗАПИСИ. resolveMedia читает
+	// цепочки правок ВСЕЙ карточки (annotateEditChains, T28 v2 ece15de) сканом по
+	// idx_design_picture_card, а под SERIALIZABLE этот скан ставит S на каждый кадр карточки — ровно то
+	// чтение, которое раунд 4 O-53 (012292f) из перезаписи убрал: перезапись снова ждала любую чужую
+	// транзакцию, державшую любой кадр той же карточки (TestDesignDBOverwriteDoesNotLockTheRestOfTheCard).
+	// Ответ ничего не теряет: снимок после коммита видит и поданную правку, и штамп replaced_by.
+	if err := s.resolveMediaAfterCommit(ctx, []*entity.DesignPicture{&out}); err != nil {
 		return nil, err
 	}
 	return &out, nil

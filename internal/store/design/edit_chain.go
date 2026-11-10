@@ -159,13 +159,6 @@ func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainSte
 			`SELECT * FROM design_picture WHERE id IN (:ids) ORDER BY id`, map[string]any{"ids": ids}); err != nil {
 			return fmt.Errorf("failed to read the edit chain of design picture %d: %w", pic.Id, err)
 		}
-		flat := make([]*entity.DesignPicture, 0, len(out.Pictures))
-		for i := range out.Pictures {
-			flat = append(flat, &out.Pictures[i])
-		}
-		if err := resolveMedia(ctx, rep, flat); err != nil {
-			return err
-		}
 		if out.Slots, err = storeutil.QueryListNamed[entity.DesignBenchSlot](ctx, db,
 			`SELECT * FROM design_bench_slot WHERE tech_card_id = :card AND picture_id = :pic`,
 			map[string]any{"card": pic.TechCardId, "pic": step.To}); err != nil {
@@ -175,7 +168,28 @@ func (s *Store) editChainStep(ctx context.Context, req entity.DesignEditChainSte
 		for i := range out.Slots {
 			ptrs = append(ptrs, &out.Slots[i])
 		}
-		return attachSlotPictures(ctx, rep, ptrs)
+		return attachSlotPlates(ctx, rep, ptrs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// ФАЙЛЫ И УГЛЫ ЦЕПОЧКИ И ПЛИТ — ПОСЛЕ КОММИТА, В СНИМКЕ ЧТЕНИЯ, как у остальных дверей записи
+	// (resolveMediaAfterCommit). Замков это шагу не снимает — звенья цепочек карточки он берёт FOR UPDATE
+	// намеренно (две вкладки undo/redo идут друг за другом), — но транзакция больше не читает под ними
+	// файлы и не держит их на время этого чтения.
+	err = s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		flat := make([]*entity.DesignPicture, 0, len(out.Pictures))
+		for i := range out.Pictures {
+			flat = append(flat, &out.Pictures[i])
+		}
+		if err := resolveMedia(ctx, rep, flat); err != nil {
+			return err
+		}
+		ptrs := make([]*entity.DesignBenchSlot, 0, len(out.Slots))
+		for i := range out.Slots {
+			ptrs = append(ptrs, &out.Slots[i])
+		}
+		return resolveSlotMedia(ctx, rep, ptrs)
 	})
 	if err != nil {
 		return nil, err

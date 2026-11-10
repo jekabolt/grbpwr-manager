@@ -56,28 +56,53 @@ func cutStripRows(ctx context.Context, db dependency.DB, ids []int) ([]entity.Te
 	return strips, nil
 }
 
-// enrichCutStrips loads the strips and runs the read-time norm resolver on every card. Every reader of
-// a norm walks an enriched card, so this is the single place the number appears.
+// enrichCutStrips loads strips and resolves every derived line norm. Production enrichment has already
+// attached the operation-owned topstitch lines.
 func (s *Store) enrichCutStrips(ctx context.Context, cards []entity.TechCard) error {
 	ids := make([]int, 0, len(cards))
+	materialIDs := make([]int, 0)
+	seenMaterial := make(map[int]bool)
+	addMaterial := func(id int64) {
+		if id > 0 && !seenMaterial[int(id)] {
+			seenMaterial[int(id)] = true
+			materialIDs = append(materialIDs, int(id))
+		}
+	}
 	for i := range cards {
 		ids = append(ids, cards[i].Id)
+		for j := range cards[i].BomItems {
+			if cards[i].BomItems[j].MaterialId.Valid {
+				addMaterial(cards[i].BomItems[j].MaterialId.Int64)
+			}
+		}
+		for j := range cards[i].Colorways {
+			for k := range cards[i].Colorways[j].Usages {
+				if cards[i].Colorways[j].Usages[k].MaterialId.Valid {
+					addMaterial(cards[i].Colorways[j].Usages[k].MaterialId.Int64)
+				}
+			}
+		}
 	}
 	strips, err := cutStripRows(ctx, s.DB, ids)
 	if err != nil {
 		return err
 	}
-	if len(strips) == 0 {
-		return nil
-	}
 	byCard := make(map[int][]entity.TechCardCutStrip, len(cards))
 	for i := range strips {
 		byCard[strips[i].TechCardId] = append(byCard[strips[i].TechCardId], strips[i])
 	}
+	// Widths matter only to roll strips; a page of cards without strips never loads the catalogue.
+	var linked map[int]entity.MaterialWithPrice
+	if len(strips) > 0 {
+		if linked, err = s.getMaterialsByIDs(ctx, materialIDs); err != nil {
+			return err
+		}
+	}
 	for i := range cards {
 		c := &cards[i]
 		c.CutStrips = byCard[c.Id]
-		entity.ApplyCutStripNorms(c.BomItems, c.CutStrips, c.SizeIds, c.Colorways)
+		entity.ApplyDerivedLineNormsWithMaterials(c.BomItems, c.CutStrips,
+			entity.TopstitchLines(c.Operations), c.SizeIds, c.Colorways, linked)
 	}
 	return nil
 }
@@ -315,11 +340,23 @@ func (s *Store) resolveCutStripRecipe(ctx context.Context, colorwayID int, usage
 		return usages, nil
 	}
 	strips, err := cutStripRows(ctx, s.DB, styles[:1])
-	if err != nil || len(strips) == 0 {
+	if err != nil {
 		return usages, err
 	}
+	topByOp, err := loadOperationTopstitchLines(ctx, s.DB, styles[:1])
+	if err != nil {
+		return usages, err
+	}
+	var topstitch []entity.TechCardTopstitchLine
+	for _, lines := range topByOp {
+		topstitch = append(topstitch, lines...)
+	}
+	if len(strips) == 0 && len(topstitch) == 0 {
+		return usages, nil
+	}
 	bom, err := storeutil.QueryListNamed[entity.TechCardBomItem](ctx, s.DB, `
-		SELECT bi.id, bi.line_key, COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit
+		SELECT bi.id, bi.line_key, bi.section, bi.purpose, bi.material_id, bi.fabric_width,
+		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit, bi.thread_per_mm
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
 		WHERE bi.tech_card_id = :id
@@ -332,7 +369,30 @@ func (s *Store) resolveCutStripRecipe(ctx context.Context, colorwayID int, usage
 	if err != nil {
 		return nil, fmt.Errorf("load size range for cut strips: %w", err)
 	}
-	return entity.ResolveCutStripUsages(usages, bom, entity.CutStripLineNorms(bom, strips, sizes)), nil
+	materialIDs := make([]int, 0, len(bom)+len(usages))
+	seen := make(map[int]bool)
+	addMaterial := func(id int64) {
+		if id > 0 && !seen[int(id)] {
+			seen[int(id)] = true
+			materialIDs = append(materialIDs, int(id))
+		}
+	}
+	for i := range bom {
+		if bom[i].MaterialId.Valid {
+			addMaterial(bom[i].MaterialId.Int64)
+		}
+	}
+	for i := range usages {
+		if usages[i].MaterialId.Valid {
+			addMaterial(usages[i].MaterialId.Int64)
+		}
+	}
+	linked, err := s.getMaterialsByIDs(ctx, materialIDs)
+	if err != nil {
+		return nil, err
+	}
+	norms := entity.DerivedLineNormsForRecipe(bom, strips, topstitch, sizes, linked, usages)
+	return entity.ResolveDerivedLineUsages(usages, bom, norms), nil
 }
 
 // cutStripStoredRow is a garment-level recipe row as the table holds it, on the way to being written back.
@@ -394,8 +454,8 @@ func cutStripStoredRows(ctx context.Context, db dependency.DB, colorwayID int, l
 	return out, nil
 }
 
-// sanitizeCutStripRecipe applies one rule of the recipe to its full-replace write: the norm of a strip
-// line is not typed. What a client sends for a garment-level row of such a line is what really is the
+// sanitizeCutStripRecipe applies one rule of the recipe to its full-replace write: a derived line norm
+// is not typed. What a client sends for a garment-level row of such a line is what really is the
 // colourway's (the pinned article, the colour, the placement); the numbers of the row come from the table.
 //
 // The wire row has no id, so a stored row is found by its line and placement, and a row left over then
@@ -413,11 +473,15 @@ func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID, colo
 	if err != nil {
 		return nil, nil, err
 	}
+	topRows, err := operationTopstitchRows(ctx, db, []int{styleID})
+	if err != nil {
+		return nil, nil, err
+	}
 	claims := false
 	for i := range usages {
 		claims = claims || usages[i].IsCutLengthNorm()
 	}
-	if len(strips) == 0 && !claims {
+	if len(strips) == 0 && len(topRows) == 0 && !claims {
 		return usages, nil, nil
 	}
 	lines, err := storeutil.QueryListNamed[struct {
@@ -428,9 +492,12 @@ func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID, colo
 	if err != nil {
 		return nil, nil, fmt.Errorf("load style bom for cut strips: %w", err)
 	}
-	stripLine := make(map[string]bool, len(strips))
+	stripLine := make(map[string]bool, len(strips)+len(topRows))
 	for i := range strips {
 		stripLine[strips[i].BomLineKey] = true
+	}
+	for i := range topRows {
+		stripLine[topRows[i].BomLineKey] = true
 	}
 	keyAt := func(index sql.NullInt32) string {
 		if index.Valid {
@@ -464,7 +531,7 @@ func sanitizeCutStripRecipe(ctx context.Context, db dependency.DB, styleID, colo
 		}
 		if !stripLine[keys[i]] && u.IsCutLengthNorm() {
 			return nil, nil, entity.NewFieldViolation(fmt.Sprintf("usages[%d].consumption_source", i),
-				"cut_length_without_strip", "", "this line has no strip, so its norm is not a cut length")
+				"cut_length_without_strip", "", "this line has no measured strip or topstitch line")
 		}
 		pieceBound := strings.TrimSpace(u.PieceLineKey) != "" || u.PieceIndex.Valid // says which fabric, not how much
 		findsStored[i] = stripLine[keys[i]] && !pieceBound && !u.ArchivedNorm

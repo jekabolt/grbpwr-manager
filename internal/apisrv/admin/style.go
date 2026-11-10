@@ -385,6 +385,7 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	// stops naming one and keeps the seam lengths it was given.
 	pbInsert.CutStrips = cloneCutStripsWithoutSeams(full.GetCutStrips())
 	pbInsert.CutStripsAware = true
+	pbInsert.TopstitchLinesAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
 	if err != nil {
 		// Field-tagged when the SOURCE card carries something the converter rejects, so the operator

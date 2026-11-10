@@ -1164,6 +1164,18 @@ func (s *Store) enrichProduction(ctx context.Context, cards []entity.TechCard) e
 		opsByCard[pos.cardID][pos.index].SeamKeys = keys
 	}
 
+	topstitchByOp, err := loadOperationTopstitchLines(ctx, s.DB, ids)
+	if err != nil {
+		return err
+	}
+	for opID, lines := range topstitchByOp {
+		pos, ok := posByOpID[opID]
+		if !ok {
+			continue
+		}
+		opsByCard[pos.cardID][pos.index].TopstitchLines = lines
+	}
+
 	// The folds that close on each step (0444), the same way.
 	foldKeysByOp, err := loadOperationFoldKeys(ctx, s.DB, ids)
 	if err != nil {

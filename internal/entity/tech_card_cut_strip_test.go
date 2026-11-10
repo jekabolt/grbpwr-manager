@@ -142,6 +142,143 @@ func TestCutStripLineNorms(t *testing.T) {
 	})
 }
 
+func rollCutBom(width string) []TechCardBomItem {
+	line := TechCardBomItem{
+		Id: 502, LineKey: cutTestLine, Section: BomSectionLining, Name: "binding",
+		Unit:    sql.NullString{String: "m", Valid: true},
+		Purpose: sql.NullString{String: "binding", Valid: true},
+	}
+	if width != "" {
+		line.FabricWidth = decimal.NewNullDecimal(cutDec(width))
+	}
+	return []TechCardBomItem{line}
+}
+
+func rollCutArticle(id int, width, selvedge string) MaterialWithPrice {
+	material := MaterialWithPrice{Material: Material{Id: id}}
+	if width != "" {
+		material.FabricAttr = &MaterialFabricAttr{
+			WidthCm: decimal.NewNullDecimal(cutDec(width)), SelvedgeCm: cutDec(selvedge),
+		}
+	}
+	return material
+}
+
+func TestRollCutStripLineNormsUseWholeLanes(t *testing.T) {
+	one := cutOneLength(1200)
+
+	t.Run("thirty millimetres from a 140 centimetre roll", func(t *testing.T) {
+		norm := DerivedLineNorms(rollCutBom("140"), []TechCardCutStrip{one}, nil, nil)[0]
+		require.True(t, norm.Complete)
+		require.Equal(t, "0.026", norm.Flat.Decimal.String(), "1200 mm / floor(1400 / 30)")
+	})
+	t.Run("wide strips use six lanes, not 6.9", func(t *testing.T) {
+		wide := one
+		wide.WidthMm = cutDec("200")
+		norm := DerivedLineNorms(rollCutBom("138"), []TechCardCutStrip{wide}, nil, nil)[0]
+		require.Equal(t, "0.2", norm.Flat.Decimal.String())
+	})
+	t.Run("different widths sum before the only rounding", func(t *testing.T) {
+		a, b := one, one
+		a.OneLengthMm = sql.NullInt32{Int32: 1000, Valid: true}
+		b.OneLengthMm = sql.NullInt32{Int32: 1000, Valid: true}
+		a.WidthMm, b.WidthMm = cutDec("300"), cutDec("500")
+		b.LineKey = cutTestLineB
+		norm := DerivedLineNorms(rollCutBom("140"), []TechCardCutStrip{a, b}, nil, nil)[0]
+		require.Equal(t, "0.75", norm.Flat.Decimal.String(), "1000/4 + 1000/2 millimetres")
+	})
+
+	for name, strip := range map[string]TechCardCutStrip{
+		"from seam":  cutFromSeam("100", "0", cutSeam(1, "1200")),
+		"per size":   {BomLineKey: cutTestLine, LineKey: cutTestStrip, LengthMode: CutStripModePerSize, WidthMm: cutDec("30"), Qty: 1, Sizes: []TechCardCutStripSize{cutManual(1, 1200)}},
+		"one length": one,
+	} {
+		t.Run(name, func(t *testing.T) {
+			norm := DerivedLineNorms(rollCutBom("140"), []TechCardCutStrip{strip}, nil, []int{1})[0]
+			if strip.LengthMode == CutStripModeOneLength {
+				require.Equal(t, "0.026", norm.Flat.Decimal.String())
+			} else {
+				require.Equal(t, []string{"0.026"}, cutNormStrings(norm.BySize))
+			}
+		})
+	}
+}
+
+func TestRollCutStripLineNormsAreIncompleteWithoutEveryDimension(t *testing.T) {
+	valid := cutOneLength(1200)
+	for name, tc := range map[string]struct {
+		bom  []TechCardBomItem
+		edit func(*TechCardCutStrip)
+	}{
+		"missing strip width": {rollCutBom("140"), func(s *TechCardCutStrip) { s.WidthMm = decimal.Zero }},
+		"missing roll width":  {rollCutBom(""), func(*TechCardCutStrip) {}},
+		"strip wider than roll": {rollCutBom("140"), func(s *TechCardCutStrip) {
+			s.WidthMm = cutDec("1401")
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			strip := valid
+			tc.edit(&strip)
+			norm := DerivedLineNorms(tc.bom, []TechCardCutStrip{strip}, nil, nil)[0]
+			require.False(t, norm.Complete)
+			require.False(t, norm.Flat.Valid)
+			require.Empty(t, norm.BySize)
+		})
+	}
+}
+
+func TestRollCutStripWidthResolutionAndColourwayPins(t *testing.T) {
+	bom := rollCutBom("140")
+	bom[0].MaterialId = sql.NullInt64{Int64: 10, Valid: true}
+	strip := cutOneLength(1000)
+	strip.WidthMm = cutDec("200")
+	linked := map[int]MaterialWithPrice{
+		10: rollCutArticle(10, "100", "5"), // usable 90 cm: 4 lanes
+		20: rollCutArticle(20, "200", "0"), // 10 lanes
+		30: rollCutArticle(30, "", "0"),
+	}
+
+	defaultNorm := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, linked, nil)[0]
+	require.Equal(t, "0.25", defaultNorm.Flat.Decimal.String(), "article usable width beats the 140 cm line")
+	lineOnly := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, nil, nil)[0]
+	require.Equal(t, "0.143", lineOnly.Flat.Decimal.String(), "line width is the default-article fallback")
+
+	usage := func(materialID int64) TechCardColorwayUsage {
+		return TechCardColorwayUsage{
+			BomItemId:  sql.NullInt64{Int64: 502, Valid: true},
+			MaterialId: sql.NullInt64{Int64: materialID, Valid: true},
+		}
+	}
+	pinned := []TechCardColorwayUsage{usage(20)}
+	pinnedNorm := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, linked, pinned)[0]
+	require.Equal(t, "0.1", pinnedNorm.Flat.Decimal.String())
+	require.Equal(t, "0.25", defaultNorm.Flat.Decimal.String(), "card-level norm stays on the default article")
+
+	sameAsDefault := []TechCardColorwayUsage{usage(10)}
+	sameNorm := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, linked, sameAsDefault)[0]
+	require.Equal(t, "0.25", sameNorm.Flat.Decimal.String(), "a pin equal to default is unpinned")
+
+	missing := []TechCardColorwayUsage{usage(30)}
+	missingNorm := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, linked, missing)[0]
+	require.False(t, missingNorm.Complete, "a pinned article cannot borrow the line width")
+
+	conflict := []TechCardColorwayUsage{usage(20), usage(30)}
+	conflictNorm := DerivedLineNormsForRecipe(bom, []TechCardCutStrip{strip}, nil, nil, linked, conflict)[0]
+	require.False(t, conflictNorm.Complete)
+}
+
+func TestRollCutStripLeavesTopstitchInRunningMetres(t *testing.T) {
+	bom := rollCutBom("140")
+	bom[0].ThreadPerMm = decimal.NewNullDecimal(decimal.NewFromInt(1))
+	strip := cutOneLength(1200)
+	top := TechCardTopstitchLine{
+		BomLineKey: cutTestLine, Rows: 1,
+		Sizes: []TechCardTopstitchLineSize{{SizeId: 1, LineMm: decimal.NewNullDecimal(decimal.NewFromInt(1000))}},
+	}
+	norm := DerivedLineNorms(bom, []TechCardCutStrip{strip}, []TechCardTopstitchLine{top}, []int{1})[0]
+	require.Equal(t, []string{"1.026"}, cutNormStrings(norm.BySize), "only the strip is divided into lanes")
+}
+
 func cutNormStrings(rows []TechCardBomSizeConsumption) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {

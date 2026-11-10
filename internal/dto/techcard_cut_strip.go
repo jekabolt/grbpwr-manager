@@ -216,9 +216,11 @@ func cutStripWireSizes(s *entity.TechCardCutStrip, sizeIDs []int) []int {
 	return out
 }
 
-// TechCardCutStripNormsToPb is the BOM line's norm, the one a card with no colourways still has to show.
-func TechCardCutStripNormsToPb(bomItems []entity.TechCardBomItem, strips []entity.TechCardCutStrip, sizeIDs []int) []*pb_common.TechCardCutStripNorm {
-	norms := entity.CutStripLineNorms(bomItems, strips, sizeIDs)
+// TechCardCutStripNormsToPb emits the shared derived-line projection, including topstitch thread.
+func TechCardCutStripNormsToPb(bomItems []entity.TechCardBomItem, strips []entity.TechCardCutStrip,
+	topstitch []entity.TechCardTopstitchLine, sizeIDs []int, linked map[int]entity.MaterialWithPrice,
+) []*pb_common.TechCardCutStripNorm {
+	norms := entity.DerivedLineNormsForRecipe(bomItems, strips, topstitch, sizeIDs, linked, nil)
 	if len(norms) == 0 {
 		return nil
 	}

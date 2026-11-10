@@ -179,6 +179,10 @@ fold steps reads byte for byte the same, so a bump would say nothing a reader co
 The cut strips (`TechCard.cut_strips`, 04.11, §5.3d) are in `1.3` without a bump for the same reasons:
 one repeated field inside `card.json`, omitted when empty, and no file and no `contents.*` claim.
 
+Measured topstitch lines (`TechCardOperation.topstitch_lines`, 09.11) are likewise in `1.3` without
+a bump: they are nested in the existing operation rows in `card.json`, own no sidecar and introduce
+no `contents.*` claim. Their size ids are remapped by name with the rest of the card.
+
 The steps' layer order (`TechCardOperation.layer_order`, 03.11) is in `1.3` without a bump for the
 same reasons: one repeated field inside `card.json`, omitted when empty, naming the step's own input
 keys, so nothing is remapped.
@@ -286,7 +290,7 @@ Four verdicts, and they are not synonyms:
 | 33 | `removed_pattern_history` | travels as source history and is **ignored**. Its source row and snapshot ids are never resolved or written; the receiving card starts its own pattern history. |
 | 34 | `piece_folds` | travels and is **written** — see §5.3c. Nothing in a fold is a foreign id; the people, the stamps and `source_fingerprint` on the row are source provenance and are **ignored** (the importer is the author, the server computes the fingerprint), and a fold the source read as `stale` lands stale. |
 | 35 | `cut_strips` | travels and is **written** — see §5.3d. Nothing in a strip is a foreign id except the size rows' `size_id`, which is remapped by name. `cut_mm` and `sewn_mm` on a size row are output-only and **ignored**. |
-| 36 | `cut_strip_norms` | **cleared in card.json.** The norm of a strip line is computed from the strips on every read, so a copy in the file would be a second truth. |
+| 36 | `cut_strip_norms` | **cleared in card.json.** Derived strip/topstitch norms are recomputed from their inputs on every read, so a copy would be a second truth. |
 | 37 | `release_size_chart` | **cleared in card.json.** OUTPUT-ONLY and set only inside a release snapshot (the chart frozen at release); a live card read never carries it. The chart itself travels in its own sidecar. |
 
 **Style facts (15/16/17/20/21/29) are WRITTEN, and that is not obvious.** `fit`, `composition`,
@@ -654,6 +658,12 @@ next to its pin, colour, Pantone and placement), and a row the resolver made up 
 row of the line is not exported. The receiving card computes the norm from the strips on read, as the
 source does. The row's own numbers land as stored and no reader gets them while a strip exists; removing
 the strip gives them back, without the `norm_marker_id` stamp no recipe row carries (`norm_marker_lost`).
+
+Topstitch lines travel inside their owning operation in `card.json`. Their `line_key`, anchors,
+`anchored_size`, rows and measured size lengths are written; `measured` is a write command and `stale`
+is an output verdict, so neither becomes imported state. A size row is remapped through `id_maps.sizes`. `thread_per_mm` travels on its
+BOM line. The imported card recomputes the shared `cut_strip_norms` projection and `cut_length` recipe
+norm from those inputs; anchors do not become seams and require no seam sidecar.
 
 On import every strip is validated by the rules of a live save; a strip that does not validate or
 repeats a key is dropped (`archive_row_invalid` on `cut_strip`), a strip on a line the card does not

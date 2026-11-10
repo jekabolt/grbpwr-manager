@@ -8,6 +8,7 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 )
 
 // What every reader gets for a strip line. The fixture is the golden shape: a measured fabric line, and a
@@ -21,6 +22,8 @@ const (
 	cutNormStripLine = "01JABCDEFGHJKMNPQRSTVWXYL1"
 	cutNormStripKey  = "01JABCDEFGHJKMNPQRSTVWXYS1"
 )
+
+func cutNormI32(v int32) *int32 { return &v }
 
 func cutNormCard(section entity.TechCardBomSection, kind string) *entity.TechCard {
 	card := &entity.TechCard{Id: 7}
@@ -415,6 +418,35 @@ func TestCutStripFrozenInARelease(t *testing.T) {
 	require.Equal(t, "23.23", onS2.Decimal.String())
 }
 
+func TestCutStripFrozenRollUsageIsAuthoritative(t *testing.T) {
+	strip := cutNormStrip(entity.CutStripModeOneLength)
+	strip.OneLengthMm = sql.NullInt32{Int32: 1200, Valid: true}
+	card := cutNormCard(entity.BomSectionLining, "")
+	card.BomItems[1].FabricWidth = nd("140")
+	card.Colorways[0].Id = 55
+	card.LinkedMaterials = cutNormArticles()
+	cutNormApply(card, strip)
+	require.Equal(t, "0.026", card.Colorways[0].Usages[1].Consumption.Decimal.String())
+
+	snap := releaseBlob(t, card)
+	for _, raw := range snap.GetCutStrips() {
+		raw.WidthMm = &pb_decimal.Decimal{Value: "700"}
+		raw.OneLengthMm = cutNormI32(9999)
+	}
+	for _, line := range snap.GetTechCard().GetBomItems() {
+		if line.GetLineKey() == cutNormStripLine {
+			line.FabricWidth = &pb_decimal.Decimal{Value: "70"}
+		}
+	}
+	frozen := releaseCostingCardFromSnapshot(snap)
+	require.Len(t, frozen.Colorways, 1)
+	require.Len(t, frozen.Colorways[0].Usages, 2)
+	usage := frozen.Colorways[0].Usages[1]
+	require.True(t, usage.IsCutLengthNorm())
+	require.Equal(t, "0.026", usage.Consumption.Decimal.String(),
+		"release cost keeps the frozen cut_length row instead of rebuilding from geometry")
+}
+
 // Readiness asks about roll goods. A hardware or trim strip line gets no row there at all, and a strip on a
 // roll line says where the number came from instead of sending someone after a marker.
 func TestCutStripReadiness(t *testing.T) {
@@ -434,7 +466,7 @@ func TestCutStripReadiness(t *testing.T) {
 		card.BomItems = append(card.BomItems, entity.TechCardBomItem{
 			Id: 502, LineKey: cutNormStripLine, Section: section, Name: "rubber",
 			Purpose:    sql.NullString{String: purpose, Valid: purpose != ""},
-			MaterialId: sql.NullInt64{Int64: rrMaterial, Valid: true}, Unit: nstr("m"),
+			MaterialId: sql.NullInt64{Int64: rrMaterial, Valid: true}, Unit: nstr("m"), FabricWidth: nd("140"),
 		})
 		cutNormApply(card, strip)
 		return card

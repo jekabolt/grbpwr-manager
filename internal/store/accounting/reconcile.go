@@ -415,35 +415,37 @@ func (s *Store) reconMaterials(ctx context.Context, fromT, toT time.Time) (entit
 	}
 	block := entity.AcctReconBlock{Name: "materials", Ledger: ledger}
 
-	// Net signed value of costed movements that touch 1110 (movement-type literals mirror the
-	// entity.MaterialMovement* constants and the M1–M8 rules in 04-posting-rules.md).
-	op, err := storeutil.QueryNamedOne[struct {
-		V decimal.Decimal `db:"v"`
-	}](ctx, s.DB, `
-		SELECT COALESCE(SUM(
-			CASE m.movement_type
-				WHEN 'receipt'            THEN  m.quantity * m.unit_cost_base
-				WHEN 'receipt_production' THEN  m.quantity * m.unit_cost_base
-				WHEN 'issue_production'   THEN -m.quantity * m.unit_cost_base
-				WHEN 'issue_sample'       THEN -m.quantity * m.unit_cost_base
-				WHEN 'return_production'  THEN  m.quantity * m.unit_cost_base
-				WHEN 'return_sample'      THEN  m.quantity * m.unit_cost_base
-				WHEN 'writeoff'           THEN -m.quantity * m.unit_cost_base
-				WHEN 'adjustment'         THEN CASE WHEN m.on_hand_after >= m.on_hand_before
-				                                    THEN  m.quantity * m.unit_cost_base
-				                                    ELSE -m.quantity * m.unit_cost_base END
-				WHEN 'convert_in'         THEN  ROUND(m.quantity * m.unit_cost_base, 2)
-				WHEN 'convert_out'        THEN -ROUND(m.quantity * m.unit_cost_base, 2)
-				WHEN 'shrinkage'          THEN 0
-				ELSE 0
-			END), 0) AS v
-		FROM material_stock_movement m
-		WHERE m.unit_cost_base IS NOT NULL AND m.created_at < :to`,
-		map[string]any{"to": toT})
+	// Net signed value of costed movements that touch 1110. Fold the canonical booked cents per
+	// movement, matching the M1-M8 journal poster exactly.
+	movements, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT movement_type, quantity, unit_cost_base, on_hand_before, on_hand_after
+		FROM material_stock_movement
+		WHERE unit_cost_base IS NOT NULL AND created_at < :to`, map[string]any{"to": toT})
 	if err != nil {
 		return entity.AcctReconBlock{}, fmt.Errorf("accounting: recon materials operational: %w", err)
 	}
-	block.Operational = op.V.Round(2)
+	for _, movement := range movements {
+		value := entity.MovementValueCents(movement.Quantity, movement.UnitCostBase.Decimal)
+		switch movement.MovementType {
+		case entity.MaterialMovementReceipt,
+			entity.MaterialMovementReceiptProduction,
+			entity.MaterialMovementReturnProduction,
+			entity.MaterialMovementReturnSample,
+			entity.MaterialMovementConvertIn:
+			block.Operational = block.Operational.Add(value)
+		case entity.MaterialMovementIssueProduction,
+			entity.MaterialMovementIssueSample,
+			entity.MaterialMovementWriteoff,
+			entity.MaterialMovementConvertOut:
+			block.Operational = block.Operational.Sub(value)
+		case entity.MaterialMovementAdjustment:
+			if movement.OnHandAfter.GreaterThanOrEqual(movement.OnHandBefore) {
+				block.Operational = block.Operational.Add(value)
+			} else {
+				block.Operational = block.Operational.Sub(value)
+			}
+		}
+	}
 	block.Delta = block.Ledger.Sub(block.Operational)
 
 	block.TotalCount, err = storeutil.QueryCountNamed(ctx, s.DB, `

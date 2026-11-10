@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -430,6 +431,7 @@ func (s *Server) resolveTechCardImport(ctx context.Context, a *techcardarchive.A
 	// strips, and the card it makes has none either.
 	insert.CutStrips = r.out.Card.GetCutStrips()
 	insert.CutStripsAware = true
+	insert.TopstitchLinesAware = true
 
 	r.resolveCategory(di.Categories)
 	if err := r.resolveMedia(ctx); err != nil {
@@ -578,6 +580,16 @@ func (r *tcimpResolver) resolveSizes() {
 		}
 	}
 	ins.SizeQuantities = kept
+	// Nested message rows are cleared to size_id=0 by the generic walker. Unlike a pattern's scalar
+	// size, a topstitch measurement has no useful unfiled form: drop the row but keep the line as an
+	// incomplete measured run when none survive.
+	for _, op := range ins.GetOperations() {
+		for _, line := range op.GetTopstitchLines() {
+			line.Sizes = slices.DeleteFunc(line.GetSizes(), func(row *pb_common.TechCardTopstitchLineSize) bool {
+				return row.GetSizeId() <= 0
+			})
+		}
+	}
 }
 
 // tallySizes counts the size axis once, at the end: the card's surviving size range on the imported

@@ -382,7 +382,7 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	_, err = testDB.ExecContext(ctx, "DELETE FROM tech_card_marker WHERE id = ?", markerB)
 	require.NoError(t, err)
 	// Стейлый клиент (штамп не эхает) сохраняет рецепт после удаления раскладки.
-	_, err = T.UpdateColorwayRecipe(ctx, cwID, stampedVer, []entity.TechCardColorwayUsage{
+	carriedVer, err := T.UpdateColorwayRecipe(ctx, cwID, stampedVer, []entity.TechCardColorwayUsage{
 		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
 			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.44")),
 			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true}},
@@ -394,11 +394,35 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 		"перенесённый штамп переживает удаление своей раскладки — висящий id и есть «удалена»")
 	require.Equal(t, markerB, recipe[0].NormMarkerId.Int64)
 
-	// А вот НАЗВАТЬ несуществующую раскладку явно — нельзя: иначе опечатка клиента и чужая карточка
-	// печатались бы на экране одинаково, как «раскладка удалена».
-	_, err = T.UpdateColorwayRecipe(ctx, cwID, stampedVer+1, []entity.TechCardColorwayUsage{
+	// ЯВНОЕ ЭХО УЖЕ ЛЕЖАЩЕГО ШТАМПА ТОЖЕ ПРОХОДИТ, хотя раскладки больше нет (a4227cf, правило
+	// slotHoldsStamp в colorway_recipe.go). Сегодняшний клиент перечитывает хранимый штамп и шлёт
+	// его обратно ЯВНО на каждой полной перезаписи рецепта; откажи здесь — и удаление раскладки
+	// запирало бы правку рецепта до ручной демотации нормы. Неизменённое значение — не утверждение
+	// клиента, а повтор прочитанного.
+	echoVer, err := T.UpdateColorwayRecipe(ctx, cwID, carriedVer, []entity.TechCardColorwayUsage{
 		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
-			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.44")),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.45")),
+			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
+			NormMarkerId:      stampSet(markerB), NormMarkerIdSet: true},
+	})
+	require.NoError(t, err, "явное эхо хранимого штампа удалённой раскладки не запирает рецепт (a4227cf)")
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, markerB, recipe[0].NormMarkerId.Int64, "эхо оставляет висящий id на месте")
+
+	// А вот НАЗВАТЬ несуществующую раскладку явно как НОВОЕ утверждение — нельзя: иначе опечатка
+	// клиента и чужая карточка печатались бы на экране одинаково, как «раскладка удалена». Слот
+	// сперва переводится на живую раскладку A — после этого B для него уже не эхо, а заявка.
+	movedVer, err := T.UpdateColorwayRecipe(ctx, cwID, echoVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.45")),
+			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
+			NormMarkerId:      stampSet(markerA), NormMarkerIdSet: true},
+	})
+	require.NoError(t, err)
+	_, err = T.UpdateColorwayRecipe(ctx, cwID, movedVer, []entity.TechCardColorwayUsage{
+		{BomLineKey: "RK1", Placement: ns("outer"), Color: ns("black"),
+			Consumption:       decimal.NewNullDecimal(decimal.RequireFromString("1.45")),
 			ConsumptionSource: sql.NullString{String: entity.ConsumptionSourceMarker, Valid: true},
 			NormMarkerId:      stampSet(markerB), NormMarkerIdSet: true},
 	})
@@ -406,6 +430,10 @@ func TestUpdateColorwayRecipeRoundTrip(t *testing.T) {
 	var ve *entity.ValidationError
 	require.ErrorAs(t, err, &ve)
 	require.Equal(t, "usages[0].norm_marker_id", ve.Field)
+	require.Equal(t, "marker_not_on_card", ve.Reason)
+	recipe, err = T.GetColorwayRecipe(ctx, cwID)
+	require.NoError(t, err)
+	require.Equal(t, markerA, recipe[0].NormMarkerId.Int64, "отказ ничего не записал — на слоте всё ещё A")
 }
 
 // TestMarkerNormBumpsTechCardLock pins the Ф6.8 revision of the rule in markers.go's header. Marker

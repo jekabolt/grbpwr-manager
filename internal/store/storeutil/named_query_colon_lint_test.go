@@ -56,7 +56,9 @@ func TestNamedQueriesCarryNoColonInsideSQLComments(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "mocks" {
+			// migrationlint lints migration FILES: its strings quote the
+			// "-- migrationlint:allow-…" annotation and never reach sqlx, so a colon there binds nothing.
+			if d.Name() == "mocks" || d.Name() == "migrationlint" {
 				return filepath.SkipDir
 			}
 			return nil

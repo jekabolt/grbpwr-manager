@@ -1114,6 +1114,9 @@ message TechCardBomItem {
   // Absent = keep the stored value; explicit Decimal{value:""} clears it (the est_usage protocol).
   // Unset = no norm: the line is unpriced and blocks the run plan, never zero.
   google.type.Decimal consumption_per_unit = 46;
+  // Thread millimetres used per sewn millimetre. Absent keeps; an explicit empty Decimal clears.
+  // Required for a complete norm when an operation measures topstitch lines against this BOM line.
+  google.type.Decimal thread_per_mm = 47;
   // → TechCardColorwayUsage: placement, consumption, quantity, colorway_colors, line_total,
   //   size_consumptions, size_run_total all moved onto the per-colourway usage.
   reserved 3, 9, 11, 15, 16, 21, 22;
@@ -3056,6 +3059,9 @@ message TechCardOperation {
   // that names no label of the saved card is a field violation.
   repeated string label_keys = 77;
 
+  // Measured topstitch runs owned by this step. Written only with topstitch_lines_aware.
+  repeated TechCardTopstitchLine topstitch_lines = 78;
+
   reserved 1, 2, 3, 5, 6, 9, 10, 11, 12, 13, 15, 18, 19, 20;
   reserved "node", "description", "seam_type", "topstitch_width", "thread", "machine", "seam_allowance", "needle", "time_norm", "attachment", "bom_item_index", "placement", "bom_line_key", "bom_item_id";
 }
@@ -4113,6 +4119,9 @@ message TechCardInsert {
   repeated TechCardCutStrip cut_strips = 134;
   bool cut_strips_aware = 135;
 
+  // Declares support for operation topstitch_lines on full-replace writes.
+  bool topstitch_lines_aware = 137;
+
   reserved 108;
   reserved "required_seam_allowance_cm";
 
@@ -4298,16 +4307,34 @@ message TechCardCutStrip {
   repeated TechCardCutStripSize sizes = 10;
 }
 
-// The norm of one strip line in metres per garment: the sum over its strips of cut * qty / 1000,
-// wastage not included. consumption_source cut_length on the recipe row carries the same numbers.
+// One derived BOM-line norm in metres per garment: cut strips plus measured topstitch runs.
+// Wastage is not included. consumption_source cut_length carries the same numbers.
 message TechCardCutStripNorm {
   string bom_line_key = 1;
-  // Set when every strip of the line is one_length: one norm for all sizes.
+  // Set only when all contributors have one size-independent norm.
   google.type.Decimal norm = 2;
-  // Otherwise one row per size whose length is known on every strip of the line.
+  // Otherwise one row per size whose length is known on every contributor.
   repeated TechCardBomSizeConsumption size_norms = 3;
-  // False when a size has no known length, or the line is not bought in metres. Unknown is not zero.
+  // False when a size or factor is unknown, or the line is not bought in metres. Unknown is not zero.
   bool complete = 4;
+}
+
+// One size of a measured topstitch line.
+message TechCardTopstitchLineSize {
+  int32 size_id = 1;
+  google.type.Decimal line_mm = 2;
+}
+
+// A measured topstitch run owned by one operation.
+message TechCardTopstitchLine {
+  string line_key = 1; // 26-character ULID; an empty key is minted by the server
+  string bom_line_key = 2; // thread BOM line consumed by this operation
+  repeated TechCardSeamAnchor parts = 3;
+  string anchored_size = 4;
+  int32 rows = 5;
+  repeated TechCardTopstitchLineSize sizes = 6;
+  bool measured = 7; // write-only: re-stamp the current pattern source
+  bool stale = 20; // output-only
 }
 
 // TechCardPieceAreaScope — площади деталей ОДНОГО скоупа ткани, с вердиктом об устаревании.

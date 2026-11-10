@@ -229,22 +229,15 @@ func TestTierLockedTeaserPurchaseBlock(t *testing.T) {
 		variantSKU[minT] = vsku
 	}
 
+	// The orders placed below hold the products and the size by RESTRICT keys, so plain deletes no-op
+	// and the (apparel, 42) size would outlive the test until TestMain drops the database. Purge the
+	// orders with the products.
 	t.Cleanup(func() {
-		cctx := context.Background()
-		// Best-effort: orders created below FK-reference the products; those deletes no-op and the
-		// ephemeral container is fully dropped by TestMain's cleanup regardless.
-		for _, pid := range pids {
-			_, _ = testDB.ExecContext(cctx, "DELETE FROM product_size WHERE product_id = ?", pid)
-			_, _ = testDB.ExecContext(cctx, "DELETE FROM product_price WHERE product_id = ?", pid)
-			_, _ = testDB.ExecContext(cctx, "DELETE FROM product WHERE id = ?", pid)
-		}
-		for _, styleID := range styleIDs {
-			_, _ = testDB.ExecContext(cctx, "DELETE FROM tech_card WHERE id = ?", styleID)
-		}
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM size WHERE id = ?", sizeID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier_price WHERE shipment_carrier_id = ?", carrierID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM shipment_carrier WHERE id = ?", carrierID)
-		_, _ = testDB.ExecContext(cctx, "DELETE FROM media WHERE id = ?", mediaID)
+		purgeTestProducts(t, pids...)
+		purgeTestRows(t, "tech_card", styleIDs...)
+		purgeTestRows(t, "size", sizeID)
+		purgeTestRows(t, "shipment_carrier", carrierID)
+		purgeTestRows(t, "media", mediaID)
 	})
 
 	placeOrder := func(minTier int16, buyerTier int16) (*entity.Order, error) {

@@ -98,7 +98,7 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 		errA := json.Unmarshal(r.SideA, &seam.SideA)
 		errB := json.Unmarshal(r.SideB, &seam.SideB)
 		seam.Stale = errA != nil || errB != nil ||
-			src.fingerprint(seam.PieceLineKeys()) != r.SourceFingerprint
+			!src.fresh(seam.PieceLineKeys(), r.SourceFingerprint)
 		out = append(out, seam)
 	}
 	return out, nil
@@ -107,9 +107,17 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 // seamSources is a card's fabric-scope sources loaded ONCE per call, with fingerprints memoised per
 // distinct piece set (a card has dozens of seams over a handful of piece sets).
 type seamSources struct {
+	// sheets/blocks are the cloth scopes only (entity.WithoutInterliningScopes): what a fingerprint
+	// is computed and STAMPED over today.
 	sheets map[string][]entity.PatternSheetRef
 	blocks map[string][]entity.PieceAreaBlockRef
 	memo   map[string]string
+	// legacySheets/legacyBlocks still hold the interlining scopes — the fingerprint every row stamped
+	// before that exclusion carries. A row matching it is fresh (see fresh), so the deploy does not
+	// stale every seam and fold of a fused piece at once; its next write re-stamps it.
+	legacySheets map[string][]entity.PatternSheetRef
+	legacyBlocks map[string][]entity.PieceAreaBlockRef
+	legacyMemo   map[string]string
 	// strips are the cut strips of the card. No fabric sheet draws a strip, so a strip end has no scope
 	// of its own: left in, it would read as an unlinked piece and any re-upload would stale the seam.
 	strips map[string]bool
@@ -152,12 +160,34 @@ func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*se
 	for _, k := range labelKeys {
 		labels[entity.CutStripLineKey(k)] = true
 	}
-	return &seamSources{sheets: sheets, blocks: blocks, memo: map[string]string{}, strips: strips, labels: labels}, nil
+	return &seamSources{
+		sheets:       entity.WithoutInterliningScopes(sheets, lines),
+		blocks:       entity.WithoutInterliningScopes(blocks, lines),
+		memo:         map[string]string{},
+		legacySheets: sheets, legacyBlocks: blocks, legacyMemo: map[string]string{},
+		strips: strips, labels: labels,
+	}, nil
 }
 
 func (s *seamSources) fingerprint(pieceKeys []string) string {
+	return s.fingerprintOver(pieceKeys, s.sheets, s.blocks, s.memo)
+}
+
+// legacyFingerprint is the fingerprint as stamped before interlining left the scope union.
+func (s *seamSources) legacyFingerprint(pieceKeys []string) string {
+	return s.fingerprintOver(pieceKeys, s.legacySheets, s.legacyBlocks, s.legacyMemo)
+}
+
+// fresh reports whether a stored fingerprint still matches the pieces' sources: today's form, or the
+// legacy form a row stamped before the interlining exclusion carries.
+func (s *seamSources) fresh(pieceKeys []string, stored string) bool {
+	return stored == s.fingerprint(pieceKeys) || stored == s.legacyFingerprint(pieceKeys)
+}
+
+func (s *seamSources) fingerprintOver(pieceKeys []string, sheets map[string][]entity.PatternSheetRef,
+	blocks map[string][]entity.PieceAreaBlockRef, memo map[string]string) string {
 	k := strings.Join(pieceKeys, "\x00")
-	if fp, ok := s.memo[k]; ok {
+	if fp, ok := memo[k]; ok {
 		return fp
 	}
 	fabric := make([]string, 0, len(pieceKeys))
@@ -167,8 +197,8 @@ func (s *seamSources) fingerprint(pieceKeys []string) string {
 			fabric = append(fabric, p)
 		}
 	}
-	fp := entity.TechCardSeamSourceFingerprint(fabric, s.sheets, s.blocks)
-	s.memo[k] = fp
+	fp := entity.TechCardSeamSourceFingerprint(fabric, sheets, blocks)
+	memo[k] = fp
 	return fp
 }
 

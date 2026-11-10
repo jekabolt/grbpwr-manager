@@ -1124,7 +1124,8 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		AssemblyCleared: pb.AssemblyCleared,
 		// Транспортный флаг количеств на связях (0334) — по тому же правилу: доезжает до сущности,
 		// но НИ В ОДИН дайджест не входит (закрыто TestBomQtyAwareIsNotHashed).
-		BomQtyAware: pb.BomQtyAware,
+		BomQtyAware:         pb.BomQtyAware,
+		TopstitchLinesAware: pb.TopstitchLinesAware,
 	}
 	cutStrips, err := parseTechCardCutStrips(pb, insert)
 	if err != nil {
@@ -1135,6 +1136,9 @@ func convertPbTechCardInsertToEntity(pb *pb_common.TechCardInsert,
 		prepare(insert)
 	}
 	if err := finalizeGarmentLabelGeometry(insert); err != nil {
+		return nil, err
+	}
+	if err := parseTechCardTopstitchLines(pb, insert); err != nil {
 		return nil, err
 	}
 	// After prepare: the strips a non-aware client did not send are carried by then, and a norm per
@@ -1445,7 +1449,8 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			Version:       int(p.Version),
 		})
 	}
-	if err := patternslot.Validate(out); err != nil {
+	// No BOM here: the raw-binding pre-check. The store repeats it by cloth identity.
+	if err := patternslot.Validate(out, nil); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1676,8 +1681,9 @@ func ConvertEntityTechCardToPb(tc *entity.TechCard, fx CostingFx) *pb_common.Tec
 		PieceFolds: TechCardPieceFoldsToPb(tc.PieceFolds),
 		// Strips and their norms. The norm sits here too, because the recipe rows that carry it exist
 		// only under a colourway, and a card with no colourways still shows it on the BOM line.
-		CutStrips:     TechCardCutStripsToPb(tc.CutStrips, tc.SizeIds),
-		CutStripNorms: TechCardCutStripNormsToPb(tc.BomItems, tc.CutStrips, tc.SizeIds),
+		CutStrips: TechCardCutStripsToPb(tc.CutStrips, tc.SizeIds),
+		CutStripNorms: TechCardCutStripNormsToPb(tc.BomItems, tc.CutStrips,
+			entity.TopstitchLines(tc.Operations), tc.SizeIds, tc.LinkedMaterials),
 	}
 }
 
@@ -3746,6 +3752,16 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 				return nil, err
 			}
 		}
+		// Thread norm factor (0464): same omitted protocol as est_usage. It is net of wastage;
+		// derived-line resolution applies the existing gross-up later through cut_length provenance.
+		threadPerMmOmitted := b.ThreadPerMm == nil
+		threadPerMm, err := nullDecimalFromPb(b.ThreadPerMm)
+		if err != nil {
+			return nil, fmt.Errorf("bom thread_per_mm: %w", err)
+		}
+		if err := entity.ValidateThreadPerMm(fmt.Sprintf("bom_items[%d].thread_per_mm", i), threadPerMm); err != nil {
+			return nil, err
+		}
 
 		materialID := sql.NullInt64{}
 		if b.MaterialId != 0 {
@@ -3807,6 +3823,8 @@ func parseTechCardBomItems(pbs []*pb_common.TechCardBomItem) ([]entity.TechCardB
 			// Aux norm per unit (0456).
 			ConsumptionPerUnit:        consumptionPerUnit,
 			ConsumptionPerUnitOmitted: consumptionPerUnitOmitted,
+			ThreadPerMm:               threadPerMm,
+			ThreadPerMmOmitted:        threadPerMmOmitted,
 		})
 	}
 	return out, nil
@@ -4375,6 +4393,7 @@ func techCardBomItemsToPb(items []entity.TechCardBomItem, linked map[int]entity.
 			EstUsage: pbDecimalFromNull(b.EstUsage),
 			// Aux norm per unit (0456) as stored; nil when unset.
 			ConsumptionPerUnit: pbDecimalFromNull(b.ConsumptionPerUnit),
+			ThreadPerMm:        pbDecimalFromNull(b.ThreadPerMm),
 			// Stored price provenance (Phase 3) — read-only; '' / nil on pre-provenance rows.
 			PriceSource:     b.PriceSource.String,
 			PriceSnapshotAt: pbTimestampFromNullTime(b.PriceSnapshotAt),

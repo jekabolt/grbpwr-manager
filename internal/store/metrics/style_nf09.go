@@ -15,19 +15,17 @@ import (
 // what sampling drew from the warehouse. Manual sample dev-expenses are excluded here (they are
 // already counted in the style's dev-cost).
 func (s *Store) GetStyleSampleSummary(ctx context.Context, techCardID int) (entity.StyleSampleSummary, error) {
-	summary, err := storeutil.QueryNamedOne[entity.StyleSampleSummary](ctx, s.DB, `
-		SELECT
-			(SELECT COUNT(*) FROM sample WHERE tech_card_id = :tc) AS count,
-			COALESCE(SUM(
-				CASE mv.movement_type
-					WHEN :issue  THEN mv.quantity * COALESCE(mv.unit_cost_base, 0)
-					WHEN :return THEN -mv.quantity * COALESCE(mv.unit_cost_base, 0)
-					ELSE 0 END), 0) AS materials_cost_base,
-			CASE WHEN SUM(
-				CASE WHEN mv.movement_type IN (:issue, :return) AND mv.unit_cost_base IS NULL
-					THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_uncosted
+	var summary entity.StyleSampleSummary
+	count, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM sample WHERE tech_card_id = :tc`, map[string]any{"tc": techCardID})
+	if err != nil {
+		return entity.StyleSampleSummary{}, fmt.Errorf("get style sample count %d: %w", techCardID, err)
+	}
+	summary.Count = count
+	movements, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT mv.movement_type, mv.quantity, mv.unit_cost_base
 		FROM sample sp
-		LEFT JOIN material_stock_movement mv
+		JOIN material_stock_movement mv
 			ON mv.sample_id = sp.id AND mv.movement_type IN (:issue, :return)
 		WHERE sp.tech_card_id = :tc`, map[string]any{
 		"tc":     techCardID,
@@ -37,7 +35,18 @@ func (s *Store) GetStyleSampleSummary(ctx context.Context, techCardID int) (enti
 	if err != nil {
 		return entity.StyleSampleSummary{}, fmt.Errorf("get style sample summary %d: %w", techCardID, err)
 	}
-	summary.MaterialsCostBase = summary.MaterialsCostBase.Round(2)
+	for _, movement := range movements {
+		if !movement.UnitCostBase.Valid {
+			summary.HasUncosted = true
+			continue
+		}
+		value := entity.MovementValueCents(movement.Quantity, movement.UnitCostBase.Decimal)
+		if movement.MovementType == entity.MaterialMovementIssueSample {
+			summary.MaterialsCostBase = summary.MaterialsCostBase.Add(value)
+		} else {
+			summary.MaterialsCostBase = summary.MaterialsCostBase.Sub(value)
+		}
+	}
 	return summary, nil
 }
 
@@ -47,16 +56,8 @@ func (s *Store) GetStyleSampleSummary(ctx context.Context, techCardID int) (enti
 // the summary counts — cancelled runs are excluded (nf09-04): otherwise the block would exclude a
 // cancelled run from runs/planned/actual yet still sum its issued material here, contradicting itself.
 func (s *Store) GetStyleMaterialsFromStock(ctx context.Context, techCardID int) (entity.StyleMaterialsFromStock, error) {
-	out, err := storeutil.QueryNamedOne[entity.StyleMaterialsFromStock](ctx, s.DB, `
-		SELECT
-			COALESCE(SUM(
-				CASE mv.movement_type
-					WHEN :issue  THEN mv.quantity * COALESCE(mv.unit_cost_base, 0)
-					WHEN :return THEN -mv.quantity * COALESCE(mv.unit_cost_base, 0)
-					ELSE 0 END), 0) AS base,
-			CASE WHEN SUM(
-				CASE WHEN mv.movement_type IN (:issue, :return) AND mv.unit_cost_base IS NULL
-					THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_uncosted
+	movements, err := storeutil.QueryListNamed[entity.MaterialMovement](ctx, s.DB, `
+		SELECT mv.movement_type, mv.quantity, mv.unit_cost_base
 		FROM material_stock_movement mv
 		JOIN production_run pr ON pr.id = mv.production_run_id
 		WHERE pr.tech_card_id = :tc AND pr.status <> :cancelled AND mv.movement_type IN (:issue, :return)`, map[string]any{
@@ -68,6 +69,18 @@ func (s *Store) GetStyleMaterialsFromStock(ctx context.Context, techCardID int) 
 	if err != nil {
 		return entity.StyleMaterialsFromStock{}, fmt.Errorf("get style materials from stock %d: %w", techCardID, err)
 	}
-	out.Base = out.Base.Round(2)
+	var out entity.StyleMaterialsFromStock
+	for _, movement := range movements {
+		if !movement.UnitCostBase.Valid {
+			out.HasUncosted = true
+			continue
+		}
+		value := entity.MovementValueCents(movement.Quantity, movement.UnitCostBase.Decimal)
+		if movement.MovementType == entity.MaterialMovementIssueProduction {
+			out.Base = out.Base.Add(value)
+		} else {
+			out.Base = out.Base.Sub(value)
+		}
+	}
 	return out, nil
 }

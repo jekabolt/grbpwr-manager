@@ -71,6 +71,8 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 	var out entity.DesignBenchSlot
 	var mismatch *entity.DesignBenchSlot
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		// Повтор после дедлока начинает с чистого отказа, а не с того, что нашла откатанная попытка.
+		mismatch = nil
 		// ОБЩИЙ ПОРЯДОК ЗАМКОВ (T28 v2 C2, locks.go): карточка → плита (усыновление колорвея её пишет) →
 		// слоты верстака. Постановка встаёт в очередь с undo/redo и перезаписью той же карточки.
 		db := rep.DB()
@@ -88,19 +90,28 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 			// The refusal carries the slot's CURRENT state, plate included, so the client can
 			// show the person what actually stands there instead of only saying «reload».
 			if slot != nil {
-				_ = attachSlotPictures(ctx, rep, []*entity.DesignBenchSlot{slot})
+				_ = attachSlotPlates(ctx, rep, []*entity.DesignBenchSlot{slot})
 				mismatch = slot
 			}
 			return err
 		}
-		if err := attachSlotPictures(ctx, rep, []*entity.DesignBenchSlot{slot}); err != nil {
+		if err := attachSlotPlates(ctx, rep, []*entity.DesignBenchSlot{slot}); err != nil {
 			return err
 		}
 		out = *slot
 		return nil
 	})
+	// ФАЙЛ И УГЛЫ ПЛИТЫ — ПОСЛЕ КОММИТА (и после отката отказа), В СНИМКЕ ЧТЕНИЯ: resolveMedia читает
+	// цепочки правок всей карточки, и под SERIALIZABLE это чтение запирало бы каждый её кадр (как у
+	// перезаписи, c169b2c). Отказ отдаёт плиту по-прежнему без гарантии файла — тем же `_ =`.
 	if err != nil {
+		if mismatch != nil {
+			_ = s.resolveSlotMediaAfterCommit(ctx, []*entity.DesignBenchSlot{mismatch})
+		}
 		return mismatch, err
+	}
+	if err := s.resolveSlotMediaAfterCommit(ctx, []*entity.DesignBenchSlot{&out}); err != nil {
+		return nil, err
 	}
 	return &out, nil
 }
@@ -119,6 +130,18 @@ func (s *Store) SetBenchSlot(ctx context.Context, req entity.DesignBenchSlotSet)
 // три двери (GetBand, SetBenchSlot, RegisterBatch) отдают слот, и три копии этого join'а разошлись
 // бы — тихо, потому что расхождение выглядит как пустое поле, а не как ошибка.
 func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []*entity.DesignBenchSlot) error {
+	if err := attachSlotPlates(ctx, rep, slots); err != nil {
+		return err
+	}
+	return resolveSlotMedia(ctx, rep, slots)
+}
+
+// attachSlotPlates — ПЛИТЫ СЛОТОВ И ШТАМПЫ ИХ ПРОГОНОВ, БЕЗ ФАЙЛА И УГЛОВ: только чтения по id (плиты
+// и их прогоны). Это половина attachSlotPictures, которую двери записи делают ВНУТРИ своей
+// транзакции — решению (устарелость детали) и ответу нужна строка плиты, а не её файл. Файл и углы
+// (resolveSlotMedia) — после коммита, в снимке чтения: resolveMedia читает цепочки правок ВСЕЙ
+// карточки сканом idx_design_picture_card, и под SERIALIZABLE этот скан ставит S на каждый её кадр.
+func attachSlotPlates(ctx context.Context, rep dependency.Repository, slots []*entity.DesignBenchSlot) error {
 	ids := make([]int, 0, len(slots))
 	for _, sl := range slots {
 		if sl != nil && sl.PictureId.Valid && sl.PictureId.Int32 > 0 {
@@ -134,13 +157,8 @@ func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []
 		return fmt.Errorf("failed to resolve design bench plates: %w", err)
 	}
 	byID := make(map[int]*entity.DesignPicture, len(rows))
-	flat := make([]*entity.DesignPicture, 0, len(rows))
 	for i := range rows {
 		byID[rows[i].Id] = &rows[i]
-		flat = append(flat, &rows[i])
-	}
-	if err := resolveMedia(ctx, rep, flat); err != nil {
-		return err
 	}
 	stamp, err := runStampsOf(ctx, rep, rows)
 	if err != nil {
@@ -165,6 +183,29 @@ func attachSlotPictures(ctx context.Context, rep dependency.Repository, slots []
 		}
 	}
 	return nil
+}
+
+// resolveSlotMedia — файл и углы undo/redo плит, уже приклеенных attachSlotPlates, ОДНИМ resolveMedia.
+func resolveSlotMedia(ctx context.Context, rep dependency.Repository, slots []*entity.DesignBenchSlot) error {
+	flat := make([]*entity.DesignPicture, 0, len(slots))
+	for _, sl := range slots {
+		if sl != nil && sl.Picture != nil {
+			flat = append(flat, sl.Picture)
+		}
+	}
+	if len(flat) == 0 {
+		return nil
+	}
+	return resolveMedia(ctx, rep, flat)
+}
+
+// resolveSlotMediaAfterCommit — resolveSlotMedia для двери записи: в своём снимке чтения, после
+// коммита её транзакции. Снимок видит поданное и всё, что закоммичено до него, — ответ ничего не
+// теряет, а транзакция записи не держит S на кадрах карточки, которых не трогала.
+func (s *Store) resolveSlotMediaAfterCommit(ctx context.Context, slots []*entity.DesignBenchSlot) error {
+	return s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		return resolveSlotMedia(ctx, rep, slots)
+	})
 }
 
 // runStampsOf — kind и rrev прогонов, из которых вышли переданные плиты, ОДНИМ чтением.

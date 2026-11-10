@@ -234,7 +234,8 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		_, err := T.SaveMarker(ctx, tcID, legacyID, ins(t, "легаси + новый 180°", lineOneWay, v3half), "editor")
 		require.ErrorAs(t, err, &ve, "a pass may not forgive geometry this save introduces")
 		require.Equal(t, entity.ReasonFlipIntroducedOnLegacy, ve.Reason)
-		require.Contains(t, ve.HowToFix, "верните сохранённые размещения",
+		// English since 21936b8: «верните сохранённые размещения» → «put the stored placements back».
+		require.Contains(t, ve.HowToFix, "put the stored placements back",
 			"the remedy is to restore, not to re-nest geometry that was fine")
 		require.Equal(t, 1, markerGeneration(ctx, t, legacyID), "the refused save wrote nothing")
 
@@ -497,7 +498,8 @@ func TestMarkerFabricDirectionGuard(t *testing.T) {
 		require.ErrorAs(t, err, &ve)
 		require.Equal(t, entity.ReasonFlipOnOneWay, ve.Reason)
 		require.Equal(t, lineMainNap, ve.Conflicting, "the blocker is the ворсовая line, not the named one")
-		require.Contains(t, ve.HowToFix, "назначение")
+		// English since 21936b8: «(через назначение %q)» → «(through purpose %q)».
+		require.Contains(t, ve.HowToFix, "through purpose")
 		// Without the forbidden placements the same binding saves — the scope restricts the
 		// GEOMETRY, it does not blacklist the line.
 		_, err = T.SaveMarker(ctx, tcID, 0, ins(t, "main прямой", lineMainAny, v3clean), "tester")

@@ -290,7 +290,9 @@ func TestRestoreWritesTheSnapshotThroughTheSave(t *testing.T) {
 	require.Equal(t, 3, written.SnapshotLockVersion, "the snapshot is valid only at the version it was read at")
 	var frozenNow pb_common.TechCard
 	require.NoError(t, protojson.Unmarshal([]byte(written.SnapshotJSON), &frozenNow))
-	require.True(t, proto.Equal(dto.ConvertEntityTechCardToPb(now, rig.srv.costingFx(restoreCtx())), &frozenNow),
+	wantFrozenNow := dto.ConvertEntityTechCardToPb(now, rig.srv.costingFx(restoreCtx()))
+	nameSnapshotThreadPerMm(wantFrozenNow)
+	require.True(t, proto.Equal(wantFrozenNow, &frozenNow),
 		"the new snapshot must be the card as it is NOW, so the restore can itself be undone")
 
 	// (1) the content of v6.

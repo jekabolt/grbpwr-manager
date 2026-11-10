@@ -4,3 +4,7 @@ packages:
       all: true
       dir: '{{.InterfaceDir}}/mocks'
       filename: 'mock_{{.InterfaceName}}.go'
+      # The mocks live in internal/dependency/mocks and are imported as package mocks;
+      # without this a bare `mockery` writes `package dependency` and every test that
+      # imports the mocks stops compiling.
+      outpkg: mocks

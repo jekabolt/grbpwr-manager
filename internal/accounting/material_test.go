@@ -64,6 +64,17 @@ func TestBuildMaterialMovementEntry_Types(t *testing.T) {
 	}
 }
 
+func TestBuildMaterialMovementEntryRoundsOneMovementToCents(t *testing.T) {
+	m := movementFacts(entity.MaterialMovementIssueProduction)
+	m.Quantity = dec("1")
+	m.UnitCostBase = nd("0.005")
+
+	entry, err := BuildMaterialMovementEntry(m, testStartDate)
+	require.NoError(t, err)
+	assertAmount(t, entry, Acc1120, entity.AcctSideDebit, "0.01")
+	assertAmount(t, entry, Acc1110, entity.AcctSideCredit, "0.01")
+}
+
 func TestBuildMaterialMovementEntry_Skips(t *testing.T) {
 	t.Run("uncosted movement", func(t *testing.T) {
 		m := movementFacts(entity.MaterialMovementReceipt)

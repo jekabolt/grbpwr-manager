@@ -72,6 +72,15 @@ func TestPatternLineKeys(t *testing.T) {
 		require.NoError(t, err)
 		return tc.LockVersion
 	}
+	// Since c6483a3 (0423 pattern history) a replaced or removed sheet is archived, and the archive
+	// row keeps its object alive: a card save therefore orphans nothing, and the object becomes a GC
+	// candidate only when its last history revision is deleted. inHistory proves the retention.
+	inHistory := func(url string) bool {
+		var n int
+		require.NoError(t, testDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM tech_card_size_pattern_history WHERE tech_card_id = ? AND url = ?", id, url).Scan(&n))
+		return n > 0
+	}
 	bySize := func(ps []entity.TechCardSizePattern, size int) entity.TechCardSizePattern {
 		for _, p := range ps {
 			if p.SizeId == size {
@@ -131,23 +140,27 @@ func TestPatternLineKeys(t *testing.T) {
 	), lock())
 	require.Error(t, err)
 
-	// A valid fabric binding lands. The szA url2 row vanishes from the payload → its object orphans.
+	// A valid fabric binding lands. The szA url2 row vanishes from the payload → it is archived, and
+	// the history row keeps its object (c6483a3), so nothing orphans.
 	orphans, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC(bom,
 		entity.TechCardSizePattern{SizeId: szB, URL: url1},
 		entity.TechCardSizePattern{SizeId: szA, URL: url3, LineKey: sheetK1, Name: ns("сетка"), BomLineKey: ns(fabKey)},
 	), lock())
 	require.NoError(t, err)
-	require.Equal(t, []string{url2}, orphans)
+	require.Empty(t, orphans, "the removed url2 row lives on in the pattern history")
+	require.True(t, inHistory(url2), "the removed url2 row is archived")
 	require.Equal(t, fabKey, bySize(read(), szA).BomLineKey.String)
 
 	// Replace the sheet's FILE: same line_key, new url, name and binding ABSENT — identity, name and
-	// binding all survive; the version bumps (a replacement is a new revision); the old object orphans.
+	// binding all survive; the version bumps (a replacement is a new revision); the old object is
+	// archived as the previous revision, not orphaned (c6483a3).
 	orphans, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC(bom,
 		entity.TechCardSizePattern{SizeId: szB, URL: url1},
 		entity.TechCardSizePattern{SizeId: szA, URL: url4, LineKey: sheetK1},
 	), lock())
 	require.NoError(t, err)
-	require.Equal(t, []string{url3}, orphans)
+	require.Empty(t, orphans, "the replaced url3 is the sheet's previous revision in the history")
+	require.True(t, inHistory(url3), "the replaced url3 is archived")
 	replaced := bySize(read(), szA)
 	require.Equal(t, sheetK1, replaced.LineKey)
 	require.Equal(t, url4, replaced.URL)
@@ -163,7 +176,21 @@ func TestPatternLineKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fabKey, bySize(read(), szA).BomLineKey.String)
 
-	// The fabric slot is deleted out from under the binding: an UNCHANGED round-trip still saves
+	// Since 6131292 a save can never leave a sheet without a material: deleting the fabric slot in the
+	// same save that keeps a sheet bound to it is refused, and the refused save writes nothing.
+	_, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC([]entity.TechCardBomItem{trim},
+		entity.TechCardSizePattern{SizeId: szB, URL: url1},
+		entity.TechCardSizePattern{SizeId: szA, URL: url4, LineKey: sheetK1, BomLineKey: ns(fabKey)},
+	), lock())
+	require.Error(t, err, "a save must not orphan a bound sheet")
+	require.Contains(t, err.Error(), "new_unresolved_sheets")
+	// Legacy data: the slot vanished before that refusal existed. The store no longer produces this
+	// state, so the test writes it directly (as 4ee45d7 does for the viewer manifest).
+	_, err = testDB.ExecContext(ctx,
+		"DELETE FROM tech_card_bom_item WHERE tech_card_id = ? AND line_key = ?", id, fabKey)
+	require.NoError(t, err)
+
+	// The fabric slot is gone from under the binding: an UNCHANGED round-trip still saves
 	// (dangling = «слот удалён», a UI state), while present-empty explicitly unbinds.
 	_, err = T.UpdateTechCardAndListOrphanedPatternURLs(ctx, id, mkTC([]entity.TechCardBomItem{trim},
 		entity.TechCardSizePattern{SizeId: szB, URL: url1},

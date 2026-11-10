@@ -56,7 +56,10 @@ func (s *Store) SetDetailKept(ctx context.Context, req entity.DesignDetailKeptSe
 		for i := range bench {
 			ptrs = append(ptrs, &bench[i])
 		}
-		if err := attachSlotPictures(ctx, rep, ptrs); err != nil {
+		// Плиты — строками, без файла и углов: устарелости нужен RunId плиты, а resolveMedia читал бы
+		// цепочки правок всей карточки под SERIALIZABLE (S на каждом её кадре). Файл и углы ответа —
+		// после коммита.
+		if err := attachSlotPlates(ctx, rep, ptrs); err != nil {
 			return err
 		}
 		entity.ApplyDesignDetailStaleness(bench)
@@ -112,6 +115,9 @@ func (s *Store) SetDetailKept(ctx context.Context, req entity.DesignDetailKeptSe
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveSlotMediaAfterCommit(ctx, []*entity.DesignBenchSlot{&out}); err != nil {
 		return nil, err
 	}
 	return &out, nil

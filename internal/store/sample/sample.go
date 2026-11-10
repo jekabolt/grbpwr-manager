@@ -381,7 +381,7 @@ func (s *Store) sampleCost(ctx context.Context, sampleID int) (*entity.SampleCos
 			out.HasUncosted = true
 			continue
 		}
-		line := m.Quantity.Mul(m.Base.Decimal)
+		line := entity.MovementValueCents(m.Quantity, m.Base.Decimal)
 		switch entity.MaterialMovementType(m.Type) {
 		case entity.MaterialMovementIssueSample:
 			out.MaterialsBase = out.MaterialsBase.Add(line)

@@ -415,10 +415,10 @@ func (r *ProductionRun) ActualTotalCostBase() (decimal.Decimal, bool) {
 			if !m.UnitCostBase.Valid {
 				return decimal.Decimal{}, false // an uncosted issue understates the total
 			}
-			total = total.Add(m.Quantity.Mul(m.UnitCostBase.Decimal))
+			total = total.Add(MovementValueCents(m.Quantity, m.UnitCostBase.Decimal))
 		case MaterialMovementReturnProduction:
 			if m.UnitCostBase.Valid {
-				total = total.Sub(m.Quantity.Mul(m.UnitCostBase.Decimal))
+				total = total.Sub(MovementValueCents(m.Quantity, m.UnitCostBase.Decimal))
 			}
 		}
 	}

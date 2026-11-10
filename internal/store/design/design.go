@@ -227,7 +227,8 @@ func loadPicturesByRuns(ctx context.Context, db dependency.DB, runIDs []int) (ma
 }
 
 // resolveMedia fills the Media pointer of every picture in place, in ONE batch read, inside the
-// caller's transaction. A missing media row leaves Media nil rather than dropping the picture:
+// caller's transaction — a READ transaction: a write door calls it after its commit, through
+// resolveMediaAfterCommit, never inside its SERIALIZABLE transaction. A missing media row leaves Media nil rather than dropping the picture:
 // "the file disappeared" is a fact the band must be able to show, not a row to hide.
 //
 // УГЛЫ undo/redo (T28 v2) ставятся здесь же (annotateEditChains): это единственная воронка, через
@@ -265,6 +266,21 @@ func resolveMedia(ctx context.Context, rep dependency.Repository, pics []*entity
 		}
 	}
 	return nil
+}
+
+// resolveMediaAfterCommit — resolveMedia ДЛЯ ДВЕРИ ЗАПИСИ: в своём снимке чтения (readTxFunc), после
+// коммита её транзакции, а не внутри неё. annotateEditChains читает цепочки правок ВСЕЙ карточки
+// сканом idx_design_picture_card, как только хоть один кадр ответа — звено цепочки, и под SERIALIZABLE
+// этот скан ставит S на каждый кадр карточки: запись ждала бы любую чужую транзакцию, державшую любой
+// её кадр, и сама держала бы их до коммита (c169b2c, TestDesignDBOverwriteDoesNotLockTheRestOfTheCard).
+// Ответ ничего не теряет: снимок после коммита видит и поданное, и чужие штампы replaced_by.
+func (s *Store) resolveMediaAfterCommit(ctx context.Context, pics []*entity.DesignPicture) error {
+	if len(pics) == 0 {
+		return nil
+	}
+	return s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		return resolveMedia(ctx, rep, pics)
+	})
 }
 
 // resolveMediaInto is resolveMedia for anything that holds a media id and a *MediaFull, which

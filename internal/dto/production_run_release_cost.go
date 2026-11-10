@@ -229,6 +229,8 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 			SpareQty:      frozenDecimal(b.GetSpareQty()),
 			// An aux line's measured norm per unit (0456); AuxRecipe reads it only on an aux card.
 			ConsumptionPerUnit: frozenDecimal(b.GetConsumptionPerUnit()),
+			// A topstitch norm is derived again from this frozen factor and the frozen operation lines.
+			ThreadPerMm: frozenDecimal(b.GetThreadPerMm()),
 		}
 		if mid := b.GetMaterialId(); mid > 0 {
 			item.MaterialId = sql.NullInt64{Int64: mid, Valid: true}
@@ -254,22 +256,28 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		}
 		card.BomItems = append(card.BomItems, item)
 	}
+	// A sellable card freezes derived norms on its cut_length recipe rows. An auxiliary card has no
+	// colourways, so its authoritative frozen value is the outer cut_strip_norms projection. Never
+	// rebuild either from today's article width (or even from the frozen strip geometry): old releases
+	// keep the number they approved.
 	if card.IsAuxiliary() {
-		// An aux card has no recipe rows to say a line is cut to length: its strips do. A strip that no
-		// longer reads is dropped, so its line has no norm and the cell falls back, never prices low.
-		strips := snap.GetCutStrips()
-		if len(strips) == 0 {
-			strips = ins.GetCutStrips()
+		byKey := make(map[string]*entity.TechCardBomItem, len(card.BomItems))
+		for i := range card.BomItems {
+			byKey[entity.CutStripLineKey(card.BomItems[i].LineKey)] = &card.BomItems[i]
 		}
-		for i, p := range strips {
-			if p == nil {
+		for _, frozen := range snap.GetCutStripNorms() {
+			line := byKey[entity.CutStripLineKey(frozen.GetBomLineKey())]
+			if line == nil {
 				continue
 			}
-			if strip, err := cutStripFromPb(p, p.GetLineKey(), i, "cut_strips"); err == nil {
-				card.CutStrips = append(card.CutStrips, strip)
+			line.CutToLength = true
+			if frozen.GetComplete() {
+				line.ConsumptionPerUnit = frozenDecimal(frozen.GetNorm())
 			}
 		}
-		entity.MarkCutStripLines(card.BomItems, entity.CutStripLineNorms(card.BomItems, card.CutStrips, nil))
+	}
+	for _, op := range ins.GetOperations() {
+		card.Operations = append(card.Operations, frozenCountableOperation(op))
 	}
 	if c := ins.GetCosting(); c != nil {
 		ccy := strings.TrimSpace(c.GetCurrency())
@@ -285,9 +293,6 @@ func releaseCostingCardFromSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 	// Брать операции с живой карточки здесь означало бы переписать цену старого релиза сегодняшним
 	// маршрутом. Восстанавливается только узкая проекция, которую читает entity.CountableOpsQty;
 	// нечитаемая историческая запись количества пропускается, как остальные decimal-поля выше.
-	for _, op := range ins.GetOperations() {
-		card.Operations = append(card.Operations, frozenCountableOperation(op))
-	}
 	// The labels that hold a line go with the card: colorwayHasOwnRecipe reads them, and without them a
 	// recipe-less colourway would be costed here as one label.
 	for id := range pickedLabelLinesFromSnapshot(snap) {
@@ -345,6 +350,25 @@ func frozenCountableOperation(o *pb_common.TechCardOperation) entity.TechCardOpe
 		op.BomQuantities = append(op.BomQuantities, entity.OperationBomQty{
 			LineKey: q.GetLineKey(), QtyPerGarment: qty.Decimal,
 		})
+	}
+	for _, raw := range o.GetTopstitchLines() {
+		if raw == nil || raw.GetRows() < 1 || raw.GetRows() > entity.TechCardTopstitchMaxRows {
+			continue
+		}
+		line := entity.TechCardTopstitchLine{
+			LineKey: raw.GetLineKey(), BomLineKey: raw.GetBomLineKey(), Rows: int(raw.GetRows()), Stale: raw.GetStale(),
+		}
+		for _, size := range raw.GetSizes() {
+			if size == nil {
+				continue
+			}
+			mm := frozenDecimal(size.GetLineMm())
+			if !mm.Valid || !mm.Decimal.IsPositive() {
+				continue
+			}
+			line.Sizes = append(line.Sizes, entity.TechCardTopstitchLineSize{SizeId: int(size.GetSizeId()), LineMm: mm})
+		}
+		op.TopstitchLines = append(op.TopstitchLines, line)
 	}
 	return op
 }

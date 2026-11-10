@@ -214,6 +214,7 @@ func (s *Seeder) tcSave(ctx context.Context, styleID int32, tc *common.TechCardI
 	tc.OperationSeamToleranceAware = true
 	tc.PackagingPicksAware = true
 	tc.CutStripsAware = true
+	tc.TopstitchLinesAware = true
 	tc.OperationSeamKindAware = true
 	// Осведомлённость о 32 колонках волны видов операций (0324): та же природа read-modify-write —
 	// tcFetch возвращает сохранённые блоки шага, и сохранение без флага было бы отвергнуто как
@@ -886,6 +887,7 @@ func (s *Seeder) plmBOM(ctx context.Context, st *plmState) error {
 	neg.OperationSeamToleranceAware = true
 	neg.PackagingPicksAware = true
 	neg.CutStripsAware = true
+	neg.TopstitchLinesAware = true
 	neg.OperationSeamKindAware = true
 	neg.MediaAware = true
 	neg.OperationKindsAware = true
@@ -1546,6 +1548,7 @@ func (s *Seeder) plmRelease(ctx context.Context, st *plmState) error {
 	tc2.OperationSeamToleranceAware = true
 	tc2.PackagingPicksAware = true
 	tc2.CutStripsAware = true
+	tc2.TopstitchLinesAware = true
 	tc2.OperationSeamKindAware = true
 	tc2.MediaAware = true
 	tc2.OperationKindsAware = true
@@ -1617,7 +1620,7 @@ func (s *Seeder) plmAssembly(ctx context.Context, st *plmState) error {
 		code := s.key(fmt.Sprintf("AUX%d", i))
 		matID, err := s.createMaterial(ctx, &common.Material{
 			Name: names[i] + " material", Section: common.TechCardBomSection_TECH_CARD_BOM_SECTION_LABEL,
-			LabelType: labelTypes[i],
+			LabelType:     labelTypes[i],
 			MaterialClass: common.MaterialClass_MATERIAL_CLASS_OTHER, Code: code, Unit: "pcs", MinStock: decv("200"), OtherAttrs: "{}",
 		})
 		if err != nil {
@@ -2305,6 +2308,7 @@ func (s *Seeder) plmHygiene(ctx context.Context, st *plmState) error {
 			body.OperationLayerOrderAware = true
 			body.OperationSeamToleranceAware = true
 			body.PackagingPicksAware = true
+			body.TopstitchLinesAware = true
 			// Not cut_strips_aware: this body is a read's insert half, which has no strips, so saying it knows
 			// them would delete the card's strips. Absent leaves them alone.
 			body.OperationSeamKindAware = true

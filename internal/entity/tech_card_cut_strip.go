@@ -123,19 +123,22 @@ func (s *TechCardCutStrip) sizeRow(sizeID int) *TechCardCutStripSize {
 	return nil
 }
 
-// CutStripLineNorm is what one BOM line gets from its strips, in metres per garment, before wastage.
-type CutStripLineNorm struct {
+// DerivedLineNorm is what one BOM line gets from its cut strips and measured topstitch lines, in
+// metres per garment, before wastage.
+type DerivedLineNorm struct {
 	BomItemId  int
 	BomLineKey string
-	// Flat is set when every strip of the line is one_length, the case with one norm for all sizes
-	// and the only one that needs no size range.
+	// Flat is set when every contributor is size-independent. Topstitch runs are always per-size.
 	Flat decimal.NullDecimal
-	// BySize has a row only for a size whose length is known on every strip of the line. A size with
+	// BySize has a row only for a size whose length is known on every contributor. A size with
 	// no row reads as no norm, which costing and the material plan already report as incomplete.
 	BySize []TechCardBomSizeConsumption
 	// Complete is false when any size has no known length or the line is not bought in metres.
 	Complete bool
 }
+
+// CutStripLineNorm is kept as an alias for callers compiled against the original strip-only name.
+type CutStripLineNorm = DerivedLineNorm
 
 // IsCutStripUnit reports whether a BOM line's unit is one a strip's norm can be expressed in. The norm
 // is metres, and it is never reinterpreted for any other unit.
@@ -162,9 +165,28 @@ func CutStripLineKey(key string) string {
 	return strings.ToUpper(strings.TrimSpace(key))
 }
 
-// CutStripLineNorms computes the norm of every BOM line that has strips, in BOM order.
+// CutStripLineNorms computes strip-only norms. New card readers use DerivedLineNorms so measured
+// topstitch thread is composed onto the same BOM line and manual-restore path.
 func CutStripLineNorms(bomItems []TechCardBomItem, strips []TechCardCutStrip, sizeIDs []int) []CutStripLineNorm {
-	if len(strips) == 0 {
+	return DerivedLineNorms(bomItems, strips, nil, sizeIDs)
+}
+
+// DerivedLineNorms is the compatibility entry point for callers with no loaded material catalog.
+// Roll lines can still resolve from the BOM line's fabric-width snapshot.
+func DerivedLineNorms(bomItems []TechCardBomItem, strips []TechCardCutStrip, topstitch []TechCardTopstitchLine, sizeIDs []int) []DerivedLineNorm {
+	return DerivedLineNormsForRecipe(bomItems, strips, topstitch, sizeIDs, nil, nil)
+}
+
+// DerivedLineNormsForRecipe composes every derived contribution per BOM line, in BOM order.
+// Running-basis strips contribute cut_mm * qty / 1000. Roll-basis strips contribute
+// cut_mm * qty / floor(cutting_width_mm / strip_width_mm) / 1000. Topstitch always contributes
+// running metres. One unknown contributor, width or conflicting colourway pin makes that size
+// unknown; a partial sum is never returned.
+func DerivedLineNormsForRecipe(bomItems []TechCardBomItem, strips []TechCardCutStrip,
+	topstitch []TechCardTopstitchLine, sizeIDs []int, linked map[int]MaterialWithPrice,
+	usages []TechCardColorwayUsage,
+) []DerivedLineNorm {
+	if len(strips) == 0 && len(topstitch) == 0 {
 		return nil
 	}
 	byLine := make(map[string][]*TechCardCutStrip, len(strips))
@@ -172,28 +194,70 @@ func CutStripLineNorms(bomItems []TechCardBomItem, strips []TechCardCutStrip, si
 		key := CutStripLineKey(strips[i].BomLineKey)
 		byLine[key] = append(byLine[key], &strips[i])
 	}
-	out := make([]CutStripLineNorm, 0, len(byLine))
+	topByLine := make(map[string][]*TechCardTopstitchLine, len(topstitch))
+	for i := range topstitch {
+		key := CutStripLineKey(topstitch[i].BomLineKey)
+		topByLine[key] = append(topByLine[key], &topstitch[i])
+	}
+	out := make([]DerivedLineNorm, 0, len(byLine)+len(topByLine))
 	for i := range bomItems {
-		onLine := byLine[CutStripLineKey(bomItems[i].LineKey)]
-		if len(onLine) == 0 {
+		key := CutStripLineKey(bomItems[i].LineKey)
+		onLine, topOnLine := byLine[key], topByLine[key]
+		if len(onLine) == 0 && len(topOnLine) == 0 {
 			continue
 		}
-		out = append(out, cutStripLineNorm(&bomItems[i], onLine, sizeIDs))
+		pinned, conflict := derivedLinePinnedArticle(bomItems, i, usages)
+		out = append(out, derivedLineNorm(&bomItems[i], onLine, topOnLine, sizeIDs, linked, pinned, conflict))
 	}
 	return out
 }
 
-func cutStripLineNorm(bom *TechCardBomItem, strips []*TechCardCutStrip, sizeIDs []int) CutStripLineNorm {
-	norm := CutStripLineNorm{BomItemId: bom.Id, BomLineKey: bom.LineKey}
-	if !IsCutStripUnit(bom.Unit.String) {
+func derivedLinePinnedArticle(bomItems []TechCardBomItem, bomIndex int, usages []TechCardColorwayUsage) (int64, bool) {
+	bom := &bomItems[bomIndex]
+	var pinned int64
+	for i := range usages {
+		u := &usages[i]
+		if u.IsPieceMaterialAssignment() || !usageBelongsToBom(u, bomItems, bomIndex) ||
+			!u.MaterialId.Valid || u.MaterialId.Int64 <= 0 ||
+			(bom.MaterialId.Valid && u.MaterialId.Int64 == bom.MaterialId.Int64) {
+			continue
+		}
+		if pinned == 0 {
+			pinned = u.MaterialId.Int64
+			continue
+		}
+		if pinned != u.MaterialId.Int64 {
+			return 0, true
+		}
+	}
+	return pinned, false
+}
+
+func usageBelongsToBom(u *TechCardColorwayUsage, bomItems []TechCardBomItem, bomIndex int) bool {
+	if u.BomItemId.Valid {
+		return int(u.BomItemId.Int64) == bomItems[bomIndex].Id
+	}
+	return u.BomItemIndex.Valid && int(u.BomItemIndex.Int32) == bomIndex
+}
+
+func derivedLineNorm(bom *TechCardBomItem, strips []*TechCardCutStrip, topstitch []*TechCardTopstitchLine,
+	sizeIDs []int, linked map[int]MaterialWithPrice, pinned int64, pinConflict bool,
+) DerivedLineNorm {
+	norm := DerivedLineNorm{BomItemId: bom.Id, BomLineKey: bom.LineKey}
+	if CutStripLineProblem(bom.Unit.String, bom.Section, bom.Purpose.String) != "" || pinConflict {
 		return norm
 	}
-	allOne := true
+	rollBasis := len(strips) > 0 && IsRollGoodsSection(bom.Section)
+	cuttingWidth := decimal.NullDecimal{}
+	if rollBasis {
+		cuttingWidth = CuttingWidthCm(bom, pinned, linked)
+	}
+	allOne := len(topstitch) == 0
 	for _, s := range strips {
 		allOne = allOne && s.LengthMode == CutStripModeOneLength
 	}
 	if allOne {
-		if sum, ok := cutStripSumMetres(strips, 0); ok {
+		if sum, ok := derivedSumMetres(bom, strips, nil, 0, rollBasis, cuttingWidth); ok {
 			norm.Flat = decimal.NullDecimal{Decimal: sum, Valid: true}
 			norm.Complete = true
 		}
@@ -201,11 +265,11 @@ func cutStripLineNorm(bom *TechCardBomItem, strips []*TechCardCutStrip, sizeIDs 
 	}
 	sizes := sizeIDs
 	if len(sizes) == 0 {
-		sizes = cutStripRowSizes(strips)
+		sizes = derivedRowSizes(strips, topstitch)
 	}
 	norm.Complete = len(sizes) > 0
 	for _, sizeID := range sizes {
-		sum, ok := cutStripSumMetres(strips, sizeID)
+		sum, ok := derivedSumMetres(bom, strips, topstitch, sizeID, rollBasis, cuttingWidth)
 		if !ok {
 			norm.Complete = false
 			continue
@@ -215,9 +279,47 @@ func cutStripLineNorm(bom *TechCardBomItem, strips []*TechCardCutStrip, sizeIDs 
 	return norm
 }
 
+// derivedSumMetres is the complete sum for one line and size. The final line norm is rounded to the
+// same three decimals the strip contract exposes.
+func derivedSumMetres(bom *TechCardBomItem, strips []*TechCardCutStrip, topstitch []*TechCardTopstitchLine,
+	sizeID int, rollBasis bool, cuttingWidth decimal.NullDecimal,
+) (decimal.Decimal, bool) {
+	strip, ok := cutStripSumMetres(strips, sizeID, rollBasis, cuttingWidth)
+	if !ok {
+		return decimal.Zero, false
+	}
+	sum := strip
+	if len(topstitch) > 0 && !bom.ThreadPerMm.Valid {
+		return decimal.Zero, false
+	}
+	for _, line := range topstitch {
+		if line.Stale {
+			return decimal.Zero, false
+		}
+		var mm decimal.Decimal
+		found := false
+		for _, row := range line.Sizes {
+			if row.SizeId == sizeID && row.LineMm.Valid {
+				mm, found = row.LineMm.Decimal, true
+				break
+			}
+		}
+		if !found {
+			return decimal.Zero, false
+		}
+		sum = sum.Add(mm.Mul(decimal.NewFromInt(int64(line.Rows))).Mul(bom.ThreadPerMm.Decimal).Div(decimal.NewFromInt(1000)))
+	}
+	return sum.Round(3), true
+}
+
 // cutStripSumMetres is cut * qty / 1000 over the strips of one line. One unknown strip makes the sum
 // unknown: a partial sum would price a garment missing one of its strips.
-func cutStripSumMetres(strips []*TechCardCutStrip, sizeID int) (decimal.Decimal, bool) {
+func cutStripSumMetres(strips []*TechCardCutStrip, sizeID int, rollBasis bool,
+	cuttingWidth decimal.NullDecimal,
+) (decimal.Decimal, bool) {
+	if rollBasis && (!cuttingWidth.Valid || !cuttingWidth.Decimal.IsPositive()) {
+		return decimal.Zero, false
+	}
 	sum := decimal.Zero
 	for _, s := range strips {
 		mm, ok := CutStripLengthMm(s, sizeID)
@@ -228,9 +330,38 @@ func cutStripSumMetres(strips []*TechCardCutStrip, sizeID int) (decimal.Decimal,
 		if qty < 1 {
 			qty = 1
 		}
-		sum = sum.Add(decimal.NewFromInt(int64(mm) * int64(qty)))
+		contribution := decimal.NewFromInt(int64(mm) * int64(qty))
+		if rollBasis {
+			if !s.WidthMm.IsPositive() {
+				return decimal.Zero, false
+			}
+			lanes := cuttingWidth.Decimal.Mul(decimal.NewFromInt(10)).Div(s.WidthMm).Floor().IntPart()
+			if lanes < 1 {
+				return decimal.Zero, false
+			}
+			contribution = contribution.Div(decimal.NewFromInt(lanes))
+		}
+		sum = sum.Add(contribution)
 	}
 	return sum.Div(decimal.NewFromInt(1000)), true
+}
+
+func derivedRowSizes(strips []*TechCardCutStrip, topstitch []*TechCardTopstitchLine) []int {
+	seen := map[int]bool{}
+	out := cutStripRowSizes(strips)
+	for _, id := range out {
+		seen[id] = true
+	}
+	for _, line := range topstitch {
+		for _, row := range line.Sizes {
+			if !seen[row.SizeId] {
+				seen[row.SizeId] = true
+				out = append(out, row.SizeId)
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
 }
 
 func cutStripRowSizes(strips []*TechCardCutStrip) []int {
@@ -248,23 +379,44 @@ func cutStripRowSizes(strips []*TechCardCutStrip) []int {
 	return out
 }
 
-// ApplyCutStripNorms is the read-time resolver: it marks the strip lines and puts each line's norm on
+// ApplyCutStripNorms is the strip-only read-time compatibility wrapper. It marks lines and puts norms on
 // the recipe rows of every colourway. Run once on a freshly read card, before anyone reads a norm.
 func ApplyCutStripNorms(bomItems []TechCardBomItem, strips []TechCardCutStrip, sizeIDs []int, colorways []TechCardColorway) {
-	norms := CutStripLineNorms(bomItems, strips, sizeIDs)
+	ApplyDerivedLineNorms(bomItems, strips, nil, sizeIDs, colorways)
+}
+
+// ApplyDerivedLineNorms is the read-time resolver for both strip and topstitch-derived lines.
+func ApplyDerivedLineNorms(bomItems []TechCardBomItem, strips []TechCardCutStrip, topstitch []TechCardTopstitchLine, sizeIDs []int, colorways []TechCardColorway) {
+	ApplyDerivedLineNormsWithMaterials(bomItems, strips, topstitch, sizeIDs, colorways, nil)
+}
+
+// ApplyDerivedLineNormsWithMaterials resolves the card-level default basis and then each colourway's
+// own article pin basis. The card-level projection never inherits a colourway pin.
+func ApplyDerivedLineNormsWithMaterials(bomItems []TechCardBomItem, strips []TechCardCutStrip,
+	topstitch []TechCardTopstitchLine, sizeIDs []int, colorways []TechCardColorway,
+	linked map[int]MaterialWithPrice,
+) {
+	norms := DerivedLineNormsForRecipe(bomItems, strips, topstitch, sizeIDs, linked, nil)
 	if len(norms) == 0 {
 		return
 	}
-	MarkCutStripLines(bomItems, norms)
+	MarkDerivedLines(bomItems, norms)
 	for i := range colorways {
-		colorways[i].Usages = ResolveCutStripUsages(colorways[i].Usages, bomItems, norms)
+		colourNorms := DerivedLineNormsForRecipe(bomItems, strips, topstitch, sizeIDs, linked, colorways[i].Usages)
+		colorways[i].Usages = ResolveDerivedLineUsages(colorways[i].Usages, bomItems, colourNorms)
 	}
 }
 
-// MarkCutStripLines sets the in-memory mark on the strip lines. The mark is what keeps the countable
+// MarkCutStripLines is the strip-only compatibility wrapper for the in-memory derived-line mark.
+// The mark is what keeps the countable
 // path of a hardware line quiet (SlotCarriesCountableNorm, CountablePairQty). The slot's own
 // qty_per_garment and spare_qty stay untouched, because the MATERIALS digest hashes them.
 func MarkCutStripLines(bomItems []TechCardBomItem, norms []CutStripLineNorm) {
+	MarkDerivedLines(bomItems, norms)
+}
+
+// MarkDerivedLines marks BOM rows whose norm is supplied by derived line geometry.
+func MarkDerivedLines(bomItems []TechCardBomItem, norms []DerivedLineNorm) {
 	for i := range norms {
 		for j := range bomItems {
 			if bomItems[j].Id == norms[i].BomItemId {
@@ -274,7 +426,7 @@ func MarkCutStripLines(bomItems []TechCardBomItem, norms []CutStripLineNorm) {
 	}
 }
 
-// ResolveCutStripUsages returns one colourway's recipe with the strip lines' numbers on its rows.
+// ResolveCutStripUsages is the strip-only compatibility wrapper for recipe norm resolution.
 //
 //   - The first garment-level row of a line carries the norm. A further row of the same line, a second
 //     placement, gets a valid zero so that it cannot multiply the norm.
@@ -284,14 +436,19 @@ func MarkCutStripLines(bomItems []TechCardBomItem, norms []CutStripLineNorm) {
 //   - A piece-bound row states which fabric a piece is cut from and carries no norm, so it stays.
 //   - A legacy positional row, resolved by bom_item_index, is part of the slot and is resolved too.
 func ResolveCutStripUsages(usages []TechCardColorwayUsage, bomItems []TechCardBomItem, norms []CutStripLineNorm) []TechCardColorwayUsage {
+	return ResolveDerivedLineUsages(usages, bomItems, norms)
+}
+
+// ResolveDerivedLineUsages applies composed line norms to recipe rows using cut_length provenance.
+func ResolveDerivedLineUsages(usages []TechCardColorwayUsage, bomItems []TechCardBomItem, norms []DerivedLineNorm) []TechCardColorwayUsage {
 	if len(norms) == 0 {
 		return usages
 	}
-	byID := make(map[int]*CutStripLineNorm, len(norms))
+	byID := make(map[int]*DerivedLineNorm, len(norms))
 	for i := range norms {
 		byID[norms[i].BomItemId] = &norms[i]
 	}
-	normOf := func(u *TechCardColorwayUsage) *CutStripLineNorm {
+	normOf := func(u *TechCardColorwayUsage) *DerivedLineNorm {
 		if u.BomItemId.Valid {
 			return byID[int(u.BomItemId.Int64)]
 		}
@@ -346,7 +503,7 @@ func ResolveCutStripUsages(usages []TechCardColorwayUsage, bomItems []TechCardBo
 	return usages
 }
 
-func (n *CutStripLineNorm) putOn(u *TechCardColorwayUsage) {
+func (n *DerivedLineNorm) putOn(u *TechCardColorwayUsage) {
 	u.Consumption = n.Flat
 	if len(n.BySize) > 0 {
 		u.SizeConsumptions = append([]TechCardBomSizeConsumption(nil), n.BySize...)
