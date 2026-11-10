@@ -233,3 +233,38 @@ func TestTechCardChangedSectionsSeesStitchLines(t *testing.T) {
 		t.Fatalf("a pre-0462 snapshot against no lines produced changes: %#v", got)
 	}
 }
+
+func TestTechCardChangedSectionsSeesFoldAxisAndPages(t *testing.T) {
+	before := snapshotDiffCard()
+	before.LabelsAware = true
+	before.GarmentLabels = []*pb_common.TechCardGarmentLabel{{
+		Key: "size", LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", HeightMm: &pb_decimal.Decimal{Value: "100"},
+	}}
+
+	axis := proto.Clone(before).(*pb_common.TechCardInsert)
+	width := "width"
+	axis.GarmentLabels[0].FoldAxis = &width
+	if got := techCardChangedSections(before, axis); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("axis change = %#v, want labels", got)
+	}
+
+	paged := proto.Clone(before).(*pb_common.TechCardInsert)
+	pages := int32(4)
+	paged.GarmentLabels[0].Pages = &pages
+	if got := techCardChangedSections(before, paged); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("pages change = %#v, want labels", got)
+	}
+
+	// A pre-0466 snapshot against the defaults, and an older client omitting both: no change.
+	same := proto.Clone(before).(*pb_common.TechCardInsert)
+	empty, one := "", int32(1)
+	same.GarmentLabels[0].FoldAxis, same.GarmentLabels[0].Pages = &empty, &one
+	if got := techCardChangedSections(before, same); len(got) != 0 {
+		t.Fatalf("default axis and pages against a pre-0466 snapshot produced changes: %#v", got)
+	}
+	omitted := proto.Clone(axis).(*pb_common.TechCardInsert)
+	omitted.GarmentLabels[0].FoldAxis, omitted.GarmentLabels[0].Pages = nil, nil
+	if got := techCardChangedSections(axis, omitted); len(got) != 0 {
+		t.Fatalf("an older client omitting axis and pages produced changes: %#v", got)
+	}
+}

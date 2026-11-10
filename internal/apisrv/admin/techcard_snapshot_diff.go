@@ -248,6 +248,14 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		if label.StitchLinesMm == nil {
 			label.StitchLinesMm = new(string)
 		}
+		// A snapshot taken before 0466 has neither: lines along the height, one page.
+		if label.FoldAxis == nil {
+			label.FoldAxis = new(string)
+		}
+		if label.Pages == nil {
+			one := int32(1)
+			label.Pages = &one
+		}
 		if key := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); key != "" {
 			byLineKey[key] = label
 		}
@@ -264,10 +272,23 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		if prev != nil && label.StitchLinesMm == nil {
 			rawStitch = prev.GetStitchLinesMm()
 		}
-		var height decimal.NullDecimal
-		if h, err := decimal.NewFromString(strings.TrimSpace(label.GetHeightMm().GetValue())); err == nil {
-			height = decimal.NewNullDecimal(h)
+		if prev != nil && label.FoldAxis == nil {
+			label.FoldAxis = prev.FoldAxis
 		}
+		if prev != nil && label.Pages == nil {
+			label.Pages = prev.Pages
+		}
+		axis := dto.NormalizeGarmentLabelFoldAxis(label.GetFoldAxis())
+		label.FoldAxis = &axis
+		pages := int32(dto.NormalizeGarmentLabelPages(int(label.GetPages())))
+		label.Pages = &pages
+		dim := func(v string) decimal.NullDecimal {
+			if d, err := decimal.NewFromString(strings.TrimSpace(v)); err == nil {
+				return decimal.NewNullDecimal(d)
+			}
+			return decimal.NullDecimal{}
+		}
+		height := dto.GarmentLabelLineLimit(axis, dim(label.GetWidthMm().GetValue()), dim(label.GetHeightMm().GetValue()))
 		normalized := dto.NormalizeGarmentLabelFoldLines(raw, height)
 		label.FoldLinesMm = &normalized
 		normalizedStitch := dto.NormalizeGarmentLabelStitchLines(rawStitch, height)

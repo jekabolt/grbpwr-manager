@@ -177,11 +177,11 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		}
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_garment_label
-				(tech_card_id, label_key, line_key, width_mm, height_mm, fold, fold_lines_mm, stitch_lines_mm,
+				(tech_card_id, label_key, line_key, width_mm, height_mm, fold, fold_lines_mm, stitch_lines_mm, fold_axis, pages,
 				 placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
 				 callout_number, artwork_per_size, artwork_per_colorway,
 				 label_source, label_kind, made_by, print_method, length_cm)
-			VALUES (:tech_card_id, :label_key, :line_key, :width_mm, :height_mm, :fold, :fold_lines_mm, :stitch_lines_mm,
+			VALUES (:tech_card_id, :label_key, :line_key, :width_mm, :height_mm, :fold, :fold_lines_mm, :stitch_lines_mm, :fold_axis, :pages,
 				 :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
 				 :callout_number, :artwork_per_size, :artwork_per_colorway,
 				 :label_source, :label_kind, :made_by, :print_method, :length_cm)`,
@@ -194,6 +194,8 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 				"fold":                 l.Fold,
 				"fold_lines_mm":        l.FoldLinesMm,
 				"stitch_lines_mm":      l.StitchLinesMm,
+				"fold_axis":            l.FoldAxis,
+				"pages":                max(l.Pages, 1),
 				"placement":            l.Placement,
 				"attachment":           l.Attachment,
 				"folding":              l.Folding,
@@ -455,6 +457,8 @@ type garmentLabelRow struct {
 	Fold          sql.NullString      `db:"fold"`
 	FoldLinesMm   string              `db:"fold_lines_mm"`
 	StitchLinesMm string              `db:"stitch_lines_mm"`
+	FoldAxis      string              `db:"fold_axis"`
+	Pages         int                 `db:"pages"`
 	Placement     sql.NullString      `db:"placement"`
 	Attachment    sql.NullString      `db:"attachment"`
 	Folding       sql.NullString      `db:"folding"`
@@ -645,7 +649,7 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	}
 
 	glRows, err := storeutil.QueryListNamed[garmentLabelRow](ctx, s.DB, `
-		SELECT l.id, l.tech_card_id, l.label_key, l.line_key, l.width_mm, l.height_mm, l.fold, l.fold_lines_mm, l.stitch_lines_mm,
+		SELECT l.id, l.tech_card_id, l.label_key, l.line_key, l.width_mm, l.height_mm, l.fold, l.fold_lines_mm, l.stitch_lines_mm, l.fold_axis, l.pages,
 			l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
 			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway,
 			l.label_source, l.label_kind, l.made_by, l.print_method, l.length_cm
@@ -672,7 +676,7 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	for _, r := range glRows {
 		glByCard[r.TechCardID] = append(glByCard[r.TechCardID], entity.TechCardGarmentLabel{
 			Key: r.Key, LineKey: r.LineKey.String, WidthMm: r.WidthMm, HeightMm: r.HeightMm, Fold: r.Fold,
-			FoldLinesMm: r.FoldLinesMm, StitchLinesMm: r.StitchLinesMm, Placement: r.Placement, Attachment: r.Attachment, Folding: r.Folding, Size: r.Size,
+			FoldLinesMm: r.FoldLinesMm, StitchLinesMm: r.StitchLinesMm, FoldAxis: r.FoldAxis, Pages: r.Pages, Placement: r.Placement, Attachment: r.Attachment, Folding: r.Folding, Size: r.Size,
 			QtyPerGarment: r.QtyPerGarment, BomItemId: r.BomItemId, BomLineKey: r.BomLineKey.String,
 			Note: r.Note, MediaIds: glMedia[r.Id],
 			CalloutNumber: r.CalloutNumber, ArtworkPerSize: r.ArtworkPerSize, ArtworkPerColorway: r.ArtworkPerColorway,

@@ -3992,6 +3992,15 @@ type TechCardGarmentLabel struct {
 	StitchLinesMm string
 	// StitchLinesOmitted is the presence bit of stitch_lines_mm. Parse only.
 	StitchLinesOmitted bool
+	// FoldAxis is "" (lines along the height, measured from the top edge, which is sewn) or "width"
+	// (lines measured from the left edge, which is sewn).
+	FoldAxis string
+	// FoldAxisOmitted is the presence bit of fold_axis. Parse only.
+	FoldAxisOmitted bool
+	// Pages of a booklet label, 1..12 (1 = an ordinary label).
+	Pages int
+	// PagesOmitted is the presence bit of pages. Parse only.
+	PagesOmitted bool
 	Placement          sql.NullString
 	Attachment         sql.NullString
 	Folding            sql.NullString

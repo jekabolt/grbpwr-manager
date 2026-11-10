@@ -3223,6 +3223,14 @@ message TechCardGarmentLabel {
   // on write like fold_lines_mm, but the range is 0 <= mm <= height_mm (mm >= 0 when the height is unset).
   // PRESENCE BIT: absent = keep the stored lines; "" = none.
   optional string stitch_lines_mm = 25;
+  // Which way the label is sewn and folded. "" = along the height (legacy): fold_lines_mm and stitch_lines_mm
+  // are mm from the TOP edge, and the top edge is the one sewn into the seam. "width" = along the width: the
+  // same lists are mm from the LEFT edge, and the left edge is sewn; the range checks use width_mm then.
+  // Anything else is stored as "". PRESENCE BIT: absent = keep the stored value.
+  optional string fold_axis = 26;
+  // Pages of a booklet label (a composition label folded into a little book), 1..12; 0 or less = 1.
+  // PRESENCE BIT: absent = keep the stored value.
+  optional int32 pages = 27;
 }
 
 // TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.

@@ -314,6 +314,17 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 		if err != nil {
 			return nil, err
 		}
+		// The stored axis is unknown here when the field is absent: the lines are then left unbounded
+		// and the carry cuts them to the effective axis.
+		foldAxis := NormalizeGarmentLabelFoldAxis(l.GetFoldAxis())
+		limit := GarmentLabelLineLimit(foldAxis, widthMm, heightMm)
+		if l.FoldAxis == nil {
+			limit = decimal.NullDecimal{}
+		}
+		pages := 1
+		if l.Pages != nil {
+			pages = NormalizeGarmentLabelPages(int(l.GetPages()))
+		}
 		out = append(out, entity.TechCardGarmentLabel{
 			Key:           l.Key,
 			LineKey:       lineKey,
@@ -344,11 +355,16 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			PickOmitted: l.Source == nil,
 
 			// A client that knows the lines always sends the field, "" included.
-			FoldLinesMm:      NormalizeGarmentLabelFoldLines(l.GetFoldLinesMm(), heightMm),
+			FoldLinesMm:      NormalizeGarmentLabelFoldLines(l.GetFoldLinesMm(), limit),
 			FoldLinesOmitted: l.FoldLinesMm == nil,
 
-			StitchLinesMm:      NormalizeGarmentLabelStitchLines(l.GetStitchLinesMm(), heightMm),
+			StitchLinesMm:      NormalizeGarmentLabelStitchLines(l.GetStitchLinesMm(), limit),
 			StitchLinesOmitted: l.StitchLinesMm == nil,
+
+			FoldAxis:        foldAxis,
+			FoldAxisOmitted: l.FoldAxis == nil,
+			Pages:           pages,
+			PagesOmitted:    l.Pages == nil,
 		})
 	}
 	return out, nil
@@ -642,6 +658,8 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 		source := string(l.Source)
 		foldLines := l.FoldLinesMm // always present: "" says no lines, absent would say an older server
 		stitchLines := l.StitchLinesMm
+		foldAxis := l.FoldAxis
+		pages := int32(NormalizeGarmentLabelPages(l.Pages))
 		out = append(out, &pb_common.TechCardGarmentLabel{
 			Key:           l.Key,
 			LineKey:       l.LineKey,
@@ -650,6 +668,8 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 			Fold:          pbStringFromNull(l.Fold),
 			FoldLinesMm:   &foldLines,
 			StitchLinesMm: &stitchLines,
+			FoldAxis:      &foldAxis,
+			Pages:         &pages,
 			Placement:     pbStringFromNull(l.Placement),
 			Attachment:    pbStringFromNull(l.Attachment),
 			Folding:       pbStringFromNull(l.Folding),
