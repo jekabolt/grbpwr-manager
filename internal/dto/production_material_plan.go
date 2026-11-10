@@ -49,7 +49,7 @@ var planSlotSections = map[entity.TechCardBomSection]bool{
 //   - blockers: slot × colourway the plan could NOT count (no article, or no norm at all —
 //     including a slot the recipe never references, which previously vanished without a trace).
 //
-// linked resolves article identities (name/unit/thread cone length) for labelling and unit
+// linked resolves article identities (name/unit/thread package length) for labelling and unit
 // conversion; nil degrades to the BOM line's own snapshot fields. onHand and issued are keyed by
 // material_id (issued = net issue_production − return_production). All may be nil/partial.
 //
@@ -109,6 +109,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 
 	type matAcc struct {
 		required decimal.Decimal
+		// unitsReconcile is false when a slot-unit requirement could not be converted into the
+		// article's stock unit. Such a row may report the requirement, but must not compare it with
+		// on-hand/issued quantities or manufacture a shortage across unlike denominators.
+		unitsReconcile bool
 		// requiredBeforeGrossup is Σ(norm × planned_qty) with NO gross-up of ANY kind applied — no
 		// BOM wastage %, no cutting coefficient — converted into the same unit as required. It is
 		// deliberately not "required before the coefficient": a manual line's number here is also
@@ -283,20 +287,20 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	// (Ф5а.3) — «м» against "m" is one unit and no longer degrades into a caveat that silently
 	// compares a slot-unit number against stock:
 	//
-	//	metres → cones: a slot in metres against an article stocked in cones divides by
-	//	  length_per_cone_m. Only that direction — a slot authored in cones against metre stock would
-	//	  divide the wrong way and report a phantom zero shortage.
+	//	metres → thread purchase units: a thread slot in metres divides by the exact linear factor or
+	//	  package length. Only that direction — reversing it would report a phantom zero shortage.
 	//	metres → kilograms (Ф5а.4): a slot in metres against an article BOUGHT BY WEIGHT multiplies
 	//	  by the roll's full width and density. Only that direction, for the same reason.
 	//
-	// Any other mismatch keeps the number AND the label in the slot's unit (noted once as a caveat) —
-	// a slot-unit number under the stock unit's label was a purchase order for 18 000 cones.
-	planConvert := func(mid int, bom *entity.TechCardBomItem, slotUnitRaw string, add, base decimal.Decimal) (decimal.Decimal, decimal.Decimal, string) {
+	// Any other mismatch keeps the requirement but withholds the row unit and all stock comparisons.
+	// A slot-unit number under the stock unit's label was a purchase order for 18 000 cones; keeping
+	// the slot label while subtracting stock was the same error one column later.
+	planConvert := func(mid int, bom *entity.TechCardBomItem, slotUnitRaw string, add, base decimal.Decimal) (decimal.Decimal, decimal.Decimal, string, bool) {
 		stockAdd, stockBase := add, base
 		rowUnit := slotUnitRaw
 		m, ok := linked[mid]
 		if !ok {
-			return stockAdd, stockBase, rowUnit
+			return stockAdd, stockBase, rowUnit, true
 		}
 		slotUnit := strings.TrimSpace(slotUnitRaw)
 		stockUnit := strings.TrimSpace(m.Unit.String)
@@ -305,8 +309,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		fromMetres := slotKnown && slotU == entity.MaterialUnitM
 		switch {
 		case stockUnit == "" || slotUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit):
+			// A missing unit on either side is not a mismatch: nothing says the figures differ.
 			rowUnit = matUnit(mid, bom)
-		case fromMetres && stockKnown && stockU == entity.MaterialUnitKg:
+			return stockAdd, stockBase, rowUnit, true
+		case fromMetres && entity.IsRollGoodsSection(bom.Section) && stockKnown && stockU == entity.MaterialUnitKg:
 			// Weight is billed on the FULL roll width, кромка included — the selvedge is bought and it
 			// weighs. Using the cutting width here would understate what the supplier invoices by
 			// 2–4%. Density comes from the ARTICLE (CTI attr over the flat column), never from the BOM
@@ -322,22 +328,27 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s by full roll width %s cm (selvedge included) × %s g/m²",
 					matName(mid, bom), slotUnit, stockUnit,
 					width.Decimal.String(), gsm.Decimal.String()))
+				return stockAdd, stockBase, rowUnit, true
 			} else {
-				noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; the row stays in %q",
-					matName(mid, bom), stockUnit, slotUnit, slotUnit))
+				noteUnit(fmt.Sprintf("%s: stocked in %s but the article has no full width and density — cannot convert the %s norm to weight; stock figures are unavailable",
+					matName(mid, bom), stockUnit, slotUnit))
 			}
-		case fromMetres &&
-			m.ThreadAttr != nil && m.ThreadAttr.LengthPerConeM.Valid && m.ThreadAttr.LengthPerConeM.Decimal.IsPositive():
-			stockAdd = add.Div(m.ThreadAttr.LengthPerConeM.Decimal)
-			stockBase = base.Div(m.ThreadAttr.LengthPerConeM.Decimal)
-			rowUnit = stockUnit
-			noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via length per cone (%s m)",
-				matName(mid, bom), slotUnit, stockUnit, m.ThreadAttr.LengthPerConeM.Decimal.String()))
+		case fromMetres && bom.Section == entity.BomSectionThread:
+			if factor, convertible := entity.MetresPerArticleUnit(m); convertible {
+				stockAdd = add.Div(factor)
+				stockBase = base.Div(factor)
+				rowUnit = stockUnit
+				noteUnit(fmt.Sprintf("%s: norm in %s converted to %s via %s metres per purchase unit",
+					matName(mid, bom), slotUnit, stockUnit, factor.String()))
+				return stockAdd, stockBase, rowUnit, true
+			}
+			noteUnit(fmt.Sprintf("%s: thread norm in %s cannot be converted to stock unit %s; stock figures are unavailable",
+				matName(mid, bom), slotUnit, stockUnit))
 		default:
-			noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; the row stays in %q and stock figures are compared across units",
-				matName(mid, bom), slotUnit, stockUnit, slotUnit))
+			noteUnit(fmt.Sprintf("%s: slot unit %q vs stock unit %q — no conversion; stock figures are unavailable",
+				matName(mid, bom), slotUnit, stockUnit))
 		}
-		return stockAdd, stockBase, rowUnit
+		return stockAdd, stockBase, slotUnit, false
 	}
 
 	// accUnitConflict is the row-level «this article arrives in two units» alarm, kept beside the
@@ -349,6 +360,8 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				"labelled with the first unit seen (%q), so that number and its shortage are not usable; "+
 				"put the slots on one unit",
 				a.name, a.unit, rowUnit, a.unit))
+			a.unitsReconcile = false
+			a.unit = ""
 		}
 	}
 
@@ -508,10 +521,14 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				c.hasSizeNorms = false
 			}
 
-			stockAdd, stockBase, rowUnit := planConvert(mid, bom, bom.Unit.String, add, base)
+			stockAdd, stockBase, rowUnit, unitsReconcile := planConvert(mid, bom, bom.Unit.String, add, base)
 			a := req[mid]
 			if a == nil {
-				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
+				unit := rowUnit
+				if !unitsReconcile {
+					unit = ""
+				}
+				a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: unit, unitsReconcile: unitsReconcile}
 				if m, ok := linked[mid]; ok {
 					// The article's coefficient is reported whether or not this run's norms let it
 					// bite, so the operator can see the dial that exists.
@@ -521,6 +538,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 				order = append(order, mid)
 			} else {
 				accUnitConflict(a, rowUnit)
+				if !unitsReconcile {
+					a.unitsReconcile = false
+					a.unit = ""
+				}
 			}
 			a.required = a.required.Add(stockAdd)
 			a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
@@ -681,10 +702,14 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		c.layClothCm = c.layClothCm.Add(d.clothCm)
 		c.layEndLossCm = c.layEndLossCm.Add(d.endLossCm)
 
-		stockAdd, stockBase, rowUnit := planConvert(mid, bom, contribUnit, add, geom)
+		stockAdd, stockBase, rowUnit, unitsReconcile := planConvert(mid, bom, contribUnit, add, geom)
 		a := req[mid]
 		if a == nil {
-			a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: rowUnit}
+			unit := rowUnit
+			if !unitsReconcile {
+				unit = ""
+			}
+			a = &matAcc{hasSizeNorms: true, name: matName(mid, bom), unit: unit, unitsReconcile: unitsReconcile}
 			if m, ok := linked[mid]; ok {
 				a.coefficient = m.EffectiveCuttingCoefficient()
 			}
@@ -692,6 +717,10 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 			order = append(order, mid)
 		} else {
 			accUnitConflict(a, rowUnit)
+			if !unitsReconcile {
+				a.unitsReconcile = false
+				a.unit = ""
+			}
 		}
 		a.required = a.required.Add(stockAdd)
 		a.requiredBeforeGrossup = a.requiredBeforeGrossup.Add(stockBase)
@@ -786,7 +815,7 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 	}
 	sort.Ints(issuedOnly)
 	for _, mid := range issuedOnly {
-		req[mid] = &matAcc{hasSizeNorms: true, name: matName(mid, nil), unit: matUnit(mid, nil)}
+		req[mid] = &matAcc{hasSizeNorms: true, name: matName(mid, nil), unit: matUnit(mid, nil), unitsReconcile: true}
 		order = append(order, mid)
 	}
 
@@ -850,26 +879,29 @@ func ComputeProductionRunMaterialPlan(run *entity.ProductionRun, card *entity.Te
 		// issued − required: after the marker is cut and material issued, this is the real over/under
 		// vs the theoretical plan — positive means more fabric went out than the norm predicted (marker
 		// inefficiency / scrap), negative means the run under-issued or has leftover (gap-04).
-		out.Rows = append(out.Rows, &pb_admin.MaterialPlanRow{
-			MaterialId:     int32(mid),
-			MaterialName:   a.name,
-			Unit:           a.unit,
-			UnitCode:       pbMaterialUnit(a.unit),
-			Required:       pbDecimalFromDecimal(a.required.Round(3)),
-			OnHand:         pbDecimalFromDecimal(on.Round(3)),
-			Issued:         pbDecimalFromDecimal(iss.Round(3)),
-			Shortage:       pbDecimalFromDecimal(shortage.Round(3)),
-			HasSizeNorms:   a.hasSizeNorms,
-			IssuedVariance: pbDecimalFromDecimal(iss.Sub(a.required).Round(3)),
+		row := &pb_admin.MaterialPlanRow{
+			MaterialId:   int32(mid),
+			MaterialName: a.name,
+			Unit:         a.unit,
+			UnitCode:     pbMaterialUnit(a.unit),
+			Required:     pbDecimalFromDecimal(a.required.Round(6)),
+			HasSizeNorms: a.hasSizeNorms,
 			// Ф5а.2 — the audit trail of the gross-up: the norm's own un-grossed sum, and the dial.
 			// The two are related BY the dial only on a marker-fed row; see the proto comment.
-			RequiredBeforeGrossup: pbDecimalFromDecimal(a.requiredBeforeGrossup.Round(3)),
+			RequiredBeforeGrossup: pbDecimalFromDecimal(a.requiredBeforeGrossup.Round(6)),
 			CuttingCoefficient:    pbDecimalFromNull(a.coefficient),
 			// Ф4.6 — the signature. A number nobody can say the provenance of is the thing this whole
 			// phase walks away from, so it rides on the ROW and on every CONTRIBUTION, not only on the
 			// response as a whole.
 			Source: planRowSource(a.hasNormSource, a.hasLaySource),
-		})
+		}
+		if a.unitsReconcile {
+			row.OnHand = pbDecimalFromDecimal(on.Round(6))
+			row.Issued = pbDecimalFromDecimal(iss.Round(6))
+			row.Shortage = pbDecimalFromDecimal(shortage.Round(6))
+			row.IssuedVariance = pbDecimalFromDecimal(iss.Sub(a.required).Round(6))
+		}
+		out.Rows = append(out.Rows, row)
 	}
 
 	// Contributions and blockers in BOM display order, then colourway id — stable and mirroring

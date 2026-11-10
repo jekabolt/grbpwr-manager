@@ -1986,22 +1986,37 @@ func pinShadowBom(bom *entity.TechCardBomItem, u *entity.TechCardColorwayUsage, 
 	sh.Currency = sql.NullString{}
 	if m, ok := linked[int(u.MaterialId.Int64)]; ok {
 		price := m.LatestPriceForCurrencies(costingCurrency, baseCurrency)
-		// A catalog price is per the MATERIAL's unit; the usage's norm is in the SLOT's unit.
-		// When the two disagree (slot metres, article priced per cone), norm × price is off by
-		// the whole conversion factor — leave the line unpriced instead, same rule as an
-		// unpriced pin: never a silently wrong number into product.cost_price.
-		//
-		// Compared through the unit vocabulary (Ф5а.3), not EqualFold: «м» and "m" ARE the same
-		// unit, and treating them as a disagreement did not produce a wrong number — it produced a
-		// silently MISSING one (an unpriced line, which also blocks the cost seed).
-		slotUnit := strings.TrimSpace(bom.Unit.String)
-		stockUnit := strings.TrimSpace(m.Unit.String)
-		if price != nil && (slotUnit == "" || stockUnit == "" || entity.SameMaterialUnit(slotUnit, stockUnit)) {
-			sh.UnitPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+		if unitPrice, priced := catalogPriceForBomUnit(bom, m, price); priced {
+			sh.UnitPrice = decimal.NullDecimal{Decimal: unitPrice, Valid: true}
 			sh.Currency = sql.NullString{String: price.Currency, Valid: price.Currency != ""}
 		}
 	}
 	return &sh
+}
+
+// catalogPriceForBomUnit resolves a catalog purchase-unit price into the unit a BOM norm uses.
+// Equal units pass through unchanged. The only cross-unit costing rule is a metre THREAD slot,
+// converted through the article's own metres-per-purchase-unit factor. Anything else is unpriced:
+// multiplying a norm by a price with a different denominator would silently corrupt cost_price.
+func catalogPriceForBomUnit(bom *entity.TechCardBomItem, material entity.MaterialWithPrice, price *entity.MaterialPrice) (decimal.Decimal, bool) {
+	if bom == nil || price == nil {
+		return decimal.Zero, false
+	}
+	if entity.SameMaterialUnit(bom.Unit.String, material.Unit.String) {
+		return price.Price, true
+	}
+	if bom.Section != entity.BomSectionThread {
+		return decimal.Zero, false
+	}
+	slotUnit, ok := entity.NormalizeMaterialUnit(bom.Unit.String)
+	if !ok || slotUnit != entity.MaterialUnitM {
+		return decimal.Zero, false
+	}
+	factor, ok := entity.MetresPerArticleUnit(material)
+	if !ok {
+		return decimal.Zero, false
+	}
+	return entity.PricePerMetre(price.Price, factor), true
 }
 
 // withCuttingCoefficient stamps the EFFECTIVE article's roll-reality coefficient

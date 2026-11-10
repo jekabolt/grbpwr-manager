@@ -350,21 +350,32 @@ func (s *Store) ArchiveMaterial(ctx context.Context, id int, archived bool) erro
 // simply absent from the map. Used to attach a tech card's LinkedMaterials — the article
 // identities its costing prices pins through and its production plan labels rollup rows with.
 func (s *Store) getMaterialsByIDs(ctx context.Context, ids []int) (map[int]entity.MaterialWithPrice, error) {
+	out, err := loadMaterialsByIDs(ctx, s.DB, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get materials by ids: %w", err)
+	}
+	return out, nil
+}
+
+// loadMaterialsByIDs is the transaction-safe catalog loader used by card writes as well as Store
+// reads. Typed attrs matter for thread purchase-unit conversion, so callers must not stop at the
+// flat material row when a line's unit or price can be derived from length_per_cone_m.
+func loadMaterialsByIDs(ctx context.Context, db dependency.DB, ids []int) (map[int]entity.MaterialWithPrice, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := storeutil.QueryListNamed[materialRow](ctx, s.DB,
+	rows, err := storeutil.QueryListNamed[materialRow](ctx, db,
 		materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
-		return nil, fmt.Errorf("get materials by ids: %w", err)
+		return nil, err
 	}
 	out := materialsFromPriceRows(rows)
 	ptrs := make([]*entity.MaterialWithPrice, len(out))
 	for i := range out {
 		ptrs[i] = &out[i]
 	}
-	if err := s.attachMaterialAttrs(ctx, ptrs); err != nil {
-		return nil, fmt.Errorf("get materials by ids attrs: %w", err)
+	if err := attachMaterialAttrsFromDB(ctx, db, ptrs); err != nil {
+		return nil, fmt.Errorf("load typed attrs: %w", err)
 	}
 	m := make(map[int]entity.MaterialWithPrice, len(out))
 	for _, mw := range out {
@@ -694,6 +705,10 @@ type materialPackagingAttrRow struct {
 // attachMaterialAttrs loads each material's typed side-table row (at most one, matching its class)
 // and attaches it. A material with no attributes simply keeps nil pointers.
 func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.MaterialWithPrice) error {
+	return attachMaterialAttrsFromDB(ctx, s.DB, mats)
+}
+
+func attachMaterialAttrsFromDB(ctx context.Context, db dependency.DB, mats []*entity.MaterialWithPrice) error {
 	if len(mats) == 0 {
 		return nil
 	}
@@ -703,7 +718,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 		ids = append(ids, m.Id)
 		byID[m.Id] = m
 	}
-	fRows, err := storeutil.QueryListNamed[materialFabricAttrRow](ctx, s.DB,
+	fRows, err := storeutil.QueryListNamed[materialFabricAttrRow](ctx, db,
 		`SELECT material_id, width_cm, weight_gsm, fabric_direction, shrinkage_pct, roll_length_m, selvedge_cm
 		 FROM material_fabric_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
@@ -715,7 +730,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 			m.FabricAttr = &a
 		}
 	}
-	hRows, err := storeutil.QueryListNamed[materialHardwareAttrRow](ctx, s.DB,
+	hRows, err := storeutil.QueryListNamed[materialHardwareAttrRow](ctx, db,
 		`SELECT material_id, diameter_mm, dimensions, finish, base_material, weight_g, button_holes
 		 FROM material_hardware_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
@@ -727,7 +742,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 			m.HardwareAttr = &a
 		}
 	}
-	tRows, err := storeutil.QueryListNamed[materialThreadAttrRow](ctx, s.DB,
+	tRows, err := storeutil.QueryListNamed[materialThreadAttrRow](ctx, db,
 		`SELECT material_id, ticket_tex, length_per_cone_m, needle_reco
 		 FROM material_thread_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
@@ -739,7 +754,7 @@ func (s *Store) attachMaterialAttrs(ctx context.Context, mats []*entity.Material
 			m.ThreadAttr = &a
 		}
 	}
-	pRows, err := storeutil.QueryListNamed[materialPackagingAttrRow](ctx, s.DB,
+	pRows, err := storeutil.QueryListNamed[materialPackagingAttrRow](ctx, db,
 		`SELECT material_id, substrate, dimensions, gsm, print_method
 		 FROM material_packaging_attr WHERE material_id IN (:ids)`, map[string]any{"ids": ids})
 	if err != nil {
@@ -989,10 +1004,11 @@ func repriceBomLinesTx(ctx context.Context, db dependency.DB, tcID int, baseCurr
 		Name       string              `db:"name"`
 		Section    string              `db:"section"`
 		MaterialId sql.NullInt64       `db:"material_id"`
+		Unit       sql.NullString      `db:"unit"`
 		UnitPrice  decimal.NullDecimal `db:"unit_price"`
 		Currency   sql.NullString      `db:"currency"`
 	}](ctx, db, `
-		SELECT id, COALESCE(line_key, '') AS line_key, name, section, material_id, unit_price, currency
+		SELECT id, COALESCE(line_key, '') AS line_key, name, section, material_id, unit, unit_price, currency
 		FROM tech_card_bom_item WHERE tech_card_id = :id ORDER BY display_order, id`,
 		map[string]any{"id": tcID})
 	if err != nil {
@@ -1018,13 +1034,10 @@ func repriceBomLinesTx(ctx context.Context, db dependency.DB, tcID int, baseCurr
 	}
 	materials := map[int]entity.MaterialWithPrice{}
 	if len(ids) > 0 {
-		rows, err := storeutil.QueryListNamed[materialRow](ctx, db,
-			materialWithPriceSelect+` WHERE m.id IN (:ids)`, map[string]any{"ids": ids})
+		var err error
+		materials, err = loadMaterialsByIDs(ctx, db, ids)
 		if err != nil {
 			return nil, 0, 0, fmt.Errorf("load catalog prices for reprice: %w", err)
-		}
-		for _, mw := range materialsFromPriceRows(rows) {
-			materials[mw.Id] = mw
 		}
 	}
 
@@ -1057,15 +1070,30 @@ func repriceBomLinesTx(ctx context.Context, db dependency.DB, tcID int, baseCurr
 			out = append(out, res)
 			continue
 		}
-		res.NewPrice = decimal.NullDecimal{Decimal: price.Price, Valid: true}
+		newPrice := price.Price
+		section := entity.TechCardBomSection(strings.ToLower(strings.TrimSpace(l.Section)))
+		if section == entity.BomSectionThread {
+			if slotUnit, ok := entity.NormalizeMaterialUnit(l.Unit.String); ok && slotUnit == entity.MaterialUnitM &&
+				!entity.SameMaterialUnit(l.Unit.String, mw.Unit.String) {
+				factor, convertible := entity.MetresPerArticleUnit(mw)
+				if !convertible {
+					// The catalog price is per a unit the metre norm cannot reconcile with. Keep the
+					// existing snapshot and do not claim this line was changed or catalog-priced.
+					out = append(out, res)
+					continue
+				}
+				newPrice = entity.PricePerMetre(price.Price, factor)
+			}
+		}
+		res.NewPrice = decimal.NullDecimal{Decimal: newPrice, Valid: true}
 		res.NewCurrency = price.Currency
-		res.Changed = !(l.UnitPrice.Valid && l.UnitPrice.Decimal.Equal(price.Price) &&
+		res.Changed = !(l.UnitPrice.Valid && l.UnitPrice.Decimal.Equal(newPrice) &&
 			strings.EqualFold(res.OldCurrency, price.Currency))
 		if err := storeutil.ExecNamed(ctx, db, `
 			UPDATE tech_card_bom_item SET unit_price = :price, currency = :currency,
 				price_source = :source, price_snapshot_at = :at
 			WHERE id = :id`, map[string]any{
-			"id": l.Id, "price": price.Price, "currency": price.Currency,
+			"id": l.Id, "price": newPrice, "currency": price.Currency,
 			"source": entity.BomPriceSourceCatalog, "at": now,
 		}); err != nil {
 			return nil, 0, 0, fmt.Errorf("reprice bom line %d: %w", l.Id, err)

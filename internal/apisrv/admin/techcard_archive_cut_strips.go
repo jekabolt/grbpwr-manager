@@ -21,8 +21,8 @@ func tcimpCutStripRef(key string) string { return "cut_strip_key=" + key }
 // ones that break them, each with a line and a counter, never failing the import. The steps' input keys
 // for a dropped strip go with it, because the convert would otherwise refuse them as dangling units.
 //
-// The target article's unit is what the rule reads here: the store's own check refuses what this one
-// would drop, and a refusal there would fail the whole import.
+// The effective BOM unit is what the rule reads here, through the same resolver used by the store;
+// otherwise the importer could retain a strip that the live save later refuses and fail the import.
 func (r *tcimpResolver) resolveCutStrips() {
 	ins := r.out.Insert
 	rows := ins.GetCutStrips()
@@ -88,7 +88,11 @@ func (r *tcimpResolver) resolveCutStrips() {
 		}
 		unit := line.GetUnit()
 		if id := line.GetMaterialId(); id > 0 && r.articleUnits[id] != "" {
-			unit = r.articleUnits[id]
+			section := entity.BomSectionOther
+			if line.GetSection() == pb_common.TechCardBomSection_TECH_CARD_BOM_SECTION_THREAD {
+				section = entity.BomSectionThread
+			}
+			unit = entity.ResolveBomLineUnit(section, unit, r.articleUnits[id])
 		}
 		if problem := dto.CutStripLineProblemOfPb(line, unit); problem != "" {
 			drop(techcardarchive.ReasonCutStripLineUnusable,

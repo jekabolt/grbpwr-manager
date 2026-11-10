@@ -258,19 +258,21 @@ func upsertTechCardCutStrips(ctx context.Context, db dependency.DB, tcID int, tc
 }
 
 // refuseCutStripsOnWrongLines holds the two rules of the mark: a strip's norm is metres, so the line is
-// bought by the metre, and the main fabric is never a strip. The unit is the one every read shows, the
-// linked article's over the line's own, which only the database can say.
+// bought by the metre, and the main fabric is never a strip. The effective unit follows the shared BOM
+// resolver, including the thread-metres exception, and only the database can provide both source units.
 func refuseCutStripsOnWrongLines(ctx context.Context, db dependency.DB, tcID int, strips []entity.TechCardCutStrip, bomRes bomResolver) error {
 	if len(strips) == 0 {
 		return nil
 	}
 	lines, err := storeutil.QueryListNamed[struct {
-		LineKey string `db:"line_key"`
-		Unit    string `db:"unit"`
-		Section string `db:"section"`
-		Purpose string `db:"purpose"`
+		LineKey     string `db:"line_key"`
+		SlotUnit    string `db:"slot_unit"`
+		ArticleUnit string `db:"article_unit"`
+		Section     string `db:"section"`
+		Purpose     string `db:"purpose"`
 	}](ctx, db, `
-		SELECT bi.line_key, COALESCE(NULLIF(m.unit, ''), bi.unit, '') AS unit, COALESCE(bi.section, '') AS section,
+		SELECT bi.line_key, COALESCE(bi.unit, '') AS slot_unit, COALESCE(m.unit, '') AS article_unit,
+		       COALESCE(bi.section, '') AS section,
 		       COALESCE(bi.purpose, '') AS purpose
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
@@ -281,7 +283,8 @@ func refuseCutStripsOnWrongLines(ctx context.Context, db dependency.DB, tcID int
 	type lineFacts struct{ unit, section, purpose string }
 	byKey := make(map[string]lineFacts, len(lines))
 	for _, l := range lines {
-		byKey[l.LineKey] = lineFacts{l.Unit, l.Section, l.Purpose}
+		section := entity.TechCardBomSection(strings.ToLower(strings.TrimSpace(l.Section)))
+		byKey[l.LineKey] = lineFacts{entity.ResolveBomLineUnit(section, l.SlotUnit, l.ArticleUnit), l.Section, l.Purpose}
 	}
 	for i := range strips {
 		line, ok := byKey[strips[i].BomLineKey]
@@ -354,15 +357,25 @@ func (s *Store) resolveCutStripRecipe(ctx context.Context, colorwayID int, usage
 	if len(strips) == 0 && len(topstitch) == 0 {
 		return usages, nil
 	}
-	bom, err := storeutil.QueryListNamed[entity.TechCardBomItem](ctx, s.DB, `
+	bomRows, err := storeutil.QueryListNamed[struct {
+		entity.TechCardBomItem
+		SlotUnit    sql.NullString `db:"slot_unit"`
+		ArticleUnit sql.NullString `db:"article_unit"`
+	}](ctx, s.DB, `
 		SELECT bi.id, bi.line_key, bi.section, bi.purpose, bi.material_id, bi.fabric_width,
-		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit, bi.thread_per_mm
+		       bi.unit AS slot_unit, m.unit AS article_unit, bi.thread_per_mm
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
 		WHERE bi.tech_card_id = :id
 		ORDER BY bi.display_order, bi.id`, map[string]any{"id": styles[0]})
 	if err != nil {
 		return nil, fmt.Errorf("load style bom for cut strips: %w", err)
+	}
+	bom := make([]entity.TechCardBomItem, 0, len(bomRows))
+	for _, row := range bomRows {
+		resolved := entity.ResolveBomLineUnit(row.Section, row.SlotUnit.String, row.ArticleUnit.String)
+		row.Unit = sql.NullString{String: resolved, Valid: strings.TrimSpace(resolved) != ""}
+		bom = append(bom, row.TechCardBomItem)
 	}
 	sizes, err := storeutil.QueryScalarListNamed[int](ctx, s.DB,
 		`SELECT size_id FROM tech_card_size WHERE tech_card_id = :id ORDER BY display_order, size_id`, map[string]any{"id": styles[0]})

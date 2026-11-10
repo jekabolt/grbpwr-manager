@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -172,7 +173,8 @@ func withResolvedBomIdentity(tc *entity.TechCardInsert, catalog map[int64]BomMat
 		b.SupplierRef = resolvedNullThroughLink(m.SupplierRef, b.SupplierRef)
 		b.Composition = resolvedNullThroughLink(m.Composition, b.Composition)
 		b.Spec = resolvedNullThroughLink(m.Spec, b.Spec)
-		b.Unit = resolvedNullThroughLink(m.Unit, b.Unit)
+		resolvedUnit := entity.ResolveBomLineUnit(b.Section, b.Unit.String, m.Unit)
+		b.Unit = sql.NullString{String: resolvedUnit, Valid: strings.TrimSpace(resolvedUnit) != ""}
 	}
 	return &out
 }

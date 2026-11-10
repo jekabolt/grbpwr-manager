@@ -231,12 +231,13 @@ func insertTechCardOperationTopstitchLines(ctx context.Context, db dependency.DB
 
 func refuseTopstitchLinesOnWrongBom(ctx context.Context, db dependency.DB, tcID int, ops []entity.TechCardOperation) error {
 	rows, err := storeutil.QueryListNamed[struct {
-		LineKey string `db:"line_key"`
-		Section string `db:"section"`
-		Unit    string `db:"unit"`
+		LineKey     string `db:"line_key"`
+		Section     string `db:"section"`
+		SlotUnit    string `db:"slot_unit"`
+		ArticleUnit string `db:"article_unit"`
 	}](ctx, db, `
 		SELECT bi.line_key, COALESCE(bi.section, '') AS section,
-		       COALESCE(NULLIF(m.unit, ''), bi.unit, '') AS unit
+		       COALESCE(bi.unit, '') AS slot_unit, COALESCE(m.unit, '') AS article_unit
 		FROM tech_card_bom_item bi
 		LEFT JOIN material m ON m.id = bi.material_id
 		WHERE bi.tech_card_id = :id`, map[string]any{"id": tcID})
@@ -246,7 +247,9 @@ func refuseTopstitchLinesOnWrongBom(ctx context.Context, db dependency.DB, tcID 
 	type facts struct{ section, unit string }
 	byKey := make(map[string]facts, len(rows))
 	for _, row := range rows {
-		byKey[entity.CutStripLineKey(row.LineKey)] = facts{section: row.Section, unit: row.Unit}
+		section := entity.TechCardBomSection(strings.ToLower(strings.TrimSpace(row.Section)))
+		unit := entity.ResolveBomLineUnit(section, row.SlotUnit, row.ArticleUnit)
+		byKey[entity.CutStripLineKey(row.LineKey)] = facts{section: row.Section, unit: unit}
 	}
 	for i := range ops {
 		for j := range ops[i].TopstitchLines {

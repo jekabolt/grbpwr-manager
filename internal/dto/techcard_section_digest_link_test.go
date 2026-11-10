@@ -91,9 +91,29 @@ func TestMaterialsDigestSurvivesTheLink(t *testing.T) {
 	})
 }
 
-// TestBomIdentityResolutionMirrorsTheLeftJoin pins the fallbacks. The read query is a LEFT JOIN whose
-// COALESCE(NULLIF(m.x, empty), bi.x) means a missing material, a missing catalog and an empty catalog
-// value all leave the line exactly as it was sent — anything else would fingerprint content no read reports.
+func TestMaterialsDigestKeepsMetreThreadSlotLinkedToCone(t *testing.T) {
+	payload := &entity.TechCardInsert{BomItems: []entity.TechCardBomItem{{
+		LineKey: "thread-1", Section: entity.BomSectionThread,
+		MaterialId: sql.NullInt64{Int64: 42, Valid: true},
+		Unit:       sql.NullString{String: "m", Valid: true},
+	}}}
+	readBack := *payload
+	readBack.BomItems = append([]entity.TechCardBomItem(nil), payload.BomItems...)
+	readBack.BomItems[0].Name = "Mara 100"
+	readBack.BomItems[0].Unit = sql.NullString{String: "m", Valid: true}
+	catalog := map[int64]BomMaterialIdentity{42: {Name: "Mara 100", Unit: "cone"}}
+
+	got := TechCardSectionDigestsAsRead(payload, catalog)[entity.SignoffMaterials]
+	want := TechCardSectionDigests(&readBack)[entity.SignoffMaterials]
+	if got != want {
+		t.Fatal("a metre THREAD slot linked to a cone must hash exactly as its metre read-back")
+	}
+}
+
+// TestBomIdentityResolutionMirrorsTheLeftJoin pins the fallbacks. A missing material, a missing
+// catalog and an empty catalog value all leave the line exactly as it was sent — anything else
+// would fingerprint content no read reports. Unit resolution additionally has the THREAD-metres
+// exception pinned above.
 func TestBomIdentityResolutionMirrorsTheLeftJoin(t *testing.T) {
 	asSent := TechCardSectionDigests(linkedWritePayload())[entity.SignoffMaterials]
 
