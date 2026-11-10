@@ -374,7 +374,7 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 }
 
 var garmentLabelFolds = map[string]bool{
-	"flat": true, "half": true, "ends": true, "mitre": true, "loop": true,
+	"flat": true, "half": true, "ends": true, "mitre": true, "loop": true, "tee": true,
 }
 
 func parseGarmentLabelFold(field, raw string) (sql.NullString, error) {
@@ -383,7 +383,7 @@ func parseGarmentLabelFold(field, raw string) (sql.NullString, error) {
 		return sql.NullString{}, nil
 	}
 	if !garmentLabelFolds[fold] {
-		return sql.NullString{}, entity.NewFieldViolation(field, "invalid", raw, "use flat, half, ends, mitre or loop")
+		return sql.NullString{}, entity.NewFieldViolation(field, "invalid", raw, "use flat, half, ends, mitre, loop or tee")
 	}
 	return sql.NullString{String: fold, Valid: true}, nil
 }
