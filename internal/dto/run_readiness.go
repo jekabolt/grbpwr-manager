@@ -9,7 +9,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
-	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 
 	"github.com/shopspring/decimal"
@@ -1173,18 +1172,17 @@ func patternScopesOfCard(card *entity.TechCard) []patternScope {
 // stockShortageRow — WARNING at worst, never a BLOCKER: a shortage is a purchasing fact, and
 // refusing to PLAN a run because the cloth has not arrived yet would invert the order in which a
 // factory works. UNKNOWN when the plan could not compare quantities at all, which it signals through
-// unit_code = UNKNOWN — a machine signal, deliberately not the prose of a caveat.
+// absent on_hand/shortage — a machine signal, deliberately not the prose of a caveat.
 func (b *runReadinessBuilder) stockShortageRow(plan *pb_admin.GetProductionRunMaterialPlanResponse, add func(entity.RunReadinessFinding)) {
 	const label = "there is enough material on hand (bare on hand, reserves not counted)"
 	tgt := b.target()
 	var short, unresolved []string
 	shortMaterial := int64(0)
 	for _, r := range plan.GetRows() {
-		// MATERIAL_UNIT_UNKNOWN is the vocabulary's zero value and means the row's unit is free text
-		// this server does not know. That is a MACHINE signal, deliberately used instead of matching on
-		// the plan's prose caveat: branching on a sentence is exactly what MaterialPlanBlocker.key was
-		// added to stop, and the same discipline applies here.
-		if r.GetUnitCode() == pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN {
+		// A missing stock comparison is the plan's machine signal that the requirement could not be
+		// reconciled with the article unit. UnitCode cannot carry that distinction: a successfully
+		// converted free-text package unit is legitimately UNKNOWN to the closed enum but comparable.
+		if r.OnHand == nil || r.Shortage == nil {
 			unresolved = append(unresolved, r.GetMaterialName())
 			continue
 		}
@@ -1422,7 +1420,15 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 				if !d.norm.IsPositive() {
 					continue
 				}
-				units := b.in.OnHand[d.materialID].Div(d.norm).IntPart()
+				stockNorm := d.norm
+				unitsReconcile := true
+				if material, found := b.card.LinkedMaterials[d.materialID]; found {
+					stockNorm, unitsReconcile = coverageNormInStockUnit(bom, material, d.norm)
+				}
+				units := int64(0)
+				if unitsReconcile && stockNorm.IsPositive() {
+					units = b.in.OnHand[d.materialID].Div(stockNorm).IntPart()
+				}
 				if units < 0 {
 					units = 0
 				}
@@ -1444,6 +1450,32 @@ func (b *runReadinessBuilder) unitCoverage() []*pb_admin.ProductionRunReadinessU
 		out = append(out, row)
 	}
 	return out
+}
+
+// coverageNormInStockUnit converts one garment's slot norm to the linked article's stock unit.
+// It is the readiness twin of the material-plan conversion and uses the same entity factor. A
+// mismatch with no supported conversion contributes zero garments from stock.
+func coverageNormInStockUnit(bom *entity.TechCardBomItem, material entity.MaterialWithPrice, norm decimal.Decimal) (decimal.Decimal, bool) {
+	if bom == nil {
+		return decimal.Zero, false
+	}
+	// A missing unit on either side is not a mismatch (the plan treats it the same way).
+	if strings.TrimSpace(bom.Unit.String) == "" || strings.TrimSpace(material.Unit.String) == "" ||
+		entity.SameMaterialUnit(bom.Unit.String, material.Unit.String) {
+		return norm, true
+	}
+	if bom.Section != entity.BomSectionThread {
+		return decimal.Zero, false
+	}
+	slotUnit, ok := entity.NormalizeMaterialUnit(bom.Unit.String)
+	if !ok || slotUnit != entity.MaterialUnitM {
+		return decimal.Zero, false
+	}
+	factor, ok := entity.MetresPerArticleUnit(material)
+	if !ok {
+		return decimal.Zero, false
+	}
+	return norm.Div(factor), true
 }
 
 // --- НА ПРОВОД ----------------------------------------------------------------------------------

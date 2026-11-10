@@ -153,7 +153,7 @@ func ValidateTechCardTopstitchLines(tc *TechCardInsert) error {
 				return NewFieldViolation(path+".bom_line_key", "not_thread", line.BomLineKey, "a THREAD line")
 			}
 			if !IsCutStripUnit(bom.Unit.String) {
-				return NewFieldViolation(path+".bom_line_key", "not_metres", bom.Unit.String, "a thread line bought in metres")
+				return NewFieldViolation(path+".bom_line_key", "not_metres", bom.Unit.String, "a thread line with its norm in metres")
 			}
 			line.AnchoredSize = strings.TrimSpace(line.AnchoredSize)
 			if utf8.RuneCountInString(line.AnchoredSize) > TechCardSeamAnchoredSizeMaxRunes {

@@ -116,7 +116,7 @@ func TestBuildCatalogFallbackSelectsCostingCurrency(t *testing.T) {
 		},
 	}
 	got := (&Server{repo: repo}).buildCatalogFallback(context.Background(), card, "EUR")
-	require.Same(t, usd, got[9], "the estimate must use its costing currency, not the singular/base quote")
+	require.Same(t, usd, got[9].LatestPrice, "the estimate must use its costing currency, not the singular/base quote")
 }
 
 // TestStripStyleCostEstimate: without costing:read every money figure is cleared while the material/

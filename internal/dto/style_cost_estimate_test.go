@@ -13,7 +13,7 @@ import (
 
 // helpers local to the estimate tests
 func nstr(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
-func bidx(v int32) sql.NullInt32 { return sql.NullInt32{Int32: v, Valid: true} }
+func bidx(v int32) sql.NullInt32   { return sql.NullInt32{Int32: v, Valid: true} }
 
 // baseEstimateCard: fabric @10 EUR (5% wastage) + trim @2 EUR, one colourway consuming 2 m fabric +
 // 3 trims, costing cmt 5 / overhead 3 / defect 10%. All EUR so no FX needed.
@@ -85,7 +85,10 @@ func TestComputeStyleCostEstimateCatalogFallback(t *testing.T) {
 	c.BomItems[0].Currency = sql.NullString{}
 	c.BomItems[0].MaterialId = sql.NullInt64{Int64: 900, Valid: true}
 	latest := entity.MaterialPrice{Price: decimal.RequireFromString("12"), Currency: "EUR", ValidFrom: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)}
-	catalog := map[int64]*entity.MaterialPrice{900: &latest}
+	catalog := map[int64]entity.MaterialWithPrice{900: {
+		Material:    entity.Material{MaterialInsert: entity.MaterialInsert{Unit: nstr("m")}},
+		LatestPrice: &latest,
+	}}
 
 	est := ComputeStyleCostEstimate(c, 0, catalog, CostingFx{Base: "EUR"})
 	require.Equal(t, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST, est.Materials[0].PriceSource)

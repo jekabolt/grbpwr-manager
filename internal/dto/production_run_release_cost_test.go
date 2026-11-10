@@ -100,6 +100,28 @@ func TestReleaseFrozenColorwayCostsCarryPinnedPrices(t *testing.T) {
 	}
 }
 
+func TestReleaseFrozenThreadPinCarriesPerMetrePrice(t *testing.T) {
+	card := releaseMixCard()
+	card.BomItems[0].Section = entity.BomSectionThread
+	card.BomItems[0].UnitPrice = nd("1") // already frozen per metre on the slot
+	defaultThread := card.LinkedMaterials[100]
+	defaultThread.Unit = nstr("cone")
+	defaultThread.ThreadAttr = &entity.MaterialThreadAttr{LengthPerConeM: nd("5000")}
+	card.LinkedMaterials[100] = defaultThread
+	pin := card.LinkedMaterials[200]
+	pin.Unit = nstr("cone")
+	pin.ThreadAttr = &entity.MaterialThreadAttr{LengthPerConeM: nd("3000")}
+	pin.LatestPrice = &entity.MaterialPrice{MaterialId: 200, Price: decimal.RequireFromString("3000"), Currency: "EUR"}
+	card.LinkedMaterials[200] = pin
+
+	costs := ReleaseFrozenColorwayCosts(releaseBlob(t, card))
+	require.NotNil(t, costs)
+	require.Equal(t, "1.5", costs.UnitCostByColorway[66].String(),
+		"3000 EUR per 3000 m pin = 1 EUR/m; average frozen norm is 1.5 m")
+	require.NotEqual(t, "4500", costs.UnitCostByColorway[66].String(),
+		"the cone purchase price must never be multiplied by a metre norm")
+}
+
 func relLine(productID, sizeID, qty int) entity.ProductionRunLine {
 	ln := entity.ProductionRunLine{SizeId: sizeID, PlannedQty: qty}
 	if productID > 0 {

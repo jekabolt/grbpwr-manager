@@ -948,6 +948,28 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		existingByKey[existingRows[i].LineKey] = existingRows[i].Id
 		existingRowByKey[existingRows[i].LineKey] = &existingRows[i]
 	}
+	newThreadMaterialIDs := make([]int, 0)
+	seenThreadMaterial := make(map[int]bool)
+	for i := range items {
+		b := &items[i]
+		if b.Section != entity.BomSectionThread || !b.MaterialId.Valid || b.MaterialId.Int64 <= 0 {
+			continue
+		}
+		if key := strings.TrimSpace(b.LineKey); key != "" {
+			if _, exists := existingByKey[key]; exists {
+				continue
+			}
+		}
+		id := int(b.MaterialId.Int64)
+		if !seenThreadMaterial[id] {
+			seenThreadMaterial[id] = true
+			newThreadMaterialIDs = append(newThreadMaterialIDs, id)
+		}
+	}
+	newThreadMaterials, err := loadMaterialsByIDs(ctx, db, newThreadMaterialIDs)
+	if err != nil {
+		return res, fmt.Errorf("load catalog materials for new thread lines: %w", err)
+	}
 	now := time.Now().UTC()
 
 	seen := make(map[string]bool, len(items))
@@ -988,13 +1010,21 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		if err := validateBomCountableSection(b, i); err != nil {
 			return res, err
 		}
-		params := bomItemParams(tcID, b, i, key)
-		src, at := bomPriceProvenance(existingRowByKey[key], b, now)
+		effective := b
+		if _, exists := existingByKey[key]; !exists {
+			if material, ok := newThreadMaterials[int(b.MaterialId.Int64)]; ok {
+				born := *b
+				normalizeNewThreadBomLine(&born, material)
+				effective = &born
+			}
+		}
+		params := bomItemParams(tcID, effective, i, key)
+		src, at := bomPriceProvenance(existingRowByKey[key], effective, now)
 		params["price_source"], params["price_snapshot_at"] = src, at
 		// Провенанс процента раскроя (0296): финальную тройку решает чистое правило (verbatim при
 		// молчании пары, сброс в 'manual' при правке значения через старый бандл, серверный штамп
 		// applied_at на смене сути) — SQL пишет уже решённое, поэтому IF-гардов здесь нет.
-		wp := bomWastageProvenance(existingRowByKey[key], b, now)
+		wp := bomWastageProvenance(existingRowByKey[key], effective, now)
 		params["wastage_source"] = wp.Source
 		params["wastage_lay_count"] = wp.LayCount
 		params["wastage_applied_at"] = wp.AppliedAt
@@ -1050,6 +1080,37 @@ func upsertTechCardBom(ctx context.Context, db dependency.DB, tcID int, items []
 		}
 	}
 	return res, nil
+}
+
+// normalizeNewThreadBomLine is deliberately insert-only. Existing lines are operator-authored
+// snapshots and changing their unit on an ordinary save would reinterpret stored norms and prices.
+// A new linked THREAD line, however, is born in the norm's invariant unit (metres); a purchase-unit
+// price is converted once at that boundary. Missing package length leaves the new line unpriced.
+func normalizeNewThreadBomLine(line *entity.TechCardBomItem, article entity.MaterialWithPrice) {
+	if line == nil || line.Section != entity.BomSectionThread || !entity.ThreadArticleUsesMetreSlot(article) {
+		return
+	}
+	if unit, ok := entity.NormalizeMaterialUnit(line.Unit.String); ok && unit == entity.MaterialUnitM {
+		// A client may already have converted a package price before sending a metre slot, so do not
+		// divide it twice. A package with no length has no defensible per-metre price either way.
+		if !entity.SameMaterialUnit(line.Unit.String, article.Unit.String) {
+			if _, convertible := entity.MetresPerArticleUnit(article); !convertible {
+				line.UnitPrice = decimal.NullDecimal{}
+				line.Currency = sql.NullString{}
+			}
+		}
+		return
+	}
+	line.Unit = sql.NullString{String: string(entity.MaterialUnitM), Valid: true}
+	factor, ok := entity.MetresPerArticleUnit(article)
+	if !ok {
+		line.UnitPrice = decimal.NullDecimal{}
+		line.Currency = sql.NullString{}
+		return
+	}
+	if line.UnitPrice.Valid {
+		line.UnitPrice.Decimal = entity.PricePerMetre(line.UnitPrice.Decimal, factor)
+	}
 }
 
 // colorwayRecipeRefsForBom names the colourways that keep a BOM slot alive through
@@ -1221,7 +1282,9 @@ type techCardColorwayRow struct {
 }
 
 type techCardBomItemRow struct {
-	TechCardID int `db:"tech_card_id"`
+	TechCardID  int            `db:"tech_card_id"`
+	SlotUnit    sql.NullString `db:"slot_unit"`
+	ArticleUnit sql.NullString `db:"article_unit"`
 	entity.TechCardBomItem
 }
 
@@ -1448,7 +1511,7 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 		       bi.pantone,
 		       COALESCE(NULLIF(m.composition, ''), bi.composition) AS composition,
 		       COALESCE(NULLIF(m.spec, ''), bi.spec) AS spec,
-		       COALESCE(NULLIF(m.unit, ''), bi.unit) AS unit,
+		       bi.unit AS slot_unit, m.unit AS article_unit,
 		       bi.unit_price, bi.currency, bi.comment,
 		       bi.fabric_width, bi.fabric_weight_gsm, bi.fabric_direction, bi.wastage_percent,
 		       bi.wastage_source, bi.wastage_lay_count, bi.wastage_applied_at, bi.wastage_applied_percent,
@@ -1467,6 +1530,8 @@ func (s *Store) enrichMaterials(ctx context.Context, cards []entity.TechCard) er
 	}
 	bomByCard := make(map[int][]entity.TechCardBomItem, len(ids))
 	for _, r := range bomRows {
+		resolved := entity.ResolveBomLineUnit(r.Section, r.SlotUnit.String, r.ArticleUnit.String)
+		r.Unit = sql.NullString{String: resolved, Valid: strings.TrimSpace(resolved) != ""}
 		bomByCard[r.TechCardID] = append(bomByCard[r.TechCardID], r.TechCardBomItem)
 	}
 

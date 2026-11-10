@@ -167,7 +167,7 @@ func TestPackagingIsNotInheritedInTheFrozenPrice(t *testing.T) {
 func TestPackagingIsNotInheritedInTheEstimate(t *testing.T) {
 	fx := CostingFx{Base: "EUR", ToBase: map[string]decimal.Decimal{"EUR": decimal.NewFromInt(1)}}
 	tc := packagingCostCard(packagingPick("insert_card", 1, 2, false, 8))
-	catalog := map[int64]*entity.MaterialPrice{1: tc.LinkedMaterials[1].LatestPrice, 100: tc.LinkedMaterials[1].LatestPrice}
+	catalog := map[int64]entity.MaterialWithPrice{1: tc.LinkedMaterials[1], 100: tc.LinkedMaterials[1]}
 	requirePackagingUnitCost(t, tc, 8, "13")
 	est := ComputeStyleCostEstimate(tc, 8, catalog, fx)
 	require.Equal(t, "13.00", est.MaterialsPerUnitBase.Value)

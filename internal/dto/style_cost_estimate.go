@@ -39,7 +39,7 @@ var estimateArticleKinds = []string{"cmt", "logistics", "overhead"}
 // whose BOM line lacks a snapshot price; a missing entry means "no catalog price" → the line has no
 // price and is flagged. The comparison block is filled by the caller (it needs production/snapshot
 // data); this function leaves it nil.
-func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[int64]*entity.MaterialPrice, fx CostingFx) *pb_admin.StyleCostEstimate {
+func ComputeStyleCostEstimate(tc *entity.TechCard, colorwayID int, catalog map[int64]entity.MaterialWithPrice, fx CostingFx) *pb_admin.StyleCostEstimate {
 	if tc == nil {
 		return nil
 	}
@@ -478,17 +478,20 @@ func usagePerGarmentQty(u *entity.TechCardColorwayUsage, basis entity.CostingBas
 // unpinned usage keeps the original ladder: the line's own snapshot price wins; else the latest
 // catalog price for the linked material; else none. Returns the price, its currency, the
 // provenance, and (for a catalog price) its effective date.
-func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, catalog map[int64]*entity.MaterialPrice) (decimal.NullDecimal, string, pb_admin.StyleCostPriceSource, sql.NullTime) {
+func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardBomItem, catalog map[int64]entity.MaterialWithPrice) (decimal.NullDecimal, string, pb_admin.StyleCostPriceSource, sql.NullTime) {
 	if bom == nil {
 		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
 	}
 	if u != nil && u.MaterialId.Valid && u.MaterialId.Int64 > 0 &&
 		!(bom.MaterialId.Valid && bom.MaterialId.Int64 == u.MaterialId.Int64) {
-		if mp, ok := catalog[u.MaterialId.Int64]; ok && mp != nil {
-			return decimal.NullDecimal{Decimal: mp.Price, Valid: true},
-				mp.Currency,
-				pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST,
-				sql.NullTime{Time: mp.ValidFrom, Valid: true}
+		if material, ok := catalog[u.MaterialId.Int64]; ok {
+			mp := material.LatestPrice
+			if price, priced := catalogPriceForBomUnit(bom, material, mp); priced {
+				return decimal.NullDecimal{Decimal: price, Valid: true},
+					mp.Currency,
+					pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST,
+					sql.NullTime{Time: mp.ValidFrom, Valid: true}
+			}
 		}
 		return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}
 	}
@@ -499,11 +502,14 @@ func resolvePlanUnitPrice(u *entity.TechCardColorwayUsage, bom *entity.TechCardB
 		return bom.UnitPrice, bom.Currency.String, pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_BOM_SNAPSHOT, bom.PriceSnapshotAt
 	}
 	if bom.MaterialId.Valid {
-		if mp, ok := catalog[bom.MaterialId.Int64]; ok && mp != nil {
-			return decimal.NullDecimal{Decimal: mp.Price, Valid: true},
-				mp.Currency,
-				pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST,
-				sql.NullTime{Time: mp.ValidFrom, Valid: true}
+		if material, ok := catalog[bom.MaterialId.Int64]; ok {
+			mp := material.LatestPrice
+			if price, priced := catalogPriceForBomUnit(bom, material, mp); priced {
+				return decimal.NullDecimal{Decimal: price, Valid: true},
+					mp.Currency,
+					pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_CATALOG_LATEST,
+					sql.NullTime{Time: mp.ValidFrom, Valid: true}
+			}
 		}
 	}
 	return decimal.NullDecimal{}, "", pb_admin.StyleCostPriceSource_STYLE_COST_PRICE_SOURCE_NONE, sql.NullTime{}

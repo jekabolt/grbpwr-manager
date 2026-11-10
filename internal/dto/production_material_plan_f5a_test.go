@@ -181,8 +181,10 @@ func TestPlanUnknownUnitStillCaveats(t *testing.T) {
 	run, card := planFixture("погонный метр", "2", entity.ConsumptionSourceManual, 100, "")
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil, fabricArticle("kg", decimal.NullDecimal{}, nil), nil)
 
-	require.Equal(t, "погонный метр", resp.Rows[0].Unit)
+	require.Empty(t, resp.Rows[0].Unit)
 	require.Equal(t, pb_common.MaterialUnit_MATERIAL_UNIT_UNKNOWN, resp.Rows[0].UnitCode)
+	require.Nil(t, resp.Rows[0].OnHand)
+	require.Nil(t, resp.Rows[0].Shortage)
 	require.True(t, hasCaveat(resp.Caveats, "no conversion"), "a real unit conflict must still be caveated: %v", resp.Caveats)
 }
 
@@ -226,8 +228,10 @@ func TestPlanKilogramsWithoutRollGeometryDoesNotGuess(t *testing.T) {
 	resp := ComputeProductionRunMaterialPlan(run, card, nil, nil,
 		fabricArticle("kg", decimal.NullDecimal{}, &entity.MaterialFabricAttr{WidthCm: nd2("150")}), nil)
 
-	require.Equal(t, "m", resp.Rows[0].Unit, "no density → no conversion, and the label follows the number")
+	require.Empty(t, resp.Rows[0].Unit, "no density → no reconciled row unit")
 	require.Equal(t, "200", resp.Rows[0].Required.Value)
+	require.Nil(t, resp.Rows[0].OnHand)
+	require.Nil(t, resp.Rows[0].Shortage)
 	require.True(t, hasCaveat(resp.Caveats, "cannot convert"), "%v", resp.Caveats)
 }
 
@@ -288,7 +292,9 @@ func TestPlanMixedSlotUnitsAreAlwaysCaveated(t *testing.T) {
 	// The sum across units is untouched by this fix — it is a separate, wider defect. What must NOT
 	// happen is that it goes unremarked.
 	require.Equal(t, "366", row.Required.Value, "66 kg + 300 pcs — the pre-existing mixed sum, unchanged")
-	require.Equal(t, "kg", row.Unit)
+	require.Empty(t, row.Unit)
+	require.Nil(t, row.OnHand)
+	require.Nil(t, row.Shortage)
 
 	require.True(t, hasCaveat(resp.Caveats, "SUM ACROSS UNITS"),
 		"a total added across units must say so: %v", resp.Caveats)

@@ -1,6 +1,10 @@
 package entity
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/shopspring/decimal"
+)
 
 // MaterialUnit is the CLOSED vocabulary a material quantity may be measured in (Ф5а.3). Until this
 // existed every unit was free text and every consumer compared it as a raw string: the production
@@ -123,4 +127,110 @@ func SameMaterialUnit(a, b string) bool {
 		return ua == ub
 	}
 	return strings.EqualFold(at, bt)
+}
+
+// ResolveBomLineUnit applies the one exception to a linked BOM line's usual article-first identity
+// rule. A THREAD slot authored in metres keeps its slot unit because its norm is always metres; the
+// linked article may be bought in cones, pieces, centimetres or another purchase unit. Every other
+// line keeps the catalog article's unit when present, falling back to the stored slot unit.
+func ResolveBomLineUnit(section TechCardBomSection, slotUnit, articleUnit string) string {
+	if section == BomSectionThread {
+		if u, ok := NormalizeMaterialUnit(slotUnit); ok && u == MaterialUnitM {
+			return slotUnit
+		}
+	}
+	if strings.TrimSpace(articleUnit) != "" {
+		return articleUnit
+	}
+	return slotUnit
+}
+
+type threadArticleUnitKind uint8
+
+const (
+	threadArticleUnitInvalid threadArticleUnitKind = iota
+	threadArticleUnitExactLength
+	threadArticleUnitPackage
+)
+
+// threadArticleUnit classifies only what is safe for a metre-based thread slot. Known linear units
+// have exact factors; count/package units use length_per_cone_m as metres per purchase unit. Unknown
+// free text is treated as a package label unless it is recognisably an area, volume or mass unit.
+// This preserves labels such as spool, bobbin and box without ever interpreting kg or m² as thread
+// length merely because a stale length_per_cone_m happens to exist.
+func threadArticleUnit(raw string) threadArticleUnitKind {
+	unit := strings.ToLower(strings.TrimSpace(raw))
+	if unit == "" {
+		return threadArticleUnitInvalid
+	}
+	if u, ok := NormalizeMaterialUnit(unit); ok {
+		switch u {
+		case MaterialUnitM, MaterialUnitCm, MaterialUnitMm:
+			return threadArticleUnitExactLength
+		case MaterialUnitM2, MaterialUnitG, MaterialUnitKg:
+			return threadArticleUnitInvalid
+		default:
+			return threadArticleUnitPackage
+		}
+	}
+	if incompatibleThreadPhysicalUnits[unit] || strings.Contains(unit, "square") ||
+		strings.Contains(unit, "cubic") {
+		return threadArticleUnitInvalid
+	}
+	return threadArticleUnitPackage
+}
+
+var incompatibleThreadPhysicalUnits = map[string]bool{
+	// area
+	"cm2": true, "cm²": true, "mm2": true, "mm²": true, "km2": true, "km²": true,
+	"sq m": true, "sq cm": true, "sq mm": true, "sq ft": true, "sq yd": true,
+	// mass
+	"mg": true, "milligram": true, "milligrams": true,
+	"gram": true, "grams": true, "kilogram": true, "kilograms": true,
+	"t": true, "ton": true, "tons": true, "tonne": true, "tonnes": true,
+	"oz": true, "ounce": true, "ounces": true, "lb": true, "lbs": true, "pound": true, "pounds": true,
+	// volume
+	"l": true, "lt": true, "ltr": true, "litre": true, "litres": true, "liter": true, "liters": true,
+	"ml": true, "cl": true, "dl": true, "m3": true, "m³": true, "cm3": true, "cm³": true,
+	"mm3": true, "mm³": true, "gal": true, "gallon": true, "gallons": true,
+}
+
+// ThreadArticleUsesMetreSlot reports whether a new THREAD line linked to article is authored in
+// metres. Package units qualify even while their length is missing: the slot is still born in
+// metres, but its price remains empty until MetresPerArticleUnit can resolve a factor.
+func ThreadArticleUsesMetreSlot(article MaterialWithPrice) bool {
+	return threadArticleUnit(article.Unit.String) != threadArticleUnitInvalid
+}
+
+// MetresPerArticleUnit returns how many metres one purchase unit of a thread article contains.
+// Exact linear units do not need thread attributes. Count/package/free-text units use the thread
+// length attribute as metres per purchase unit. Area, volume, mass and empty units never convert.
+func MetresPerArticleUnit(article MaterialWithPrice) (decimal.Decimal, bool) {
+	switch threadArticleUnit(article.Unit.String) {
+	case threadArticleUnitExactLength:
+		u, _ := NormalizeMaterialUnit(article.Unit.String)
+		switch u {
+		case MaterialUnitM:
+			return decimal.NewFromInt(1), true
+		case MaterialUnitCm:
+			return decimal.New(1, -2), true
+		case MaterialUnitMm:
+			return decimal.New(1, -3), true
+		}
+	case threadArticleUnitPackage:
+		if article.ThreadAttr != nil && article.ThreadAttr.LengthPerConeM.Valid &&
+			article.ThreadAttr.LengthPerConeM.Decimal.IsPositive() {
+			return article.ThreadAttr.LengthPerConeM.Decimal, true
+		}
+	}
+	return decimal.Zero, false
+}
+
+// PricePerMetre converts a purchase-unit price to the DECIMAL(…,4) scale stored by BOM unit_price.
+// shopspring's Round is half away from zero; prices are non-negative, so this is decimal half-up.
+func PricePerMetre(price, metresPerArticleUnit decimal.Decimal) decimal.Decimal {
+	if !metresPerArticleUnit.IsPositive() {
+		return decimal.Zero
+	}
+	return price.Div(metresPerArticleUnit).Round(4)
 }

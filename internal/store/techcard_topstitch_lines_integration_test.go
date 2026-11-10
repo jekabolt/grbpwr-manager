@@ -97,6 +97,80 @@ func TestTechCardTopstitchLinesRoundTripAndCascade(t *testing.T) {
 	require.Zero(t, cutsCount(t, ctx, "SELECT COUNT(*) FROM tech_card_operation_topstitch_line_size WHERE line_id = ?", lineID))
 }
 
+// TestTechCardThreadConeUnitReadAndTopstitchValidation proves the store boundary end to end: the
+// linked cone remains a cone in the catalog, while the THREAD slot reads in metres and its derived
+// topstitch norm is unchanged. The resolver exception is section-specific (a fabric slot still reads
+// its linked kg article), and changing the thread SLOT itself to cone remains refused.
+func TestTechCardThreadConeUnitReadAndTopstitchValidation(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r := newTopstitchRig(t, ctx)
+
+	coneID, err := r.T.CreateMaterial(ctx, &entity.MaterialInsert{
+		Name: "topstitch cone", Section: "thread", MaterialClass: string(entity.MaterialClassThread),
+		Unit: sql.NullString{String: "cone", Valid: true},
+		ThreadAttr: &entity.MaterialThreadAttr{
+			LengthPerConeM: decimal.NewNullDecimal(decimal.RequireFromString("5000")),
+		},
+	})
+	require.NoError(t, err)
+	card := r.read()
+	write := card.TechCardInsert
+	for i := range write.BomItems {
+		if write.BomItems[i].LineKey == topStoreThread {
+			write.BomItems[i].MaterialId = sql.NullInt64{Int64: int64(coneID), Valid: true}
+			write.BomItems[i].Unit = sql.NullString{String: "m", Valid: true}
+		}
+	}
+	require.NoError(t, r.T.UpdateTechCard(ctx, r.cardID, &write, card.LockVersion))
+	require.NoError(t, r.createTopstitchLine(), "an m THREAD slot linked to a cone article must pass")
+
+	read := r.read()
+	foundThread := false
+	for i := range read.BomItems {
+		if read.BomItems[i].LineKey == topStoreThread {
+			foundThread = true
+			require.Equal(t, "m", read.BomItems[i].Unit.String)
+		}
+	}
+	require.True(t, foundThread)
+	require.Equal(t, map[int]string{r.sizeA: "1", r.sizeB: "1.1"}, cutsNormOf(r.wire(), topStoreThread))
+
+	kgID, err := r.T.CreateMaterial(ctx, &entity.MaterialInsert{
+		Name: "fabric by weight", Section: "fabric", MaterialClass: string(entity.MaterialClassFabric),
+		Unit: sql.NullString{String: "kg", Valid: true},
+	})
+	require.NoError(t, err)
+	card = r.read()
+	write = card.TechCardInsert
+	for i := range write.BomItems {
+		if write.BomItems[i].LineKey == cutsLineShell {
+			write.BomItems[i].MaterialId = sql.NullInt64{Int64: int64(kgID), Valid: true}
+			write.BomItems[i].Unit = sql.NullString{String: "m", Valid: true}
+		}
+	}
+	require.NoError(t, r.T.UpdateTechCard(ctx, r.cardID, &write, card.LockVersion))
+	read = r.read()
+	for i := range read.BomItems {
+		if read.BomItems[i].LineKey == cutsLineShell {
+			require.Equal(t, "kg", read.BomItems[i].Unit.String, "non-thread lines keep article-first resolution")
+		}
+	}
+
+	card = r.read()
+	write = card.TechCardInsert
+	for i := range write.BomItems {
+		if write.BomItems[i].LineKey == topStoreThread {
+			write.BomItems[i].Unit = sql.NullString{String: "cone", Valid: true}
+		}
+	}
+	err = r.T.UpdateTechCard(ctx, r.cardID, &write, card.LockVersion)
+	var violation *entity.ValidationError
+	require.ErrorAs(t, err, &violation)
+	require.Equal(t, "not_metres", violation.Reason)
+}
+
 func TestTechCardTopstitchLinesUnawarePublicWriterIsRefused(t *testing.T) {
 	requireCutStripIntegrationDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

@@ -143,6 +143,15 @@ func TestDerivedLineNormsComposeTopstitchAndStrips(t *testing.T) {
 		require.True(t, n.Complete)
 		require.Equal(t, []string{"0.5", "1"}, cutNormStrings(n.BySize))
 	})
+	t.Run("a linked cone does not change the metre norm", func(t *testing.T) {
+		linkedCone := append([]TechCardBomItem(nil), bom...)
+		linkedCone[0].Unit = sql.NullString{
+			String: ResolveBomLineUnit(BomSectionThread, "m", "cone"), Valid: true,
+		}
+		n := DerivedLineNorms(linkedCone, nil, []TechCardTopstitchLine{top}, []int{1, 2})[0]
+		require.True(t, n.Complete)
+		require.Equal(t, []string{"0.5", "1"}, cutNormStrings(n.BySize))
+	})
 	t.Run("mixed with strip", func(t *testing.T) {
 		n := DerivedLineNorms(bom, []TechCardCutStrip{cutOneLength(500)}, []TechCardTopstitchLine{top}, []int{1, 2})[0]
 		require.True(t, n.Complete)

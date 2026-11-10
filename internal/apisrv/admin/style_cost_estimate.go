@@ -61,7 +61,7 @@ func (s *Server) GetStyleCostEstimate(ctx context.Context, req *pb_admin.GetStyl
 // currency, then base currency, then a sole unambiguous catalog currency. Best-effort: a material that
 // can't be loaded or has multiple unmatched currencies simply leaves its line unpriced (flagged in
 // the estimate), never fails the request. Deduped by material id.
-func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard, baseCurrency string) map[int64]*entity.MaterialPrice {
+func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard, baseCurrency string) map[int64]entity.MaterialWithPrice {
 	need := map[int64]bool{}
 	for i := range card.BomItems {
 		b := &card.BomItems[i]
@@ -85,7 +85,7 @@ func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard
 	if card.Costing != nil && card.Costing.Currency.Valid {
 		costingCurrency = card.Costing.Currency.String
 	}
-	out := make(map[int64]*entity.MaterialPrice, len(need))
+	out := make(map[int64]entity.MaterialWithPrice, len(need))
 	for id := range need {
 		m, err := s.repo.TechCards().GetMaterial(ctx, int(id))
 		if err != nil {
@@ -95,7 +95,9 @@ func (s *Server) buildCatalogFallback(ctx context.Context, card *entity.TechCard
 		}
 		if m != nil {
 			if price := m.LatestPriceForCurrencies(costingCurrency, baseCurrency); price != nil {
-				out[id] = price
+				selected := *m
+				selected.LatestPrice = price
+				out[id] = selected
 			}
 		}
 	}
