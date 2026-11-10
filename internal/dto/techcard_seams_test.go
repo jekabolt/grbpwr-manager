@@ -147,7 +147,7 @@ func TestTechCardSeamsWriteFromPbBoundsBeforeCopy(t *testing.T) {
 	require.Equal(t, "seams", ve.Field)
 
 	s := seamPb()
-	for i := 0; i < 9; i++ {
+	for len(s.SideB.Parts) <= entity.TechCardSeamMaxAnchorsPerSide {
 		s.SideB.Parts = append(s.SideB.Parts, seamPbAnchor("P", "h"))
 	}
 	_, err = TechCardSeamsWriteFromPb(7, []*pb_common.TechCardSeam{s}, "ann")
