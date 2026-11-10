@@ -28,9 +28,12 @@ import (
 
 // Bounds of one seam write. Field-addressed refusals name them; nothing here is a DB CHECK.
 const (
-	TechCardSeamKeyLen               = 26  // ULID
-	TechCardSeamMaxRowsPerCard       = 400 // a garment has dozens of seams; 400 is a runaway client
-	TechCardSeamMaxAnchorsPerSide    = 8
+	TechCardSeamKeyLen         = 26  // ULID
+	TechCardSeamMaxRowsPerCard = 400 // a garment has dozens of seams; 400 is a runaway client
+	// A collar sewn to a whole neckline crosses fronts, back and two plackets, and a fold cut splits
+	// an edge into two stretches: 8 refused a real neckline (prod card 5, op 570). 24 still stops a
+	// runaway client at 24 × 5 samples per side.
+	TechCardSeamMaxAnchorsPerSide    = 24
 	TechCardSeamSamplesPerAnchor     = 5
 	TechCardSeamNoteMaxRunes         = 255
 	TechCardSeamAnchoredSizeMaxRunes = 16
