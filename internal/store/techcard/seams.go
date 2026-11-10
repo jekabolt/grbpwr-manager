@@ -123,6 +123,12 @@ type seamSources struct {
 	strips map[string]bool
 	// labels follow the same rule: a pose may place one, but no pattern sheet draws it.
 	labels map[string]bool
+	// interliningHistory holds, per sheet line key of an interlining scope, the refs that sheet
+	// held before (tech_card_size_pattern_history). A legacy stamp covers the interlining sheet as it
+	// was then; a regenerated fusing DXF moves only that sheet, and the legacy fingerprint re-computed
+	// over the old ref proves every OTHER source is still the one the row was decided on.
+	interliningHistory map[string][]entity.PatternSheetRef
+	historyMemo        map[string]map[string]string
 }
 
 func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*seamSources, error) {
@@ -160,13 +166,17 @@ func loadSeamSources(ctx context.Context, db dependency.DB, techCardID int) (*se
 	for _, k := range labelKeys {
 		labels[entity.CutStripLineKey(k)] = true
 	}
-	return &seamSources{
+	src := &seamSources{
 		sheets:       entity.WithoutInterliningScopes(sheets, lines),
 		blocks:       entity.WithoutInterliningScopes(blocks, lines),
 		memo:         map[string]string{},
 		legacySheets: sheets, legacyBlocks: blocks, legacyMemo: map[string]string{},
 		strips: strips, labels: labels,
-	}, nil
+	}
+	if src.interliningHistory, err = loadInterliningSheetHistory(ctx, db, techCardID, src); err != nil {
+		return nil, err
+	}
+	return src, nil
 }
 
 func (s *seamSources) fingerprint(pieceKeys []string) string {
@@ -181,7 +191,7 @@ func (s *seamSources) legacyFingerprint(pieceKeys []string) string {
 // fresh reports whether a stored fingerprint still matches the pieces' sources: today's form, or the
 // legacy form a row stamped before the interlining exclusion carries.
 func (s *seamSources) fresh(pieceKeys []string, stored string) bool {
-	return stored == s.fingerprint(pieceKeys) || stored == s.legacyFingerprint(pieceKeys)
+	return stored == s.fingerprint(pieceKeys) || s.legacyFresh(pieceKeys, stored)
 }
 
 func (s *seamSources) fingerprintOver(pieceKeys []string, sheets map[string][]entity.PatternSheetRef,
