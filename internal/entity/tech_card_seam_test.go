@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -290,6 +291,41 @@ func TestValidateTechCardSeamsWritePose(t *testing.T) {
 			require.Equal(t, c.code, fv.Reason)
 		})
 	}
+}
+
+// Prod card 5 «load balance», OP 570: the collar (NCK_1, 433.5 mm) on the whole neckline. side_b
+// below is the row prod already stores for it (7 anchors: the back's edges #11 and #5 are each cut
+// in two stretches). The owner's new pick adds both plackets; split by a fold cut each, as the back
+// is, that is 11 anchors. The old bound of 8 refused it («TOO MANY PARTS», ACCEPT saved nothing).
+const prodCard5Op570SideB = `[
+ {"len_mm": 52.3, "notches": 1, "samples": [{"u": 0.289, "v": 0.968}, {"u": 0.266, "v": 0.972}, {"u": 0.243, "v": 0.976}, {"u": 0.223, "v": 0.985}, {"u": 0.213, "v": 1}], "range_to": 0.5825, "turn_deg": -159.5, "edge_hint": "01M1M1S2WRVE27KVQT0GQ9490Y#11", "range_from": 0, "contour_sig": "c7839b9d78be8b7f", "perim_share": 0.0205, "piece_line_key": "01M1M1S2WRVE27KVQT0GQ9490Y"},
+ {"len_mm": 92.3, "notches": 0, "samples": [{"u": 0.987, "v": 0.914}, {"u": 0.873, "v": 0.926}, {"u": 0.776, "v": 0.946}, {"u": 0.694, "v": 0.972}, {"u": 0.628, "v": 1}], "range_to": 0, "turn_deg": -121.9, "edge_hint": "01M1M1S2WR7Z1ED4Q4DPAXXA50#1", "range_from": 0, "contour_sig": "a8b3f8d7ae54a595", "perim_share": 0.058, "piece_line_key": "01M1M1S2WR7Z1ED4Q4DPAXXA50"},
+ {"len_mm": 52.3, "notches": 1, "samples": [{"u": 0.289, "v": 0.968}, {"u": 0.266, "v": 0.972}, {"u": 0.243, "v": 0.976}, {"u": 0.223, "v": 0.985}, {"u": 0.213, "v": 1}], "range_to": 1, "turn_deg": -159.5, "edge_hint": "01M1M1S2WRVE27KVQT0GQ9490Y#11", "range_from": 0.6032, "contour_sig": "c7839b9d78be8b7f", "perim_share": 0.0205, "piece_line_key": "01M1M1S2WRVE27KVQT0GQ9490Y"},
+ {"len_mm": 94.5, "notches": 2, "samples": [{"u": 0.585, "v": 0.875}, {"u": 0.543, "v": 0.87}, {"u": 0.5, "v": 0.868}, {"u": 0.457, "v": 0.87}, {"u": 0.415, "v": 0.875}], "range_to": 0, "turn_deg": -56.7, "edge_hint": "01M1M1S2WRVE27KVQT0GQ9490Y#8", "range_from": 0, "contour_sig": "c7839b9d78be8b7f", "perim_share": 0.037, "piece_line_key": "01M1M1S2WRVE27KVQT0GQ9490Y"},
+ {"len_mm": 52.3, "notches": 1, "samples": [{"u": 0.787, "v": 1}, {"u": 0.777, "v": 0.985}, {"u": 0.757, "v": 0.976}, {"u": 0.734, "v": 0.972}, {"u": 0.711, "v": 0.968}], "range_to": 0.3968, "turn_deg": -159.5, "edge_hint": "01M1M1S2WRVE27KVQT0GQ9490Y#5", "range_from": 0, "contour_sig": "c7839b9d78be8b7f", "perim_share": 0.0205, "piece_line_key": "01M1M1S2WRVE27KVQT0GQ9490Y"},
+ {"len_mm": 92.3, "notches": 0, "samples": [{"u": 0.372, "v": 1}, {"u": 0.306, "v": 0.972}, {"u": 0.224, "v": 0.946}, {"u": 0.127, "v": 0.926}, {"u": 0.013, "v": 0.914}], "range_to": 0, "turn_deg": -121.9, "edge_hint": "01M1M1S2WR4DTBW8FVRST2G68Y#2", "range_from": 0, "contour_sig": "ddbc1c4b9b48d0ed", "perim_share": 0.058, "piece_line_key": "01M1M1S2WR4DTBW8FVRST2G68Y"},
+ {"len_mm": 52.3, "notches": 1, "samples": [{"u": 0.787, "v": 1}, {"u": 0.777, "v": 0.985}, {"u": 0.757, "v": 0.976}, {"u": 0.734, "v": 0.972}, {"u": 0.711, "v": 0.968}], "range_to": 1, "turn_deg": -159.5, "edge_hint": "01M1M1S2WRVE27KVQT0GQ9490Y#5", "range_from": 0.4175, "contour_sig": "c7839b9d78be8b7f", "perim_share": 0.0205, "piece_line_key": "01M1M1S2WRVE27KVQT0GQ9490Y"}
+]`
+
+func TestValidateTechCardSeamsWriteAcceptsProdCard5Neckline(t *testing.T) {
+	var side []TechCardSeamAnchor
+	require.NoError(t, json.Unmarshal([]byte(prodCard5Op570SideB), &side))
+	for _, placket := range []string{"01M1M1S2WRSJFKPTJQD6NP5B34", "01M1M1S2WRKPF7CBSVY8VFH76T"} { // PLCK_R, PLCK_L
+		for _, r := range [][2]float64{{0, 0.45}, {0.55, 1}} {
+			a := seamTestAnchor(placket, placket+"#0")
+			a.RangeFrom, a.RangeTo = r[0], r[1]
+			side = append(side, a)
+		}
+	}
+	require.Len(t, side, 11)
+	require.Greater(t, len(side), 8, "the old bound refused this side")
+
+	in := seamTestWrite()
+	in.Seams[0].Kind = TechCardSeamKindComposite
+	in.Seams[0].Source = TechCardSeamSourceManual
+	in.Seams[0].SideA = []TechCardSeamAnchor{seamTestAnchor("01M1M1S2WRD4PS0KGFPVVX6301", "01M1M1S2WRD4PS0KGFPVVX6301#3")} // NCK_1
+	in.Seams[0].SideB = side
+	require.NoError(t, ValidateTechCardSeamsWrite(&in))
 }
 
 // A collar on a whole neckline: two fronts, the back split by fold cuts, two plackets — 11 anchors,
