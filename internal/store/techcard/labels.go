@@ -175,16 +175,22 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 		if qty < 1 {
 			qty = 1
 		}
+		pieceBom, err := resolveLabelBomItem(fmt.Sprintf("garment_labels[%d].piece_bom_item_id", i), l.PieceBomItemId, l.PieceBomLineKey, bomRes)
+		if err != nil {
+			return err
+		}
 		id, err := storeutil.ExecNamedLastId(ctx, db, `
 			INSERT INTO tech_card_garment_label
 				(tech_card_id, label_key, line_key, width_mm, height_mm, fold, fold_lines_mm, stitch_lines_mm, fold_axis, pages,
 				 placement, attachment, folding, size, qty_per_garment, bom_item_id, note, display_order,
 				 callout_number, artwork_per_size, artwork_per_colorway,
-				 label_source, label_kind, made_by, print_method, length_cm)
+				 label_source, label_kind, made_by, print_method, length_cm,
+				 piece_bom_item_id, piece_width_mm, piece_height_mm, piece_seam_mm, label_x_mm, label_y_mm, label_on_piece)
 			VALUES (:tech_card_id, :label_key, :line_key, :width_mm, :height_mm, :fold, :fold_lines_mm, :stitch_lines_mm, :fold_axis, :pages,
 				 :placement, :attachment, :folding, :size, :qty_per_garment, :bom_item_id, :note, :display_order,
 				 :callout_number, :artwork_per_size, :artwork_per_colorway,
-				 :label_source, :label_kind, :made_by, :print_method, :length_cm)`,
+				 :label_source, :label_kind, :made_by, :print_method, :length_cm,
+				 :piece_bom_item_id, :piece_width_mm, :piece_height_mm, :piece_seam_mm, :label_x_mm, :label_y_mm, :label_on_piece)`,
 			map[string]any{
 				"tech_card_id":         tcID,
 				"label_key":            l.Key,
@@ -212,6 +218,13 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 				"made_by":              l.MadeBy,
 				"print_method":         l.PrintMethod,
 				"length_cm":            l.LengthCm,
+				"piece_bom_item_id":    pieceBom,
+				"piece_width_mm":       l.PieceWidthMm,
+				"piece_height_mm":      l.PieceHeightMm,
+				"piece_seam_mm":        l.PieceSeamMm,
+				"label_x_mm":           l.LabelXMm,
+				"label_y_mm":           l.LabelYMm,
+				"label_on_piece":       l.LabelOnPiece,
 			})
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card garment label: %w", err)
@@ -220,6 +233,9 @@ func insertTechCardGarmentLabels(ctx context.Context, db dependency.DB, tcID int
 			return err
 		}
 		if err := insertGarmentLabelFiles(ctx, db, id, l.Files); err != nil {
+			return err
+		}
+		if err := insertGarmentLabelPrints(ctx, db, id, l.Prints); err != nil {
 			return err
 		}
 	}
@@ -245,6 +261,33 @@ func insertGarmentLabelFiles(ctx context.Context, db dependency.DB, labelID int,
 	}
 	if err := storeutil.BulkInsert(ctx, db, "tech_card_garment_label_file", rows); err != nil {
 		return fmt.Errorf("failed to insert tech card garment label files: %w", err)
+	}
+	return nil
+}
+
+// insertGarmentLabelPrints writes the prints of one label in display order (0467). The label row was
+// just inserted, so this is a full replace: the previous row and its prints went with the delete.
+func insertGarmentLabelPrints(ctx context.Context, db dependency.DB, labelID int, prints []entity.TechCardGarmentLabelPrint) error {
+	if len(prints) == 0 {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(prints))
+	for j, p := range prints {
+		rows = append(rows, map[string]any{
+			"label_id":        labelID,
+			"display_order":   j,
+			"name":            p.Name,
+			"library_file_id": p.LibraryFileId,
+			"method":          p.Method,
+			"colour":          p.Colour,
+			"width_mm":        p.WidthMm,
+			"height_mm":       p.HeightMm,
+			"x_mm":            p.XMm,
+			"y_mm":            p.YMm,
+		})
+	}
+	if err := storeutil.BulkInsert(ctx, db, "tech_card_garment_label_print", rows); err != nil {
+		return fmt.Errorf("failed to insert tech card garment label prints: %w", err)
 	}
 	return nil
 }
@@ -477,6 +520,28 @@ type garmentLabelRow struct {
 	MadeBy      string          `db:"made_by"`
 	PrintMethod string          `db:"print_method"`
 	LengthCm    decimal.Decimal `db:"length_cm"`
+
+	PieceBomItemId  sql.NullInt32   `db:"piece_bom_item_id"`
+	PieceBomLineKey sql.NullString  `db:"piece_bom_line_key"`
+	PieceWidthMm    decimal.Decimal `db:"piece_width_mm"`
+	PieceHeightMm   decimal.Decimal `db:"piece_height_mm"`
+	PieceSeamMm     decimal.Decimal `db:"piece_seam_mm"`
+	LabelXMm        decimal.Decimal `db:"label_x_mm"`
+	LabelYMm        decimal.Decimal `db:"label_y_mm"`
+	LabelOnPiece    string          `db:"label_on_piece"`
+}
+
+type garmentLabelPrintRow struct {
+	Id            int             `db:"id"`
+	LabelID       int             `db:"label_id"`
+	Name          string          `db:"name"`
+	LibraryFileId sql.NullInt32   `db:"library_file_id"`
+	Method        string          `db:"method"`
+	Colour        string          `db:"colour"`
+	WidthMm       decimal.Decimal `db:"width_mm"`
+	HeightMm      decimal.Decimal `db:"height_mm"`
+	XMm           decimal.Decimal `db:"x_mm"`
+	YMm           decimal.Decimal `db:"y_mm"`
 }
 
 // garmentLabelFileRow is one artwork file with the state of its public link. LinkEpoch is 0 unless
@@ -577,6 +642,29 @@ func (s *Store) garmentLabelFilesByLabel(ctx context.Context, labelIDs []int) (m
 	return out, nil
 }
 
+// garmentLabelPrintsByLabel reads the prints of the labels in display order (0467).
+func (s *Store) garmentLabelPrintsByLabel(ctx context.Context, labelIDs []int) (map[int][]entity.TechCardGarmentLabelPrint, error) {
+	out := make(map[int][]entity.TechCardGarmentLabelPrint, len(labelIDs))
+	if len(labelIDs) == 0 {
+		return out, nil
+	}
+	rows, err := storeutil.QueryListNamed[garmentLabelPrintRow](ctx, s.DB, `
+		SELECT id, label_id, name, library_file_id, method, colour, width_mm, height_mm, x_mm, y_mm
+		FROM tech_card_garment_label_print
+		WHERE label_id IN (:ids)
+		ORDER BY label_id, display_order, id`, map[string]any{"ids": labelIDs})
+	if err != nil {
+		return nil, fmt.Errorf("can't load tech card garment label prints: %w", err)
+	}
+	for _, r := range rows {
+		out[r.LabelID] = append(out[r.LabelID], entity.TechCardGarmentLabelPrint{
+			Id: r.Id, Name: r.Name, LibraryFileId: r.LibraryFileId, Method: r.Method, Colour: r.Colour,
+			WidthMm: r.WidthMm, HeightMm: r.HeightMm, XMm: r.XMm, YMm: r.YMm,
+		})
+	}
+	return out, nil
+}
+
 // enrichLabelsRework loads the composition label record, the garment labels and the packaging items
 // (+ mockups) for each card.
 func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard) error {
@@ -652,9 +740,12 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 		SELECT l.id, l.tech_card_id, l.label_key, l.line_key, l.width_mm, l.height_mm, l.fold, l.fold_lines_mm, l.stitch_lines_mm, l.fold_axis, l.pages,
 			l.placement, l.attachment, l.folding, l.size, l.qty_per_garment,
 			l.bom_item_id, b.line_key AS bom_line_key, l.note, l.callout_number, l.artwork_per_size, l.artwork_per_colorway,
-			l.label_source, l.label_kind, l.made_by, l.print_method, l.length_cm
+			l.label_source, l.label_kind, l.made_by, l.print_method, l.length_cm,
+			l.piece_bom_item_id, pb.line_key AS piece_bom_line_key, l.piece_width_mm, l.piece_height_mm, l.piece_seam_mm,
+			l.label_x_mm, l.label_y_mm, l.label_on_piece
 		FROM tech_card_garment_label l
 		LEFT JOIN tech_card_bom_item b ON b.id = l.bom_item_id
+		LEFT JOIN tech_card_bom_item pb ON pb.id = l.piece_bom_item_id
 		WHERE l.tech_card_id IN (:ids)
 		ORDER BY l.tech_card_id, l.display_order, l.id`, map[string]any{"ids": ids})
 	if err != nil {
@@ -672,6 +763,10 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 	if err != nil {
 		return err
 	}
+	glPrints, err := s.garmentLabelPrintsByLabel(ctx, glIDs)
+	if err != nil {
+		return err
+	}
 	glByCard := make(map[int][]entity.TechCardGarmentLabel, len(ids))
 	for _, r := range glRows {
 		glByCard[r.TechCardID] = append(glByCard[r.TechCardID], entity.TechCardGarmentLabel{
@@ -682,7 +777,11 @@ func (s *Store) enrichLabelsRework(ctx context.Context, cards []entity.TechCard)
 			CalloutNumber: r.CalloutNumber, ArtworkPerSize: r.ArtworkPerSize, ArtworkPerColorway: r.ArtworkPerColorway,
 			Files:  glFiles[r.Id],
 			Source: entity.GarmentLabelSource(r.Source), Kind: r.Kind, MadeBy: r.MadeBy, PrintMethod: r.PrintMethod,
-			LengthCm: r.LengthCm,
+			LengthCm:       r.LengthCm,
+			PieceBomItemId: r.PieceBomItemId, PieceBomLineKey: r.PieceBomLineKey.String,
+			PieceWidthMm: r.PieceWidthMm, PieceHeightMm: r.PieceHeightMm, PieceSeamMm: r.PieceSeamMm,
+			LabelXMm: r.LabelXMm, LabelYMm: r.LabelYMm, LabelOnPiece: r.LabelOnPiece,
+			Prints: glPrints[r.Id],
 		})
 	}
 

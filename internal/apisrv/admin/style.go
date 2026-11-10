@@ -534,6 +534,10 @@ func carryCloneLabels(source *entity.TechCard, insert *entity.TechCardInsert) {
 			l.BomLineKey = lineKeyByID[l.BomItemId.Int32]
 			l.BomItemId = sql.NullInt32{}
 		}
+		if l.PieceBomItemId.Valid {
+			l.PieceBomLineKey = lineKeyByID[l.PieceBomItemId.Int32]
+			l.PieceBomItemId = sql.NullInt32{}
+		}
 	}
 	// No colourway is a colourway of the new card yet, so only files of any colourway survive.
 	dto.DropForeignGarmentLabelColorwayFiles(nil, insert)

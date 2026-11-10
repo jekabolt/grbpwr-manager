@@ -493,6 +493,10 @@ func restoreLabelBomLinks(frozenBom []*pb_common.TechCardBomItem) func(*entity.T
 				l.BomLineKey = key
 				l.BomItemId = sql.NullInt32{}
 			}
+			if key, ok := lineKeyByID[l.PieceBomItemId.Int32]; ok && l.PieceBomItemId.Valid && l.PieceBomLineKey == "" {
+				l.PieceBomLineKey = key
+				l.PieceBomItemId = sql.NullInt32{}
+			}
 		}
 		for i := range tc.PackagingItems {
 			it := &tc.PackagingItems[i]

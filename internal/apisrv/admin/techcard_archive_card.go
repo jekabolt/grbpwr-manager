@@ -226,6 +226,11 @@ func sanitizeGarmentLabelsForArchive(ins *pb_common.TechCardInsert) {
 		if l != nil {
 			l.Files = nil
 			l.BomLineKey = ""
+			for _, p := range l.GetPrints() {
+				if p != nil {
+					p.LibraryFileId, p.Id = 0, 0
+				}
+			}
 		}
 	}
 	for _, it := range ins.GetPackagingItems() {
