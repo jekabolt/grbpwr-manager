@@ -366,12 +366,15 @@ func parseTechCardGarmentLabels(pbs []*pb_common.TechCardGarmentLabel) ([]entity
 			Pages:           pages,
 			PagesOmitted:    l.Pages == nil,
 		})
+		if err := parseGarmentLabelPiece(f, l, &out[len(out)-1]); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
 
 var garmentLabelFolds = map[string]bool{
-	"flat": true, "half": true, "ends": true, "mitre": true, "loop": true,
+	"flat": true, "half": true, "ends": true, "mitre": true, "loop": true, "tee": true,
 }
 
 func parseGarmentLabelFold(field, raw string) (sql.NullString, error) {
@@ -380,7 +383,7 @@ func parseGarmentLabelFold(field, raw string) (sql.NullString, error) {
 		return sql.NullString{}, nil
 	}
 	if !garmentLabelFolds[fold] {
-		return sql.NullString{}, entity.NewFieldViolation(field, "invalid", raw, "use flat, half, ends, mitre or loop")
+		return sql.NullString{}, entity.NewFieldViolation(field, "invalid", raw, "use flat, half, ends, mitre, loop or tee")
 	}
 	return sql.NullString{String: fold, Valid: true}, nil
 }
@@ -660,25 +663,35 @@ func techCardGarmentLabelsToPb(labels []entity.TechCardGarmentLabel) []*pb_commo
 		stitchLines := l.StitchLinesMm
 		foldAxis := l.FoldAxis
 		pages := int32(NormalizeGarmentLabelPages(l.Pages))
+		// The piece fields are always sent, so a round trip never reads as a client that omits them.
+		pieceBom, onPiece := l.PieceBomItemId.Int32, l.LabelOnPiece
 		out = append(out, &pb_common.TechCardGarmentLabel{
-			Key:           l.Key,
-			LineKey:       l.LineKey,
-			WidthMm:       pbDecimalFromNull(l.WidthMm),
-			HeightMm:      pbDecimalFromNull(l.HeightMm),
-			Fold:          pbStringFromNull(l.Fold),
-			FoldLinesMm:   &foldLines,
-			StitchLinesMm: &stitchLines,
-			FoldAxis:      &foldAxis,
-			Pages:         &pages,
-			Placement:     pbStringFromNull(l.Placement),
-			Attachment:    pbStringFromNull(l.Attachment),
-			Folding:       pbStringFromNull(l.Folding),
-			Size:          pbStringFromNull(l.Size),
-			QtyPerGarment: int32(l.QtyPerGarment),
-			BomItemId:     l.BomItemId.Int32,
-			Note:          pbStringFromNull(l.Note),
-			MediaIds:      labelMediaIdsToPb(l.MediaIds),
-			BomLineKey:    l.BomLineKey,
+			PieceBomItemId: &pieceBom,
+			PieceWidthMm:   pbDecimalFromDecimal(l.PieceWidthMm),
+			PieceHeightMm:  pbDecimalFromDecimal(l.PieceHeightMm),
+			PieceSeamMm:    pbDecimalFromDecimal(l.PieceSeamMm),
+			LabelXMm:       pbDecimalFromDecimal(l.LabelXMm),
+			LabelYMm:       pbDecimalFromDecimal(l.LabelYMm),
+			LabelOnPiece:   &onPiece,
+			Prints:         garmentLabelPrintsToPb(l.Prints),
+			Key:            l.Key,
+			LineKey:        l.LineKey,
+			WidthMm:        pbDecimalFromNull(l.WidthMm),
+			HeightMm:       pbDecimalFromNull(l.HeightMm),
+			Fold:           pbStringFromNull(l.Fold),
+			FoldLinesMm:    &foldLines,
+			StitchLinesMm:  &stitchLines,
+			FoldAxis:       &foldAxis,
+			Pages:          &pages,
+			Placement:      pbStringFromNull(l.Placement),
+			Attachment:     pbStringFromNull(l.Attachment),
+			Folding:        pbStringFromNull(l.Folding),
+			Size:           pbStringFromNull(l.Size),
+			QtyPerGarment:  int32(l.QtyPerGarment),
+			BomItemId:      l.BomItemId.Int32,
+			Note:           pbStringFromNull(l.Note),
+			MediaIds:       labelMediaIdsToPb(l.MediaIds),
+			BomLineKey:     l.BomLineKey,
 
 			CalloutNumber:      int32(l.CalloutNumber),
 			ArtworkPerSize:     &perSize,
@@ -859,6 +872,7 @@ func NormalizeLabelBomLinks(stored, tc *entity.TechCardInsert) {
 	}
 	for i := range tc.GarmentLabels {
 		normalize(&tc.GarmentLabels[i].BomLineKey, &tc.GarmentLabels[i].BomItemId)
+		normalize(&tc.GarmentLabels[i].PieceBomLineKey, &tc.GarmentLabels[i].PieceBomItemId)
 	}
 	for i := range tc.PackagingItems {
 		normalize(&tc.PackagingItems[i].BomLineKey, &tc.PackagingItems[i].BomItemId)

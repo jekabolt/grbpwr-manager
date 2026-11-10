@@ -196,6 +196,8 @@ type resolvedTechCardImport struct {
 	// the ids the insert mints — the season clone's transfer, done here for the archive.
 	GarmentLabelBomKeys  map[int]string
 	PackagingItemBomKeys map[int]string
+	// GarmentLabelPieceBomKeys: the same for the fabric of a label's piece (0467, piece_bom_item_id).
+	GarmentLabelPieceBomKeys map[int]string
 	// MaterialPlan is keyed by the passport's `ref` (the source material_id).
 	MaterialPlan map[int64]tcimpMaterialMatch
 
@@ -248,6 +250,11 @@ func (res *resolvedTechCardImport) stampLabelBomLineKeys(card *entity.TechCardIn
 	for i, key := range res.GarmentLabelBomKeys {
 		if i >= 0 && i < len(card.GarmentLabels) {
 			card.GarmentLabels[i].BomLineKey = key
+		}
+	}
+	for i, key := range res.GarmentLabelPieceBomKeys {
+		if i >= 0 && i < len(card.GarmentLabels) {
+			card.GarmentLabels[i].PieceBomLineKey = key
 		}
 	}
 	for i, key := range res.PackagingItemBomKeys {
@@ -1287,6 +1294,24 @@ func (r *tcimpResolver) resolveForeignScalars() {
 		// strips these; a hand-made or foreign file may not. The copy rebuilds its files.
 		l.Files = nil
 		l.BomLineKey = ""
+		// The same for the artwork of a print (0467): the print keeps its place, not the foreign id.
+		for _, p := range l.GetPrints() {
+			if p != nil {
+				p.LibraryFileId, p.Id = 0, 0
+			}
+		}
+		if id := l.GetPieceBomItemId(); id > 0 {
+			if key := lineKeyByBomID[id]; key != "" {
+				if r.out.GarmentLabelPieceBomKeys == nil {
+					r.out.GarmentLabelPieceBomKeys = map[int]string{}
+				}
+				r.out.GarmentLabelPieceBomKeys[i] = key
+			}
+		}
+		if l.PieceBomItemId != nil {
+			zero := int32(0)
+			l.PieceBomItemId = &zero
+		}
 		if l.GetBomItemId() <= 0 {
 			continue
 		}

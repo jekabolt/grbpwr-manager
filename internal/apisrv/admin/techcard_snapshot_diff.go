@@ -10,6 +10,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
+	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -198,6 +199,7 @@ func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardI
 		label.Fold = matches[0].GetFold()
 	}
 	materializeGarmentLabelFoldLines(before, after)
+	materializeGarmentLabelPiece(before, after)
 	if !allLabelsOmitted || !allOperationsOmitted {
 		return
 	}
@@ -293,6 +295,81 @@ func materializeGarmentLabelFoldLines(before, after *pb_common.TechCardInsert) {
 		label.FoldLinesMm = &normalized
 		normalizedStitch := dto.NormalizeGarmentLabelStitchLines(rawStitch, height)
 		label.StitchLinesMm = &normalizedStitch
+	}
+}
+
+// materializeGarmentLabelPiece mirrors the 0467 carry: an absent piece field takes the stored value of
+// the label with the same line key, an absent label_on_piece keeps the stored prints, and both sides are
+// put in the form the read returns (a snapshot taken before 0467 has no piece and no prints). Print ids
+// are output-only and change on every save, so they are not compared.
+func materializeGarmentLabelPiece(before, after *pb_common.TechCardInsert) {
+	canon := func(d *pb_decimal.Decimal) *pb_decimal.Decimal {
+		if d == nil || strings.TrimSpace(d.GetValue()) == "" {
+			return &pb_decimal.Decimal{Value: "0"}
+		}
+		if v, err := decimal.NewFromString(strings.TrimSpace(d.GetValue())); err == nil {
+			return &pb_decimal.Decimal{Value: v.Round(2).String()}
+		}
+		return d
+	}
+	readForm := func(label *pb_common.TechCardGarmentLabel) {
+		if label.PieceBomItemId == nil {
+			label.PieceBomItemId = new(int32)
+		}
+		label.PieceWidthMm, label.PieceHeightMm = canon(label.PieceWidthMm), canon(label.PieceHeightMm)
+		label.PieceSeamMm = canon(label.PieceSeamMm)
+		label.LabelXMm, label.LabelYMm = canon(label.LabelXMm), canon(label.LabelYMm)
+		onPiece := dto.NormalizeGarmentLabelOnPiece(label.GetLabelOnPiece())
+		label.LabelOnPiece = &onPiece
+		for _, p := range label.GetPrints() {
+			if p == nil {
+				continue
+			}
+			p.Id = 0
+			p.Method = strings.ToLower(strings.TrimSpace(p.GetMethod()))
+			p.Name, p.Colour = strings.TrimSpace(p.GetName()), strings.TrimSpace(p.GetColour())
+			p.WidthMm, p.HeightMm, p.XMm, p.YMm = canon(p.WidthMm), canon(p.HeightMm), canon(p.XMm), canon(p.YMm)
+		}
+	}
+	byLineKey := make(map[string]*pb_common.TechCardGarmentLabel, len(before.GetGarmentLabels()))
+	for _, label := range before.GetGarmentLabels() {
+		if label == nil {
+			continue
+		}
+		readForm(label)
+		if key := strings.ToUpper(strings.TrimSpace(label.GetLineKey())); key != "" {
+			byLineKey[key] = label
+		}
+	}
+	for _, label := range after.GetGarmentLabels() {
+		if label == nil {
+			continue
+		}
+		if prev := byLineKey[strings.ToUpper(strings.TrimSpace(label.GetLineKey()))]; prev != nil {
+			if label.PieceBomItemId == nil {
+				label.PieceBomItemId = prev.PieceBomItemId
+			}
+			if label.PieceWidthMm == nil {
+				label.PieceWidthMm = prev.PieceWidthMm
+			}
+			if label.PieceHeightMm == nil {
+				label.PieceHeightMm = prev.PieceHeightMm
+			}
+			if label.PieceSeamMm == nil {
+				label.PieceSeamMm = prev.PieceSeamMm
+			}
+			if label.LabelXMm == nil {
+				label.LabelXMm = prev.LabelXMm
+			}
+			if label.LabelYMm == nil {
+				label.LabelYMm = prev.LabelYMm
+			}
+			if label.LabelOnPiece == nil {
+				label.LabelOnPiece = prev.LabelOnPiece
+				label.Prints = cloneMessages(prev.GetPrints())
+			}
+		}
+		readForm(label)
 	}
 }
 

@@ -4001,12 +4001,32 @@ type TechCardGarmentLabel struct {
 	Pages int
 	// PagesOmitted is the presence bit of pages. Parse only.
 	PagesOmitted bool
-	Placement          sql.NullString
-	Attachment         sql.NullString
-	Folding            sql.NullString
-	Size               sql.NullString
-	QtyPerGarment      int           // ≥ 1
-	BomItemId          sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
+	// Label on a fabric piece (0467): the label is sewn onto a spare piece of fabric whose top edge goes
+	// into the seam. Sizes in mm, all >= 0; PieceWidthMm or PieceHeightMm 0 = no piece. With a piece the
+	// label must lie inside it and start at or below PieceSeamMm (ValidateGarmentLabelPiece).
+	PieceBomItemId sql.NullInt32 // the fabric: a BOM line of this card; NULL = none
+	// PieceBomLineKey names that BOM line by key in a server-built payload (clone, restore, archive
+	// import), like BomLineKey. Never on the wire.
+	PieceBomLineKey string
+	PieceWidthMm    decimal.Decimal
+	PieceHeightMm   decimal.Decimal
+	PieceSeamMm     decimal.Decimal
+	LabelXMm        decimal.Decimal // label's left edge from the piece's left edge
+	LabelYMm        decimal.Decimal // label's top edge from the piece's top edge
+	LabelOnPiece    string          // "" | 4_sides | top_edge
+	// PieceOmitted holds the presence bits of the piece fields. Parse only.
+	PieceOmitted GarmentLabelPieceOmitted
+	// Prints are the printed artworks on the label, in display order (0467).
+	Prints []TechCardGarmentLabelPrint
+	// PrintsOmitted: the payload came from a client that knows nothing of 0467 (no label_on_piece), and
+	// the stored prints are carried. Parse only.
+	PrintsOmitted bool
+	Placement     sql.NullString
+	Attachment    sql.NullString
+	Folding       sql.NullString
+	Size          sql.NullString
+	QtyPerGarment int           // ≥ 1
+	BomItemId     sql.NullInt32 // NULL = unlinked; must be a BOM line of this card
 	// BomLineKey names the BOM line by its stable key: a client links a line born in the same save
 	// this way, and a server-built payload (the season clone) moves a link across cards. A non-empty
 	// key wins over BomItemId in the store. Read back through the link, never hashed: BomItemId is
@@ -4078,6 +4098,36 @@ type TechCardGarmentLabelFile struct {
 	// PublicURL is RESPONSE-ONLY, set where a card is read for a response. Snapshots and archives
 	// stay token-free. Never hashed.
 	PublicURL string
+}
+
+// GarmentLabelPieceOmitted are the presence bits of a garment label's piece fields: true = the field was
+// absent on the wire and the stored value is carried.
+type GarmentLabelPieceOmitted struct {
+	BomItem, Width, Height, Seam, LabelX, LabelY, LabelOnPiece bool
+}
+
+// Any reports whether at least one piece field was absent.
+func (o GarmentLabelPieceOmitted) Any() bool {
+	return o.BomItem || o.Width || o.Height || o.Seam || o.LabelX || o.LabelY || o.LabelOnPiece
+}
+
+// All reports whether every piece field was absent: the client knows nothing of 0467.
+func (o GarmentLabelPieceOmitted) All() bool {
+	return o.BomItem && o.Width && o.Height && o.Seam && o.LabelX && o.LabelY && o.LabelOnPiece
+}
+
+// TechCardGarmentLabelPrint is one printed artwork on a garment label (tech_card_garment_label_print),
+// placed in mm from the label's top-left, unfolded. It lies inside the label rectangle.
+type TechCardGarmentLabelPrint struct {
+	Id            int           // read only
+	Name          string        // ≤ 64
+	LibraryFileId sql.NullInt32 // the artwork; NULL = none yet
+	Method        string        // screen | heat_transfer | woven | embroidery | pad_print
+	Colour        string        // ≤ 64
+	WidthMm       decimal.Decimal
+	HeightMm      decimal.Decimal
+	XMm           decimal.Decimal
+	YMm           decimal.Decimal
 }
 
 // TechCardPackagingItem is one packaging item (tech_card_packaging_item) — the garment label with

@@ -3231,6 +3231,39 @@ message TechCardGarmentLabel {
   // Pages of a booklet label (a composition label folded into a little book), 1..12; 0 or less = 1.
   // PRESENCE BIT: absent = keep the stored value.
   optional int32 pages = 27;
+  // Label on a fabric piece (attachment on_fabric_piece): the label is sewn onto a small spare piece of
+  // fabric whose top edge goes into the seam. All in mm. PRESENCE BITS: each absent field keeps the stored
+  // value. The server refuses a negative size. When piece_width_mm > 0 and piece_height_mm > 0 the label
+  // (width_mm x height_mm at label_x_mm, label_y_mm from the piece's top-left) must lie inside the piece
+  // and start at or below piece_seam_mm, else InvalidArgument.
+  optional int32 piece_bom_item_id = 28; // the fabric the piece is cut from: a BOM line of THIS card; 0 = none
+  optional google.type.Decimal piece_width_mm = 29; // 0 = no piece
+  optional google.type.Decimal piece_height_mm = 30; // 0 = no piece
+  optional google.type.Decimal piece_seam_mm = 31; // how deep the piece's top edge goes into the seam
+  optional google.type.Decimal label_x_mm = 32; // label's left edge from the piece's left edge
+  optional google.type.Decimal label_y_mm = 33; // label's top edge from the piece's top edge
+  // How the label is sewn onto the piece: 4_sides | top_edge; anything else is stored as "".
+  // It is also the presence bit of `prints`: a client that knows this block always sends it, and its
+  // prints list replaces the stored one (empty = none). Absent = an older client, whose save keeps the
+  // stored prints.
+  optional string label_on_piece = 34;
+  // Printed artworks on the label, in display order. Replace-all on save when label_on_piece is sent.
+  repeated TechCardGarmentLabelPrint prints = 35;
+}
+
+// TechCardGarmentLabelPrint is one printed artwork on a garment label, placed in mm from the label's
+// top-left, unfolded. The rectangle must lie inside the label (x_mm + width_mm <= label width_mm,
+// y_mm + height_mm <= label height_mm), so the label's size must be set.
+message TechCardGarmentLabelPrint {
+  int32 id = 1; // OUTPUT-ONLY row id; ignored on write (the save replaces every print of the label)
+  string name = 2; // ≤ 64
+  int32 library_file_id = 3; // FK library_file(id), the artwork; 0 = none yet
+  string method = 4; // screen | heat_transfer | woven | embroidery | pad_print
+  string colour = 5; // ≤ 64
+  google.type.Decimal width_mm = 6; // > 0
+  google.type.Decimal height_mm = 7; // > 0
+  google.type.Decimal x_mm = 8; // >= 0, from the label's left edge
+  google.type.Decimal y_mm = 9; // >= 0, from the label's top edge
 }
 
 // TechCardGarmentLabelFile is one artwork file of a garment label, printed as a QR on the tech pack.

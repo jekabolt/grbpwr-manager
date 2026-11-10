@@ -268,3 +268,50 @@ func TestTechCardChangedSectionsSeesFoldAxisAndPages(t *testing.T) {
 		t.Fatalf("an older client omitting axis and pages produced changes: %#v", got)
 	}
 }
+
+func TestTechCardChangedSectionsSeesLabelPieceAndPrints(t *testing.T) {
+	before := snapshotDiffCard()
+	before.LabelsAware = true
+	before.GarmentLabels = []*pb_common.TechCardGarmentLabel{{
+		Key: "size", LineKey: "01JABCDEFGHJKMNPQRSTVWXYZ1", WidthMm: &pb_decimal.Decimal{Value: "40"},
+		HeightMm: &pb_decimal.Decimal{Value: "20"},
+	}}
+
+	piece := proto.Clone(before).(*pb_common.TechCardInsert)
+	piece.GarmentLabels[0].PieceWidthMm = &pb_decimal.Decimal{Value: "60"}
+	if got := techCardChangedSections(before, piece); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("piece change = %#v, want labels", got)
+	}
+
+	printed := proto.Clone(before).(*pb_common.TechCardInsert)
+	on := ""
+	printed.GarmentLabels[0].LabelOnPiece = &on
+	printed.GarmentLabels[0].Prints = []*pb_common.TechCardGarmentLabelPrint{{Id: 9, Name: "logo", Method: "screen",
+		WidthMm: &pb_decimal.Decimal{Value: "10"}, HeightMm: &pb_decimal.Decimal{Value: "5"}}}
+	if got := techCardChangedSections(before, printed); !reflect.DeepEqual(got, []string{"labels"}) {
+		t.Fatalf("prints change = %#v, want labels", got)
+	}
+
+	// Print ids are not content; trailing zeros are not a change.
+	renumbered := proto.Clone(printed).(*pb_common.TechCardInsert)
+	renumbered.GarmentLabels[0].Prints[0].Id = 42
+	renumbered.GarmentLabels[0].Prints[0].WidthMm = &pb_decimal.Decimal{Value: "10.00"}
+	if got := techCardChangedSections(printed, renumbered); len(got) != 0 {
+		t.Fatalf("print id / decimal form produced changes: %#v", got)
+	}
+
+	// A pre-0467 snapshot against the defaults, and an older client omitting everything: no change.
+	defaults := proto.Clone(before).(*pb_common.TechCardInsert)
+	zero, none := &pb_decimal.Decimal{Value: "0"}, int32(0)
+	g := defaults.GarmentLabels[0]
+	g.PieceBomItemId, g.PieceWidthMm, g.PieceHeightMm, g.PieceSeamMm, g.LabelXMm, g.LabelYMm, g.LabelOnPiece =
+		&none, zero, zero, zero, zero, zero, &on
+	if got := techCardChangedSections(before, defaults); len(got) != 0 {
+		t.Fatalf("defaults against a pre-0467 snapshot produced changes: %#v", got)
+	}
+	omitted := proto.Clone(printed).(*pb_common.TechCardInsert)
+	omitted.GarmentLabels[0].LabelOnPiece, omitted.GarmentLabels[0].Prints = nil, nil
+	if got := techCardChangedSections(printed, omitted); len(got) != 0 {
+		t.Fatalf("an older client omitting the prints produced changes: %#v", got)
+	}
+}

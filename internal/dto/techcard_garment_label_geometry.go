@@ -58,6 +58,7 @@ func CarryStoredGarmentLabelGeometry(stored, in *entity.TechCardInsert) {
 
 	if in.LabelsAware {
 		carryOmittedGarmentLabelFoldLines(stored, in)
+		carryOmittedGarmentLabelPiece(stored, in)
 	}
 
 	if !allLabelsOmittedKeys || !allOperationsOmittedKeys {
@@ -105,6 +106,7 @@ func cloneGarmentLabels(in []entity.TechCardGarmentLabel) []entity.TechCardGarme
 	for i := range out {
 		out[i].MediaIds = append([]int(nil), in[i].MediaIds...)
 		out[i].Files = append([]entity.TechCardGarmentLabelFile(nil), in[i].Files...)
+		out[i].Prints = append([]entity.TechCardGarmentLabelPrint(nil), in[i].Prints...)
 	}
 	return out
 }
@@ -148,6 +150,9 @@ func finalizeGarmentLabelGeometry(in *entity.TechCardInsert) error {
 		taken[key] = path
 		live[key] = true
 		in.GarmentLabels[i].LineKey = key
+	}
+	if err := validateGarmentLabelPieceAndPrints(in); err != nil {
+		return err
 	}
 	for i := range in.Operations {
 		for j := range in.Operations[i].LabelKeys {

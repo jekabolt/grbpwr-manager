@@ -137,12 +137,42 @@ func (s *Server) garmentLabelFilesVisibleGate(ctx context.Context, stored, tc *e
 			known[f.LibraryFileId] = true
 		}
 	}
+	// The artwork of a print (0467) must exist and be visible the same way. 0 = none yet.
+	if stored != nil {
+		for i := range stored.GarmentLabels {
+			for _, p := range stored.GarmentLabels[i].Prints {
+				if p.LibraryFileId.Valid {
+					known[int(p.LibraryFileId.Int32)] = true
+				}
+			}
+		}
+	}
+	for i := range tc.GarmentLabels {
+		for j, p := range tc.GarmentLabels[i].Prints {
+			id := int(p.LibraryFileId.Int32)
+			if !p.LibraryFileId.Valid || known[id] {
+				continue
+			}
+			if _, err := s.repo.Files().GetFileById(ctx, id); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return apierr.Invalid(entity.NewFieldViolation(
+						fmt.Sprintf("garment_labels[%d].prints[%d].library_file_id", i, j),
+						"file not found", fmt.Sprint(id), "upload the file again"))
+				}
+				slog.Default().ErrorContext(ctx, "can't check garment label print file",
+					slog.Int("library_file_id", id), slog.String("err", err.Error()))
+				return status.Error(codes.Internal, "can't check label files; try again")
+			}
+			known[id] = true
+		}
+	}
 	return nil
 }
 
 // dropMissingGarmentLabelFiles is the snapshot restore's part: a snapshot may name a library file
 // deleted since (a file is refused deletion only while a row holds it). The row goes back without it
-// rather than failing the whole restore on a foreign key. The tile then reads as empty.
+// rather than failing the whole restore on a foreign key. The tile then reads as empty. A print whose
+// artwork is gone goes back with no artwork.
 func (s *Server) dropMissingGarmentLabelFiles(ctx context.Context, tc *entity.TechCardInsert) error {
 	if tc == nil {
 		return nil
@@ -151,6 +181,11 @@ func (s *Server) dropMissingGarmentLabelFiles(ctx context.Context, tc *entity.Te
 	for i := range tc.GarmentLabels {
 		for _, f := range tc.GarmentLabels[i].Files {
 			ids = append(ids, f.LibraryFileId)
+		}
+		for _, p := range tc.GarmentLabels[i].Prints {
+			if p.LibraryFileId.Valid {
+				ids = append(ids, int(p.LibraryFileId.Int32))
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -170,6 +205,12 @@ func (s *Server) dropMissingGarmentLabelFiles(ctx context.Context, tc *entity.Te
 			}
 		}
 		l.Files = kept
+		// A print keeps its place and size without the deleted artwork (0467).
+		for j := range l.Prints {
+			if p := &l.Prints[j]; p.LibraryFileId.Valid && !alive[int(p.LibraryFileId.Int32)] {
+				p.LibraryFileId = sql.NullInt32{}
+			}
+		}
 	}
 	return nil
 }
