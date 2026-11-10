@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -73,7 +74,7 @@ func TestValidateTechCardSeamsWriteRefusals(t *testing.T) {
 		{"empty side", func(w *TechCardSeamsWrite) { w.Seams[0].SideB = nil }, "seams[0].side_b.parts"},
 		{"too many anchors", func(w *TechCardSeamsWrite) {
 			var side []TechCardSeamAnchor
-			for i := 0; i < 9; i++ {
+			for i := 0; i <= TechCardSeamMaxAnchorsPerSide; i++ {
 				side = append(side, seamTestAnchor("P", strings.Repeat("h", i+1)))
 			}
 			w.Seams[0].SideA = side
@@ -289,4 +290,17 @@ func TestValidateTechCardSeamsWritePose(t *testing.T) {
 			require.Equal(t, c.code, fv.Reason)
 		})
 	}
+}
+
+// A collar on a whole neckline: two fronts, the back split by fold cuts, two plackets — 11 anchors,
+// the shape prod card 5's op 570 needs. The old bound of 8 refused it.
+func TestValidateTechCardSeamsWriteAcceptsAWholeNeckline(t *testing.T) {
+	in := seamTestWrite()
+	in.Seams[0].Kind = TechCardSeamKindComposite
+	var side []TechCardSeamAnchor
+	for i := 0; i < 11; i++ {
+		side = append(side, seamTestAnchor(fmt.Sprintf("PIECE-%d", i), fmt.Sprintf("P%d#1", i)))
+	}
+	in.Seams[0].SideB = side
+	require.NoError(t, ValidateTechCardSeamsWrite(&in))
 }
