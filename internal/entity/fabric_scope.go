@@ -34,6 +34,9 @@ type RollGoodsLine struct {
 	LineKey string
 	Purpose string
 	Section TechCardBomSection
+	// Name is the line's material name, for messages only: a line key is an internal id and is never
+	// shown to an operator. No rule reads it.
+	Name string
 }
 
 // FabricScope is one binding, resolved.

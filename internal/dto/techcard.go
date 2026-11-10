@@ -12,7 +12,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/patternslot"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
@@ -1449,10 +1448,8 @@ func parseTechCardPatterns(pbs []*pb_common.TechCardSizePattern, sizeIds []int) 
 			Version:       int(p.Version),
 		})
 	}
-	// No BOM here: the raw-binding pre-check. The store repeats it by cloth identity.
-	if err := patternslot.Validate(out, nil); err != nil {
-		return nil, err
-	}
+	// One file per material slot is checked in the store only: it needs what is already stored (a
+	// slot that already holds two files stays writable), and this layer has no stored state.
 	return out, nil
 }
 
