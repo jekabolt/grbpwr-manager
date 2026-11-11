@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -19,8 +18,9 @@ import (
 //
 // Order inside the transaction: card row FOR UPDATE (first action, before any read — see
 // UpsertTechCardSeams) → released refusal → lock_version equals expected → steps resolved → upsert
-// (a new key of a stored pair is rekeyed onto the stored row) → link → detach → delete → one
-// lock_version bump if anything changed → the response read in the same transaction.
+// (a new key of a pair already on the card or earlier in the request goes onto that row's key) →
+// link → detach → delete → the caps checked on the state all of that left → one lock_version bump if
+// anything changed → the response read in the same transaction.
 
 // ChangeTechCardSeams applies one seam gesture atomically and returns what was committed.
 func (s *Store) ChangeTechCardSeams(ctx context.Context, in entity.TechCardSeamsChange) (entity.TechCardSeamsChangeResult, error) {
@@ -42,24 +42,6 @@ func (s *Store) ChangeTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		return entity.TechCardSeamsChangeResult{}, err
 	}
 	return out, nil
-}
-
-// seamChangeFault fails a change right after the named phase ("upsert", "link", "detach", "delete",
-// "bump"). Nil in production; set only through SetSeamChangeFaultForTest.
-var seamChangeFault atomic.Pointer[func(phase string) error]
-
-// SetSeamChangeFaultForTest installs f as the change's fault injector and returns the restore. For
-// store integration tests that prove a failure in any phase leaves rows and links untouched.
-func SetSeamChangeFaultForTest(f func(phase string) error) (restore func()) {
-	prev := seamChangeFault.Swap(&f)
-	return func() { seamChangeFault.Store(prev) }
-}
-
-func seamChangePhaseDone(phase string) error {
-	if f := seamChangeFault.Load(); f != nil && *f != nil {
-		return (*f)(phase)
-	}
-	return nil
 }
 
 func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.TechCardSeamsChange) (entity.TechCardSeamsChangeResult, error) {
@@ -119,10 +101,14 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 		return zero, err
 	}
 
-	// Rekey: a new upsert key whose pair and ranges match a stored row goes onto that row's key — one
-	// pair, one row, as the client's reuseKeys does. Candidates are stored non-pose rows in stored
-	// order, first wins, minus the rows this change deletes, detaches or rewrites by their own key:
-	// landing a new row on one of those would delete or detach it in the same breath.
+	// REKEY — one pair and ranges, one row, as the client's reuseKeys does. A sent key that is not
+	// stored and names a non-pose row goes onto the row already holding its pair and ranges: first a
+	// stored row (stored order, first wins), judged by what it holds AFTER this change — a stored row
+	// the upsert rewrites is a target by its new content, not its old — then an earlier new row of
+	// this request. Rows of the same request that land on one key are written once: the row sent
+	// under that key's own name gives the content, else the first of them; key_map and the links of
+	// every sent key follow the row they landed on. Rows this change deletes or detaches are no
+	// target: landing a new row on one would delete or detach it in the same breath.
 	stored, err := storeutil.QueryListNamed[struct {
 		SeamKey string `db:"seam_key"`
 		Kind    string `db:"kind"`
@@ -134,54 +120,69 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 	if err != nil {
 		return zero, fmt.Errorf("load seams of tech card %d: %w", id, err)
 	}
-	excluded := make(map[string]bool, len(in.Delete)+len(in.Detach)+len(in.Upsert))
+	excluded := make(map[string]bool, len(in.Delete)+len(in.Detach))
 	for _, k := range in.Delete {
 		excluded[k] = true
 	}
 	for _, d := range in.Detach {
 		excluded[d.SeamKey] = true
 	}
-	for _, u := range in.Upsert {
-		excluded[u.SeamKey] = true
+	sentAt := make(map[string]int, len(in.Upsert)) // sent keys are unique (ValidateTechCardSeamsWrite)
+	for i, u := range in.Upsert {
+		sentAt[u.SeamKey] = i
 	}
 	storedKeys := make(map[string]bool, len(stored))
 	bySig := map[string]string{}
 	for _, r := range stored {
 		key := entity.NormalizeTechCardSeamKey(r.SeamKey)
 		storedKeys[key] = true
-		if excluded[key] || entity.TechCardSeamKind(r.Kind) == entity.TechCardSeamKindPose {
+		if excluded[key] {
 			continue
 		}
-		row := entity.TechCardSeamInput{Kind: entity.TechCardSeamKind(r.Kind)}
-		if json.Unmarshal(r.SideA, &row.SideA) != nil || json.Unmarshal(r.SideB, &row.SideB) != nil {
-			continue // a corrupted row is offered for re-confirm or delete, never a rekey target
+		var row entity.TechCardSeamInput
+		if i, rewritten := sentAt[key]; rewritten {
+			row = in.Upsert[i]
+		} else {
+			row = entity.TechCardSeamInput{Kind: entity.TechCardSeamKind(r.Kind)}
+			if json.Unmarshal(r.SideA, &row.SideA) != nil || json.Unmarshal(r.SideB, &row.SideB) != nil {
+				continue // a corrupted row is offered for re-confirm or delete, never a rekey target
+			}
+		}
+		if row.Kind == entity.TechCardSeamKindPose {
+			continue
 		}
 		if sig := entity.TechCardSeamPairRangeSig(row); bySig[sig] == "" {
 			bySig[sig] = key
 		}
 	}
-	upsert := append([]entity.TechCardSeamInput(nil), in.Upsert...)
-	keyMap := make([]entity.TechCardSeamKeyMap, 0, len(upsert))
+	upsert := make([]entity.TechCardSeamInput, 0, len(in.Upsert))
+	keyMap := make([]entity.TechCardSeamKeyMap, 0, len(in.Upsert))
 	alias := map[string]string{}
-	rowAt := make(map[string]int, len(upsert))
-	for i := range upsert {
-		sent := upsert[i].SeamKey
+	rowAt := make(map[string]int, len(in.Upsert)) // stored key → its row in upsert
+	for _, u := range in.Upsert {
+		sent := u.SeamKey
 		key := sent
-		if !storedKeys[sent] && upsert[i].Kind != entity.TechCardSeamKindPose {
-			if k := bySig[entity.TechCardSeamPairRangeSig(upsert[i])]; k != "" {
+		if !storedKeys[sent] && u.Kind != entity.TechCardSeamKindPose {
+			sig := entity.TechCardSeamPairRangeSig(u)
+			if k := bySig[sig]; k != "" {
 				key = k
+			} else {
+				bySig[sig] = sent // a later new row of this pair lands here
 			}
 		}
-		if j, dup := rowAt[key]; dup {
-			return zero, entity.NewFieldViolation(fmt.Sprintf("upsert[%d].seam_key", i), "duplicate_pair",
-				fmt.Sprintf("upsert[%d]", j), "two rows of one pair and ranges — send one")
-		}
-		rowAt[key] = i
-		upsert[i].SeamKey = key
 		keyMap = append(keyMap, entity.TechCardSeamKeyMap{Sent: sent, Stored: key})
 		if key != sent {
 			alias[sent] = key
 		}
+		u.SeamKey = key
+		if j, landed := rowAt[key]; landed {
+			if sent == key {
+				upsert[j] = u
+			}
+			continue
+		}
+		rowAt[key] = len(upsert)
+		upsert = append(upsert, u)
 	}
 	resolve := func(links []entity.TechCardSeamLink) []entity.TechCardSeamLink {
 		out := make([]entity.TechCardSeamLink, len(links))
@@ -210,32 +211,37 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 		deleted = append(deleted, k)
 	}
 
-	// UPSERT — the reviewer's write, piece membership and the per-card cap included.
+	// UPSERT — the reviewer's write with piece membership; the per-card cap waits for the final state
+	// (below): a MIRROR at the cap adds its row before its detach takes the replaced one out.
 	if len(upsert) > 0 {
-		if err := writeTechCardSeamsTx(ctx, db, id, upsert, in.By, seamWriteOpts{}); err != nil {
+		if err := writeTechCardSeamsTx(ctx, db, id, upsert, in.By, seamWriteOpts{capChecked: true}); err != nil {
 			return zero, entity.RenameSeamFieldPrefix(err, "seams", "upsert")
 		}
 		changed = true
 	}
-	if err := seamChangePhaseDone("upsert"); err != nil {
-		return zero, err
-	}
 
 	// LINK — appended to the step; a pair already linked is a no-op. The key must be a row of the card
 	// after the upsert (checked here, after the write, so a refusal rolls the upsert back with it).
+	// The per-step cap waits for the final state, as the per-card cap does.
+	type gained struct{ op, before, at int } // a step that gained a link: its count before, the first link[i]
+	var grown []gained
+	grownAt := map[int]bool{}
 	for i, l := range link {
 		if _, upserted := rowAt[l.SeamKey]; !storedKeys[l.SeamKey] && !upserted {
 			return zero, entity.NewFieldViolation(fmt.Sprintf("link[%d].seam_key", i), "unknown_seam", "",
 				"seam "+l.SeamKey+" is not stored on this card — upsert it in the same change, or reload: it may have been deleted")
 		}
-		inserted, err := linkSeamToOperationTx(ctx, db, linkOps[i], l.SeamKey)
+		had, inserted, err := linkSeamToOperationTx(ctx, db, linkOps[i], l.SeamKey)
 		if err != nil {
-			return zero, entity.RenameSeamFieldPrefix(err, "link", fmt.Sprintf("link[%d]", i))
+			return zero, err
 		}
-		changed = changed || inserted
-	}
-	if err := seamChangePhaseDone("link"); err != nil {
-		return zero, err
+		if inserted {
+			if !grownAt[linkOps[i]] {
+				grownAt[linkOps[i]] = true
+				grown = append(grown, gained{op: linkOps[i], before: had, at: i})
+			}
+			changed = true
+		}
 	}
 
 	// DETACH — the link goes; the row goes too only when THIS change removed a link and no step links
@@ -266,9 +272,6 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 			noteDeleted(d.SeamKey)
 		}
 	}
-	if err := seamChangePhaseDone("detach"); err != nil {
-		return zero, err
-	}
 
 	// DELETE — unconditional, and it unlinks the key from every step (THE SEAM DELETE).
 	for _, k := range in.Delete {
@@ -287,8 +290,31 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 			noteDeleted(k)
 		}
 	}
-	if err := seamChangePhaseDone("delete"); err != nil {
-		return zero, err
+
+	// THE CAPS, ON THE FINAL STATE — 400 rows per card, 64 links per step — after detach and delete,
+	// so a gesture that replaces at the cap lands and one that ends over it is refused whole. Only a
+	// change that GROWS a count past its cap is refused: a delete or a replace is never blocked by it.
+	if len(upsert) > 0 {
+		after, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM tech_card_seam WHERE tech_card_id = :id`, map[string]any{"id": id})
+		if err != nil {
+			return zero, fmt.Errorf("count seams of tech card %d: %w", id, err)
+		}
+		if after > entity.TechCardSeamMaxRowsPerCard && after > len(stored) {
+			return zero, entity.NewFieldViolation("upsert", "too_many", "",
+				fmt.Sprintf("a card holds at most %d seams; delete orphan or obsolete rows first", entity.TechCardSeamMaxRowsPerCard))
+		}
+	}
+	for _, g := range grown { // request order: the first step over its cap is the one named
+		after, err := storeutil.QueryCountNamed(ctx, db, `
+			SELECT COUNT(*) FROM tech_card_operation_seam WHERE operation_id = :op`, map[string]any{"op": g.op})
+		if err != nil {
+			return zero, fmt.Errorf("count seam links of step %d: %w", g.op, err)
+		}
+		if after > entity.TechCardOperationMaxSeamKeys && after > g.before {
+			return zero, entity.NewFieldViolation(fmt.Sprintf("link[%d]", g.at), "too_many", "",
+				fmt.Sprintf("a step links at most %d seams", entity.TechCardOperationMaxSeamKeys))
+		}
 	}
 
 	// ONE bump per change that changed anything; a no-op change leaves the version alone.
@@ -300,9 +326,6 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 			return zero, fmt.Errorf("bump lock_version of tech card %d: %w", id, err)
 		}
 		newVersion = version + 1
-	}
-	if err := seamChangePhaseDone("bump"); err != nil {
-		return zero, err
 	}
 
 	// The response, read in the same transaction: what was committed, not the request echoed.
@@ -339,9 +362,10 @@ func lockTechCardRowVersion(ctx context.Context, db dependency.DB, techCardID in
 	return row.LockVersion, nil
 }
 
-// linkSeamToOperationTx appends key to the step's seams; false when the step already links it. A step
-// links at most entity.TechCardOperationMaxSeamKeys seams, as the card save allows.
-func linkSeamToOperationTx(ctx context.Context, db dependency.DB, opID int, key string) (bool, error) {
+// linkSeamToOperationTx appends key to the step's seams and returns the step's link count before it;
+// inserted is false when the step already links key. The per-step cap
+// (entity.TechCardOperationMaxSeamKeys) is the caller's, on its final state.
+func linkSeamToOperationTx(ctx context.Context, db dependency.DB, opID int, key string) (had int, inserted bool, err error) {
 	st, err := storeutil.QueryNamedOne[struct {
 		N        int `db:"n"`
 		MaxOrder int `db:"max_order"`
@@ -352,22 +376,18 @@ func linkSeamToOperationTx(ctx context.Context, db dependency.DB, opID int, key 
 		FROM tech_card_operation_seam WHERE operation_id = :op`,
 		map[string]any{"op": opID, "k": key})
 	if err != nil {
-		return false, fmt.Errorf("load seam links of step %d: %w", opID, err)
+		return 0, false, fmt.Errorf("load seam links of step %d: %w", opID, err)
 	}
 	if st.Has > 0 {
-		return false, nil
-	}
-	if st.N >= entity.TechCardOperationMaxSeamKeys {
-		return false, entity.NewFieldViolation("link", "too_many", "",
-			fmt.Sprintf("a step links at most %d seams", entity.TechCardOperationMaxSeamKeys))
+		return st.N, false, nil
 	}
 	if err := storeutil.ExecNamed(ctx, db, `
 		INSERT INTO tech_card_operation_seam (operation_id, seam_key, display_order)
 		VALUES (:op, :k, :pos)`,
 		map[string]any{"op": opID, "k": key, "pos": st.MaxOrder + 1}); err != nil {
-		return false, fmt.Errorf("link seam %s to step %d: %w", key, opID, err)
+		return 0, false, fmt.Errorf("link seam %s to step %d: %w", key, opID, err)
 	}
-	return true, nil
+	return st.N, true, nil
 }
 
 // countSeamLinksTx counts the steps of the card that link key.

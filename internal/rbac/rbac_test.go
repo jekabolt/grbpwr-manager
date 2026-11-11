@@ -36,6 +36,22 @@ func TestEveryAdminMethodIsClassified(t *testing.T) {
 	}
 }
 
+// The one-write seam gesture carries the same right as the two seam RPCs it replaces: a technologist
+// with tech_cards:write must not be denied the new path while the old one still lets them through.
+func TestChangeTechCardSeamsUsesTheSeamWriteAccess(t *testing.T) {
+	want, _, known := Lookup(MethodPrefix + "UpsertTechCardSeams")
+	if !known {
+		t.Fatal("UpsertTechCardSeams is no longer mapped")
+	}
+	req, allowlisted, known := Lookup(MethodPrefix + "ChangeTechCardSeams")
+	if allowlisted || !known {
+		t.Fatalf("ChangeTechCardSeams must be section-gated (allowlisted=%v, known=%v)", allowlisted, known)
+	}
+	if req != want {
+		t.Fatalf("ChangeTechCardSeams = %s:%s, want UpsertTechCardSeams' %s:%s", req.Section, req.Access, want.Section, want.Access)
+	}
+}
+
 func TestDeleteTechCardPatternRevisionUsesTechCardWriteAccess(t *testing.T) {
 	req, allowlisted, known := Lookup(MethodPrefix + "DeleteTechCardPatternRevision")
 	if allowlisted || !known {

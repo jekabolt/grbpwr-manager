@@ -2986,12 +2986,16 @@ service AdminService {
   // with FailedPrecondition `lock_version_moved` and nothing written. A request that changed anything
   // bumps lock_version exactly once, and the response carries the new version.
   //
-  // Order: upsert (a new key whose pair and ranges match a stored row is rekeyed onto that row's key,
-  // reported in key_map) → link (appended to the step) → detach (a row is deleted only when THIS call
-  // removed a link and no step links it any more; an absent link is a no-op) → delete (unconditional,
-  // also unlinks). Contradictions — the same (step, key) in link and detach, a key in link or upsert
-  // and in delete, a step number unknown or not unique on the card — refuse the whole request.
-  // A released card refuses (the frozen wording). wr(tech_cards).
+  // Order: upsert (one pair and ranges, one row: a new key whose pair and ranges match a row of the
+  // card — a stored row by what it holds after this upsert — or an earlier row of this request goes
+  // onto that row's key; rows landing on one key are written once, key_map reports every sent key and
+  // links of a sent key follow its row) → link (appended to the step) → detach (a row is deleted only
+  // when THIS call removed a link and no step links it any more; an absent link is a no-op) → delete
+  // (unconditional, also unlinks). The caps — 400 rows per card, 64 links per step — hold on the state
+  // after the whole change: a replace at the cap lands, a change that ends over a cap and grew it is
+  // refused whole (upsert / link[i] too_many). Contradictions — the same (step, key) in link and
+  // detach, a key in link or upsert and in delete, a step number unknown or not unique on the card —
+  // refuse the whole request. A released card refuses (the frozen wording). wr(tech_cards).
   rpc ChangeTechCardSeams(ChangeTechCardSeamsRequest) returns (ChangeTechCardSeamsResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/seams/change"
@@ -10127,7 +10131,11 @@ message UpdateTechCardRequest {
   string save_session_id = 5;
 }
 
-message UpdateTechCardResponse {}
+message UpdateTechCardResponse {
+  // The card's lock_version after this save: expected_lock_version + 1 (the save bumps it exactly
+  // once). The client sends it as its next expected_lock_version without re-reading the card.
+  int32 lock_version = 1;
+}
 
 message ListTechCardSnapshotsRequest {
   int32 tech_card_id = 1;
@@ -12076,7 +12084,7 @@ message OperationSeamKeys {
 }
 
 // SeamKeyMap reports the key a sent upsert row was stored under (stored differs from sent when the
-// row was rekeyed onto a stored row of the same pair and ranges).
+// row went onto a row of the same pair and ranges: a stored row, or an earlier row of this request).
 message SeamKeyMap {
   string sent = 1;
   string stored = 2;

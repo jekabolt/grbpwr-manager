@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
 
@@ -167,7 +170,7 @@ func TestTechCardSeamChange(t *testing.T) {
 		require.Equal(t, v0+2, res.LockVersion, "a change that changed nothing does not move the version")
 	})
 
-	t.Run("a failure in any phase rolls the whole change back", func(t *testing.T) {
+	t.Run("a failure at any write rolls the whole change back", func(t *testing.T) {
 		id := newCard(t, 10, 20, 30)
 		v0 := state(t, id).Version
 		mustChange(t, id, v0, entity.TechCardSeamsChange{
@@ -182,18 +185,26 @@ func TestTechCardSeamChange(t *testing.T) {
 			Delete: []string{key(11)},
 		}
 		injected := errors.New("injected")
-		for _, phase := range []string{"upsert", "link", "detach", "delete", "bump"} {
-			restore := techcard.SetSeamChangeFaultForTest(func(p string) error {
-				if p == phase {
-					return injected
-				}
-				return nil
-			})
-			_, err := change(id, seed.Version, gesture)
-			restore()
-			require.ErrorIs(t, err, injected, phase)
-			require.Equal(t, seed, state(t, id), "a failure after %s leaves rows, links and version as they were", phase)
+		send := func(f *seamFault) error {
+			f.err = injected
+			c := gesture
+			c.TechCardId, c.ExpectedLockVersion, c.By = id, &seed.Version, "ann"
+			_, err := faultyCards(st, f).ChangeTechCardSeams(ctx, c)
+			return err
 		}
+		// The whole gesture, refused at commit: counts its writes, and a refused commit keeps nothing.
+		dry := &seamFault{atCommit: true}
+		require.ErrorIs(t, send(dry), injected)
+		require.Equal(t, seed, state(t, id), "a refused commit leaves rows, links and version as they were")
+		writes := dry.writes
+		require.GreaterOrEqual(t, writes, 5, "at least one write per phase: upsert, link, detach, delete, bump")
+		for n := 1; n <= writes; n++ {
+			require.ErrorIs(t, send(&seamFault{failWrite: n}), injected, "write %d", n)
+			require.Equal(t, seed, state(t, id), "a failure at write %d of %d leaves rows, links and version as they were", n, writes)
+		}
+		// The response read after the last write (the bump) fails: the bump goes back with the rest.
+		require.ErrorIs(t, send(&seamFault{failReadAfter: writes}), injected)
+		require.Equal(t, seed, state(t, id), "a failed response read takes the bump with it")
 
 		// A real refusal inside the link phase, after the upsert ran: the upsert goes with it.
 		_, err := change(id, seed.Version, entity.TechCardSeamsChange{
@@ -322,7 +333,6 @@ func TestTechCardSeamChange(t *testing.T) {
 		seed := state(t, id)
 		fresh := edge(key(51), "F#2", "B#2")
 		samePair := edge(key(52), "F#1", "B#1")
-		samePair2 := edge(key(53), "F#1", "B#1")
 		for _, tc := range []struct {
 			name string
 			c    entity.TechCardSeamsChange
@@ -346,9 +356,6 @@ func TestTechCardSeamChange(t *testing.T) {
 				Upsert: []entity.TechCardSeamInput{fresh},
 				Detach: []entity.TechCardSeamLink{link(20, key(50))},
 			}, "detach[0].operation_number operation_not_unique"},
-			{"two new rows of one stored pair", entity.TechCardSeamsChange{
-				Upsert: []entity.TechCardSeamInput{samePair, samePair2},
-			}, "upsert[1].seam_key duplicate_pair"},
 			{"link and detach of one row once the rekey resolved it", entity.TechCardSeamsChange{
 				Upsert: []entity.TechCardSeamInput{samePair},
 				Link:   []entity.TechCardSeamLink{link(10, key(50))},
@@ -418,6 +425,121 @@ func TestTechCardSeamChange(t *testing.T) {
 		require.Equal(t, []string{key(74)}, state(t, id).Links[10])
 	})
 
+	t.Run("rows of one pair and ranges in one request are one row", func(t *testing.T) {
+		id := newCard(t, 10, 20, 30)
+		v0 := state(t, id).Version
+		noted := func(s entity.TechCardSeamInput, note string) entity.TechCardSeamInput { s.Note = note; return s }
+		noteOf := func(seams []entity.TechCardSeam, k string) string {
+			for _, s := range seams {
+				if s.SeamKey == k {
+					return s.Note
+				}
+			}
+			return "<no row>"
+		}
+
+		// Two new rows of one pair on a card without it: the second lands on the first, its link follows.
+		res := mustChange(t, id, v0, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{edge(key(90), "F#1", "B#1"), noted(edge(key(91), "F#1", "B#1"), "second")},
+			Link:   []entity.TechCardSeamLink{link(10, key(91))},
+		})
+		require.Equal(t, []entity.TechCardSeamKeyMap{{Sent: key(90), Stored: key(90)}, {Sent: key(91), Stored: key(90)}}, res.KeyMap)
+		require.Equal(t, "", noteOf(res.Seams, key(90)), "the first row of the pair keeps its content")
+		require.Equal(t, cardState{Version: v0 + 1, Seams: []string{key(90)},
+			Links: map[int][]string{10: {key(90)}, 20: {}, 30: {}}}, state(t, id))
+
+		// A stored row sent again stays the target of a new row of its pair, wherever the new row
+		// stands in the request; the row sent under its own key keeps its own content.
+		res = mustChange(t, id, v0+1, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{noted(edge(key(92), "F#1", "B#1"), "new"), noted(edge(key(90), "F#1", "B#1"), "own")},
+			Link:   []entity.TechCardSeamLink{link(20, key(92))},
+		})
+		require.Equal(t, []entity.TechCardSeamKeyMap{{Sent: key(92), Stored: key(90)}, {Sent: key(90), Stored: key(90)}}, res.KeyMap)
+		require.Equal(t, "own", noteOf(res.Seams, key(90)))
+		require.Equal(t, cardState{Version: v0 + 2, Seams: []string{key(90)},
+			Links: map[int][]string{10: {key(90)}, 20: {key(90)}, 30: {}}}, state(t, id))
+
+		// Two new rows of a stored pair both land on it.
+		res = mustChange(t, id, v0+2, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{edge(key(93), "F#1", "B#1"), edge(key(94), "F#1", "B#1")},
+			Link:   []entity.TechCardSeamLink{link(30, key(94))},
+		})
+		require.Equal(t, []entity.TechCardSeamKeyMap{{Sent: key(93), Stored: key(90)}, {Sent: key(94), Stored: key(90)}}, res.KeyMap)
+		require.Equal(t, cardState{Version: v0 + 3, Seams: []string{key(90)},
+			Links: map[int][]string{10: {key(90)}, 20: {key(90)}, 30: {key(90)}}}, state(t, id))
+
+		// A stored row rewritten to another pair in the same request no longer holds its old pair.
+		res = mustChange(t, id, v0+3, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{edge(key(90), "F#9", "B#9"), edge(key(95), "F#1", "B#1")},
+		})
+		require.Equal(t, []entity.TechCardSeamKeyMap{{Sent: key(90), Stored: key(90)}, {Sent: key(95), Stored: key(95)}}, res.KeyMap)
+		require.Equal(t, sorted(key(90), key(95)), state(t, id).Seams)
+	})
+
+	t.Run("the caps hold on the state after the whole change", func(t *testing.T) {
+		// 400 rows per card: a MIRROR at the cap (a new row in, the replaced row out) lands; a change
+		// that ends one row over does not, and writes nothing.
+		id := newCard(t, 10, 20)
+		const rowCap = entity.TechCardSeamMaxRowsPerCard
+		full := make([]entity.TechCardSeamInput, 0, rowCap)
+		for i := 0; i < rowCap; i++ {
+			full = append(full, edge(key(1000+i), fmt.Sprintf("F#%d", i), "B#1"))
+		}
+		mustChange(t, id, state(t, id).Version, entity.TechCardSeamsChange{
+			Upsert: full,
+			Link:   []entity.TechCardSeamLink{link(10, key(1000)), link(10, key(1001)), link(20, key(1001))},
+		})
+		seed := state(t, id)
+		require.Len(t, seed.Seams, rowCap)
+		res := mustChange(t, id, seed.Version, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{edge(key(2000), "F#new", "B#new")},
+			Link:   []entity.TechCardSeamLink{link(10, key(2000))},
+			Detach: []entity.TechCardSeamLink{link(10, key(1000))},
+		})
+		require.Equal(t, []string{key(1000)}, res.DeletedKeys)
+		require.Len(t, res.Seams, rowCap, "the replaced row went: the card ends at the cap")
+		atCap := state(t, id)
+		for name, c := range map[string]entity.TechCardSeamsChange{
+			"one row more": {Upsert: []entity.TechCardSeamInput{edge(key(2001), "F#more", "B#more")}},
+			// key(1001) keeps its link on step 20, so it stays: still one row over.
+			"a detach that deletes nothing": {
+				Upsert: []entity.TechCardSeamInput{edge(key(2001), "F#more", "B#more")},
+				Detach: []entity.TechCardSeamLink{link(10, key(1001))},
+			},
+		} {
+			_, err := change(id, atCap.Version, c)
+			require.Equal(t, "upsert too_many", violation(t, err), name)
+			require.Equal(t, atCap, state(t, id), "%s: nothing written", name)
+		}
+
+		// 64 links per step: replacing one link on a full step lands; a 65th link does not.
+		id = newCard(t, 10, 20)
+		const linkCap = entity.TechCardOperationMaxSeamKeys
+		rows := make([]entity.TechCardSeamInput, 0, linkCap+2)
+		links := make([]entity.TechCardSeamLink, 0, linkCap)
+		for i := 0; i < linkCap+2; i++ {
+			rows = append(rows, edge(key(3000+i), fmt.Sprintf("F#%d", i), "B#2"))
+			if i < linkCap {
+				links = append(links, link(20, key(3000+i)))
+			}
+		}
+		mustChange(t, id, state(t, id).Version, entity.TechCardSeamsChange{Upsert: rows, Link: links})
+		seed = state(t, id)
+		require.Len(t, seed.Links[20], linkCap)
+		mustChange(t, id, seed.Version, entity.TechCardSeamsChange{
+			Link:   []entity.TechCardSeamLink{link(20, key(3000+linkCap))},
+			Detach: []entity.TechCardSeamLink{link(20, key(3000))},
+		})
+		atCap = state(t, id)
+		require.Len(t, atCap.Links[20], linkCap)
+		require.Equal(t, key(3000+linkCap), atCap.Links[20][linkCap-1], "the new link is appended")
+		_, err := change(id, atCap.Version, entity.TechCardSeamsChange{Link: []entity.TechCardSeamLink{
+			link(10, key(3000+linkCap+1)), link(20, key(3000+linkCap+1)),
+		}})
+		require.Equal(t, "link[1] too_many", violation(t, err))
+		require.Equal(t, atCap, state(t, id), "nothing written")
+	})
+
 	t.Run("the card read returns version, links and rows from one snapshot", func(t *testing.T) {
 		id := newCard(t, 10)
 		v0 := state(t, id).Version
@@ -464,4 +586,62 @@ func TestTechCardSeamChange(t *testing.T) {
 		require.NoError(t, writeEr)
 		require.Equal(t, v0+30, state(t, id).Version)
 	})
+}
+
+// seamFault is where faultyCards' transaction fails: at the failWrite-th write statement (1-based),
+// at the first read once failReadAfter writes ran, or — atCommit — after the whole change ran, in
+// place of its commit. writes counts the write statements of the last attempt.
+type seamFault struct {
+	err           error
+	failWrite     int
+	failReadAfter int
+	atCommit      bool
+	writes        int
+}
+
+// seamFaultDB is the transaction's own handle with seamFault applied. Every store write goes through
+// ExecContext and every list read through QueryxContext (storeutil), so the count needs no SQL text.
+type seamFaultDB struct {
+	dependency.DB
+	f *seamFault
+}
+
+func (d seamFaultDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	d.f.writes++
+	if d.f.writes == d.f.failWrite {
+		return nil, d.f.err
+	}
+	return d.DB.ExecContext(ctx, query, args...)
+}
+
+func (d seamFaultDB) QueryxContext(ctx context.Context, query string, args ...any) (*sqlx.Rows, error) {
+	if d.f.failReadAfter > 0 && d.f.writes >= d.f.failReadAfter {
+		return nil, d.f.err
+	}
+	return d.DB.QueryxContext(ctx, query, args...)
+}
+
+type seamFaultRepo struct {
+	dependency.Repository
+	db dependency.DB
+}
+
+func (r seamFaultRepo) DB() dependency.DB { return r.db }
+
+// faultyCards is the card store over st whose write transaction fails where f says — the fault is
+// the test's, through the store's public constructor; production code carries no hook for it.
+func faultyCards(st *MYSQLStore, f *seamFault) *techcard.Store {
+	tx := func(ctx context.Context, fn func(context.Context, dependency.Repository) error) error {
+		return st.Tx(ctx, func(ctx context.Context, rep dependency.Repository) error {
+			f.writes = 0 // per attempt: Tx may re-run the closure
+			if err := fn(ctx, seamFaultRepo{Repository: rep, db: seamFaultDB{DB: rep.DB(), f: f}}); err != nil {
+				return err
+			}
+			if f.atCommit {
+				return f.err
+			}
+			return nil
+		})
+	}
+	return techcard.New(storeutil.Base{DB: st.db, Now: st.Now}, tx, st.readTx, func() dependency.Repository { return st })
 }

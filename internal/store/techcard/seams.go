@@ -252,8 +252,8 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 	return out, len(in.Seams), nil
 }
 
-// seamWriteOpts are the two ways a restore writes differently from a reviewer (see
-// entity.TechCardSeamsRestore). The zero value is the reviewer's write.
+// seamWriteOpts are the ways a restore or a seam gesture writes differently from a reviewer (see
+// entity.TechCardSeamsRestore, ChangeTechCardSeams). The zero value is the reviewer's write.
 type seamWriteOpts struct {
 	// skipPieceCheck: the snapshot's rows are what the card held, and a row orphaned by a deleted
 	// piece was a legal row then (0411: no FK to the piece) — refusing it would make that snapshot
@@ -261,6 +261,9 @@ type seamWriteOpts struct {
 	skipPieceCheck bool
 	// stale: seam keys written with seamFingerprintStale instead of today's fingerprint.
 	stale map[string]bool
+	// capChecked: the caller checks the per-card cap itself, on the state its whole transaction
+	// leaves (ChangeTechCardSeams deletes and detaches after it writes).
+	capChecked bool
 }
 
 // seamFingerprintStale is stamped on a seam a restore brings back stale. CHAR(64) holds it and no
@@ -321,25 +324,27 @@ func writeTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int,
 		}
 	}
 	// The per-card cap counts what the card WILL hold: existing rows not named here + this call.
-	existing, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-		SELECT seam_key FROM tech_card_seam WHERE tech_card_id = :id`,
-		map[string]any{"id": techCardID})
-	if err != nil {
-		return fmt.Errorf("load seam keys of tech card %d: %w", techCardID, err)
-	}
-	named := make(map[string]bool, len(seams))
-	for _, seam := range seams {
-		named[seam.SeamKey] = true
-	}
-	total := len(seams)
-	for _, k := range existing {
-		if !named[strings.ToUpper(k)] {
-			total++
+	if !opts.capChecked {
+		existing, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+			SELECT seam_key FROM tech_card_seam WHERE tech_card_id = :id`,
+			map[string]any{"id": techCardID})
+		if err != nil {
+			return fmt.Errorf("load seam keys of tech card %d: %w", techCardID, err)
 		}
-	}
-	if total > entity.TechCardSeamMaxRowsPerCard {
-		return entity.NewFieldViolation("seams", "too_many", "",
-			fmt.Sprintf("a card holds at most %d seams; delete orphan or obsolete rows first", entity.TechCardSeamMaxRowsPerCard))
+		named := make(map[string]bool, len(seams))
+		for _, seam := range seams {
+			named[seam.SeamKey] = true
+		}
+		total := len(seams)
+		for _, k := range existing {
+			if !named[strings.ToUpper(k)] {
+				total++
+			}
+		}
+		if total > entity.TechCardSeamMaxRowsPerCard {
+			return entity.NewFieldViolation("seams", "too_many", "",
+				fmt.Sprintf("a card holds at most %d seams; delete orphan or obsolete rows first", entity.TechCardSeamMaxRowsPerCard))
+		}
 	}
 	src, err := loadSeamSources(ctx, db, techCardID)
 	if err != nil {
