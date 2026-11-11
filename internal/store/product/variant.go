@@ -114,7 +114,7 @@ func getVariantByID(ctx context.Context, db dependency.DB, variantID int) (entit
 // own row (a colourway carries no category -- category is a style fact, R4/§14.7).
 func loadColorwayStyleCategoryPath(ctx context.Context, db dependency.DB, colorwayID int) (entity.StyleCategoryPath, error) {
 	row, err := storeutil.QueryNamedOne[entity.StyleCategoryPath](ctx, db, `
-		SELECT sty.top_category_id AS top_category_id, sty.sub_category_id AS sub_category_id, sty.type_id AS type_id
+		SELECT COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id AS sub_category_id, sty.type_id AS type_id
 		FROM product p
 		JOIN tech_card sty ON sty.id = p.style_id
 		WHERE p.id = :id`, map[string]any{"id": colorwayID})
