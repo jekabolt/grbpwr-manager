@@ -51,17 +51,21 @@ func TestOperationReviewGateProtectsFullReplace(t *testing.T) {
 }
 
 func TestOperationReviewDTOValidationAndRoundTrip(t *testing.T) {
-	in := reviewPayload(true, "remapped")
-	card, err := dto.ConvertPbTechCardInsertToEntity(in)
-	if err != nil {
-		t.Fatalf("convert review-marked operation: %v", err)
-	}
-	if len(card.Operations) != 1 || !card.Operations[0].Review.Valid || card.Operations[0].Review.String != "remapped" {
-		t.Fatalf("review did not reach entity: %+v", card.Operations)
-	}
-	out := dto.ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *card}, dto.CostingFx{})
-	if got := out.GetTechCard().GetOperations()[0].GetReview(); got != "remapped" {
-		t.Fatalf("review round-trip = %q, want remapped", got)
+	for _, review := range []string{"remapped", "orphan"} {
+		t.Run(review, func(t *testing.T) {
+			in := reviewPayload(true, review)
+			card, err := dto.ConvertPbTechCardInsertToEntity(in)
+			if err != nil {
+				t.Fatalf("convert review-marked operation: %v", err)
+			}
+			if len(card.Operations) != 1 || !card.Operations[0].Review.Valid || card.Operations[0].Review.String != review {
+				t.Fatalf("review did not reach entity: %+v", card.Operations)
+			}
+			out := dto.ConvertEntityTechCardToPb(&entity.TechCard{TechCardInsert: *card}, dto.CostingFx{})
+			if got := out.GetTechCard().GetOperations()[0].GetReview(); got != review {
+				t.Fatalf("review round-trip = %q, want %s", got, review)
+			}
+		})
 	}
 
 	bad := reviewPayload(true, "invented")

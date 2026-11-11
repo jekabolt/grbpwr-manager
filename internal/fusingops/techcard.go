@@ -491,7 +491,7 @@ func matchAutoFusingOps(stored, incoming *entity.TechCardInsert) autoFusingMatch
 // PrepareTechCardUpdateAssembly restores private automatic identities before the DTO layer performs
 // its first assembly validation. That timing matters when a save deletes a piece: the wire still
 // echoes the server-owned FUSING step with that now-dead input, and the reconciler must be allowed to
-// delete its draft or retain its edited orphan before the graph rejects the stale key.
+// delete it before the graph rejects the stale key.
 func PrepareTechCardUpdateAssembly(stored, incoming *entity.TechCardInsert) {
 	if stored == nil || incoming == nil {
 		return

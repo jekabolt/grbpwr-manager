@@ -337,8 +337,7 @@ func reconcileFusingOps(ctx context.Context, db dependency.DB, techCardID int, s
 	for _, operationID := range plan.DeletedIDs {
 		if err := storeutil.ExecNamed(ctx, db,
 			`DELETE FROM tech_card_operation
-			 WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing'
-			   AND (draft = 1 OR (auto_fusing_line_key IS NULL AND auto_fusing_piece_key IS NULL))`,
+			 WHERE tech_card_id = :tech_card_id AND id = :id AND operation_type = 'fusing'`,
 			map[string]any{"tech_card_id": techCardID, "id": operationID}); err != nil {
 			return fmt.Errorf("delete reconciled fusing operation %d: %w", operationID, err)
 		}

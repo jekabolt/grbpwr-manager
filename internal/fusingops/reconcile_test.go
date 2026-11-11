@@ -85,15 +85,15 @@ func TestReconcileFusingOps(t *testing.T) {
 			}},
 		},
 		{
-			name:   "grouped legacy step left without pieces: draft deleted, edited orphaned",
+			name:   "grouped legacy step left without pieces is deleted whether draft or edited",
 			pieces: []Piece{{ID: 11}},
 			operations: []Operation{
 				{ID: 5, Kind: KindLegacy, Draft: true, PieceIDs: []int{11}},
 				{ID: 6, Kind: KindLegacy, PieceIDs: []int{11}},
 			},
 			want: Plan{
-				Operations: []Operation{{ID: 6, Kind: KindAuto, Review: ReviewOrphan}},
-				DeletedIDs: []int{5},
+				Operations: []Operation{},
+				DeletedIDs: []int{5, 6},
 			},
 		},
 		{
@@ -132,28 +132,29 @@ func TestReconcileFusingOps(t *testing.T) {
 			}},
 		},
 		{
-			name:   "a per-piece step without its piece: draft deleted, edited orphaned, a second claimant orphaned",
+			name:   "a per-piece step without its piece is deleted whether draft edited duplicate or orphan",
 			pieces: []Piece{{ID: 11, Fused: true}, {ID: 12}},
 			operations: []Operation{
 				{ID: 1, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
 				{ID: 2, Kind: KindAuto, Owner: 11, PieceIDs: []int{11}},
 				{ID: 3, Kind: KindAuto, Owner: 12, Draft: true, PieceIDs: []int{12}},
-				{ID: 4, Kind: KindAuto, Owner: 0, PieceIDs: []int{}},
+				{ID: 4, Kind: KindAuto, Owner: 0, Review: ReviewOrphan, PieceIDs: []int{}},
 			},
 			want: Plan{
 				Operations: []Operation{
 					{ID: 1, Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}},
-					{ID: 2, Kind: KindAuto, Owner: 11, Review: ReviewOrphan},
-					{ID: 4, Kind: KindAuto, Review: ReviewOrphan},
 				},
-				DeletedIDs: []int{3},
+				DeletedIDs: []int{2, 3, 4},
 			},
 		},
 		{
-			name:       "an orphan whose piece is fused again reclaims it",
+			name:       "an existing orphan is deleted instead of reclaimed",
 			pieces:     []Piece{{ID: 11, Fused: true}},
 			operations: []Operation{{ID: 2, Kind: KindAuto, Owner: 11, Review: ReviewOrphan}},
-			want:       Plan{Operations: []Operation{{ID: 2, Kind: KindAuto, Owner: 11, PieceIDs: []int{11}}}},
+			want: Plan{
+				Operations: []Operation{{Kind: KindAuto, Owner: 11, Draft: true, PieceIDs: []int{11}}},
+				DeletedIDs: []int{2},
+			},
 		},
 		{
 			name:   "automatic input is removed from a manual step while its unit input keeps it alive",
@@ -251,7 +252,7 @@ func assertConverged(t *testing.T, card *entity.TechCardInsert) {
 	if fusingOpsNeedReconcile(card) {
 		t.Fatalf("reconciled card still needs a reconcile: %#v", card.Operations)
 	}
-	before := append([]entity.TechCardOperation(nil), card.Operations...)
+	before := slices.Clone(card.Operations)
 	issues := append([]entity.TechCardIssue(nil), card.Issues...)
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("repeat ReconcileTechCard() error = %v", err)
@@ -547,7 +548,7 @@ func TestWriteModelResyncsMaterialWhenThePieceChangesInterlining(t *testing.T) {
 	})
 }
 
-func TestUnfusedPieceOrphansEditedStepAndRefusingReclaimsIt(t *testing.T) {
+func TestUnfusedPieceDeletesEditedStepAndRefusingCreatesDraft(t *testing.T) {
 	step := storedAutoFusing(10, "INTERLINING-A", "FRONT")
 	step.Draft = false
 	step.PieceIds, step.BomIds = nil, nil
@@ -556,10 +557,8 @@ func TestUnfusedPieceOrphansEditedStepAndRefusingReclaimsIt(t *testing.T) {
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("ReconcileTechCard() error = %v", err)
 	}
-	orphan := card.Operations[0]
-	if len(card.Operations) != 2 || orphan.Review.String != ReviewOrphan || orphan.AutoFusingPieceKey != autoKey("FRONT") ||
-		len(pieceInputKeys(&orphan, nil)) != 0 || !reflect.DeepEqual(orphan.BomLineKeys, []string{"INTERLINING-A"}) {
-		t.Fatalf("operations = %#v, want an orphan keeping its key and live link, without the piece", card.Operations)
+	if len(card.Operations) != 1 || card.Operations[0].OperationType != entity.OpTypeMachine {
+		t.Fatalf("operations = %#v, want the automatic step deleted", card.Operations)
 	}
 	assertConverged(t, card)
 
@@ -567,14 +566,14 @@ func TestUnfusedPieceOrphansEditedStepAndRefusingReclaimsIt(t *testing.T) {
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("ReconcileTechCard() error = %v", err)
 	}
-	if len(card.Operations) != 2 || card.Operations[0].Draft {
-		t.Fatalf("operations = %#v, want the orphan reclaimed, no new step", card.Operations)
+	if len(card.Operations) != 2 || !card.Operations[0].Draft {
+		t.Fatalf("operations = %#v, want a fresh draft step", card.Operations)
 	}
 	assertPerPieceStep(t, card.Operations[0], "FRONT", "INTERLINING-A", "INTERLINING-A")
 	assertConverged(t, card)
 }
 
-func TestDeletedInterliningKeepsEditedGroupedStepAsLinklessOrphan(t *testing.T) {
+func TestDeletedInterliningDeletesEditedGroupedStep(t *testing.T) {
 	grouped := legacyGroupedFusing(10, "DELETED-INTERLINING")
 	grouped.Draft = false
 	grouped.PieceIds, grouped.BomIds = nil, nil
@@ -582,25 +581,19 @@ func TestDeletedInterliningKeepsEditedGroupedStepAsLinklessOrphan(t *testing.T) 
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("ReconcileTechCard() error = %v", err)
 	}
-	if len(card.Operations) != 1 || card.Operations[0].Review.String != ReviewOrphan ||
-		len(card.Operations[0].BomLineKeys) != 0 || card.Operations[0].AutoFusingLineKey != autoKey("DELETED-INTERLINING") {
-		t.Fatalf("deleted-line operation was not retained as a linkless orphan: %#v", card.Operations)
+	if len(card.Operations) != 0 {
+		t.Fatalf("deleted-line operation survived: %#v", card.Operations)
 	}
+	assertConverged(t, card)
 
-	// A human may acknowledge the review. The private snapshot, not that clearable mark, keeps the
-	// step from being adopted as a newly fused piece's step.
-	card.Operations[0].Review = sql.NullString{}
 	card.Pieces = []entity.TechCardPiece{{LineKey: "FRONT", Fused: true}}
 	if err := ReconcileTechCard(card); err != nil {
 		t.Fatalf("second ReconcileTechCard() error = %v", err)
 	}
-	if len(card.Operations) != 2 {
-		t.Fatalf("operations = %#v, want a new step for FRONT plus the orphan", card.Operations)
+	if len(card.Operations) != 1 || !card.Operations[0].Draft {
+		t.Fatalf("operations = %#v, want a fresh step for FRONT", card.Operations)
 	}
 	assertPerPieceStep(t, card.Operations[0], "FRONT", "")
-	if card.Operations[1].Review.String != ReviewOrphan || card.Operations[1].Draft {
-		t.Fatalf("edited orphan was re-adopted: %#v", card.Operations[1])
-	}
 	assertConverged(t, card)
 }
 
