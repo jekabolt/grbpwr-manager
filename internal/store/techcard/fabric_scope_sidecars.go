@@ -75,10 +75,19 @@ func patternHistoryName(row patternHistoryRow) string {
 	return "unnamed sheet"
 }
 
-// reconcileMovedFabricScopeSidecars moves scope-derived rows only when every sheet leaving an old
-// scope names one destination and the old scope has no sheets left. Existing destination rows win:
-// they describe the destination's already-current sheet set, while the source fingerprint cannot.
-// A split has no truthful one-row destination, so its old aggregate is discarded.
+// reconcileMovedFabricScopeSidecars carries scope-derived rows (size index, measured areas) along an
+// UNAMBIGUOUS sheet move: every sheet leaving the old scope names one destination, the old scope has
+// no sheets left, and the destination holds no rows of that table yet. Every other shape — a split
+// into several scopes, a merge into a scope that already has rows — leaves the rows PARKED under the
+// old key. Nothing here deletes: a card save is not a measurement, and an operator re-sorting the BOM
+// back must get the measured set back with it (REPORT §2.2).
+//
+// WHY A PARKED SET CANNOT POSE AS ANOTHER SLOT'S DATA. A dead key is read by no line at all
+// (FabricScopeReadKeys lists live keys only). A key that is live again is compared against the
+// fingerprint the server computes from the sheets that key addresses TODAY (scopeFingerprints,
+// PatternSheetFingerprint), and both fingerprints cover sheet identity (line_key, url, version) — the
+// area one also the block→piece links. So a parked set reads fresh only when exactly the inputs it was
+// measured from address that key again, which is the restore; any other sheet set reads it as stale.
 func reconcileMovedFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
 	before []patternHistoryRow, beforeLines []entity.RollGoodsLine,
 	after []patternHistoryRow, afterLines []entity.RollGoodsLine) error {
@@ -128,9 +137,7 @@ func reconcileMovedFabricScopeSidecars(ctx context.Context, db dependency.DB, te
 			continue
 		}
 		if len(m.to) != 1 {
-			if _, err := deleteFabricScopeSidecars(ctx, db, techCardID, m.from); err != nil {
-				return err
-			}
+			// A split has no truthful single destination: park, never discard.
 			continue
 		}
 		var target string
@@ -143,6 +150,9 @@ func reconcileMovedFabricScopeSidecars(ctx context.Context, db dependency.DB, te
 	return nil
 }
 
+// rekeyFabricScopeSidecars refiles one scope's rows under another key, table by table, and only into
+// a vacant destination. An occupied destination wins — it describes that scope's own measurement —
+// and the source stays parked under its old key instead of being discarded.
 func rekeyFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int, from, to string) error {
 	for _, table := range []string{"tech_card_pattern_size_index", "tech_card_piece_area"} {
 		targetRows, err := storeutil.QueryCountNamed(ctx, db,
@@ -152,11 +162,6 @@ func rekeyFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID 
 			return fmt.Errorf("count %s target scope %q: %w", table, to, err)
 		}
 		if targetRows > 0 {
-			if _, err := storeutil.ExecNamedRows(ctx, db,
-				fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :card AND scope_key = :scope`, table),
-				map[string]any{"card": techCardID, "scope": from}); err != nil {
-				return fmt.Errorf("discard %s source scope %q: %w", table, from, err)
-			}
 			continue
 		}
 		if _, err := storeutil.ExecNamedRows(ctx, db,
@@ -178,9 +183,10 @@ type fabricScopeSidecarCleanup struct {
 // (entity.LiveFabricScopeKey). Such rows are not dead: a sheet bound to line L keeps naming L after L
 // gets purpose «main», reconcileMovedFabricScopeSidecars sees no identity move (main → main), and the
 // rows written under L before the sort (or by an older client publishing the raw binding) would
-// otherwise be deleted as a dead bucket. The destination wins when it already holds rows — the same
-// rule as a merge in reconcileMovedFabricScopeSidecars. Sources are visited in sorted order so two raw
-// keys folding into one scope resolve deterministically.
+// otherwise sit in a bucket no reader asks for. The destination wins when it already holds rows — the
+// same rule as a merge in reconcileMovedFabricScopeSidecars — and the raw source then stays parked
+// under its own key (un-sorting the line makes it live again). Sources are visited in sorted order so
+// two raw keys folding into one scope resolve deterministically. Never deletes.
 func adoptRawLineFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
 	lines []entity.RollGoodsLine) error {
 	targets := make(map[string]string)
@@ -216,6 +222,11 @@ func adoptRawLineFabricScopeSidecars(ctx context.Context, db dependency.DB, tech
 
 // cleanupDeadFabricScopeSidecars first adopts raw-line buckets into their line's live scope, then
 // deletes only what still resolves to nothing on the card.
+//
+// ARCHIVE IMPORT ONLY (import.go): the card is brand new and the imported graph is authoritative, so
+// a bucket nothing on it resolves to has no earlier state to be restored into. A card save never
+// calls this — UpdateTechCard parks such buckets (adoptRawLineFabricScopeSidecars only), because a
+// purpose re-sort that is undone must bring its measurements back.
 func cleanupDeadFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
 	lines []entity.RollGoodsLine) (fabricScopeSidecarCleanup, error) {
 	var out fabricScopeSidecarCleanup
@@ -248,27 +259,6 @@ func cleanupDeadFabricScopeSidecars(ctx context.Context, db dependency.DB, techC
 			}
 			*target.rows += deleted
 		}
-	}
-	return out, nil
-}
-
-func deleteFabricScopeSidecars(ctx context.Context, db dependency.DB, techCardID int,
-	scope string) (fabricScopeSidecarCleanup, error) {
-	var out fabricScopeSidecarCleanup
-	for _, target := range []struct {
-		table string
-		rows  *int64
-	}{
-		{"tech_card_pattern_size_index", &out.SizeIndexRows},
-		{"tech_card_piece_area", &out.PieceAreaRows},
-	} {
-		deleted, err := storeutil.ExecNamedRows(ctx, db,
-			fmt.Sprintf(`DELETE FROM %s WHERE tech_card_id = :card AND scope_key = :scope`, target.table),
-			map[string]any{"card": techCardID, "scope": scope})
-		if err != nil {
-			return out, fmt.Errorf("delete %s scope %q: %w", target.table, scope, err)
-		}
-		*target.rows += deleted
 	}
 	return out, nil
 }

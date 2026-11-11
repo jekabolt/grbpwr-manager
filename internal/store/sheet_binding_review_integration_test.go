@@ -110,13 +110,15 @@ func TestSheetBindingRawLineSidecarsFollowTheLinesPurpose(t *testing.T) {
 	require.Equal(t, "321.00", area, "the piece area filed under the raw line key must survive the save")
 
 	// A raw-key row arriving next to an existing purpose set loses to it (the merge rule): the
-	// destination is the newer, scope-wide measurement.
+	// destination is the newer, scope-wide measurement, and the raw source stays PARKED under L —
+	// un-sorting L makes that key live again, so a save must not discard it.
 	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_piece_area
 		(tech_card_id, scope_key, piece_line_key, area_cm2, sheet_fingerprint, parsed_by)
 		VALUES (?, ?, ?, 999, ?, 'test')`, cardID, lineL, pieceKey, fingerprint)
 	require.NoError(t, err)
 	require.NoError(t, T.UpdateTechCard(ctx, cardID, card("main"), lock))
-	require.Zero(t, sheetBindingScopeRows(t, ctx, "tech_card_piece_area", cardID, lineL))
+	require.Equal(t, 1, sheetBindingScopeRows(t, ctx, "tech_card_piece_area", cardID, lineL),
+		"a raw-key source next to an occupied destination is parked, not deleted")
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT area_cm2 FROM tech_card_piece_area
 		WHERE tech_card_id = ? AND scope_key = 'main'`, cardID).Scan(&area))
 	require.Equal(t, "321.00", area, "an existing destination set wins over a raw-key source")
@@ -139,7 +141,8 @@ func TestSheetBindingRawLineSidecarsFollowTheLinesPurpose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "main", res.ScopeKey)
-	require.Zero(t, sheetBindingScopeRows(t, ctx, "tech_card_piece_area", cardID, lineL))
+	// The explicit write replaces «main» only; the parked raw-key bucket is not its scope.
+	require.Equal(t, 1, sheetBindingScopeRows(t, ctx, "tech_card_piece_area", cardID, lineL))
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT area_cm2 FROM tech_card_piece_area
 		WHERE tech_card_id = ? AND scope_key = 'main'`, cardID).Scan(&area))
 	require.Equal(t, "123.00", area)

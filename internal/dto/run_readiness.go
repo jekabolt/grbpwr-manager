@@ -1043,15 +1043,15 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 		state, tokens := patternSizeIndexStatusForScope(sc, b.in.PatternSizeIndex)
 		switch state {
 		case entity.PatternSizeIndexMissing:
-			notes = append(notes, fmt.Sprintf("%s: sizes in the files were never checked — press “⌕ sizes in the files” on the patterns tab", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: sizes in the files were never checked — press “⌕ sizes in the files” on the patterns tab", sc.label))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		case entity.PatternSizeIndexStale:
-			notes = append(notes, fmt.Sprintf("%s: the files changed after the check — the parse is stale", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: the files changed after the check — the parse is stale", sc.label))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		case entity.PatternSizeIndexUngraded:
-			notes = append(notes, fmt.Sprintf("%s: the files carry no size encoding (looks like one size per file) — there is no verdict", sc.key))
+			notes = append(notes, fmt.Sprintf("%s: the files carry no size encoding (looks like one size per file) — there is no verdict", sc.label))
 			worst = worseReadiness(worst, entity.RunReadinessUnknown)
 			continue
 		}
@@ -1062,7 +1062,7 @@ func (b *runReadinessBuilder) sizesInDxfRow(add func(entity.RunReadinessFinding)
 			}
 		}
 		if len(missing) > 0 {
-			notes = append(notes, fmt.Sprintf("%s: the files do not contain %s", sc.key, strings.Join(missing, ", ")))
+			notes = append(notes, fmt.Sprintf("%s: the files do not contain %s", sc.label, strings.Join(missing, ", ")))
 			worst = worseReadiness(worst, entity.RunReadinessBlocker)
 		}
 	}
@@ -1101,7 +1101,28 @@ func worseReadiness(a, b entity.RunReadinessSeverity) entity.RunReadinessSeverit
 type patternScope struct {
 	key       string
 	legacyKey string
-	sheets    []entity.PatternSheetRef
+	// label is what an operator reads for this scope (patternScopeLabel): key and legacyKey address
+	// the index, and a line-scoped key is a ULID that is never shown.
+	label  string
+	sheets []entity.PatternSheetRef
+}
+
+// patternScopeLabel names a fabric scope in readiness text. A purpose is its own word; a line-scoped
+// scope (an interlining line, a line not sorted yet) is the line's material name, never its key.
+func patternScopeLabel(key string, lines []entity.RollGoodsLine) string {
+	key = strings.TrimSpace(key)
+	for _, l := range lines {
+		if strings.EqualFold(strings.TrimSpace(l.LineKey), key) {
+			if name := strings.TrimSpace(l.Name); name != "" {
+				return name
+			}
+			return "unnamed fabric"
+		}
+	}
+	if key == strings.ToLower(key) {
+		return key
+	}
+	return "fabric no longer in BOM"
 }
 
 // patternSizeIndexStatusForScope treats the line and legacy purpose indexes as alternative complete
@@ -1164,7 +1185,7 @@ func patternScopesOfCard(card *entity.TechCard) []patternScope {
 	}
 	out := make([]patternScope, 0, len(order))
 	for _, k := range order {
-		out = append(out, patternScope{key: k, legacyKey: legacyByKey[k], sheets: byKey[k]})
+		out = append(out, patternScope{key: k, legacyKey: legacyByKey[k], label: patternScopeLabel(k, lines), sheets: byKey[k]})
 	}
 	return out
 }
@@ -1649,13 +1670,13 @@ func TechCardPatternSizeVerdict(card *entity.TechCard, index map[string]entity.P
 		state, tokens := patternSizeIndexStatusForScope(sc, index)
 		switch state {
 		case entity.PatternSizeIndexMissing:
-			reasons = append(reasons, fmt.Sprintf("%s: sizes in the files were never checked", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: sizes in the files were never checked", sc.label))
 			continue
 		case entity.PatternSizeIndexStale:
-			reasons = append(reasons, fmt.Sprintf("%s: the files changed after the check", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: the files changed after the check", sc.label))
 			continue
 		case entity.PatternSizeIndexUngraded:
-			reasons = append(reasons, fmt.Sprintf("%s: the files carry no size encoding", sc.key))
+			reasons = append(reasons, fmt.Sprintf("%s: the files carry no size encoding", sc.label))
 			continue
 		}
 		usable++

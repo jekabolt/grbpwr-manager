@@ -405,6 +405,20 @@ func TestFabricPurposeMigrationReplay(t *testing.T) {
 	run("up (replayed)", up)
 	require.Greater(t, indexCount("uniq_tcpdb_card_scope_block"), 0, "up is back")
 	require.Equal(t, 0, indexCount("uniq_tcpdb_card_slot_block"), "and the line unique is gone again")
+
+	// Down dropped the purpose columns and Up re-created them with 0267's vocabulary, so the CHECKs
+	// that 0430 widened by «binding» are narrow again. Re-apply 0430 (guarded, so a no-op when
+	// already wide) to hand the rest of the package the schema the migration chain leaves.
+	body, err = os.ReadFile("sql/0430_bom_purpose_binding.sql")
+	require.NoError(t, err)
+	widen, _ := splitMigration(t, string(body))
+	run("0430 up", widen)
+	var narrow int
+	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
+		WHERE CONSTRAINT_SCHEMA = DATABASE()
+		  AND CONSTRAINT_NAME IN ('chk_tcsp_fabric_purpose', 'chk_tcpdb_fabric_purpose')
+		  AND CHECK_CLAUSE NOT LIKE '%binding%'`).Scan(&narrow))
+	require.Zero(t, narrow, "the purpose CHECKs carry «binding» again")
 }
 
 // splitMigration returns the Up and Down statement lists of a sql-migrate file. Comments are

@@ -519,10 +519,11 @@ func sizedAreaPieceKeys(ctx context.Context, db dependency.DB, techCardID int) (
 // livePieceKeysOfSizedAreas keeps only the sized areas whose scope STILL resolves to cloth on the
 // card, and returns the pieces they belong to.
 //
-// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. SaveTechCard now rekeys one-destination
-// scope moves and deletes dead buckets in the SAME transaction as the BOM edit. Rows predating that
-// hygiene can still exist, though, and this guard must not turn one into a permanent UNI blocker:
-// a dead scope cannot be replaced through the side RPC and the operator has no direct delete action.
+// ОТКАЗЫВАТЬ МОЖНО ТОЛЬКО ТЕМ, ЧТО ЧЕЛОВЕК В СОСТОЯНИИ ПОЧИНИТЬ. SaveTechCard rekeys one-destination
+// scope moves in the SAME transaction as the BOM edit, but it never deletes: a split, a merge into an
+// occupied scope and a bucket the BOM no longer exposes stay PARKED under their old key so a re-sort
+// back restores them. This guard must not turn a parked bucket into a permanent UNI blocker: a dead
+// scope cannot be replaced through the side RPC and the operator has no direct delete action.
 //
 // А главное — такие строки ничего и не ломают: entity.AreaEstimateNorm спрашивает площади по ключу
 // ЖИВОЙ строки (dto.slotAreaEstimate считает его как EffectiveFabricScopeKey(строка)),
