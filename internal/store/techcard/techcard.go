@@ -715,7 +715,7 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// sorted into a purpose belong to that purpose. File them there before anything below reads the
 	// sidecars: the UNI guard (upsertTechCardPieces) reads them by live scope and the scope-move
 	// reconcile moves them by live scope, so both would otherwise act on a card missing the rows that
-	// the closing cleanup adopts (and the guard could let a sized row land on a piece marked UNI).
+	// the closing adopt files (and the guard could let a sized row land on a piece marked UNI).
 	if err := adoptRawLineFabricScopeSidecars(ctx, rep.DB(), id, priorRollGoods); err != nil {
 		return nil, err
 	}
@@ -848,14 +848,17 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			return nil, err
 		}
 	}
-	// Derived scope data follows a one-destination sheet move. A merge keeps an already-existing
-	// target set; a split has no honest single destination and drops the old derived set. Finally,
-	// remove every bucket the prospective BOM no longer exposes. All of this is in the document tx.
+	// Derived scope data (size index, measured areas) follows a one-destination sheet move into a
+	// vacant scope, and raw-line buckets of lines this save sorted follow their line. Everything else
+	// — a split, a merge into a scope that already has rows, a bucket the prospective BOM no longer
+	// exposes — stays PARKED under its old key: a card save or a purpose re-sort never deletes these
+	// rows, so sorting back restores them. Readers compare fingerprints, so a parked set never reads
+	// as current data of another slot (see reconcileMovedFabricScopeSidecars). All in the document tx.
 	if err := reconcileMovedFabricScopeSidecars(ctx, rep.DB(), id, priorPatterns, priorRollGoods,
 		prospectivePatterns, prospectiveRollGoods); err != nil {
 		return nil, err
 	}
-	if _, err := cleanupDeadFabricScopeSidecars(ctx, rep.DB(), id, prospectiveRollGoods); err != nil {
+	if err := adoptRawLineFabricScopeSidecars(ctx, rep.DB(), id, prospectiveRollGoods); err != nil {
 		return nil, err
 	}
 	// A card that goes RELEASED this save is frozen the moment this transaction commits, and the

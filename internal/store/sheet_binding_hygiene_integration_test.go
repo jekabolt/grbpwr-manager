@@ -122,7 +122,8 @@ func TestSheetBindingSaveInvariantAndSidecarHygiene(t *testing.T) {
 	require.Equal(t, "live_binding_required", violation.Reason)
 
 	// Seed both sidecars under MAIN. LINING already has a piece-area row, so the move exercises both
-	// policies: size-index rekeys, while piece-area keeps the target and discards the source.
+	// policies: size-index rekeys into the vacant LINING, while piece-area keeps the occupied target
+	// and leaves the source PARKED under MAIN — a card save never deletes a measurement.
 	fingerprint := strings.Repeat("a", 64)
 	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_pattern_size_index
 		(tech_card_id, scope_key, sheet_fingerprint, size_tokens, parsed_by)
@@ -151,7 +152,7 @@ func TestSheetBindingSaveInvariantAndSidecarHygiene(t *testing.T) {
 	require.Equal(t, "999.00", area, "an existing target measurement wins over the moved source")
 	require.NoError(t, testDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM tech_card_piece_area
 		WHERE tech_card_id = ? AND scope_key = 'main'`, cardID).Scan(&n))
-	require.Zero(t, n)
+	require.Equal(t, 1, n, "the moved source stays parked under its old key, not discarded")
 
 	// An orphaned stored sheet used to make these side RPCs accept its dead bucket as if it were live.
 	_, err = testDB.ExecContext(ctx,
@@ -169,8 +170,9 @@ func TestSheetBindingSaveInvariantAndSidecarHygiene(t *testing.T) {
 	require.ErrorAs(t, err, &violation)
 	require.Equal(t, "scope_not_live", violation.Reason)
 
-	// The next successful card save repairs the sheet and removes unrelated dead buckets in the same
-	// transaction, even though their scope names no current sheet move.
+	// The next successful card save repairs the sheet and leaves the dead buckets PARKED: a save is not
+	// a measurement, and a re-sort back must find them. They stay unreadable (no live line asks for
+	// «mesh») and unwritable (the side RPCs above refuse the dead key).
 	_, err = testDB.ExecContext(ctx, `INSERT INTO tech_card_pattern_size_index
 		(tech_card_id, scope_key, sheet_fingerprint, size_tokens, parsed_by)
 		VALUES (?, 'mesh', ?, '[]', 'test')`, cardID, fingerprint)
@@ -184,5 +186,5 @@ func TestSheetBindingSaveInvariantAndSidecarHygiene(t *testing.T) {
 		(SELECT COUNT(*) FROM tech_card_pattern_size_index WHERE tech_card_id = ? AND scope_key = 'mesh') +
 		(SELECT COUNT(*) FROM tech_card_piece_area WHERE tech_card_id = ? AND scope_key = 'mesh')`,
 		cardID, cardID).Scan(&n))
-	require.Zero(t, n)
+	require.Equal(t, 2, n, "a card save must not delete dead-bucket sidecars")
 }
