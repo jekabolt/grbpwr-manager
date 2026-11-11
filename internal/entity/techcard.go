@@ -4807,6 +4807,10 @@ type TechCardInsert struct {
 	// admit instead of refusing it, on the order the FUSING reconciliation leaves. A restore must not
 	// fail on what happened to the folds since the snapshot.
 	RestoreFolds bool `db:"-"`
+	// RestorePieceFolds is set by RestoreTechCardSnapshot only: the snapshot's fold rows, of which the
+	// store re-creates those of the pieces holding no fold today, before the step links settle (see
+	// PlanTechCardPieceFoldsRestore). nil (every other save, a snapshot without folds) writes none.
+	RestorePieceFolds *TechCardPieceFoldsRestore `db:"-"`
 
 	// CutStrips is the card's cut-to-length strips (0449). On a write they are stored only with
 	// CutStripsAware. Without the flag the RPC layer fills them from the stored card, so that a step's

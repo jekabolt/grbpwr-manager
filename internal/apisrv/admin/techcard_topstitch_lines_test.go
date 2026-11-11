@@ -227,7 +227,7 @@ func TestSnapshotThreadPerMmPresenceDistinguishesClearFromPreserve(t *testing.T)
 
 	newFrozen, err := decodeTechCardSnapshot(row)
 	require.NoError(t, err)
-	newPayload, err := restoreTechCardPayload(newFrozen.GetTechCard(), now, current)
+	newPayload, err := restoreTechCardPayload(newFrozen.GetTechCard(), now, current, nil)
 	require.NoError(t, err)
 	newEntity, err := dto.ConvertPbTechCardInsertToEntityPrepared(newPayload, func(tc *entity.TechCardInsert) {
 		entity.CarryStoredThreadPerMm(tc, &now.TechCardInsert)
@@ -249,7 +249,7 @@ func TestSnapshotThreadPerMmPresenceDistinguishesClearFromPreserve(t *testing.T)
 	oldRow.Snapshot = string(oldRaw)
 	oldFrozen, err := decodeTechCardSnapshot(&oldRow)
 	require.NoError(t, err)
-	oldPayload, err := restoreTechCardPayload(oldFrozen.GetTechCard(), now, current)
+	oldPayload, err := restoreTechCardPayload(oldFrozen.GetTechCard(), now, current, nil)
 	require.NoError(t, err)
 	require.Nil(t, oldPayload.GetBomItems()[0].ThreadPerMm, "a pre-0464 snapshot stays omitted")
 	oldEntity, err := dto.ConvertPbTechCardInsertToEntityPrepared(oldPayload, func(tc *entity.TechCardInsert) {

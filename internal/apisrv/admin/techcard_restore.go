@@ -43,6 +43,11 @@ const restoreCarryDigest = "restore-carry"
 // (restoreSeamsFromSnapshot) and the store brings the table to it in the same transaction, through
 // the seam RPCs' own write and delete. Still outside lock_version and every digest.
 //
+// FOLDS. tech_card_piece_fold is not part of the card payload either, and a save that dropped a piece
+// deleted its folds. The save carries the snapshot's fold rows (restorePieceFoldsFromSnapshot); the
+// store re-creates those of the pieces that hold no fold today, before the steps' fold links settle,
+// so the snapshot's links to them survive. A piece that holds folds today keeps exactly those.
+//
 // SCOPE SIDECARS. They are likewise absent from the snapshot payload. UpdateTechCardTx applies its
 // normal prospective-graph rekey/dead-scope cleanup after restoring the BOM and sheets, so current
 // size-index and piece-area rows cannot remain filed under a scope the restored card no longer has.
@@ -111,7 +116,8 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	}
 	carryStoredTopstitchLines := !frozen.GetTechCard().GetTopstitchLinesAware() &&
 		sameOperationsIgnoringTopstitch(frozen.GetTechCard(), current)
-	in, err := restoreTechCardPayload(frozen.GetTechCard(), stored, current)
+	foldsBack := restorePieceFoldsFromSnapshot(ctx, id, frozen, authsrv.GetAdminUsername(ctx))
+	in, err := restoreTechCardPayload(frozen.GetTechCard(), stored, current, foldsBack)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +147,7 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 	tc.SnapshotChangedPaths = []string{"restored " + snap.CreatedAt.UTC().Format("02.01 15:04")}
 	tc.SnapshotPinned = true
 	tc.RestoreFolds = true
+	tc.RestorePieceFolds = foldsBack
 	if tc.RestoreSeams, err = restoreSeamsFromSnapshot(id, snap.Snapshot, frozen, authsrv.GetAdminUsername(ctx)); err != nil {
 		return nil, err
 	}
@@ -212,6 +219,69 @@ func restoreSeamsFromSnapshot(techCardID int, raw string, frozen *pb_common.Tech
 	return out, nil
 }
 
+// restorePieceFoldsFromSnapshot is the snapshot's fold list the restore may bring back, or nil when it
+// has none. Unlike the seams, absent and empty need no telling apart: protojson omits an empty list,
+// and both a snapshot older than folds and a card that had none bring nothing back — a restore never
+// deletes folds. Each row is validated on its own by the rules of UpsertTechCardPieceFolds; one that
+// does not validate is skipped, never fatal, so the snapshot stays restorable.
+func restorePieceFoldsFromSnapshot(ctx context.Context, techCardID int, frozen *pb_common.TechCard, by string) *entity.TechCardPieceFoldsRestore {
+	rows := frozen.GetPieceFolds()
+	if len(rows) == 0 {
+		return nil
+	}
+	out := &entity.TechCardPieceFoldsRestore{Stale: map[string]bool{}}
+	invalid := 0
+	for _, row := range rows {
+		in, err := dto.TechCardPieceFoldsWriteFromPb(techCardID, []*pb_common.TechCardPieceFold{row}, by)
+		if err != nil {
+			invalid++
+			continue
+		}
+		fold := in.Folds[0]
+		out.Folds = append(out.Folds, fold)
+		if row.GetStale() {
+			out.Stale[fold.FoldKey] = true
+		}
+	}
+	if invalid > 0 {
+		slog.Default().WarnContext(ctx, "restore skips snapshot folds that do not validate",
+			slog.Int("tech_card_id", techCardID), slog.Int("skipped", invalid))
+	}
+	if len(out.Folds) == 0 {
+		return nil
+	}
+	return out
+}
+
+// restoredPieceFoldsPlan predicts the store's plan (insertRestoredPieceFolds) from what the handler
+// sees before the write: the payload's pieces, and today's rows less those of the pieces this save
+// deletes — the store plans after that drop. The store decides again on what it holds.
+func restoredPieceFoldsPlan(back *entity.TechCardPieceFoldsRestore, in *pb_common.TechCardInsert, stored *entity.TechCard) []entity.TechCardPieceFoldInput {
+	if back == nil || len(back.Folds) == 0 {
+		return nil
+	}
+	pieces := make([]string, 0, len(in.GetPieces()))
+	kept := make(map[string]bool, len(in.GetPieces()))
+	for _, p := range in.GetPieces() {
+		pieces = append(pieces, p.GetLineKey())
+		kept[strings.ToUpper(strings.TrimSpace(p.GetLineKey()))] = true
+	}
+	dropped := map[string]bool{}
+	for i := range stored.Pieces {
+		if k := strings.ToUpper(strings.TrimSpace(stored.Pieces[i].LineKey)); k != "" && !kept[k] {
+			dropped[k] = true
+		}
+	}
+	held := make([]entity.TechCardPieceFoldHeld, 0, len(stored.PieceFolds))
+	for _, f := range stored.PieceFolds {
+		if !dropped[strings.ToUpper(strings.TrimSpace(f.PieceLineKey))] {
+			held = append(held, entity.TechCardPieceFoldHeld{FoldKey: f.FoldKey, PieceLineKey: f.PieceLineKey})
+		}
+	}
+	plan, _ := entity.PlanTechCardPieceFoldsRestore(back.Folds, pieces, held)
+	return plan
+}
+
 // restoreCutStripsFromSnapshot moves the snapshot's strips onto its write payload. A snapshot older than
 // strips has no such key: the payload then stays unaware and the card's strips stay as they are. A key
 // with an empty list is a card that had none, and restoring it removes them.
@@ -264,7 +334,9 @@ func restoreTopstitchLinesFromSnapshot(raw string, frozen *pb_common.TechCard) e
 // a NULL in several of them. Echoed verbatim, a field that was empty in the snapshot would keep
 // whatever the card has now. Every such absence is turned into an explicit «this is empty» here, and
 // TestRestorePayloadSpeaksEveryField locks that no presence flag survives the conversion.
-func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.TechCard, current *pb_common.TechCardInsert) (*pb_common.TechCardInsert, error) {
+func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.TechCard, current *pb_common.TechCardInsert,
+	foldsBack *entity.TechCardPieceFoldsRestore,
+) (*pb_common.TechCardInsert, error) {
 	if frozen == nil || stored == nil || current == nil {
 		return nil, status.Error(codes.Internal, "can't build the restore payload")
 	}
@@ -313,7 +385,7 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 	in.PackagingPicksAware = true
 	// The backstops refuse an aware payload that would erase stored facts without saying so. Here the
 	// erasure IS the request (the snapshot had none), so it is said.
-	restoreOperationFoldKeys(in, stored)
+	restoreOperationFoldKeys(in, stored, restoredPieceFoldsPlan(foldsBack, in, stored))
 	in.AssemblyCleared = storedHasAssemblyFacts(stored) && !payloadCarriesAssemblyUnits(in)
 	in.MediaCleared = storedHasOperationMedia(stored) && !payloadCarriesOperationMedia(in)
 

@@ -76,13 +76,15 @@ func stripOperationFoldKeys(pb *pb_common.TechCardInsert) {
 	}
 }
 
-// restoreOperationFoldKeys cuts a snapshot's step links down to what the card's folds admit TODAY, so
-// the body the write model reconciles names no dead link. A restore does not touch tech_card_piece_fold
-// (a snapshot does not bring the fold rows back), so a key of a fold deleted since, a repeat, or a pair
-// whose seq was swapped since would make the snapshot unrestorable if the store refused it. The link
-// goes and the piece stays flat at that step. The store cuts again (TechCardInsert.RestoreFolds): only
-// it sees the order the FUSING reconciliation leaves and a fold deleted in the race after this read.
-func restoreOperationFoldKeys(in *pb_common.TechCardInsert, stored *entity.TechCard) {
+// restoreOperationFoldKeys cuts a snapshot's step links down to what the card's folds will admit after
+// the restore, so the body the write model reconciles names no dead link: today's folds plus the rows
+// this restore re-creates (recreated, the snapshot's folds of the pieces that hold none today; a
+// re-created row is read as the snapshot has it). A key of a fold deleted since on a piece that kept
+// others, a repeat, or a pair whose seq was swapped since would make the snapshot unrestorable if the
+// store refused it. The link goes and the piece stays flat at that step. The store cuts again
+// (TechCardInsert.RestoreFolds) against the rows it actually holds: only it sees the order the FUSING
+// reconciliation leaves and a fold written or deleted in the race after this read.
+func restoreOperationFoldKeys(in *pb_common.TechCardInsert, stored *entity.TechCard, recreated []entity.TechCardPieceFoldInput) {
 	ops := in.GetOperations()
 	steps := make([][]string, len(ops))
 	wanted := false
@@ -93,8 +95,11 @@ func restoreOperationFoldKeys(in *pb_common.TechCardInsert, stored *entity.TechC
 	if !wanted {
 		return
 	}
-	refs := make(map[string]entity.TechCardFoldOrderRef, len(stored.PieceFolds))
+	refs := make(map[string]entity.TechCardFoldOrderRef, len(stored.PieceFolds)+len(recreated))
 	for _, f := range stored.PieceFolds {
+		refs[entity.NormalizeTechCardSeamKey(f.FoldKey)] = entity.TechCardFoldOrderRef{PieceLineKey: f.PieceLineKey, Seq: f.Seq}
+	}
+	for _, f := range recreated {
 		refs[entity.NormalizeTechCardSeamKey(f.FoldKey)] = entity.TechCardFoldOrderRef{PieceLineKey: f.PieceLineKey, Seq: f.Seq}
 	}
 	cut, _ := entity.CutTechCardFoldLinks(steps, refs)
