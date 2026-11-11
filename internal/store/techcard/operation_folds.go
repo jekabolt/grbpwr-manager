@@ -140,13 +140,35 @@ func foldLinkRows(steps [][]string, opIDs []int) []map[string]any {
 	return rows
 }
 
-func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID int, tc *entity.TechCardInsert) error {
+func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID int, tc *entity.TechCardInsert,
+	dropped map[string]bool,
+) error {
+	// A fold this same save removed with its piece is skipped, not refused as unknown: the body that
+	// deleted the piece may still name it on a step.
+	keep := func(keys []string) []string {
+		if len(dropped) == 0 {
+			return keys
+		}
+		out := make([]string, 0, len(keys))
+		for _, k := range keys {
+			if !dropped[entity.NormalizeTechCardSeamKey(k)] {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
 	ops := tc.Operations
 	steps := make([][]string, len(ops))
-	wanted := len(tc.DisplacedFoldKeys) > 0
+	displaced := make([]entity.TechCardDisplacedFoldKey, 0, len(tc.DisplacedFoldKeys))
+	for _, link := range tc.DisplacedFoldKeys {
+		if !dropped[entity.NormalizeTechCardSeamKey(link.Key)] {
+			displaced = append(displaced, link)
+		}
+	}
+	wanted := len(displaced) > 0
 	for i := range ops {
-		steps[i] = ops[i].FoldKeys
-		wanted = wanted || len(ops[i].FoldKeys) > 0
+		steps[i] = keep(ops[i].FoldKeys)
+		wanted = wanted || len(steps[i]) > 0
 	}
 	// A card with no fold steps costs this save no statement at all.
 	if !wanted {
@@ -160,7 +182,7 @@ func insertTechCardOperationFolds(ctx context.Context, db dependency.DB, tcID in
 	for i := range tc.Pieces {
 		piecesOnCard = append(piecesOnCard, tc.Pieces[i].LineKey)
 	}
-	addressOf, err := placeDisplacedFoldLinks(tc.DisplacedFoldKeys, steps, fusingops.FoldStepsOf(ops, tc.Pieces),
+	addressOf, err := placeDisplacedFoldLinks(displaced, steps, fusingops.FoldStepsOf(ops, tc.Pieces),
 		refs, piecesOnCard, tc.RestoreFolds)
 	if err != nil {
 		return err

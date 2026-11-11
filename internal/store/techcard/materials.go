@@ -45,6 +45,11 @@ func clearTechCardPieceMaterials(ctx context.Context, db dependency.DB, tcID int
 	return nil
 }
 
+// doomedFoldRow is a fold of a piece the card save deletes.
+type doomedFoldRow struct {
+	FoldKey string `db:"fold_key"`
+}
+
 type pieceExistingRow struct {
 	Id      int    `db:"id"`
 	LineKey string `db:"line_key"`
@@ -378,7 +383,10 @@ const (
 // colourway recipe usage) surfaces as a field-tagged error, not a raw 500 or a silent dangle — the
 // deferred-from-0159 cross-aggregate guard. piece_material was cleared in Phase A, so each kept/new
 // piece just re-inserts its per-colourway mapping with the BOM ids resolved by bomRes.
-func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver, cs calloutSync) error {
+// droppedFolds collects the keys of the folds removed with deleted pieces (normalised).
+func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, pieces []entity.TechCardPiece, bomRes bomResolver, cs calloutSync,
+	droppedFolds map[string]bool,
+) error {
 	// A selected fusing line is valid only while that SAME row remains in this card's INTERLINING
 	// section. The BOM upsert immediately before this call may have deleted it (the FK SET NULLs it)
 	// or changed its section. Clear the latter case explicitly before omitted-field guards carry the
@@ -653,6 +661,28 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			WHERE tech_card_id = :card AND piece_line_key IN (:keys)`,
 			map[string]any{"card": tcID, "keys": doomedKeys}); err != nil {
 			return fmt.Errorf("drop measured areas of deleted cut-pieces: %w", err)
+		}
+		// Folds hang on the piece by line_key without a foreign key, like the areas: a fold of a piece
+		// that is gone is never drawn again and only blocks its slot (owner decision 11.11). Their step
+		// links went with the card's operations at the start of this transaction; the keys are handed
+		// back so the links this save re-inserts skip them instead of naming a fold that is gone.
+		foldRows, err := storeutil.QueryListNamed[doomedFoldRow](ctx, db, `
+			SELECT fold_key FROM tech_card_piece_fold
+			WHERE tech_card_id = :card AND piece_line_key IN (:keys)`,
+			map[string]any{"card": tcID, "keys": doomedKeys})
+		if err != nil {
+			return fmt.Errorf("load folds of deleted cut-pieces: %w", err)
+		}
+		if len(foldRows) > 0 {
+			if err := storeutil.ExecNamed(ctx, db, `
+				DELETE FROM tech_card_piece_fold
+				WHERE tech_card_id = :card AND piece_line_key IN (:keys)`,
+				map[string]any{"card": tcID, "keys": doomedKeys}); err != nil {
+				return fmt.Errorf("drop folds of deleted cut-pieces: %w", err)
+			}
+			for _, r := range foldRows {
+				droppedFolds[entity.NormalizeTechCardSeamKey(r.FoldKey)] = true
+			}
 		}
 	}
 
