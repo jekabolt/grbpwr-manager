@@ -839,6 +839,15 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		prospectivePatterns, prospectiveRollGoods); err != nil {
 		return nil, err
 	}
+	// The same exact-graph comparison for one file per slot: the funnel above grouped the stored
+	// sheets by the BOM of THIS save, so a BOM edit that sorts two singly-filled lines into one slot
+	// would pass there. Against the prior BOM it is what it is — a file added beside another.
+	if patternslot.Bound(patternRowsAsSlots(prospectivePatterns)) > 1 {
+		if err := patternslot.ValidateAgainst(patternRowsAsSlots(priorPatterns), priorRollGoods,
+			patternRowsAsSlots(prospectivePatterns), prospectiveRollGoods); err != nil {
+			return nil, err
+		}
+	}
 	// Derived scope data follows a one-destination sheet move. A merge keeps an already-existing
 	// target set; a split has no honest single destination and drops the old derived set. Finally,
 	// remove every bucket the prospective BOM no longer exposes. All of this is in the document tx.
@@ -1843,6 +1852,18 @@ type patternHistoryRow struct {
 	SHA256        sql.NullString `db:"sha256"`
 }
 
+// patternRowsAsSlots projects stored pattern rows onto the shape the slot rule reads.
+func patternRowsAsSlots(rows []patternHistoryRow) []entity.TechCardSizePattern {
+	out := make([]entity.TechCardSizePattern, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, entity.TechCardSizePattern{
+			SizeId: r.SizeId, LineKey: r.LineKey, URL: r.URL, Name: r.Name, Filename: r.Filename,
+			BomLineKey: r.BomLineKey, FabricPurpose: r.FabricPurpose,
+		})
+	}
+	return out
+}
+
 func techCardPatternURLs(ctx context.Context, db dependency.DB, techCardID int) ([]string, error) {
 	rows, err := techCardPatternRows(ctx, db, techCardID)
 	if err != nil {
@@ -1918,20 +1939,25 @@ func patternObjectIdentity(raw string) string {
 // below: every row is new on the destination card, but its binding is the source's, unchanged, and a
 // source sheet that was already an unresolved (grandfathered) orphan must not abort the whole create.
 func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patterns []entity.TechCardSizePattern, sizeIDs []int, actor, snapshotReason string, snapshotIDForArchive func(string) (int64, error), bindingsCopied bool) error {
-	// The API has already checked explicit bindings, but this is the single write funnel for creates,
-	// updates, restores, clones and archive imports. Keep the guard here for every direct store caller.
+	prior, err := techCardPatternRows(ctx, db, id)
+	if err != nil {
+		return fmt.Errorf("failed to read tech card patterns: %w", err)
+	}
+	// One pattern file per material slot. This is the single write funnel for creates, updates,
+	// restores, clones and archive imports, and the only layer that knows what is already stored: a
+	// slot that ALREADY holds two files stays writable (patternslot.ValidateAgainst), only a save that
+	// adds a file beside another is refused. The BOM is already upserted here, so prior rows are
+	// grouped by the prospective lines; UpdateTechCard repeats the check against the prior BOM once
+	// the whole graph is written, which catches a BOM edit that merges two slots.
+	priorSlots := patternRowsAsSlots(prior)
 	if patternslot.Bound(patterns) > 1 {
 		lines, err := loadRollGoodsLines(ctx, db, id)
 		if err != nil {
 			return err
 		}
-		if err := patternslot.Validate(patterns, lines); err != nil {
+		if err := patternslot.ValidateAgainst(priorSlots, lines, patterns, lines); err != nil {
 			return err
 		}
-	}
-	prior, err := techCardPatternRows(ctx, db, id)
-	if err != nil {
-		return fmt.Errorf("failed to read tech card patterns: %w", err)
 	}
 	archived, err := techCardArchivedPatternRows(ctx, db, id)
 	if err != nil {
@@ -2210,6 +2236,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 		// a stale-client payload that would put two rows into one slot. The write runs in a transaction;
 		// if a later row conflicts, prior row updates from this loop are rolled back with the refusal.
 		resolvedPatterns = append(resolvedPatterns, entity.TechCardSizePattern{
+			SizeId: p.SizeId, LineKey: lineKey, URL: p.URL, Name: name, Filename: p.Filename,
 			BomLineKey: bomLineKey, FabricPurpose: fabricPurpose,
 		})
 		if patternslot.Bound(resolvedPatterns) > 1 {
@@ -2217,7 +2244,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 			if err != nil {
 				return err
 			}
-			if err := patternslot.Validate(resolvedPatterns, lines); err != nil {
+			if err := patternslot.ValidateAgainst(priorSlots, lines, resolvedPatterns, lines); err != nil {
 				return err
 			}
 		}

@@ -301,6 +301,17 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		slog.Default().InfoContext(ctx, "operation work catalog loaded", slog.Int("works", len(works)))
 	}
 
+	// LEGACY SEAM STAMPS (prod 10.11): rows stamped in the interlining-inclusive form read fresh only
+	// while the fusing sheet they were stamped over is current or still in its history. Re-stamp the
+	// ones that read fresh in today's form so a later regeneration or a history trim cannot stale
+	// them. Rows that read stale are left alone. Idempotent; never fatal — a failed pass only leaves
+	// rows as they were.
+	if ns, nf, rErr := ss.techCardStore.RestampLegacySeamFingerprints(ctx); rErr != nil {
+		slog.Default().ErrorContext(ctx, "can't re-stamp legacy seam fingerprints", slog.String("err", rErr.Error()))
+	} else if ns+nf > 0 {
+		slog.Default().WarnContext(ctx, "re-stamped legacy seam fingerprints", slog.Int("seams", ns), slog.Int("folds", nf))
+	}
+
 	// SKU redesign task 13: repair eligible identities, then enforce the catalog-wide SKU
 	// postcondition before the store becomes ready. Frozen/deleted rows are included in verification.
 	if err := ss.productStore.BackfillSKUs(ctx); err != nil {

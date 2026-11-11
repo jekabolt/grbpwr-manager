@@ -1353,6 +1353,14 @@ func techCardCostingWithRoot(tc *entity.TechCard, fx CostingFx) (*pb_common.Tech
 	if c.Currency.Valid {
 		costingCcy = c.Currency.String
 	}
+	// A costing with NO currency is rolled up in the base currency — the currency the cost estimate
+	// and every *_base figure are already in (toBase reads an empty currency as base). Bucketing by ""
+	// instead put every priced line in a "foreign" bucket: materials and unit cost came back 0 and the
+	// tab said «not computed» beside an estimate that had the number. Display-only in effect: the saved
+	// currency (out.Currency) stays empty, and the seeds already took the identical base figure.
+	if costingCcy == "" {
+		costingCcy = fx.Base
+	}
 
 	// Manual per-unit articles are shared across colourways; each colourway's unit cost is
 	// its own materials plus these, grossed up by defect%.

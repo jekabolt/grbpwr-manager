@@ -93,6 +93,7 @@ func RollGoodsLinesOfBom(items []TechCardBomItem) []RollGoodsLine {
 			LineKey: items[i].LineKey,
 			Purpose: items[i].Purpose.String,
 			Section: items[i].Section,
+			Name:    items[i].Name,
 		})
 	}
 	return out

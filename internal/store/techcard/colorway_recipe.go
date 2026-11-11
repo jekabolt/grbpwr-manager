@@ -330,7 +330,9 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 		LineKey string `db:"line_key"`
 		Purpose string `db:"purpose"`
 		Section string `db:"section"`
-	}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose, section
+		Name    string `db:"name"`
+	}](ctx, db, `SELECT COALESCE(line_key, '') AS line_key, COALESCE(purpose, '') AS purpose, section,
+		COALESCE(name, '') AS name
 		FROM tech_card_bom_item
 		WHERE tech_card_id = :id AND `+rollGoodsSectionIn,
 		rollGoodsSectionArgs(map[string]any{"id": techCardID}))
@@ -341,6 +343,7 @@ func loadRollGoodsLines(ctx context.Context, db dependency.DB, techCardID int) (
 	for _, r := range rows {
 		out = append(out, entity.RollGoodsLine{
 			LineKey: r.LineKey, Purpose: r.Purpose, Section: entity.TechCardBomSection(r.Section),
+			Name: r.Name,
 		})
 	}
 	return out, nil
