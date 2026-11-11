@@ -293,7 +293,7 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
-		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
 		p.thumbnail_id, p.secondary_thumbnail_id,
@@ -365,7 +365,7 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 	SELECT
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
-		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
 		p.thumbnail_id, p.secondary_thumbnail_id,
@@ -436,7 +436,7 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
-		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
 		p.thumbnail_id, p.secondary_thumbnail_id,
@@ -507,7 +507,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.country_code, p.sale_percentage,
-		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		sty.care_instructions, `+styleCompositionSelect+` AS composition, `+styleCompositionEntriesSelect+` AS composition_entries,
 		p.thumbnail_id, p.secondary_thumbnail_id,
@@ -699,7 +699,7 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 	SELECT 
 		p.id, p.created_at, p.updated_at, p.deleted_at, p.preorder, COALESCE(sty.brand, '') AS brand, COALESCE(p.sku, '') AS sku,
 		p.color, p.color_code, COALESCE(p.sku_color_token, p.color_code) AS sku_color_token, p.color_hex, p.country_of_origin, p.sale_percentage,
-		sty.top_category_id, sty.sub_category_id, sty.type_id,
+		COALESCE(sty.top_category_id, 0) AS top_category_id, sty.sub_category_id, sty.type_id,
 		sty.model_wears_height_cm, sty.model_wears_size_id, COALESCE(sty.target_gender, '') AS target_gender, COALESCE(sty.age_group, '') AS age_group,
 		COALESCE(sty.season_code, '') AS season, sty.care_instructions, ` + styleCompositionSelect + ` AS composition, ` + styleCompositionEntriesSelect + ` AS composition_entries,
 		p.thumbnail_id,
