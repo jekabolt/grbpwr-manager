@@ -75,6 +75,10 @@ type TechCardCutStrip struct {
 	Qty          int                    `db:"qty"`
 	DisplayOrder int                    `db:"display_order"`
 	Sizes        []TechCardCutStripSize `db:"-"`
+	// SeamStale is set on read when the strip's seam is stale (its pattern changed since the decision)
+	// or rejected. Its stored seam_mm then measures a pattern that is gone: the formula has no length,
+	// the same rule a stale topstitch line follows. A typed manual cut still wins. Never stored.
+	SeamStale bool `db:"-" json:"-"`
 }
 
 // CutStripLengthMm is the one function that computes a strip's length. Norm, cost and print read it,
@@ -97,7 +101,8 @@ func CutStripLengthMm(strip *TechCardCutStrip, sizeID int) (int, bool) {
 	if size.ManualCutMm.Valid && size.ManualCutMm.Int32 > 0 {
 		return int(size.ManualCutMm.Int32), true
 	}
-	if strip.LengthMode != CutStripModeFromSeam || !size.SeamMm.Valid || !size.SeamMm.Decimal.IsPositive() {
+	if strip.LengthMode != CutStripModeFromSeam || strip.SeamStale || !size.SeamMm.Valid ||
+		!size.SeamMm.Decimal.IsPositive() {
 		return 0, false
 	}
 	// Decimal, not float: 412.5 * 100 / 100 must round to 413 on every machine. Round is half away

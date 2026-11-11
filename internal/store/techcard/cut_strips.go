@@ -53,7 +53,47 @@ func cutStripRows(ctx context.Context, db dependency.DB, ids []int) ([]entity.Te
 			s.Sizes = append(s.Sizes, row)
 		}
 	}
+	if err := markStaleSeamStrips(ctx, db, strips); err != nil {
+		return nil, err
+	}
 	return strips, nil
+}
+
+// markStaleSeamStrips sets SeamStale on every from_seam strip whose seam is stale or rejected, so the
+// norm, the cost and the print read it as unknown, as they read a stale topstitch line. Only cards with
+// such a strip pay for the seam read. A seam key with no row is left alone: a clone keeps the lengths.
+func markStaleSeamStrips(ctx context.Context, db dependency.DB, strips []entity.TechCardCutStrip) error {
+	cards := make(map[int]bool)
+	order := make([]int, 0)
+	for i := range strips {
+		s := &strips[i]
+		if s.LengthMode == entity.CutStripModeFromSeam && s.SeamKey.Valid && strings.TrimSpace(s.SeamKey.String) != "" &&
+			!cards[s.TechCardId] {
+			cards[s.TechCardId] = true
+			order = append(order, s.TechCardId)
+		}
+	}
+	dead := make(map[int]map[string]bool, len(order))
+	for _, cardID := range order {
+		seams, err := listTechCardSeams(ctx, db, cardID)
+		if err != nil {
+			return fmt.Errorf("load seams for strips of tech card %d: %w", cardID, err)
+		}
+		keys := make(map[string]bool)
+		for i := range seams {
+			if seams[i].Stale || seams[i].Status != entity.TechCardSeamConfirmed {
+				keys[entity.CutStripLineKey(seams[i].SeamKey)] = true
+			}
+		}
+		dead[cardID] = keys
+	}
+	for i := range strips {
+		s := &strips[i]
+		if s.LengthMode == entity.CutStripModeFromSeam && s.SeamKey.Valid {
+			s.SeamStale = dead[s.TechCardId][entity.CutStripLineKey(s.SeamKey.String)]
+		}
+	}
+	return nil
 }
 
 // enrichCutStrips loads strips and resolves every derived line norm. Production enrichment has already

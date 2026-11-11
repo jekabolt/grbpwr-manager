@@ -65,12 +65,19 @@ func storedHasCutStripInputs(stored *entity.TechCard) bool {
 }
 
 // cloneCutStripsWithoutSeams is the clone's copy of the strips: seams are not cloned, so no strip may name
-// one, and the seam lengths stay as what the from_seam formula keeps working on.
-func cloneCutStripsWithoutSeams(strips []*pb_common.TechCardCutStrip) []*pb_common.TechCardCutStrip {
+// one, and the seam lengths stay as what the from_seam formula keeps working on. A strip whose seam is
+// stale or rejected on the source (staleLines, by strip line key) has no length there; it loses its seam
+// lengths, so the clone does not read them as known again. Manual cuts are kept.
+func cloneCutStripsWithoutSeams(strips []*pb_common.TechCardCutStrip, staleLines map[string]bool) []*pb_common.TechCardCutStrip {
 	out := make([]*pb_common.TechCardCutStrip, 0, len(strips))
 	for _, s := range strips {
 		c := proto.Clone(s).(*pb_common.TechCardCutStrip)
 		c.SeamKey = ""
+		if staleLines[entity.CutStripLineKey(c.GetLineKey())] {
+			for _, size := range c.GetSizes() {
+				size.SeamMm = nil
+			}
+		}
 		out = append(out, c)
 	}
 	return out
@@ -78,6 +85,17 @@ func cloneCutStripsWithoutSeams(strips []*pb_common.TechCardCutStrip) []*pb_comm
 
 // cutStripsChanged is the history chip's question: did this save change the strips. Numbers are compared
 // by value, since a client may echo 100.00 for 100.
+// staleSeamCutStrips is the set of strips (by line key) whose seam is stale or rejected on a read card.
+func staleSeamCutStrips(strips []entity.TechCardCutStrip) map[string]bool {
+	out := map[string]bool{}
+	for i := range strips {
+		if strips[i].SeamStale {
+			out[entity.CutStripLineKey(strips[i].LineKey)] = true
+		}
+	}
+	return out
+}
+
 func cutStripsChanged(stored []entity.TechCardCutStrip, in *entity.TechCardInsert) bool {
 	if !in.CutStripsAware {
 		return false
