@@ -135,7 +135,7 @@ func (m *writeModel) liveSections(op *entity.TechCardOperation) []entity.TechCar
 }
 
 // LegacyKind classifies a step of the one-per-line model (line key, no piece key). An orphaned one is
-// already in its final state, a per-piece orphan with no piece; any other one is still to split.
+// treated as an automatic step so the reconciler deletes it instead of splitting or adopting it.
 func LegacyKind(review string) Kind {
 	if review == ReviewOrphan {
 		return KindAuto

@@ -37,11 +37,12 @@ func TestFoldHome(t *testing.T) {
 	}
 }
 
-// A deleted duplicate hands its links to the store with their address in the body as sent; the steps
-// that stay keep theirs, and no fold key is written anywhere the store would read it from twice.
+// A deleted edited duplicate hands its links to the store with their address in the body as sent;
+// the steps that stay keep theirs, and no fold key is written anywhere the store would read it twice.
 func TestReconcileDisplacesTheLinksOfADeletedStep(t *testing.T) {
 	survivor := storedAutoFusing(10, "INTERLINING-A", "FRONT")
 	duplicate := storedAutoFusing(20, "INTERLINING-A", "FRONT")
+	duplicate.Draft = false
 	duplicate.FoldKeys = []string{"K1", "K2"}
 	join := machineOp(30, "join")
 	join.FoldKeys = []string{"K3"}

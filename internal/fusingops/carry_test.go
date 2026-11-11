@@ -469,7 +469,7 @@ func TestReorderedEditedAutoOverridesSamePieceManual(t *testing.T) {
 
 func TestDeletedPieceInputIsRemovedBeforeAssemblyValidation(t *testing.T) {
 	for _, draft := range []bool{true, false} {
-		name := "edited_orphan_is_kept"
+		name := "edited_is_deleted"
 		if draft {
 			name = "draft_is_deleted"
 		}
@@ -498,19 +498,8 @@ func TestDeletedPieceInputIsRemovedBeforeAssemblyValidation(t *testing.T) {
 			if verr != nil || !outcome.Reconcile {
 				t.Fatalf("outcome = %+v err = %v, want deletion reconciliation", outcome, verr)
 			}
-			if draft {
-				if len(incoming.Operations) != 1 || incoming.Operations[0].OperationType != entity.OpTypeMachine {
-					t.Fatalf("draft of the deleted piece survived: %#v", incoming.Operations)
-				}
-				return
-			}
-			if len(incoming.Operations) != 2 {
-				t.Fatalf("edited step was lost: %#v", incoming.Operations)
-			}
-			orphan := incoming.Operations[0]
-			if orphan.AutoFusingPieceKey != autoKey("FRONT") || orphan.AutoFusingLineKey.Valid ||
-				orphan.Review.String != ReviewOrphan || orphan.Draft || len(pieceInputKeys(&orphan, nil)) != 0 {
-				t.Fatalf("edited step was not retained as a keyed orphan: %#v", orphan)
+			if len(incoming.Operations) != 1 || incoming.Operations[0].OperationType != entity.OpTypeMachine {
+				t.Fatalf("automatic step of the deleted piece survived: %#v", incoming.Operations)
 			}
 		})
 	}

@@ -48,15 +48,15 @@ type Operation struct {
 }
 
 // Plan is the reconciled operation list in assembly order plus the ids of steps to delete.
-// Every operation of KindAuto in it is server-owned: an orphan (Review == ReviewOrphan) has no piece
-// inputs, any other one has exactly [Owner]. Manual FUSING steps lose inputs already owned by an
-// automatic step and are deleted when that override leaves them with no inputs.
+// Every operation of KindAuto in it is server-owned and has exactly [Owner] as its piece input.
+// Manual FUSING steps lose inputs already owned by an automatic step and are deleted when that
+// override leaves them with no inputs.
 type Plan struct {
 	Operations []Operation
 	DeletedIDs []int
 }
 
-// IsOrphan reports a retained automatic step that no longer fuses a piece.
+// IsOrphan reports an automatic step carrying the legacy orphan review mark.
 func (o Operation) IsOrphan() bool { return o.Kind == KindAuto && o.Review == ReviewOrphan }
 
 // ReconcileFusingOps computes the idempotent FUSING state: exactly one automatic step per fused
@@ -66,8 +66,9 @@ func (o Operation) IsOrphan() bool { return o.Kind == KindAuto && o.Review == Re
 //  2. In operation order, a grouped legacy step or an adoptable manual step takes its fused pieces
 //     nobody claimed yet: the first keeps the row, each other gets a new draft copying its press
 //     settings. A legacy step left without pieces, like a per-piece step without its piece, is
-//     deleted when draft and kept as an orphan when edited. An adoptable draft whose pieces are all
-//     fused (and so all claimed) is a duplicate and is deleted; any other adoptable step is kept.
+//     deleted whether draft or edited. A stored orphan is deleted too. An adoptable draft whose
+//     pieces are all fused (and so all claimed) is a duplicate and is deleted; any other adoptable
+//     step is kept.
 //  3. Every fused piece still unclaimed gets a new draft step.
 //  4. Automatic ownership wins over manual FUSING: covered piece inputs are removed from every
 //     remaining manual step. A step made empty by those removals is deleted; a step that was already
@@ -100,17 +101,11 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 	move := make([]bool, len(operations))
 	claimed := make(map[int]bool, len(fusedOrder))
 	var deleted []int
-	dropOrOrphan := func(i int) {
-		if out[i].Draft {
-			keep[i] = false
-			if out[i].ID > 0 {
-				deleted = append(deleted, out[i].ID)
-			}
-			return
+	drop := func(i int) {
+		keep[i] = false
+		if out[i].ID > 0 {
+			deleted = append(deleted, out[i].ID)
 		}
-		out[i].Kind = KindAuto
-		out[i].PieceIDs = nil
-		out[i].Review = ReviewOrphan
 	}
 	own := func(i, pieceID int) {
 		claimed[pieceID] = true
@@ -132,11 +127,15 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 		if operation.Kind != KindAuto {
 			continue
 		}
+		if operation.Review == ReviewOrphan && len(operation.PieceIDs) == 0 {
+			drop(i)
+			continue
+		}
 		if operation.Owner > 0 && fused[operation.Owner] && !claimed[operation.Owner] {
 			own(i, operation.Owner)
 			continue
 		}
-		dropOrOrphan(i)
+		drop(i)
 	}
 
 	fresh := make([]Operation, 0)
@@ -160,7 +159,7 @@ func ReconcileFusingOps(pieces []Piece, operations []Operation) Plan {
 		if len(candidates) == 0 {
 			switch {
 			case operation.Kind == KindLegacy:
-				dropOrOrphan(i)
+				drop(i)
 			case operation.Draft && allFused:
 				keep[i] = false
 				if operation.ID > 0 {
