@@ -1220,6 +1220,11 @@ type (
 		// DeleteTechCardSeams removes seams by seam_key (unknown keys are not an error) and returns the
 		// card's full list plus how many rows went. Same lock and released-card refusal as the upsert.
 		DeleteTechCardSeams(ctx context.Context, techCardID int, seamKeys []string) ([]entity.TechCardSeam, int, error)
+		// ChangeTechCardSeams applies one seam gesture — upsert, link, detach, delete — in ONE
+		// transaction under the card's lock_version: expected_lock_version required and equal
+		// (entity.ErrTechCardLockVersionMoved otherwise, nothing written), one bump when anything
+		// changed, the response read in the same transaction.
+		ChangeTechCardSeams(ctx context.Context, in entity.TechCardSeamsChange) (entity.TechCardSeamsChangeResult, error)
 		// PIECE FOLDS (0443). GetTechCardPieceFolds returns a card's fold lines in (piece, seq) order
 		// with staleness resolved against the piece's fabric scopes (the seams' fingerprint).
 		GetTechCardPieceFolds(ctx context.Context, techCardID int) ([]entity.TechCardPieceFold, error)
