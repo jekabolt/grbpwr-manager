@@ -145,6 +145,49 @@ func (s *Store) UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCard
 	return out, len(in.Folds), nil
 }
 
+// ReplaceTechCardPieceFolds deletes and upserts folds atomically, then returns the card's full list.
+func (s *Store) ReplaceTechCardPieceFolds(ctx context.Context, in entity.TechCardPieceFoldsReplace) ([]entity.TechCardPieceFold, int, int, error) {
+	if err := entity.ValidateTechCardPieceFoldsReplace(&in); err != nil {
+		return nil, 0, 0, err
+	}
+	keys, err := normalizeTechCardPieceFoldDeleteKeys(in.DeleteFoldKeys, "delete_fold_keys")
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var (
+		out     []entity.TechCardPieceFold
+		deleted int
+	)
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		// THE CARD ROW LOCK — FIRST ACTION, BEFORE ANY READ (seams.go explains why).
+		if err := lockTechCardRow(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
+		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
+		n, err := deleteTechCardPieceFoldsTx(ctx, db, in.TechCardId, keys)
+		if err != nil {
+			return err
+		}
+		// This helper writes every row before judging the result-wide seq, count and step-order rules.
+		if err := writeTechCardPieceFoldsTx(ctx, db, in.TechCardId, in.Folds, in.By, pieceFoldWriteOpts{}); err != nil {
+			return err
+		}
+		list, err := listTechCardPieceFolds(ctx, db, in.TechCardId)
+		if err != nil {
+			return err
+		}
+		out, deleted = list, n
+		return nil
+	})
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return out, len(in.Folds), deleted, nil
+}
+
 // pieceFoldWriteOpts is what differs when a fold write is not a live RPC.
 type pieceFoldWriteOpts struct {
 	// stale: fold keys written with seamFingerprintStale instead of today's fingerprint. An archive
@@ -307,24 +350,15 @@ func (s *Store) DeleteTechCardPieceFolds(ctx context.Context, techCardID int, fo
 		return nil, 0, entity.NewFieldViolation("fold_keys", "too_many", "",
 			fmt.Sprintf("at most %d keys per call", entity.TechCardPieceFoldMaxRowsPerCard))
 	}
-	keys := make([]string, 0, len(foldKeys))
-	seen := map[string]bool{}
-	for i, k := range foldKeys {
-		k = entity.NormalizeTechCardSeamKey(k)
-		if !entity.ValidTechCardSeamKey(k) {
-			return nil, 0, entity.NewFieldViolation(fmt.Sprintf("fold_keys[%d]", i), "invalid", "",
-				"a 26-char ULID")
-		}
-		if !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
-		}
+	keys, err := normalizeTechCardPieceFoldDeleteKeys(foldKeys, "fold_keys")
+	if err != nil {
+		return nil, 0, err
 	}
 	var (
 		out     []entity.TechCardPieceFold
 		deleted int
 	)
-	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+	err = s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
 		if err := lockTechCardRow(ctx, db, techCardID); err != nil {
 			return err
@@ -332,19 +366,9 @@ func (s *Store) DeleteTechCardPieceFolds(ctx context.Context, techCardID int, fo
 		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
 			return err
 		}
-		n := 0
-		for _, k := range keys {
-			affected, err := storeutil.ExecNamedRows(ctx, db, `
-				DELETE FROM tech_card_piece_fold WHERE tech_card_id = :id AND fold_key = :k`,
-				map[string]any{"id": techCardID, "k": k})
-			if err != nil {
-				return fmt.Errorf("delete fold %s of tech card %d: %w", k, techCardID, err)
-			}
-			n += int(affected)
-			// The steps let go of it in this same transaction: a step never names a fold that is gone.
-			if err := unlinkFoldFromOperationsTx(ctx, db, techCardID, k); err != nil {
-				return err
-			}
+		n, err := deleteTechCardPieceFoldsTx(ctx, db, techCardID, keys)
+		if err != nil {
+			return err
 		}
 		list, err := listTechCardPieceFolds(ctx, db, techCardID)
 		if err != nil {
@@ -357,4 +381,40 @@ func (s *Store) DeleteTechCardPieceFolds(ctx context.Context, techCardID int, fo
 		return nil, 0, err
 	}
 	return out, deleted, nil
+}
+
+func normalizeTechCardPieceFoldDeleteKeys(foldKeys []string, field string) ([]string, error) {
+	keys := make([]string, 0, len(foldKeys))
+	seen := map[string]bool{}
+	for i, k := range foldKeys {
+		k = entity.NormalizeTechCardSeamKey(k)
+		if !entity.ValidTechCardSeamKey(k) {
+			return nil, entity.NewFieldViolation(fmt.Sprintf("%s[%d]", field, i), "invalid", "", "a 26-char ULID")
+		}
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	return keys, nil
+}
+
+// deleteTechCardPieceFoldsTx removes folds and their step links. The caller holds the card row lock
+// and has already checked that the card is mutable.
+func deleteTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID int, keys []string) (int, error) {
+	deleted := 0
+	for _, k := range keys {
+		affected, err := storeutil.ExecNamedRows(ctx, db, `
+			DELETE FROM tech_card_piece_fold WHERE tech_card_id = :id AND fold_key = :k`,
+			map[string]any{"id": techCardID, "k": k})
+		if err != nil {
+			return 0, fmt.Errorf("delete fold %s of tech card %d: %w", k, techCardID, err)
+		}
+		deleted += int(affected)
+		// The steps let go of it in this same transaction: a step never names a fold that is gone.
+		if err := unlinkFoldFromOperationsTx(ctx, db, techCardID, k); err != nil {
+			return 0, err
+		}
+	}
+	return deleted, nil
 }

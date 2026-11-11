@@ -142,10 +142,69 @@ func TestDeleteTechCardPieceFolds(t *testing.T) {
 	require.Empty(t, resp.GetFolds())
 }
 
+func TestReplaceTechCardPieceFoldsPassesBothSidesAndEchoesCounts(t *testing.T) {
+	const deleteKey = "01JABCDEFGHJKMNPQRSTVWXYZ1"
+	repo := mocks.NewMockRepository(t)
+	techCards := mocks.NewMockTechCards(t)
+	repo.EXPECT().TechCards().Return(techCards)
+	techCards.EXPECT().ReplaceTechCardPieceFolds(mock.Anything, mock.MatchedBy(func(in entity.TechCardPieceFoldsReplace) bool {
+		return in.TechCardId == 7 && in.By == "ann" &&
+			len(in.DeleteFoldKeys) == 1 && in.DeleteFoldKeys[0] == deleteKey &&
+			len(in.Folds) == 1 && in.Folds[0].FoldKey == foldHandlerKey
+	})).Return([]entity.TechCardPieceFold{{TechCardPieceFoldInput: entity.TechCardPieceFoldInput{
+		FoldKey: foldHandlerKey,
+	}}}, 1, 1, nil)
+
+	req := foldHandlerReq()
+	ctx := authsrv.PutAdminUsername(fullAccessCtx(), "ann")
+	resp, err := (&Server{repo: repo}).ReplaceTechCardPieceFolds(ctx, &pb_admin.ReplaceTechCardPieceFoldsRequest{
+		TechCardId:     req.GetTechCardId(),
+		DeleteFoldKeys: []string{deleteKey},
+		Folds:          req.GetFolds(),
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, resp.GetWritten())
+	require.EqualValues(t, 1, resp.GetDeleted())
+	require.Len(t, resp.GetFolds(), 1)
+}
+
+func TestReplaceTechCardPieceFoldsRefusesEmptyAndConflictBeforeTheStore(t *testing.T) {
+	cases := []struct {
+		name   string
+		req    *pb_admin.ReplaceTechCardPieceFoldsRequest
+		field  string
+		reason string
+	}{
+		{
+			name:   "empty",
+			req:    &pb_admin.ReplaceTechCardPieceFoldsRequest{TechCardId: 7},
+			field:  "folds",
+			reason: "empty",
+		},
+		{
+			name: "key conflict",
+			req: &pb_admin.ReplaceTechCardPieceFoldsRequest{
+				TechCardId: 7, DeleteFoldKeys: []string{foldHandlerKey}, Folds: foldHandlerReq().GetFolds(),
+			},
+			field:  "delete_fold_keys[0]",
+			reason: "conflict",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo := mocks.NewMockRepository(t) // strict: any store call fails the test
+			_, err := (&Server{repo: repo}).ReplaceTechCardPieceFolds(fullAccessCtx(), c.req)
+			fv := fieldOf(t, err)
+			require.Equal(t, c.field, fv.GetField())
+			require.Contains(t, fv.GetDescription(), c.reason)
+		})
+	}
+}
+
 func TestTechCardPieceFoldsRBAC(t *testing.T) {
 	want, _, ok := rbac.Lookup(rbac.MethodPrefix + "UpsertTechCardSeams")
 	require.True(t, ok)
-	for _, m := range []string{"UpsertTechCardPieceFolds", "DeleteTechCardPieceFolds"} {
+	for _, m := range []string{"UpsertTechCardPieceFolds", "DeleteTechCardPieceFolds", "ReplaceTechCardPieceFolds"} {
 		got, allowlisted, known := rbac.Lookup(rbac.MethodPrefix + m)
 		require.True(t, known, m)
 		require.False(t, allowlisted, m)
