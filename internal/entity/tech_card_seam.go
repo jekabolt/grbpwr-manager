@@ -382,9 +382,53 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 				return err
 			}
 		}
+		if s.Kind != TechCardSeamKindPose {
+			if err := validateTechCardSeamSidesApart(f, s); err != nil {
+				return err
+			}
+		}
 		if s.Kind == TechCardSeamKindComposite && len(s.SideA) < 2 && len(s.SideB) < 2 {
 			return NewFieldViolation(f+".kind", "composite_needs_parts", "",
 				"a composite seam walks across at least two anchors on one side; send a single run as edge")
+		}
+	}
+	return nil
+}
+
+// techCardSeamHintEdges splits an edge hint into its member edges: "P#3+4" names P#3 and P#4.
+func techCardSeamHintEdges(hint string) []string {
+	at := strings.LastIndex(hint, "#")
+	if at < 0 {
+		return []string{hint}
+	}
+	ks := strings.Split(hint[at+1:], "+")
+	out := make([]string, 0, len(ks))
+	for _, k := range ks {
+		out = append(out, hint[:at+1]+k)
+	}
+	return out
+}
+
+// validateTechCardSeamSidesApart refuses a seam whose two sides name one edge of one piece, whatever
+// stretches of it: a piece closed on itself sews one edge onto ANOTHER, and the resolver reads edges,
+// so such a row reads stale from its first read. A chain counts by its member edges.
+func validateTechCardSeamSidesApart(f string, s *TechCardSeamInput) error {
+	for j, b := range s.SideB {
+		for k, a := range s.SideA {
+			if !strings.EqualFold(a.PieceLineKey, b.PieceLineKey) || a.EdgeHint == "" || b.EdgeHint == "" {
+				continue
+			}
+			clash := false
+			for _, x := range techCardSeamHintEdges(a.EdgeHint) {
+				for _, y := range techCardSeamHintEdges(b.EdgeHint) {
+					clash = clash || x == y
+				}
+			}
+			if clash {
+				return NewFieldViolation(fmt.Sprintf("%s.side_b.parts[%d]", f, j), "same_edge_both_sides",
+					fmt.Sprintf("%s.side_a.parts[%d]", f, k),
+					"the two sides of a seam must not name the same piece edge")
+			}
 		}
 	}
 	return nil
