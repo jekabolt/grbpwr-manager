@@ -2,11 +2,13 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -70,4 +72,31 @@ func (s *Server) DeleteTechCardSeams(ctx context.Context, req *pb_admin.DeleteTe
 		Seams:   dto.TechCardSeamsToPb(seams),
 		Deleted: int32(deleted),
 	}, nil
+}
+
+// ChangeTechCardSeams applies one seam gesture (upsert, link, detach, delete) in one transaction
+// under the card's lock_version. A moved version is FailedPrecondition `lock_version_moved` on the
+// expected_lock_version field: nothing was written, the client re-reads the card and repeats.
+func (s *Server) ChangeTechCardSeams(ctx context.Context, req *pb_admin.ChangeTechCardSeamsRequest) (*pb_admin.ChangeTechCardSeamsResponse, error) {
+	in, err := dto.TechCardSeamsChangeFromPb(req, authsrv.GetAdminUsername(ctx))
+	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	res, err := s.repo.TechCards().ChangeTechCardSeams(ctx, in)
+	if err != nil {
+		if errors.Is(err, entity.ErrTechCardLockVersionMoved) {
+			return nil, apierr.FailedPrecondition(entity.NewFieldViolation("expected_lock_version", "lock_version_moved", "",
+				"the card changed since it was read — reload it and repeat"))
+		}
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		slog.Default().ErrorContext(ctx, "can't change tech card seams",
+			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't change tech card seams")
+	}
+	return dto.TechCardSeamsChangeToPb(res), nil
 }

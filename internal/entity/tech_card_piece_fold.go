@@ -106,6 +106,15 @@ type TechCardPieceFoldsWrite struct {
 	By         string
 }
 
+// TechCardPieceFoldsReplace is one atomic ReplaceTechCardPieceFolds call. Deletes happen before
+// the keyed writes, but a key may appear in only one side of the request.
+type TechCardPieceFoldsReplace struct {
+	TechCardId     int
+	DeleteFoldKeys []string
+	Folds          []TechCardPieceFoldInput
+	By             string
+}
+
 var techCardPieceFoldKinds = map[TechCardPieceFoldKind]bool{
 	TechCardPieceFoldInward: true, TechCardPieceFoldOutward: true, TechCardPieceFoldPleat: true,
 	TechCardPieceFoldPleatLeft: true, TechCardPieceFoldPleatRight: true,
@@ -212,6 +221,45 @@ func ValidateTechCardPieceFoldsWrite(in *TechCardPieceFoldsWrite) error {
 		if utf8.RuneCountInString(f.Note) > TechCardPieceFoldNoteMaxRunes {
 			return NewFieldViolation(at+".note", "too_long", "",
 				fmt.Sprintf("at most %d characters", TechCardPieceFoldNoteMaxRunes))
+		}
+	}
+	return nil
+}
+
+// ValidateTechCardPieceFoldsReplace checks and normalises an atomic fold replacement. Unlike the
+// upsert validator, either side may be empty, but not both.
+func ValidateTechCardPieceFoldsReplace(in *TechCardPieceFoldsReplace) error {
+	if in.TechCardId <= 0 {
+		return NewFieldViolation("tech_card_id", "required", "", "")
+	}
+	if len(in.DeleteFoldKeys) == 0 && len(in.Folds) == 0 {
+		return NewFieldViolation("folds", "empty", "", "name at least one fold to delete or write")
+	}
+	if len(in.DeleteFoldKeys) > TechCardPieceFoldMaxRowsPerCard {
+		return NewFieldViolation("delete_fold_keys", "too_many", "",
+			fmt.Sprintf("at most %d keys per call", TechCardPieceFoldMaxRowsPerCard))
+	}
+	for i := range in.DeleteFoldKeys {
+		in.DeleteFoldKeys[i] = NormalizeTechCardSeamKey(in.DeleteFoldKeys[i])
+		if !ValidTechCardSeamKey(in.DeleteFoldKeys[i]) {
+			return NewFieldViolation(fmt.Sprintf("delete_fold_keys[%d]", i), "invalid", "", "a 26-char ULID")
+		}
+	}
+	if len(in.Folds) > 0 {
+		write := TechCardPieceFoldsWrite{TechCardId: in.TechCardId, Folds: in.Folds, By: in.By}
+		if err := ValidateTechCardPieceFoldsWrite(&write); err != nil {
+			return err
+		}
+		in.Folds = write.Folds
+	}
+	writes := make(map[string]int, len(in.Folds))
+	for i, fold := range in.Folds {
+		writes[fold.FoldKey] = i
+	}
+	for i, key := range in.DeleteFoldKeys {
+		if j, conflict := writes[key]; conflict {
+			return NewFieldViolation(fmt.Sprintf("delete_fold_keys[%d]", i), "conflict",
+				fmt.Sprintf("folds[%d].fold_key", j), "name the key in only one list")
 		}
 	}
 	return nil

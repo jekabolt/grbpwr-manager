@@ -340,3 +340,35 @@ func TestValidateTechCardSeamsWriteAcceptsAWholeNeckline(t *testing.T) {
 	in.Seams[0].SideB = side
 	require.NoError(t, ValidateTechCardSeamsWrite(&in))
 }
+
+func TestValidateTechCardSeamsWriteOneEdgeOnBothSides(t *testing.T) {
+	check := func(a, b TechCardSeamAnchor) error {
+		in := seamTestWrite()
+		in.Seams[0].SideA = []TechCardSeamAnchor{a}
+		in.Seams[0].SideB = []TechCardSeamAnchor{b}
+		return ValidateTechCardSeamsWrite(&in)
+	}
+	span := func(hint string, from, to float64) TechCardSeamAnchor {
+		a := seamTestAnchor("PIECE-SLV", hint)
+		a.RangeFrom, a.RangeTo = from, to
+		return a
+	}
+	// A sleeve closed on itself: two edges of one piece.
+	require.NoError(t, check(span("SLV#0", 0, 0), span("SLV#2", 0, 0)))
+	require.NoError(t, check(span("SLV#1+2", 0, 0), span("SLV#3", 0.2, 0.4)))
+	for name, pair := range map[string][2]TechCardSeamAnchor{
+		"whole edge twice":          {span("SLV#2", 0, 0), span("SLV#2", 0, 0)},
+		"shared stretch":            {span("SLV#2", 0, 0.5), span("SLV#2", 0.4, 1)},
+		"separate stretches":        {span("SLV#2", 0, 0.4), span("SLV#2", 0.6, 1)},
+		"chain and member":          {span("SLV#1+2", 0, 0), span("SLV#2", 0, 0)},
+		"chain and a ranged member": {span("SLV#1+2", 0, 0), span("SLV#2", 0.2, 0.4)},
+		"member and chain":          {span("SLV#2", 0.2, 0.4), span("SLV#1+2", 0, 0)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ve *ValidationError
+			require.ErrorAs(t, check(pair[0], pair[1]), &ve)
+			require.Equal(t, "seams[0].side_b.parts[0]", ve.Field)
+			require.Contains(t, ve.Error(), "same_edge_both_sides")
+		})
+	}
+}

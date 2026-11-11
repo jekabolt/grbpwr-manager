@@ -382,8 +382,8 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 	stripOperationFoldKeys(pbInsert)
 	pbInsert.LabelsAware = true
 	// Strips travel with the BOM and the step inputs, by the same keys. Seams are not copied, so a strip
-	// stops naming one and keeps the seam lengths it was given.
-	pbInsert.CutStrips = cloneCutStripsWithoutSeams(full.GetCutStrips())
+	// stops naming one and keeps the seam lengths it was given, unless its seam was stale on the source.
+	pbInsert.CutStrips = cloneCutStripsWithoutSeams(full.GetCutStrips(), staleSeamCutStrips(card.CutStrips))
 	pbInsert.CutStripsAware = true
 	pbInsert.TopstitchLinesAware = true
 	insert, err := dto.ConvertPbTechCardInsertToEntity(pbInsert)
@@ -392,6 +392,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
+	// The clone copies the pieces, so a fresh fingerprint would read a stale topstitch line as measured on
+	// today's pattern: each line keeps its freshness, as a restore does.
+	markRestoredTopstitchLines(insert, restoredTopstitchStale(pbInsert))
 	carryCloneLabels(card, insert)
 	// Сброс approval_state ПЕРЕЕХАЛ ВЫШЕ, в pb, до конверсии (см. pbInsert.ApprovalState): в
 	// конвертере теперь стоит релизный гейт сборки, и released-исходник отказывался бы

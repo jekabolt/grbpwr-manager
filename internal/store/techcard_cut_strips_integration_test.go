@@ -1629,3 +1629,62 @@ func TestTechCardArchiveFusingStepWithAStripStaysAPersonsStep(t *testing.T) {
 	require.NoError(t, got.save(func(in *pb_common.TechCardInsert) { in.Pieces[0].Fused = false }))
 	require.Equal(t, 1, stepsWithStrip(""))
 }
+
+// TestTechCardCutStripStaleSeamHasNoLength: a from_seam strip whose seam is rejected (or stale) measures a
+// pattern decision that no longer holds. Its length reads as unknown, so its line's norm is incomplete,
+// and a season clone does not read the old seam lengths as known again. A manual cut still wins.
+func TestTechCardCutStripStaleSeamHasNoLength(t *testing.T) {
+	requireCutStripIntegrationDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r := newCutRig(t, ctx)
+	seamed := r.fromSeam()
+	seamed.SeamKey = cutsSeamKey
+	seamed.Sizes[1].ManualCutMm = cutsMm(500)
+	require.NoError(t, r.save(func(in *pb_common.TechCardInsert) {
+		in.CutStrips = []*pb_common.TechCardCutStrip{seamed}
+	}))
+	write := func(status entity.TechCardSeamStatus) {
+		seam := cutsSeamInput(cutsPieceFront, cutsStripSeam)
+		seam.Status = status
+		_, _, err := r.T.UpsertTechCardSeams(ctx, entity.TechCardSeamsWrite{
+			TechCardId: r.cardID, By: "cut.owner@example.com", Seams: []entity.TechCardSeamInput{seam},
+		})
+		require.NoError(t, err)
+	}
+
+	write(entity.TechCardSeamConfirmed)
+	wire := r.wire()
+	require.Equal(t, map[int]int{r.sizeA: 650, r.sizeB: 500}, cutsOfWire(r.stripOf(cutsStripSeam)))
+	require.True(t, cutsNormComplete(wire, cutsLineRubber))
+
+	write(entity.TechCardSeamRejected)
+	wire = r.wire()
+	require.Equal(t, map[int]int{r.sizeB: 500}, cutsOfWire(r.stripOf(cutsStripSeam)), "only the manual cut is known")
+	require.False(t, cutsNormComplete(wire, cutsLineRubber), "the line's norm is not complete without the length")
+	require.Equal(t, "700", r.stripOf(cutsStripSeam).GetSizes()[0].GetSeamMm().GetValue(), "the stored seam length is kept")
+
+	src := r.read()
+	resp, err := r.rt.srv.CloneStyleForSeason(r.rt.adminCtx("cut.owner@example.com"), &pb_admin.CloneStyleForSeasonRequest{
+		SourceStyleId: int64(r.cardID), ExpectedSourceVersion: uint64(src.LockVersion),
+		SkuSeason: &pb_common.SkuSeason{Code: pb_common.SeasonEnum_SEASON_ENUM_FW, Year: 2032},
+	})
+	require.NoError(t, err)
+	newID := int(resp.GetNewStyleId())
+	t.Cleanup(func() { _ = r.T.DeleteTechCard(context.Background(), newID) })
+	clone, err := r.T.GetTechCardById(ctx, newID)
+	require.NoError(t, err)
+	cloned := dto.ConvertEntityTechCardToPb(clone, dto.CostingFx{})
+	require.Len(t, cloned.GetCutStrips(), 1)
+	require.Empty(t, cloned.GetCutStrips()[0].GetSeamKey())
+	require.Equal(t, map[int]int{r.sizeB: 500}, cutsOfWire(cloned.GetCutStrips()[0]), "the clone keeps it unknown")
+}
+
+func cutsNormComplete(card *pb_common.TechCard, line string) bool {
+	for _, n := range card.GetCutStripNorms() {
+		if n.GetBomLineKey() == line {
+			return n.GetComplete()
+		}
+	}
+	return false
+}

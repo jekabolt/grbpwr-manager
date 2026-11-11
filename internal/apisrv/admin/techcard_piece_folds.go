@@ -69,3 +69,32 @@ func (s *Server) DeleteTechCardPieceFolds(ctx context.Context, req *pb_admin.Del
 		Deleted: int32(deleted),
 	}, nil
 }
+
+// ReplaceTechCardPieceFolds deletes and upserts fold lines in one transaction.
+func (s *Server) ReplaceTechCardPieceFolds(ctx context.Context, req *pb_admin.ReplaceTechCardPieceFoldsRequest) (*pb_admin.ReplaceTechCardPieceFoldsResponse, error) {
+	if req.GetTechCardId() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "tech_card_id is required")
+	}
+	in, err := dto.TechCardPieceFoldsReplaceFromPb(
+		int(req.GetTechCardId()), req.GetDeleteFoldKeys(), req.GetFolds(), authsrv.GetAdminUsername(ctx))
+	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	folds, written, deleted, err := s.repo.TechCards().ReplaceTechCardPieceFolds(ctx, in)
+	if err != nil {
+		if st, ok := apierr.Status(err); ok {
+			return nil, st
+		}
+		slog.Default().ErrorContext(ctx, "can't replace tech card piece folds",
+			slog.Int("tech_card_id", int(req.GetTechCardId())), slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't replace tech card piece folds")
+	}
+	return &pb_admin.ReplaceTechCardPieceFoldsResponse{
+		Folds:   dto.TechCardPieceFoldsToPb(folds),
+		Written: int32(written),
+		Deleted: int32(deleted),
+	}, nil
+}

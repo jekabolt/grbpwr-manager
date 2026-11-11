@@ -1751,7 +1751,10 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	// per-colourway fabric mapping with the resolved bom_item_id. calloutSync (built from the same
 	// payload) derives each piece's name from its technical-sketch callout and marks moodboard/orphan
 	// links detached (S6/S7/S8).
-	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc)); err != nil {
+	// The folds of the pieces this save deletes go with them (owner decision 11.11); their keys reach the
+	// fold links below.
+	droppedFolds := map[string]bool{}
+	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc), droppedFolds); err != nil {
 		return err
 	}
 	// DXF block aliases (§2.2) resolve piece_line_key against THIS save's pieces, so they run after
@@ -1789,7 +1792,7 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	}
 	// The folds that close on each step (0444), same place and same reason. Checked against the card's
 	// fold table: a restore does not touch that table, and it cuts what the table does not admit.
-	if err := insertTechCardOperationFolds(ctx, db, id, tc); err != nil {
+	if err := insertTechCardOperationFolds(ctx, db, id, tc, droppedFolds); err != nil {
 		return err
 	}
 	// tc.Labels (legacy tech_card_label) is NOT written any more — read-only until the drop (0386, I-19).

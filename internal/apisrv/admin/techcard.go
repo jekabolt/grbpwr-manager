@@ -338,7 +338,10 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 	if req.Id <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "tech card id is required")
 	}
-	pbTc, err := s.readTechCardForResponse(ctx, int(req.Id), req.GetVatCountryCode())
+	// One REPEATABLE READ snapshot: lock_version, the steps' seam links and the seam rows must agree,
+	// or a client gating a seam change on lock_version would pair a version with rows of another one.
+	pbTc, err := s.readTechCardForResponseWith(ctx, int(req.Id), req.GetVatCountryCode(),
+		s.repo.TechCards().GetTechCardByIdConsistent)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +358,14 @@ func (s *Server) GetTechCard(ctx context.Context, req *pb_admin.GetTechCardReque
 // account without costing:read, tokenized pattern urls minted on the response only. Every RPC that
 // answers with the full card owes the same three steps.
 func (s *Server) readTechCardForResponse(ctx context.Context, id int, vatCountryCode string) (*pb_common.TechCard, error) {
-	tc, err := s.repo.TechCards().GetTechCardById(ctx, id)
+	return s.readTechCardForResponseWith(ctx, id, vatCountryCode, s.repo.TechCards().GetTechCardById)
+}
+
+// readTechCardForResponseWith is readTechCardForResponse with the store read chosen by the caller.
+func (s *Server) readTechCardForResponseWith(ctx context.Context, id int, vatCountryCode string,
+	load func(context.Context, int) (*entity.TechCard, error),
+) (*pb_common.TechCard, error) {
+	tc, err := load(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Errorf(codes.NotFound, "tech card not found")
@@ -888,7 +898,9 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	// MOODBOARD LABELS (101): the save may have put pictures on the board or changed a purpose — the
 	// server labels them in the background (never blocks the save, never writes the form).
 	s.designBoardLabelKick(ctx, int(req.Id))
-	return &pb_admin.UpdateTechCardResponse{}, nil
+	// The header UPDATE (`WHERE lock_version = :expected_lock_version`) is the save's only bump, so
+	// the committed version is expected + 1 — the same number finalizeTechCardWrite seeds costs at.
+	return &pb_admin.UpdateTechCardResponse{LockVersion: req.ExpectedLockVersion + 1}, nil
 }
 
 func marshalTechCardSnapshot(card *entity.TechCard, fx dto.CostingFx) (string, error) {

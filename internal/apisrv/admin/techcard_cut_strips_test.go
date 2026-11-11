@@ -246,10 +246,20 @@ func TestCutStripsChangedComparesByValue(t *testing.T) {
 func TestCloneCutStripsDropsTheSeamNotTheLength(t *testing.T) {
 	row := cutPbRow(cutStripA)
 	row.SeamKey = "SEAM"
-	got := cloneCutStripsWithoutSeams([]*pb_common.TechCardCutStrip{row})
+	got := cloneCutStripsWithoutSeams([]*pb_common.TechCardCutStrip{row}, nil)
 	require.Empty(t, got[0].GetSeamKey())
 	require.Equal(t, "700", got[0].GetSizes()[0].GetSeamMm().GetValue())
 	require.Equal(t, "SEAM", row.GetSeamKey(), "the read card is not edited")
+}
+
+func TestCloneCutStripsDropsTheLengthOfAStaleSeam(t *testing.T) {
+	row := cutPbRow(cutStripA)
+	row.SeamKey = "SEAM"
+	got := cloneCutStripsWithoutSeams([]*pb_common.TechCardCutStrip{row},
+		staleSeamCutStrips([]entity.TechCardCutStrip{{LineKey: cutStripA, SeamStale: true}}))
+	require.Empty(t, got[0].GetSeamKey())
+	require.Nil(t, got[0].GetSizes()[0].GetSeamMm(), "a stale seam's length is not known on the clone either")
+	require.Equal(t, "700", row.GetSizes()[0].GetSeamMm().GetValue(), "the read card is not edited")
 }
 
 func cutSnapshotStrip() entity.TechCardCutStrip {

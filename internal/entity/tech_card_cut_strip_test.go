@@ -48,6 +48,10 @@ func TestCutStripLengthMm(t *testing.T) {
 	oneWithManual := cutOneLength(500)
 	oneWithManual.Sizes = []TechCardCutStripSize{cutManual(1, 999)}
 	manualZero := cutFromSeam("100", "0", TechCardCutStripSize{SizeId: 1, ManualCutMm: sql.NullInt32{Valid: true}})
+	staleSeam := seam("100", "0", "700")
+	staleSeam.SeamStale = true
+	staleWithManual := cutFromSeam("90", "20", bothOnOne)
+	staleWithManual.SeamStale = true
 
 	for name, tc := range map[string]struct {
 		strip TechCardCutStrip
@@ -70,6 +74,8 @@ func TestCutStripLengthMm(t *testing.T) {
 		"one length covers any size":        {cutOneLength(500), 77, 500, true},
 		"one length ignores a manual":       {oneWithManual, 1, 500, true},
 		"one length with no number":         {cutOneLength(0), 1, 0, false},
+		"a stale seam has no length":        {staleSeam, 1, 0, false},
+		"a manual wins over a stale seam":   {staleWithManual, 1, 650, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mm, known := CutStripLengthMm(&tc.strip, tc.size)

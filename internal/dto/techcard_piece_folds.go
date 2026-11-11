@@ -34,6 +34,29 @@ var (
 // dictionaries, bounds — everything but piece membership and stored-seq uniqueness, which the store
 // checks). Output-only fields (stale, *_by, *_at) are ignored; UNKNOWN kind / source are refused.
 func TechCardPieceFoldsWriteFromPb(techCardID int, folds []*pb_common.TechCardPieceFold, by string) (entity.TechCardPieceFoldsWrite, error) {
+	return techCardPieceFoldsWriteFromPb(techCardID, folds, by, false)
+}
+
+// TechCardPieceFoldsReplaceFromPb converts and validates an atomic delete+upsert payload. Either
+// side may be empty; the entity validator also rejects keys named on both sides.
+func TechCardPieceFoldsReplaceFromPb(techCardID int, deleteFoldKeys []string, folds []*pb_common.TechCardPieceFold, by string) (entity.TechCardPieceFoldsReplace, error) {
+	write, err := techCardPieceFoldsWriteFromPb(techCardID, folds, by, true)
+	in := entity.TechCardPieceFoldsReplace{
+		TechCardId:     techCardID,
+		DeleteFoldKeys: append([]string(nil), deleteFoldKeys...),
+		Folds:          write.Folds,
+		By:             by,
+	}
+	if err != nil {
+		return in, err
+	}
+	if err := entity.ValidateTechCardPieceFoldsReplace(&in); err != nil {
+		return in, err
+	}
+	return in, nil
+}
+
+func techCardPieceFoldsWriteFromPb(techCardID int, folds []*pb_common.TechCardPieceFold, by string, allowEmpty bool) (entity.TechCardPieceFoldsWrite, error) {
 	// BOUNDS BEFORE ANY COPY (the seams' rule): counts and key lengths on the wire messages themselves.
 	if len(folds) > entity.TechCardPieceFoldMaxRowsPerCard {
 		return entity.TechCardPieceFoldsWrite{}, entity.NewFieldViolation("folds", "too_many", "",
@@ -89,8 +112,10 @@ func TechCardPieceFoldsWriteFromPb(techCardID int, folds []*pb_common.TechCardPi
 			Note:         f.GetNote(),
 		})
 	}
-	if err := entity.ValidateTechCardPieceFoldsWrite(&in); err != nil {
-		return in, err
+	if !allowEmpty || len(in.Folds) > 0 {
+		if err := entity.ValidateTechCardPieceFoldsWrite(&in); err != nil {
+			return in, err
+		}
 	}
 	return in, nil
 }

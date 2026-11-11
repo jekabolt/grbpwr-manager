@@ -412,7 +412,7 @@ func TestTechCardFoldLinksFollowTheFusingRebuild(t *testing.T) {
 			card, _ = rig.read()
 			require.Equal(t, []string{opFoldBack}, ownerOf(card, opFoldPieceBack), "a refused save changes nothing")
 
-			// ── a piece leaving the card takes its fold's link along: no step could ever close it ──
+			// ── a piece leaving the card takes its fold and the fold's link along ──
 			require.NoError(t, write(map[string]bool{pieceCuff: true}, false, "",
 				sew("a", nil, opFoldPieceFlap), auto("cuff step", true, []string{foldCuff}, pieceCuff)))
 			// The API strips the dead input before the first validation (PrepareTechCardUpdateAssembly).
@@ -421,7 +421,7 @@ func TestTechCardFoldLinksFollowTheFusingRebuild(t *testing.T) {
 			require.NoError(t, write(map[string]bool{}, false, pieceCuff, sew("a", nil, opFoldPieceFlap), cuffStep))
 			card, links = rig.read()
 			require.NotContains(t, links, "cuff step")
-			require.Len(t, card.PieceFolds, 4, "the fold row is not this save's to delete")
+			require.Len(t, card.PieceFolds, 3, "the fold goes with its piece, in the same save (owner decision 11.11)")
 
 			// ── the move would reverse the piece's folds: refused by the moved link's address ──
 			reversal := func() []entity.TechCardOperation {

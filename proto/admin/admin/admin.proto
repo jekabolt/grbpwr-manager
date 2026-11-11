@@ -2979,6 +2979,30 @@ service AdminService {
     };
   }
 
+  // ChangeTechCardSeams applies one seam gesture atomically: upsert rows, link them to steps, detach
+  // them from steps and delete rows, all in ONE transaction under the card's lock_version.
+  //
+  // expected_lock_version is REQUIRED (absent = InvalidArgument); a different stored version refuses
+  // with FailedPrecondition `lock_version_moved` and nothing written. A request that changed anything
+  // bumps lock_version exactly once, and the response carries the new version.
+  //
+  // Order: upsert (one pair and ranges, one row: a new key whose pair and ranges match a row of the
+  // card — a stored row by what it holds after this upsert — or an earlier row of this request goes
+  // onto that row's key; rows landing on one key are written once, key_map reports every sent key and
+  // links of a sent key follow its row) → link (appended to the step) → detach (a row is deleted only
+  // when THIS call removed a link and no step links it any more; an absent link is a no-op) → delete
+  // (unconditional, also unlinks). The caps — 400 rows per card, 64 links per step — hold on the state
+  // after the whole change: a replace at the cap lands, a change that ends over a cap and grew it is
+  // refused whole (upsert / link[i] too_many). Contradictions — the same (step, key) in link and
+  // detach, a key in link or upsert and in delete, a step number unknown or not unique on the card —
+  // refuse the whole request. A released card refuses (the frozen wording). wr(tech_cards).
+  rpc ChangeTechCardSeams(ChangeTechCardSeamsRequest) returns (ChangeTechCardSeamsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/seams/change"
+      body: "*"
+    };
+  }
+
   // UpsertTechCardPieceFolds stores fold lines on the card's pieces (placket, cuff, hem turn-up) —
   // construction data the paper doll folds before the solve.
   //
@@ -2998,6 +3022,19 @@ service AdminService {
   rpc DeleteTechCardPieceFolds(DeleteTechCardPieceFoldsRequest) returns (DeleteTechCardPieceFoldsResponse) {
     option (google.api.http) = {
       post: "/api/admin/tech-card/{tech_card_id}/piece-folds:delete"
+      body: "*"
+    };
+  }
+
+  // ReplaceTechCardPieceFolds deletes and upserts fold rows of one card in ONE transaction: the
+  // deletes first (their keys leave the steps, as DeleteTechCardPieceFolds), then the keyed upsert,
+  // then the checks over the result (seq unique per piece, ≤ 16 per piece, ≤ 200 per card, step
+  // order). Any refusal leaves the card as it was. A key may not be in both lists; both empty is
+  // refused. NO lock_version: it never addresses steps by number, it only takes deleted keys off
+  // them. Same lock, released-card refusal and full-list echo as UpsertTechCardPieceFolds.
+  rpc ReplaceTechCardPieceFolds(ReplaceTechCardPieceFoldsRequest) returns (ReplaceTechCardPieceFoldsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/piece-folds:replace"
       body: "*"
     };
   }
@@ -10094,7 +10131,11 @@ message UpdateTechCardRequest {
   string save_session_id = 5;
 }
 
-message UpdateTechCardResponse {}
+message UpdateTechCardResponse {
+  // The card's lock_version after this save: expected_lock_version + 1 (the save bumps it exactly
+  // once). The client sends it as its next expected_lock_version without re-reading the card.
+  int32 lock_version = 1;
+}
 
 message ListTechCardSnapshotsRequest {
   int32 tech_card_id = 1;
@@ -12030,6 +12071,47 @@ message DeleteTechCardSeamsResponse {
   int32 deleted = 2; // rows actually removed
 }
 
+// SeamLink names one step → seam link by the step's operation_number on the card.
+message SeamLink {
+  int32 operation_number = 1;
+  string seam_key = 2;
+}
+
+// OperationSeamKeys is one step's linked seam keys, in the step's order.
+message OperationSeamKeys {
+  int32 operation_number = 1;
+  repeated string seam_keys = 2;
+}
+
+// SeamKeyMap reports the key a sent upsert row was stored under (stored differs from sent when the
+// row went onto a row of the same pair and ranges: a stored row, or an earlier row of this request).
+message SeamKeyMap {
+  string sent = 1;
+  string stored = 2;
+}
+
+message ChangeTechCardSeamsRequest {
+  int32 tech_card_id = 1;
+  // Required: the card's lock_version the client last read.
+  optional int32 expected_lock_version = 2;
+  // Rows to insert or replace whole, by seam_key. Output-only fields (stale, *_by, *_at) are ignored.
+  repeated common.TechCardSeam upsert = 3;
+  // Rows to delete by seam_key; also unlinked from every step. Unknown keys are not an error.
+  repeated string delete = 4;
+  // Links to append; keys may name rows of this request's upsert by their sent key.
+  repeated SeamLink link = 5;
+  // Links to remove; keys may name rows of this request's upsert by their sent key.
+  repeated SeamLink detach = 6;
+}
+
+message ChangeTechCardSeamsResponse {
+  repeated common.TechCardSeam seams = 1; // the card's full list after the change, stale resolved
+  repeated OperationSeamKeys links = 2; // every numbered step of the card with its linked keys, in step order
+  int32 lock_version = 3; // the card's version after the change
+  repeated SeamKeyMap key_map = 4; // one entry per upsert row
+  repeated string deleted_keys = 5; // rows this change removed (detach clean-up and delete)
+}
+
 message UpsertTechCardPieceFoldsRequest {
   int32 tech_card_id = 1;
   // Rows to insert or replace whole, by fold_key. Output-only fields (stale, *_by, *_at) are ignored.
@@ -12049,6 +12131,20 @@ message DeleteTechCardPieceFoldsRequest {
 message DeleteTechCardPieceFoldsResponse {
   repeated common.TechCardPieceFold folds = 1; // the card's full list after the delete, stale resolved
   int32 deleted = 2; // rows actually removed
+}
+
+message ReplaceTechCardPieceFoldsRequest {
+  int32 tech_card_id = 1;
+  // Keys to delete first; unknown keys are not an error. May be empty.
+  repeated string delete_fold_keys = 2;
+  // Rows to insert or replace whole, by fold_key, after the deletes. May be empty.
+  repeated common.TechCardPieceFold folds = 3;
+}
+
+message ReplaceTechCardPieceFoldsResponse {
+  repeated common.TechCardPieceFold folds = 1; // the card's full list after the write, stale resolved
+  int32 written = 2; // rows inserted or replaced
+  int32 deleted = 3; // rows actually removed
 }
 
 message AddTechCardSeamDecisionsRequest {

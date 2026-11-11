@@ -13,6 +13,7 @@ func TestPieceFoldWritesLockTheCardRowFirstAndNeverBumpLockVersion(t *testing.T)
 	for _, sig := range []string{
 		"func (s *Store) UpsertTechCardPieceFolds",
 		"func (s *Store) DeleteTechCardPieceFolds",
+		"func (s *Store) ReplaceTechCardPieceFolds",
 	} {
 		t.Run(sig, func(t *testing.T) {
 			body := funcBody(t, "piece_folds.go", sig)
