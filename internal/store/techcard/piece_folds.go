@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -193,6 +194,96 @@ type pieceFoldWriteOpts struct {
 	// stale: fold keys written with seamFingerprintStale instead of today's fingerprint. An archive
 	// import brings a fold the source read as stale, and it must not land as «drawn on these patterns».
 	stale map[string]bool
+	// restamp: the rows are the ones this transaction already wrote, with the same piece and seq, and
+	// only their fingerprint is taken again (restampRestoredPieceFolds). The step links were settled
+	// against exactly these rows, so the step-order rule they were judged by cannot have moved; judging
+	// it again in another walk order must not fail the restore.
+	restamp bool
+}
+
+// insertRestoredPieceFolds re-creates the snapshot folds of the pieces a restore brings back
+// (TechCardInsert.RestorePieceFolds, entity.PlanTechCardPieceFoldsRestore). It runs inside the card
+// save, after the piece upsert has dropped the folds of the pieces this save deletes and before the
+// steps' fold links settle against the table, so the snapshot's links to these rows survive. A row
+// that cannot land is skipped and counted, never refused. A re-created key leaves dropped: the links
+// below must keep it although the piece it sat on today is gone.
+func insertRestoredPieceFolds(ctx context.Context, db dependency.DB, techCardID int, tc *entity.TechCardInsert, dropped map[string]bool) error {
+	r := tc.RestorePieceFolds
+	if r == nil {
+		return nil
+	}
+	r.Recreated = nil // txFunc may retry the transaction: never carry rows of an aborted attempt
+	if len(r.Folds) == 0 {
+		return nil
+	}
+	// The store is the last gate before the JSON columns: each row is validated again, alone.
+	valid := make([]entity.TechCardPieceFoldInput, 0, len(r.Folds))
+	invalid := 0
+	for _, f := range r.Folds {
+		one := entity.TechCardPieceFoldsWrite{TechCardId: techCardID, By: tc.UpdatedBy, Folds: []entity.TechCardPieceFoldInput{f}}
+		if err := entity.ValidateTechCardPieceFoldsWrite(&one); err != nil {
+			invalid++
+			continue
+		}
+		valid = append(valid, one.Folds[0])
+	}
+	pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT line_key FROM tech_card_piece
+		WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+	if err != nil {
+		return fmt.Errorf("load piece keys of tech card %d: %w", techCardID, err)
+	}
+	held, err := storeutil.QueryListNamed[struct {
+		FoldKey      string `db:"fold_key"`
+		PieceLineKey string `db:"piece_line_key"`
+	}](ctx, db, `
+		SELECT fold_key, piece_line_key FROM tech_card_piece_fold WHERE tech_card_id = :id`,
+		map[string]any{"id": techCardID})
+	if err != nil {
+		return fmt.Errorf("load folds of tech card %d: %w", techCardID, err)
+	}
+	today := make([]entity.TechCardPieceFoldHeld, 0, len(held))
+	for _, h := range held {
+		today = append(today, entity.TechCardPieceFoldHeld{FoldKey: h.FoldKey, PieceLineKey: h.PieceLineKey})
+	}
+	plan, skipped := entity.PlanTechCardPieceFoldsRestore(valid, pieces, today)
+	if invalid > 0 {
+		if skipped == nil {
+			skipped = map[string]int{}
+		}
+		skipped[entity.TechCardFoldRestoreInvalid] += invalid
+	}
+	if len(skipped) > 0 {
+		attrs := []any{slog.Int("tech_card_id", techCardID), slog.Int("recreated", len(plan))}
+		for reason, n := range skipped {
+			attrs = append(attrs, slog.Int("skipped_"+reason, n))
+		}
+		slog.Default().InfoContext(ctx, "restore re-creates folds of the pieces it brings back; some rows stay out", attrs...)
+	}
+	if len(plan) == 0 {
+		return nil
+	}
+	if err := writeTechCardPieceFoldsTx(ctx, db, techCardID, plan, tc.UpdatedBy, pieceFoldWriteOpts{stale: r.Stale}); err != nil {
+		return err
+	}
+	for _, f := range plan {
+		delete(dropped, entity.NormalizeTechCardSeamKey(f.FoldKey)) // dropped is keyed normalised (materials.go)
+	}
+	r.Recreated = plan
+	return nil
+}
+
+// restampRestoredPieceFolds takes the fingerprint of the re-created folds again once the restore has
+// put the snapshot's sheets and scope data in place: the early write (insertRestoredPieceFolds) ran
+// before them, and a fingerprint over that half-restored geometry would read stale, or fresh, for the
+// wrong reason. The same write, the same rows; a key the snapshot read as stale stays stale.
+func restampRestoredPieceFolds(ctx context.Context, db dependency.DB, techCardID int, tc *entity.TechCardInsert) error {
+	r := tc.RestorePieceFolds
+	if r == nil || len(r.Recreated) == 0 {
+		return nil
+	}
+	return writeTechCardPieceFoldsTx(ctx, db, techCardID, r.Recreated, tc.UpdatedBy,
+		pieceFoldWriteOpts{stale: r.Stale, restamp: true})
 }
 
 // writeTechCardPieceFoldsTx IS THE FOLD WRITE; the caller holds the card row and checked it is mutable.
@@ -302,6 +393,9 @@ func writeTechCardPieceFoldsTx(ctx context.Context, db dependency.DB, techCardID
 	}
 	if err := requireUniqueFoldSeqTx(ctx, db, techCardID, folds); err != nil {
 		return err
+	}
+	if opts.restamp {
+		return nil
 	}
 	return requireFoldLinkOrderTx(ctx, db, techCardID, folds)
 }

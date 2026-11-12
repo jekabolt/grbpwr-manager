@@ -315,6 +315,15 @@ func TestTechCardSeamChange(t *testing.T) {
 		})
 		require.Empty(t, res.DeletedKeys)
 		require.Equal(t, map[int][]string{10: {}, 20: {key(43)}, 30: {key(40)}}, state(t, id).Links)
+
+		// The same move with the row rewritten: the link on the new step keeps it, no contradiction.
+		res = mustChange(t, id, v1+2, entity.TechCardSeamsChange{
+			Upsert: []entity.TechCardSeamInput{edge(key(40), "F#1", "B#1")},
+			Link:   []entity.TechCardSeamLink{link(10, key(40))},
+			Detach: []entity.TechCardSeamLink{link(30, key(40))},
+		})
+		require.Empty(t, res.DeletedKeys)
+		require.Equal(t, map[int][]string{10: {key(40)}, 20: {key(43)}, 30: {}}, state(t, id).Links)
 	})
 
 	t.Run("contradictory requests are refused whole", func(t *testing.T) {
@@ -361,6 +370,10 @@ func TestTechCardSeamChange(t *testing.T) {
 				Link:   []entity.TechCardSeamLink{link(10, key(50))},
 				Detach: []entity.TechCardSeamLink{link(10, key(52))},
 			}, "detach[0] contradicts_link"},
+			{"a row written and its last link detached", entity.TechCardSeamsChange{
+				Upsert: []entity.TechCardSeamInput{stored},
+				Detach: []entity.TechCardSeamLink{link(10, key(50))},
+			}, "detach[0] contradicts_upsert"},
 		} {
 			_, err := change(id, seed.Version, tc.c)
 			require.Error(t, err, tc.name)

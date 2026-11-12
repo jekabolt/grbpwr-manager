@@ -515,7 +515,7 @@ func TestRestorePayloadSpeaksEveryField(t *testing.T) {
 	})
 	require.NotEmpty(t, rawUnspoken, "the fixture must leave absences in the raw read model, or the probe proves nothing")
 
-	in, err := restoreTechCardPayload(frozen.GetTechCard(), now, current)
+	in, err := restoreTechCardPayload(frozen.GetTechCard(), now, current, nil)
 	require.NoError(t, err)
 	tc, err := dto.ConvertPbTechCardInsertToEntity(in)
 	require.NoError(t, err)

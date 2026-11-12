@@ -264,6 +264,22 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 		if left > 0 {
 			continue
 		}
+		// A row this change wrote would go again right here: upsert + detach of its last link is the
+		// upsert + delete the request validation refuses, only it shows on the stored links. Refused
+		// whole (the transaction rolls the upsert and the detach back). A move keeps working: link the
+		// new step in the same change and the detach leaves a link behind.
+		if _, upserted := rowAt[d.SeamKey]; upserted {
+			at := 0
+			for j, m := range keyMap { // keyMap runs in request order: the first upsert landing on the row
+				if m.Stored == d.SeamKey {
+					at = j
+					break
+				}
+			}
+			return zero, entity.NewFieldViolation(fmt.Sprintf("detach[%d]", i), "contradicts_upsert",
+				fmt.Sprintf("upsert[%d]", at),
+				"this detach takes the last link of a row the same change writes, so the row would be deleted — link it to a step or drop the upsert")
+		}
 		n, err := deleteTechCardSeamsTx(ctx, db, id, []string{d.SeamKey})
 		if err != nil {
 			return zero, err

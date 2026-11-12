@@ -893,6 +893,11 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			return nil, err
 		}
 	}
+	// The folds it re-created early (insertRestoredPieceFolds) take their fingerprint again here, on the
+	// same restored pieces and sheets as the seams.
+	if err := restampRestoredPieceFolds(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
 	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 	action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)
 	if tc.SnapshotReason != "" {
@@ -1757,6 +1762,11 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 	if err := upsertTechCardPieces(ctx, db, id, tc.Pieces, bomRes, buildCalloutSync(tc), droppedFolds); err != nil {
 		return err
 	}
+	// A restore brings back the folds of the pieces that hold none now — after the drop above, before
+	// the fold links below settle against the table. Every other save has RestorePieceFolds nil.
+	if err := insertRestoredPieceFolds(ctx, db, id, tc, droppedFolds); err != nil {
+		return err
+	}
 	// DXF block aliases (§2.2) resolve piece_line_key against THIS save's pieces, so they run after
 	// the piece upsert — the resolveUsagePiece ordering precedent.
 	if err := upsertTechCardPieceDxfAliases(ctx, db, id, tc.PieceDxfAliasesSet, tc.PieceDxfAliases, tc.UpdatedBy,
@@ -1791,7 +1801,8 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 		return err
 	}
 	// The folds that close on each step (0444), same place and same reason. Checked against the card's
-	// fold table: a restore does not touch that table, and it cuts what the table does not admit.
+	// fold table, which on a restore already holds the rows it re-created above; a restore cuts what
+	// the table does not admit.
 	if err := insertTechCardOperationFolds(ctx, db, id, tc, droppedFolds); err != nil {
 		return err
 	}
