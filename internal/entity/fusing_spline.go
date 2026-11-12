@@ -330,6 +330,25 @@ func validatePieceFusingSpline(field string, spline *TechCardPieceFusingSpline) 
 		return NewFieldViolation(field+".points", "a fusing spline needs 3 to 64 points", "",
 			"add or remove points until the closed outline has between 3 and 64")
 	}
+	if !ValidPieceFusingGradeMode(spline.GradeMode) {
+		return NewFieldViolation(field+".grade_mode", "unknown fusing grade mode", string(spline.GradeMode),
+			"pick fixed, follow line, or grow")
+	}
+	if spline.GradeMode == PieceFusingGradeModeFollowLine && spline.Anchor == nil {
+		return NewFieldViolation(field+".anchor", "a ring that follows a line needs its line", "",
+			"pick the internal line on the piece, or switch the ring to fixed")
+	}
+	if spline.GradeMode != PieceFusingGradeModeFollowLine && spline.Anchor != nil {
+		return NewFieldViolation(field+".anchor", "an anchor belongs only to a ring that follows a line",
+			string(spline.GradeMode), "switch the ring to follow line, or clear the anchor")
+	}
+	if spline.Anchor != nil {
+		ax, ay := spline.Anchor.X.InexactFloat64(), spline.Anchor.Y.InexactFloat64()
+		if !finiteFusingSplinePoint(fusingSplineFloatPoint{x: ax, y: ay}) {
+			return NewFieldViolation(field+".anchor", "the anchor is too far away", "",
+				"pick the internal line on the piece again")
+		}
+	}
 	flat, err := flattenPieceFusingSpline(spline)
 	if err != nil {
 		return NewFieldViolation(field+".points", "the fusing spline cannot be flattened safely", err.Error(),

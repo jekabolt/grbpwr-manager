@@ -4300,6 +4300,49 @@ type TechCardPieceFusingEdge struct {
 	Edge    int
 	StartMm decimal.Decimal
 	EndMm   decimal.Decimal
+	// StartMode / EndMode say what the size carry-over holds constant for that end. The empty
+	// value is the millimetre default, so rows stored before the modes existed read unchanged.
+	StartMode TechCardPieceFusingEndMode
+	EndMode   TechCardPieceFusingEndMode
+	// StartModeOmitted / EndModeOmitted mean the wire carried no mode at all (a client that predates
+	// them), as opposed to an explicit millimetre choice: the stored mode of the same edge is kept.
+	// Write-path only; never stored and never set on a read.
+	StartModeOmitted bool
+	EndModeOmitted   bool
+}
+
+// TechCardPieceFusingEndMode is how one strip end travels across sizes; "" is fixed millimetres.
+type TechCardPieceFusingEndMode string
+
+const (
+	PieceFusingEndModeMm    TechCardPieceFusingEndMode = ""
+	PieceFusingEndModeNotch TechCardPieceFusingEndMode = "notch"
+	PieceFusingEndModeShare TechCardPieceFusingEndMode = "share"
+)
+
+// ValidPieceFusingEndMode reports whether mode is one of the stored spellings.
+func ValidPieceFusingEndMode(mode TechCardPieceFusingEndMode) bool {
+	return mode == PieceFusingEndModeMm || mode == PieceFusingEndModeNotch || mode == PieceFusingEndModeShare
+}
+
+// TechCardPieceFusingGradeMode is how one zone ring travels across sizes; "" keeps its shape.
+type TechCardPieceFusingGradeMode string
+
+const (
+	PieceFusingGradeModeFixed      TechCardPieceFusingGradeMode = ""
+	PieceFusingGradeModeFollowLine TechCardPieceFusingGradeMode = "follow_line"
+	PieceFusingGradeModeGrow       TechCardPieceFusingGradeMode = "grow"
+)
+
+// ValidPieceFusingGradeMode reports whether mode is one of the stored spellings.
+func ValidPieceFusingGradeMode(mode TechCardPieceFusingGradeMode) bool {
+	return mode == PieceFusingGradeModeFixed || mode == PieceFusingGradeModeFollowLine || mode == PieceFusingGradeModeGrow
+}
+
+// TechCardPieceFusingAnchor is the base-size point that picks the internal line a ring follows.
+type TechCardPieceFusingAnchor struct {
+	X decimal.Decimal
+	Y decimal.Decimal
 }
 
 // TechCardPieceFusingRect is a piece-local rectangle in millimetres.
@@ -4320,6 +4363,79 @@ type TechCardPieceFusingSplinePoint struct {
 
 type TechCardPieceFusingSpline struct {
 	Points []TechCardPieceFusingSplinePoint
+	// GradeMode and Anchor travel together: Anchor is set exactly when GradeMode follows a line.
+	GradeMode TechCardPieceFusingGradeMode
+	Anchor    *TechCardPieceFusingAnchor
+	// GradeModeOmitted means the wire carried no mode at all (a client that predates it), as opposed
+	// to an explicit fixed choice: an unchanged ring keeps its stored mode and anchor. Write-path only.
+	GradeModeOmitted bool
+}
+
+// CarryOmittedFusingModesFrom keeps the stored carry-over modes for whatever an older client sent
+// without them. Such a client round-trips geometry it understands and silently drops fields it has
+// never heard of, so its save would otherwise reset every ring to fixed and every end to mm. An edge
+// is matched by its outline segment; a ring by its position and only while its points are untouched,
+// because a ring the old client reshaped or reordered is no longer the ring the mode was chosen for.
+func (p *TechCardPiece) CarryOmittedFusingModesFrom(stored *TechCardPiece) {
+	if p == nil || stored == nil {
+		return
+	}
+	storedEdges := make(map[int]TechCardPieceFusingEdge, len(stored.FusingEdges))
+	for _, edge := range stored.FusingEdges {
+		storedEdges[edge.Edge] = edge
+	}
+	for i := range p.FusingEdges {
+		edge := &p.FusingEdges[i]
+		was, ok := storedEdges[edge.Edge]
+		if !ok {
+			continue
+		}
+		if edge.StartModeOmitted {
+			edge.StartMode = was.StartMode
+		}
+		if edge.EndModeOmitted {
+			edge.EndMode = was.EndMode
+		}
+	}
+	if p.FusingZone == nil || stored.FusingZone == nil || p.FusingZone == stored.FusingZone ||
+		p.FusingZone.Spline == nil || stored.FusingZone.Spline == nil {
+		return
+	}
+	carry := func(ring, was *TechCardPieceFusingSpline) {
+		if !ring.GradeModeOmitted || len(ring.Points) != len(was.Points) {
+			return
+		}
+		for i := range ring.Points {
+			if !ring.Points[i].X.Equal(was.Points[i].X) || !ring.Points[i].Y.Equal(was.Points[i].Y) ||
+				ring.Points[i].Corner != was.Points[i].Corner {
+				return
+			}
+		}
+		ring.GradeMode = was.GradeMode
+		ring.Anchor = nil
+		if was.Anchor != nil {
+			anchor := *was.Anchor
+			ring.Anchor = &anchor
+		}
+	}
+	// The incoming spline may be the very pointer other code still holds; copy before writing.
+	spline := *p.FusingZone.Spline
+	carry(&spline, stored.FusingZone.Spline)
+	zone := *p.FusingZone
+	zone.Spline = &spline
+	zone.Islands = append([]TechCardPieceFusingSpline(nil), p.FusingZone.Islands...)
+	for i := range zone.Islands {
+		if i < len(stored.FusingZone.Islands) {
+			carry(&zone.Islands[i], &stored.FusingZone.Islands[i])
+		}
+	}
+	zone.Holes = append([]TechCardPieceFusingSpline(nil), p.FusingZone.Holes...)
+	for i := range zone.Holes {
+		if i < len(stored.FusingZone.Holes) {
+			carry(&zone.Holes[i], &stored.FusingZone.Holes[i])
+		}
+	}
+	p.FusingZone = &zone
 }
 
 // TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. All shape arms may be empty
@@ -4706,6 +4822,14 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 		if edge.StartMm.IsNegative() || edge.EndMm.IsNegative() {
 			return NewFieldViolation(edgeField, "edge-end offsets cannot be negative", "",
 				"use zero for no trim from that end")
+		}
+		if !ValidPieceFusingEndMode(edge.StartMode) {
+			return NewFieldViolation(edgeField+".start_mode", "unknown strip end mode", string(edge.StartMode),
+				"pick mm, notch, or share")
+		}
+		if !ValidPieceFusingEndMode(edge.EndMode) {
+			return NewFieldViolation(edgeField+".end_mode", "unknown strip end mode", string(edge.EndMode),
+				"pick mm, notch, or share")
 		}
 	}
 	if p.FusingZone != nil {

@@ -797,6 +797,9 @@ func carryOmittedPieceFusingDetailsFrom(stored *entity.TechCard, incoming *entit
 		if piece.FusingZoneOmitted {
 			piece.FusingZone = storedPiece.FusingZone
 		}
+		// Inside a zone or edge list that DID arrive, an older client still drops the per-ring and
+		// per-end carry-over modes it has never heard of.
+		piece.CarryOmittedFusingModesFrom(storedPiece)
 		if piece.FusingInsetMmOmitted {
 			piece.FusingInsetMm = storedPiece.FusingInsetMm
 		}

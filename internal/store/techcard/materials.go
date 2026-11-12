@@ -67,6 +67,9 @@ type pieceFusingEdgeJSON struct {
 	Edge    int         `json:"edge"`
 	StartMm json.Number `json:"start_mm"`
 	EndMm   json.Number `json:"end_mm"`
+	// Absent for the millimetre default, so rows written before the modes existed stay byte-identical.
+	StartMode string `json:"start_mode,omitempty"`
+	EndMode   string `json:"end_mode,omitempty"`
 }
 
 type pieceFusingZoneJSON struct {
@@ -79,10 +82,16 @@ type pieceFusingZoneJSON struct {
 
 type pieceFusingSplineJSON struct {
 	Pts [][]json.Number `json:"pts"`
+	// Absent for a fixed ring, so zones written before the modes existed stay byte-identical.
+	GradeMode string        `json:"grade_mode,omitempty"`
+	Anchor    []json.Number `json:"anchor,omitempty"`
 }
 
 func pieceFusingSplineJSONValue(spline *entity.TechCardPieceFusingSpline) pieceFusingSplineJSON {
-	row := pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(spline.Points))}
+	row := pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(spline.Points)), GradeMode: string(spline.GradeMode)}
+	if spline.Anchor != nil {
+		row.Anchor = []json.Number{json.Number(spline.Anchor.X.String()), json.Number(spline.Anchor.Y.String())}
+	}
 	for _, point := range spline.Points {
 		corner := json.Number("0")
 		if point.Corner {
@@ -103,6 +112,7 @@ func pieceFusingEdgesJSON(edges []entity.TechCardPieceFusingEdge) (any, error) {
 	for _, edge := range edges {
 		rows = append(rows, pieceFusingEdgeJSON{
 			Edge: edge.Edge, StartMm: json.Number(edge.StartMm.String()), EndMm: json.Number(edge.EndMm.String()),
+			StartMode: string(edge.StartMode), EndMode: string(edge.EndMode),
 		})
 	}
 	raw, err := json.Marshal(rows)
@@ -167,7 +177,28 @@ func decodePieceFusingSplineJSON(row pieceFusingSplineJSON, field, pieceKey stri
 			X: x, Y: y, Corner: tuple[2].String() == "1",
 		})
 	}
-	return entity.TechCardPieceFusingSpline{Points: points}, nil
+	out := entity.TechCardPieceFusingSpline{Points: points, GradeMode: entity.TechCardPieceFusingGradeMode(row.GradeMode)}
+	if !entity.ValidPieceFusingGradeMode(out.GradeMode) {
+		return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s grade_mode of piece %q: got %q", field, pieceKey, row.GradeMode)
+	}
+	if (out.GradeMode == entity.PieceFusingGradeModeFollowLine) != (len(row.Anchor) > 0) {
+		return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s of piece %q: anchor and follow_line must come together", field, pieceKey)
+	}
+	if len(row.Anchor) > 0 {
+		if len(row.Anchor) != 2 {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor of piece %q: has %d values, want 2", field, pieceKey, len(row.Anchor))
+		}
+		x, err := decimal.NewFromString(row.Anchor[0].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor x of piece %q: %w", field, pieceKey, err)
+		}
+		y, err := decimal.NewFromString(row.Anchor[1].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor y of piece %q: %w", field, pieceKey, err)
+		}
+		out.Anchor = &entity.TechCardPieceFusingAnchor{X: x, Y: y}
+	}
+	return out, nil
 }
 
 func decodePieceFusingJSON(p *entity.TechCardPiece) error {
@@ -186,9 +217,15 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 			if err != nil {
 				return fmt.Errorf("decode fusing_edges end_mm of piece %q: %w", p.LineKey, err)
 			}
-			p.FusingEdges = append(p.FusingEdges, entity.TechCardPieceFusingEdge{
+			edge := entity.TechCardPieceFusingEdge{
 				Edge: row.Edge, StartMm: start, EndMm: end,
-			})
+				StartMode: entity.TechCardPieceFusingEndMode(row.StartMode),
+				EndMode:   entity.TechCardPieceFusingEndMode(row.EndMode),
+			}
+			if !entity.ValidPieceFusingEndMode(edge.StartMode) || !entity.ValidPieceFusingEndMode(edge.EndMode) {
+				return fmt.Errorf("decode fusing_edges modes of piece %q: got %q / %q", p.LineKey, row.StartMode, row.EndMode)
+			}
+			p.FusingEdges = append(p.FusingEdges, edge)
 		}
 	}
 	if len(p.FusingZoneRaw) == 0 {
