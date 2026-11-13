@@ -106,6 +106,7 @@ func normalizeTechCardDiffPair(before, after *pb_common.TechCardInsert) {
 		after.PieceDxfAliases = cloneMessage(before.PieceDxfAliases)
 	}
 	materializePreservedGarmentLabelGeometry(before, after)
+	materializePieceFusingBase(before, after)
 	if !after.GetLabelsAware() {
 		after.GarmentLabels = cloneMessages(before.GetGarmentLabels())
 		after.PackagingItems = cloneMessages(before.GetPackagingItems())
@@ -230,6 +231,38 @@ func materializePreservedGarmentLabelGeometry(before, after *pb_common.TechCardI
 				seen[key] = true
 				op.LabelKeys = append(op.LabelKeys, key)
 			}
+		}
+	}
+}
+
+// materializePieceFusingBase mirrors the 0468 carry of the markup's staleness key: an absent key takes
+// the stored key of the piece with the same line key, and a present empty key is the read form of "no
+// key" (absent). So an older tab's save, or a clear of a key that was never stored, is not a pieces
+// change; a real new key is.
+func materializePieceFusingBase(before, after *pb_common.TechCardInsert) {
+	empty := func(base *pb_common.TechCardPieceFusingBase) bool {
+		return base.GetBaseSizeId() == 0 && base.GetContourSignature() == ""
+	}
+	stored := make(map[string]*pb_common.TechCardPieceFusingBase, len(before.GetPieces()))
+	for _, piece := range before.GetPieces() {
+		if piece == nil {
+			continue
+		}
+		if empty(piece.GetFusingBase()) {
+			piece.FusingBase = nil
+		}
+		if key := strings.TrimSpace(piece.GetLineKey()); key != "" {
+			stored[key] = piece.GetFusingBase()
+		}
+	}
+	for _, piece := range after.GetPieces() {
+		if piece == nil {
+			continue
+		}
+		if piece.FusingBase == nil {
+			piece.FusingBase = cloneMessage(stored[strings.TrimSpace(piece.GetLineKey())])
+		} else if empty(piece.FusingBase) {
+			piece.FusingBase = nil
 		}
 	}
 }

@@ -812,6 +812,12 @@ func carryOmittedPieceFusingDetailsFrom(stored *entity.TechCard, incoming *entit
 		if piece.FusingDartsOmitted {
 			piece.FusingDarts = storedPiece.FusingDarts
 		}
+		// The markup's staleness key (0468) is outside the digest; it is carried so the payload the
+		// store and the fusing reconciliation see matches the row the guarded UPDATE will keep.
+		if piece.FusingBaseOmitted {
+			piece.FusingBaseSizeId = storedPiece.FusingBaseSizeId
+			piece.FusingBaseSignature = storedPiece.FusingBaseSignature
+		}
 		piece.NormalizeFusing()
 	}
 }

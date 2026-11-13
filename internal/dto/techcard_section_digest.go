@@ -724,6 +724,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if p.FusingDarts.Valid {
 			fusingDetails = append(fusingDetails, []any{"darts", p.FusingDarts.String})
 		}
+		// The markup's staleness key (FusingBaseSizeId / FusingBaseSignature, 0468) is deliberately
+		// NOT here: it records which pattern the edges / zone were drawn against, not anything the
+		// shop floor cuts or fuses. Hashing it would make an approval go stale the moment a client
+		// restamps the key after a pattern replacement that left the markup unchanged — the same
+		// reasoning that keeps the topstitch anchors' source fingerprint and the callout client_ref out.
 		if len(fusingDetails) > 1 {
 			row = append(row, fusingDetails)
 		}

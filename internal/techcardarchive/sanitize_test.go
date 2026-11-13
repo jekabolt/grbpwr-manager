@@ -345,8 +345,8 @@ var sanitizeGuardSubstrings = []string{
 // one is the same unchecked list under a different name. A stale exclusion (a name no longer
 // raised) fails this test, so the file cannot accumulate them.
 //
-// EMPTY, and measured rather than assumed. The walk reaches 269 distinct field names from
-// TechCardInsert and the substring list above raises exactly seven of them: the four in
+// Measured rather than assumed. Before 0468 the walk reached 269 distinct field names from
+// TechCardInsert and the substring list above raised exactly seven of them: the four in
 // ApprovalFieldNames, plus signed_by / signed_at / signed_digest, which are reachable ONLY
 // under `signoffs` and are therefore cleared with it. Nothing else in the write contract is
 // approval-shaped — `designer`, `assigned_by` and the revision log (`released_by`,
@@ -354,7 +354,14 @@ var sanitizeGuardSubstrings = []string{
 // TechCard message or were removed from the contract. So the four names are not a sample of
 // the approval family; they are the whole of it. If this map ever stops being empty, the entry
 // is a decision somebody made, in writing, and the test holds them to it.
-var sanitizeGuardExclusions = map[string]string{}
+//
+// The first such decision is 0468's `contour_signature`: the `sign` substring catches it, and it is
+// geometry, not consent.
+var sanitizeGuardExclusions = map[string]string{
+	"contour_signature": "TechCardPieceFusingBase (0468): a client-computed fingerprint of the base size's piece " +
+		"contour that the fusing markup was drawn against. Nobody signs anything with it and it gates nothing; " +
+		"importing it keeps the markup's staleness check working, and a mismatch only shows the markup as stale.",
+}
 
 // sanitizeGuardRoot is TechCardInsert and only TechCardInsert. The sanitiser's argument is
 // the WRITE contract, and that is the correct and sufficient root: the read-side approval

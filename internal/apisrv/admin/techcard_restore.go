@@ -491,6 +491,11 @@ func restoreTechCardPayload(frozen *pb_common.TechCardInsert, stored *entity.Tec
 		if p.FusingInsetMm == nil {
 			p.FusingInsetMm = &pb_decimal.Decimal{}
 		}
+		// Same presence rule for the markup's staleness key (0468). A snapshot without one restores
+		// "no key": today's key describes today's markup, not the restored one.
+		if p.FusingBase == nil {
+			p.FusingBase = &pb_common.TechCardPieceFusingBase{}
+		}
 	}
 	for _, p := range in.GetPatterns() {
 		if p == nil {

@@ -3229,6 +3229,35 @@ func parsePieceFusingSpline(spline *pb_common.TechCardPieceFusingSpline, field s
 	return out, nil
 }
 
+// parsePieceFusingBase reads the staleness key of the piece's fusing markup (0468). Absent = omitted:
+// an older client keeps the stored key. A present message with both fields empty is the explicit
+// clear. Half a key is refused here, on the wire, before NormalizeFusing could drop it silently
+// together with the markup it was sent for.
+func parsePieceFusingBase(p *pb_common.TechCardPiece, field string) (sql.NullInt32, sql.NullString, bool, error) {
+	base := p.GetFusingBase()
+	if base == nil {
+		return sql.NullInt32{}, sql.NullString{}, true, nil
+	}
+	sizeID := sql.NullInt32{Int32: base.GetBaseSizeId(), Valid: base.GetBaseSizeId() != 0}
+	signature := sql.NullString{String: base.GetContourSignature(), Valid: base.GetContourSignature() != ""}
+	if err := entity.ValidatePieceFusingBase(field+".fusing_base", sizeID, signature); err != nil {
+		return sql.NullInt32{}, sql.NullString{}, false, err
+	}
+	return sizeID, signature, false, nil
+}
+
+// pieceFusingBaseToPb is the read side: present only when a key is stored. A client that round-trips
+// the absent field sends nothing back, which keeps the stored NULL — the same result as a clear.
+func pieceFusingBaseToPb(p *entity.TechCardPiece) *pb_common.TechCardPieceFusingBase {
+	if !p.FusingBaseSizeId.Valid || !p.FusingBaseSignature.Valid {
+		return nil
+	}
+	return &pb_common.TechCardPieceFusingBase{
+		BaseSizeId:       p.FusingBaseSizeId.Int32,
+		ContourSignature: p.FusingBaseSignature.String,
+	}
+}
+
 func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.TechCardPieceFusingZone, bool, error) {
 	zone := p.GetFusingZone()
 	if zone == nil {
@@ -3410,6 +3439,10 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		if err != nil {
 			return nil, err
 		}
+		fusingBaseSizeID, fusingBaseSignature, fusingBaseOmitted, err := parsePieceFusingBase(p, pieceField)
+		if err != nil {
+			return nil, err
+		}
 		fusingInset, err := nullDecimalFromPb(p.GetFusingInsetMm())
 		if err != nil {
 			return nil, entity.NewFieldViolation(pieceField+".fusing_inset_mm", "the inset is not a number",
@@ -3519,6 +3552,9 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			FusingGrainOmitted:    p.FusingGrain == nil,
 			FusingDarts:           fusingDarts,
 			FusingDartsOmitted:    p.FusingDarts == nil,
+			FusingBaseSizeId:      fusingBaseSizeID,
+			FusingBaseSignature:   fusingBaseSignature,
+			FusingBaseOmitted:     fusingBaseOmitted,
 			CalloutNumber:         calloutNumber,
 			Note:                  nullStringFromPb(p.Note),
 			Materials:             materials,
@@ -4386,6 +4422,7 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			FusingInsetNet:   &fusingInsetNet,
 			FusingGrain:      &fusingGrain,
 			FusingDarts:      &fusingDarts,
+			FusingBase:       pieceFusingBaseToPb(p),
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			CalloutNumber:    calloutNumber,

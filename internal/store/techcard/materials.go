@@ -371,12 +371,28 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 // Тот же довод — причина, по которой ЭТА ветка контракта не может обойтись переносом в API-слое
 // (carryOmittedPieceFusingFrom): тот приводит в порядок ДАЙДЖЕСТ, а инвариант колонки обязан
 // держаться и на путях, которые через парсер RPC не идут вовсе.
+//
+// THE MARKUP'S STALENESS KEY (0468, fusing_base_size_id + fusing_base_signature) follows the same
+// presence contract, IF(:fusing_base_omitted, …), with one owner: the key describes the edges / zone
+// and lives exactly as long as they do. pieceFusingMarkupKept restates in SQL whether edges or a zone
+// remain on the row after this UPDATE, with the very expressions that write fusing_edges and
+// fusing_zone; when neither remains, the pair is cleared even if the key was omitted. Both columns
+// come BEFORE fusing_mode / fusing_edges / fusing_zone in the SET list, so the column references in
+// the condition read the STORED values under MySQL's left-to-right assignment order and under any
+// other. The INSERT clears the key when both markup columns are NULL: a new row has nothing stored,
+// so its parameters alone decide.
 const (
+	pieceFusingMarkupKept = `(:fused AND (
+						(IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'strip' AND IF(:fusing_edges_omitted, fusing_edges, :fusing_edges) IS NOT NULL)
+						OR (IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'zone' AND IF(:fusing_zone_omitted, fusing_zone, :fusing_zone) IS NOT NULL)))`
+
 	pieceUpdateQuery = `
 				UPDATE tech_card_piece SET
 					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
 					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
 					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
+					fusing_base_size_id=IF(` + pieceFusingMarkupKept + `, IF(:fusing_base_omitted, fusing_base_size_id, :fusing_base_size_id), NULL),
+					fusing_base_signature=IF(` + pieceFusingMarkupKept + `, IF(:fusing_base_omitted, fusing_base_signature, :fusing_base_signature), NULL),
 					fusing_mode=IF(:fused, IF(:fusing_omitted, fusing_mode, :fusing_mode), NULL),
 					fusing_width_mm=IF(:fused, IF(:fusing_omitted, fusing_width_mm, :fusing_width_mm), NULL),
 					fusing_bom_item_id=IF(:fused, IF(:fusing_bom_omitted, fusing_bom_item_id, :fusing_bom_item_id), NULL),
@@ -393,9 +409,12 @@ const (
 				INSERT INTO tech_card_piece
 					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm,
 					 fusing_bom_item_id, fusing_edges, fusing_zone, fusing_inset_mm, fusing_inset_net, fusing_grain, fusing_darts,
+					 fusing_base_size_id, fusing_base_signature,
 					 callout_number, detached, note, display_order)
 				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :fusing_mode, :fusing_width_mm,
 					:fusing_bom_item_id, :fusing_edges, :fusing_zone, :fusing_inset_mm, :fusing_inset_net, :fusing_grain, :fusing_darts,
+					IF(:fusing_edges IS NULL AND :fusing_zone IS NULL, NULL, :fusing_base_size_id),
+					IF(:fusing_edges IS NULL AND :fusing_zone IS NULL, NULL, :fusing_base_signature),
 					:callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
@@ -406,6 +425,7 @@ const (
 		SELECT p.id, p.tech_card_id, p.name, p.line_key, p.pieces_per_garment, p.mirrored, p.cut_symmetry, p.ungraded,
 		       p.grainline, p.fused, p.fusing_mode, p.fusing_width_mm, p.fusing_bom_item_id,
 		       p.fusing_edges, p.fusing_zone, p.fusing_inset_mm, p.fusing_inset_net, p.fusing_grain, p.fusing_darts,
+		       p.fusing_base_size_id, p.fusing_base_signature,
 		       p.callout_number, p.detached, p.note, fb.line_key AS fusing_bom_line_key
 		FROM tech_card_piece p
 		LEFT JOIN tech_card_bom_item fb ON fb.id = p.fusing_bom_item_id
@@ -583,6 +603,9 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			"fusing_grain_omitted":     p.FusingGrainOmitted,
 			"fusing_darts":             p.FusingDarts,
 			"fusing_darts_omitted":     p.FusingDartsOmitted,
+			"fusing_base_size_id":      p.FusingBaseSizeId,
+			"fusing_base_signature":    p.FusingBaseSignature,
+			"fusing_base_omitted":      p.FusingBaseOmitted,
 			"callout_number":           p.CalloutNumber,
 			"detached":                 p.Detached,
 			"note":                     p.Note,

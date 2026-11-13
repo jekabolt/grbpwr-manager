@@ -49,6 +49,10 @@ type zoneState struct {
 	RingModes []string
 }
 
+// pieceFusingState is what decides whether the automatic FUSING steps are reconciled. The markup's
+// staleness key (TechCardPiece.FusingBase*, 0468) is deliberately absent: it says which pattern the
+// markup was drawn against and changes nothing the shop floor does, so restamping it after a pattern
+// replacement must not touch reviewed FUSING steps.
 type pieceFusingState struct {
 	Fused      bool
 	Mode       nullStringState

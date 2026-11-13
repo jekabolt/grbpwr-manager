@@ -4547,7 +4547,16 @@ type TechCardPiece struct {
 	FusingGrainOmitted    bool                `db:"-"`
 	FusingDarts           sql.NullString      `db:"fusing_darts"`
 	FusingDartsOmitted    bool                `db:"-"`
-	CalloutNumber         sql.NullInt32       `db:"callout_number"`
+	// FusingBaseSizeId + FusingBaseSignature are the staleness key of the edges / zone above (0468):
+	// the size whose coordinates the markup is in and the client's signature of that size's contour.
+	// Opaque to the server and deliberately outside the CONSTRUCTION digest. Both valid or both NULL;
+	// NormalizeFusing and the store clear the pair together with the markup it describes.
+	FusingBaseSizeId    sql.NullInt32  `db:"fusing_base_size_id"`
+	FusingBaseSignature sql.NullString `db:"fusing_base_signature"`
+	// FusingBaseOmitted — the key was not on the wire (an older client): the store keeps the stored
+	// pair, IF(:fusing_base_omitted, …), unless the markup it describes is gone after this write.
+	FusingBaseOmitted bool          `db:"-"`
+	CalloutNumber     sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -4701,6 +4710,7 @@ func (p *TechCardPiece) NormalizeFusing() {
 		p.FusingInsetNet = sql.NullBool{}
 		p.FusingGrain = sql.NullString{}
 		p.FusingDarts = sql.NullString{}
+		p.clearFusingBase()
 		return
 	}
 	switch PieceFusingModeOrFull(p.FusingMode) {
@@ -4719,6 +4729,70 @@ func (p *TechCardPiece) NormalizeFusing() {
 	} else if p.FusingInsetNet.Valid {
 		p.FusingInsetNet = sql.NullBool{}
 	}
+	// The key describes the edges / zone, so it goes with them.
+	if p.fusingMarkupKnownGone() {
+		p.clearFusingBase()
+	}
+}
+
+// fusingMarkupKnownGone reports whether this write is KNOWN to leave the fused piece with neither
+// edges nor a zone. An omitted mode, edge list or zone keeps the stored one, which only the store
+// sees, so those cases are left to the store's own copy of the rule (pieceFusingMarkupKept in
+// internal/store/techcard). On an INSERT nothing is stored and the store clears the key whenever
+// both markup columns are NULL.
+func (p *TechCardPiece) fusingMarkupKnownGone() bool {
+	if p.FusingOmitted {
+		return false
+	}
+	switch PieceFusingModeOrFull(p.FusingMode) {
+	case PieceFusingModeStrip:
+		return len(p.FusingEdges) == 0 && !p.FusingEdgesOmitted
+	case PieceFusingModeZone:
+		return p.FusingZone == nil && !p.FusingZoneOmitted
+	default:
+		return true // full or unset: neither edges nor a zone survive this write
+	}
+}
+
+func (p *TechCardPiece) clearFusingBase() {
+	p.FusingBaseSizeId = sql.NullInt32{}
+	p.FusingBaseSignature = sql.NullString{}
+}
+
+// TechCardPieceFusingBaseSignatureMaxLen is the width of tech_card_piece.fusing_base_signature (0468).
+const TechCardPieceFusingBaseSignatureMaxLen = 64
+
+// ValidatePieceFusingBase checks the staleness key of a piece's fusing markup: both halves or
+// neither, a positive size id, and a signature of 1..64 printable ASCII characters without spaces.
+// The signature is opaque — the server never computes or compares it — so nothing else is checked,
+// not even that the size belongs to the card's range: the key records what the markup was drawn
+// against, and a key that matches nothing is exactly the stale state the client looks for.
+func ValidatePieceFusingBase(field string, sizeID sql.NullInt32, signature sql.NullString) error {
+	if !sizeID.Valid && !signature.Valid {
+		return nil
+	}
+	if !sizeID.Valid || !signature.Valid {
+		return NewFieldViolation(field, "the fusing base key needs both the base size and the contour signature", "",
+			"send both fields, or an empty key to clear it")
+	}
+	if sizeID.Int32 <= 0 {
+		return NewFieldViolation(field+".base_size_id", "the base size id must be positive",
+			"", "send the id of the size the markup was drawn in")
+	}
+	sig := signature.String
+	if sig == "" || len(sig) > TechCardPieceFusingBaseSignatureMaxLen {
+		return NewFieldViolation(field+".contour_signature",
+			fmt.Sprintf("the contour signature must be 1 to %d characters", TechCardPieceFusingBaseSignatureMaxLen),
+			"", "send the signature the client computed for the base contour")
+	}
+	for i := 0; i < len(sig); i++ {
+		if sig[i] < 0x21 || sig[i] > 0x7e {
+			return NewFieldViolation(field+".contour_signature",
+				"the contour signature may hold only printable ASCII characters without spaces", "",
+				"send the signature the client computed for the base contour")
+		}
+	}
+	return nil
 }
 
 // ValidatePieceFusing checks one piece's fusing marking BEFORE the row reaches MySQL, in the words
@@ -4884,7 +4958,7 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 		return NewFieldViolation(field+".fusing_darts", "unknown dart treatment", p.FusingDarts.String,
 			"pick cut or fuse")
 	}
-	return nil
+	return ValidatePieceFusingBase(field+".fusing_base", p.FusingBaseSizeId, p.FusingBaseSignature)
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).

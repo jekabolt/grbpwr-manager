@@ -3618,6 +3618,16 @@ message TechCardPieceFusingZone {
   repeated TechCardPieceFusingSpline islands = 5;
 }
 
+// The base the piece's fusing markup (fusing_edges / fusing_zone) was drawn against: the base size
+// and a signature of that size's piece contour. A client compares it with the current pattern file
+// to tell whether the markup still fits after the pattern was replaced. The server stores it as an
+// opaque pair and never computes or compares the signature itself.
+// Both fields are set together, or both are empty (= clear).
+message TechCardPieceFusingBase {
+  int32 base_size_id = 1; // id of the size whose coordinates the markup is in; > 0 when set
+  string contour_signature = 2; // client-computed signature of that size's contour; 1..64 printable ASCII, no spaces
+}
+
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
 // how many per garment, whether mirrored/paired, its grainline (долевая) and whether it is fused
 // (клеевая). materials picks, per colourway, which BOM fabric it is cut from. Full-replace child.
@@ -3716,6 +3726,11 @@ message TechCardPiece {
   optional string fusing_grain = 20;
   // Empty/NULL = cut; otherwise cut|fuse.
   optional string fusing_darts = 21;
+  // Staleness key of the fusing markup. Absent = do not touch (an older client keeps the stored
+  // key); present empty = clear; present with both fields = replace. Half a key is rejected. The
+  // server clears it on its own when the piece stops being fused or loses its edges / zone. Reads
+  // return it only when one is stored. Not part of the CONSTRUCTION digest.
+  TechCardPieceFusingBase fusing_base = 22;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers
