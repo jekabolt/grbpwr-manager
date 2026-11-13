@@ -638,7 +638,16 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if len(p.FusingEdges) > 0 {
 			edges := make([]any, 0, len(p.FusingEdges))
 			for _, edge := range p.FusingEdges {
-				edges = append(edges, []any{edge.Edge, edge.StartMm.String(), edge.EndMm.String()})
+				edgeRow := []any{edge.Edge, edge.StartMm.String(), edge.EndMm.String()}
+				// Conditional tail, sorted by name: an edge on the millimetre default keeps the
+				// tuple it had before the modes existed, so no approved card goes stale at deploy.
+				if edge.EndMode != entity.PieceFusingEndModeMm {
+					edgeRow = append(edgeRow, []any{"end_mode", string(edge.EndMode)})
+				}
+				if edge.StartMode != entity.PieceFusingEndModeMm {
+					edgeRow = append(edgeRow, []any{"start_mode", string(edge.StartMode)})
+				}
+				edges = append(edges, edgeRow)
 			}
 			fusingDetails = append(fusingDetails, []any{"edges", edges})
 		}
@@ -675,6 +684,29 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 					}
 					zoneSpline = append(zoneSpline, []any{"holes", holes})
 				}
+				// Ring modes are one more conditional tail: rings are numbered spline, islands,
+				// holes, and only a ring off the fixed default is listed.
+				ringModes := make([]any, 0)
+				addRingMode := func(ring int, spline *entity.TechCardPieceFusingSpline) {
+					if spline.GradeMode == entity.PieceFusingGradeModeFixed && spline.Anchor == nil {
+						return
+					}
+					mode := []any{ring, string(spline.GradeMode)}
+					if spline.Anchor != nil {
+						mode = append(mode, spline.Anchor.X.String(), spline.Anchor.Y.String())
+					}
+					ringModes = append(ringModes, mode)
+				}
+				addRingMode(0, p.FusingZone.Spline)
+				for i := range p.FusingZone.Islands {
+					addRingMode(1+i, &p.FusingZone.Islands[i])
+				}
+				for i := range p.FusingZone.Holes {
+					addRingMode(1+len(p.FusingZone.Islands)+i, &p.FusingZone.Holes[i])
+				}
+				if len(ringModes) > 0 {
+					zoneSpline = append(zoneSpline, []any{"ring_modes", ringModes})
+				}
 				fusingDetails = append(fusingDetails, zoneSpline)
 			case p.FusingZone.DxfPieceKey != "":
 				fusingDetails = append(fusingDetails, []any{"zone_dxf", p.FusingZone.DxfPieceKey})
@@ -692,6 +724,11 @@ func constructionProjection(tc *entity.TechCardInsert) any {
 		if p.FusingDarts.Valid {
 			fusingDetails = append(fusingDetails, []any{"darts", p.FusingDarts.String})
 		}
+		// The markup's staleness key (FusingBaseSizeId / FusingBaseSignature, 0468) is deliberately
+		// NOT here: it records which pattern the edges / zone were drawn against, not anything the
+		// shop floor cuts or fuses. Hashing it would make an approval go stale the moment a client
+		// restamps the key after a pattern replacement that left the markup unchanged — the same
+		// reasoning that keeps the topstitch anchors' source fingerprint and the callout client_ref out.
 		if len(fusingDetails) > 1 {
 			row = append(row, fusingDetails)
 		}

@@ -597,6 +597,15 @@ func (r *tcimpResolver) resolveSizes() {
 			})
 		}
 	}
+	// The fusing markup's staleness key (0468) is a pair, and the write path refuses half of one. A
+	// base size the walk cleared would leave exactly that, so the whole key goes instead (an explicit
+	// clear): the markup imports as drawn against an unknown base, which the client reads as "check
+	// the markup" rather than failing the whole import.
+	for _, piece := range ins.GetPieces() {
+		if base := piece.GetFusingBase(); base != nil && base.GetBaseSizeId() <= 0 {
+			piece.FusingBase = &pb_common.TechCardPieceFusingBase{}
+		}
+	}
 }
 
 // tallySizes counts the size axis once, at the end: the card's surviving size range on the imported

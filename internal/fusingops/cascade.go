@@ -38,6 +38,7 @@ func clearPieceFusing(piece *entity.TechCardPiece) {
 	piece.FusingInsetNetOmitted = false
 	piece.FusingGrainOmitted = false
 	piece.FusingDartsOmitted = false
+	piece.FusingBaseOmitted = false
 	piece.NormalizeFusing()
 }
 

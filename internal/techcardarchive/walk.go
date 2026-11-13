@@ -225,6 +225,7 @@ var SizeFieldNames = map[string]bool{
 	"base_sample_size_id": true,
 	"grade_base_size_id":  true, // StyleSizeChart, not the TechCard tree
 	"model_wears_size_id": true,
+	"base_size_id":        true, // TechCardPieceFusingBase, the fusing markup's staleness key (0468)
 }
 
 // MediaFieldNames are the media FKs remapped on import, after the archived files have been

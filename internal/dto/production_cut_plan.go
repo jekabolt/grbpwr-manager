@@ -805,6 +805,12 @@ func CutSpecCardFromReleaseSnapshot(snap *pb_common.TechCard) *entity.TechCard {
 		if v := strings.ToLower(strings.TrimSpace(p.GetFusingDarts())); v != "" {
 			piece.FusingDarts = sql.NullString{String: v, Valid: true}
 		}
+		// The markup's staleness key (0468) travels with the markup; a snapshot older than the field
+		// has none, which reads as "drawn before keys existed".
+		if sizeID, signature, _, err := parsePieceFusingBase(p, "pieces"); err == nil {
+			piece.FusingBaseSizeId = sizeID
+			piece.FusingBaseSignature = signature
+		}
 		piece.NormalizeFusing()
 		card.Pieces = append(card.Pieces, piece)
 	}

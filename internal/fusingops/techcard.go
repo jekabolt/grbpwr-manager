@@ -27,8 +27,9 @@ type nullBoolState struct {
 }
 
 type edgeState struct {
-	Edge           int
-	StartMm, EndMm string
+	Edge               int
+	StartMm, EndMm     string
+	StartMode, EndMode string
 }
 
 type splinePointState struct {
@@ -44,8 +45,14 @@ type zoneState struct {
 	Points         []splinePointState
 	Islands        [][]splinePointState
 	Holes          [][]splinePointState
+	// RingModes lists, in ring order (spline, islands, holes), each ring off the fixed default.
+	RingModes []string
 }
 
+// pieceFusingState is what decides whether the automatic FUSING steps are reconciled. The markup's
+// staleness key (TechCardPiece.FusingBase*, 0468) is deliberately absent: it says which pattern the
+// markup was drawn against and changes nothing the shop floor does, so restamping it after a pattern
+// replacement must not touch reviewed FUSING steps.
 type pieceFusingState struct {
 	Fused      bool
 	Mode       nullStringState
@@ -84,6 +91,7 @@ func pieceState(piece entity.TechCardPiece) pieceFusingState {
 	for _, edge := range piece.FusingEdges {
 		state.Edges = append(state.Edges, edgeState{
 			Edge: edge.Edge, StartMm: edge.StartMm.String(), EndMm: edge.EndMm.String(),
+			StartMode: string(edge.StartMode), EndMode: string(edge.EndMode),
 		})
 	}
 	if piece.FusingZone != nil {
@@ -95,6 +103,23 @@ func pieceState(piece entity.TechCardPiece) pieceFusingState {
 		}
 		if spline := piece.FusingZone.Spline; spline != nil {
 			state.Zone.Spline = true
+			ringMode := func(ring int, s *entity.TechCardPieceFusingSpline) {
+				if s.GradeMode == entity.PieceFusingGradeModeFixed && s.Anchor == nil {
+					return
+				}
+				mode := fmt.Sprintf("%d:%s", ring, s.GradeMode)
+				if s.Anchor != nil {
+					mode += ":" + s.Anchor.X.String() + ":" + s.Anchor.Y.String()
+				}
+				state.Zone.RingModes = append(state.Zone.RingModes, mode)
+			}
+			ringMode(0, spline)
+			for i := range piece.FusingZone.Islands {
+				ringMode(1+i, &piece.FusingZone.Islands[i])
+			}
+			for i := range piece.FusingZone.Holes {
+				ringMode(1+len(piece.FusingZone.Islands)+i, &piece.FusingZone.Holes[i])
+			}
 			for _, point := range spline.Points {
 				state.Zone.Points = append(state.Zone.Points, splinePointState{
 					X: point.X.String(), Y: point.Y.String(), Corner: point.Corner,

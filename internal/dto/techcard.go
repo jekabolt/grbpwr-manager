@@ -3119,9 +3119,69 @@ func parsePieceFusingEdges(p *pb_common.TechCardPiece, field string) ([]entity.T
 		if err != nil {
 			return nil, false, err
 		}
-		out = append(out, entity.TechCardPieceFusingEdge{Edge: int(edge.GetEdge()), StartMm: start, EndMm: end})
+		startMode, err := pieceFusingEndModeFromPb(edge.GetStartMode(), fmt.Sprintf("%s.fusing_edges[%d].start_mode", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		endMode, err := pieceFusingEndModeFromPb(edge.GetEndMode(), fmt.Sprintf("%s.fusing_edges[%d].end_mode", field, i))
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, entity.TechCardPieceFusingEdge{
+			Edge: int(edge.GetEdge()), StartMm: start, EndMm: end, StartMode: startMode, EndMode: endMode,
+			StartModeOmitted: edge.GetStartMode() == pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_UNKNOWN,
+			EndModeOmitted:   edge.GetEndMode() == pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_UNKNOWN,
+		})
 	}
 	return out, false, nil
+}
+
+func pieceFusingEndModeFromPb(mode pb_common.TechCardPieceFusingEndMode, field string) (entity.TechCardPieceFusingEndMode, error) {
+	switch mode {
+	case pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_UNKNOWN,
+		pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_MM:
+		return entity.PieceFusingEndModeMm, nil
+	case pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_NOTCH:
+		return entity.PieceFusingEndModeNotch, nil
+	case pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_SHARE:
+		return entity.PieceFusingEndModeShare, nil
+	}
+	return "", entity.NewFieldViolation(field, "unknown strip end mode", mode.String(), "pick mm, notch, or share")
+}
+
+// A read always names the mode. UNKNOWN is reserved for a write from a client that predates the
+// modes, where it means "keep what is stored"; a client that echoes a read therefore states its choice.
+func pieceFusingEndModeToPb(mode entity.TechCardPieceFusingEndMode) pb_common.TechCardPieceFusingEndMode {
+	switch mode {
+	case entity.PieceFusingEndModeNotch:
+		return pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_NOTCH
+	case entity.PieceFusingEndModeShare:
+		return pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_SHARE
+	}
+	return pb_common.TechCardPieceFusingEndMode_TECH_CARD_PIECE_FUSING_END_MODE_MM
+}
+
+func pieceFusingGradeModeFromPb(mode pb_common.TechCardPieceFusingGradeMode, field string) (entity.TechCardPieceFusingGradeMode, error) {
+	switch mode {
+	case pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_UNKNOWN,
+		pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_FIXED:
+		return entity.PieceFusingGradeModeFixed, nil
+	case pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_FOLLOW_LINE:
+		return entity.PieceFusingGradeModeFollowLine, nil
+	case pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_GROW:
+		return entity.PieceFusingGradeModeGrow, nil
+	}
+	return "", entity.NewFieldViolation(field, "unknown fusing grade mode", mode.String(), "pick fixed, follow line, or grow")
+}
+
+func pieceFusingGradeModeToPb(mode entity.TechCardPieceFusingGradeMode) pb_common.TechCardPieceFusingGradeMode {
+	switch mode {
+	case entity.PieceFusingGradeModeFollowLine:
+		return pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_FOLLOW_LINE
+	case entity.PieceFusingGradeModeGrow:
+		return pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_GROW
+	}
+	return pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_FIXED
 }
 
 func parsePieceFusingSpline(spline *pb_common.TechCardPieceFusingSpline, field string) (*entity.TechCardPieceFusingSpline, error) {
@@ -3146,7 +3206,56 @@ func parsePieceFusingSpline(spline *pb_common.TechCardPieceFusingSpline, field s
 		}
 		points = append(points, entity.TechCardPieceFusingSplinePoint{X: x, Y: y, Corner: point.GetCorner()})
 	}
-	return &entity.TechCardPieceFusingSpline{Points: points}, nil
+	gradeMode, err := pieceFusingGradeModeFromPb(spline.GetGradeMode(), field+".grade_mode")
+	if err != nil {
+		return nil, err
+	}
+	out := &entity.TechCardPieceFusingSpline{
+		Points: points, GradeMode: gradeMode,
+		GradeModeOmitted: spline.GetGradeMode() == pb_common.TechCardPieceFusingGradeMode_TECH_CARD_PIECE_FUSING_GRADE_MODE_UNKNOWN &&
+			spline.GetAnchor() == nil,
+	}
+	if anchor := spline.GetAnchor(); anchor != nil {
+		x, err := fusingDecimalFromPb(anchor.GetX(), field+".anchor.x")
+		if err != nil {
+			return nil, err
+		}
+		y, err := fusingDecimalFromPb(anchor.GetY(), field+".anchor.y")
+		if err != nil {
+			return nil, err
+		}
+		out.Anchor = &entity.TechCardPieceFusingAnchor{X: x, Y: y}
+	}
+	return out, nil
+}
+
+// parsePieceFusingBase reads the staleness key of the piece's fusing markup (0468). Absent = omitted:
+// an older client keeps the stored key. A present message with both fields empty is the explicit
+// clear. Half a key is refused here, on the wire, before NormalizeFusing could drop it silently
+// together with the markup it was sent for.
+func parsePieceFusingBase(p *pb_common.TechCardPiece, field string) (sql.NullInt32, sql.NullString, bool, error) {
+	base := p.GetFusingBase()
+	if base == nil {
+		return sql.NullInt32{}, sql.NullString{}, true, nil
+	}
+	sizeID := sql.NullInt32{Int32: base.GetBaseSizeId(), Valid: base.GetBaseSizeId() != 0}
+	signature := sql.NullString{String: base.GetContourSignature(), Valid: base.GetContourSignature() != ""}
+	if err := entity.ValidatePieceFusingBase(field+".fusing_base", sizeID, signature); err != nil {
+		return sql.NullInt32{}, sql.NullString{}, false, err
+	}
+	return sizeID, signature, false, nil
+}
+
+// pieceFusingBaseToPb is the read side: present only when a key is stored. A client that round-trips
+// the absent field sends nothing back, which keeps the stored NULL — the same result as a clear.
+func pieceFusingBaseToPb(p *entity.TechCardPiece) *pb_common.TechCardPieceFusingBase {
+	if !p.FusingBaseSizeId.Valid || !p.FusingBaseSignature.Valid {
+		return nil
+	}
+	return &pb_common.TechCardPieceFusingBase{
+		BaseSizeId:       p.FusingBaseSizeId.Int32,
+		ContourSignature: p.FusingBaseSignature.String,
+	}
 }
 
 func parsePieceFusingZone(p *pb_common.TechCardPiece, field string) (*entity.TechCardPieceFusingZone, bool, error) {
@@ -3330,6 +3439,10 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 		if err != nil {
 			return nil, err
 		}
+		fusingBaseSizeID, fusingBaseSignature, fusingBaseOmitted, err := parsePieceFusingBase(p, pieceField)
+		if err != nil {
+			return nil, err
+		}
 		fusingInset, err := nullDecimalFromPb(p.GetFusingInsetMm())
 		if err != nil {
 			return nil, entity.NewFieldViolation(pieceField+".fusing_inset_mm", "the inset is not a number",
@@ -3439,6 +3552,9 @@ func parseTechCardPieces(pbs []*pb_common.TechCardPiece, bomItemCount int, callo
 			FusingGrainOmitted:    p.FusingGrain == nil,
 			FusingDarts:           fusingDarts,
 			FusingDartsOmitted:    p.FusingDarts == nil,
+			FusingBaseSizeId:      fusingBaseSizeID,
+			FusingBaseSignature:   fusingBaseSignature,
+			FusingBaseOmitted:     fusingBaseOmitted,
 			CalloutNumber:         calloutNumber,
 			Note:                  nullStringFromPb(p.Note),
 			Materials:             materials,
@@ -4170,6 +4286,7 @@ func pieceFusingEdgesToPb(edges []entity.TechCardPieceFusingEdge) *pb_common.Tec
 	for _, edge := range edges {
 		out.Items = append(out.Items, &pb_common.TechCardPieceFusingEdge{
 			Edge: int32(edge.Edge), StartMm: pbDecimalFromDecimal(edge.StartMm), EndMm: pbDecimalFromDecimal(edge.EndMm),
+			StartMode: pieceFusingEndModeToPb(edge.StartMode), EndMode: pieceFusingEndModeToPb(edge.EndMode),
 		})
 	}
 	return out
@@ -4185,7 +4302,13 @@ func pieceFusingSplineToPb(spline *entity.TechCardPieceFusingSpline) *pb_common.
 			X: pbDecimalFromDecimal(point.X), Y: pbDecimalFromDecimal(point.Y), Corner: point.Corner,
 		})
 	}
-	return &pb_common.TechCardPieceFusingSpline{Points: points}
+	out := &pb_common.TechCardPieceFusingSpline{Points: points, GradeMode: pieceFusingGradeModeToPb(spline.GradeMode)}
+	if spline.Anchor != nil {
+		out.Anchor = &pb_common.TechCardPieceFusingAnchor{
+			X: pbDecimalFromDecimal(spline.Anchor.X), Y: pbDecimalFromDecimal(spline.Anchor.Y),
+		}
+	}
+	return out
 }
 
 func pieceFusingZoneToPb(zone *entity.TechCardPieceFusingZone) *pb_common.TechCardPieceFusingZone {
@@ -4299,6 +4422,7 @@ func techCardPiecesToPb(pieces []entity.TechCardPiece) []*pb_common.TechCardPiec
 			FusingInsetNet:   &fusingInsetNet,
 			FusingGrain:      &fusingGrain,
 			FusingDarts:      &fusingDarts,
+			FusingBase:       pieceFusingBaseToPb(p),
 			Grainline:        p.Grainline,
 			Fused:            p.Fused,
 			CalloutNumber:    calloutNumber,

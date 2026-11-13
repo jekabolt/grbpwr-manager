@@ -67,6 +67,9 @@ type pieceFusingEdgeJSON struct {
 	Edge    int         `json:"edge"`
 	StartMm json.Number `json:"start_mm"`
 	EndMm   json.Number `json:"end_mm"`
+	// Absent for the millimetre default, so rows written before the modes existed stay byte-identical.
+	StartMode string `json:"start_mode,omitempty"`
+	EndMode   string `json:"end_mode,omitempty"`
 }
 
 type pieceFusingZoneJSON struct {
@@ -79,10 +82,16 @@ type pieceFusingZoneJSON struct {
 
 type pieceFusingSplineJSON struct {
 	Pts [][]json.Number `json:"pts"`
+	// Absent for a fixed ring, so zones written before the modes existed stay byte-identical.
+	GradeMode string        `json:"grade_mode,omitempty"`
+	Anchor    []json.Number `json:"anchor,omitempty"`
 }
 
 func pieceFusingSplineJSONValue(spline *entity.TechCardPieceFusingSpline) pieceFusingSplineJSON {
-	row := pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(spline.Points))}
+	row := pieceFusingSplineJSON{Pts: make([][]json.Number, 0, len(spline.Points)), GradeMode: string(spline.GradeMode)}
+	if spline.Anchor != nil {
+		row.Anchor = []json.Number{json.Number(spline.Anchor.X.String()), json.Number(spline.Anchor.Y.String())}
+	}
 	for _, point := range spline.Points {
 		corner := json.Number("0")
 		if point.Corner {
@@ -103,6 +112,7 @@ func pieceFusingEdgesJSON(edges []entity.TechCardPieceFusingEdge) (any, error) {
 	for _, edge := range edges {
 		rows = append(rows, pieceFusingEdgeJSON{
 			Edge: edge.Edge, StartMm: json.Number(edge.StartMm.String()), EndMm: json.Number(edge.EndMm.String()),
+			StartMode: string(edge.StartMode), EndMode: string(edge.EndMode),
 		})
 	}
 	raw, err := json.Marshal(rows)
@@ -167,7 +177,28 @@ func decodePieceFusingSplineJSON(row pieceFusingSplineJSON, field, pieceKey stri
 			X: x, Y: y, Corner: tuple[2].String() == "1",
 		})
 	}
-	return entity.TechCardPieceFusingSpline{Points: points}, nil
+	out := entity.TechCardPieceFusingSpline{Points: points, GradeMode: entity.TechCardPieceFusingGradeMode(row.GradeMode)}
+	if !entity.ValidPieceFusingGradeMode(out.GradeMode) {
+		return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s grade_mode of piece %q: got %q", field, pieceKey, row.GradeMode)
+	}
+	if (out.GradeMode == entity.PieceFusingGradeModeFollowLine) != (len(row.Anchor) > 0) {
+		return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s of piece %q: anchor and follow_line must come together", field, pieceKey)
+	}
+	if len(row.Anchor) > 0 {
+		if len(row.Anchor) != 2 {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor of piece %q: has %d values, want 2", field, pieceKey, len(row.Anchor))
+		}
+		x, err := decimal.NewFromString(row.Anchor[0].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor x of piece %q: %w", field, pieceKey, err)
+		}
+		y, err := decimal.NewFromString(row.Anchor[1].String())
+		if err != nil {
+			return entity.TechCardPieceFusingSpline{}, fmt.Errorf("decode fusing_zone %s anchor y of piece %q: %w", field, pieceKey, err)
+		}
+		out.Anchor = &entity.TechCardPieceFusingAnchor{X: x, Y: y}
+	}
+	return out, nil
 }
 
 func decodePieceFusingJSON(p *entity.TechCardPiece) error {
@@ -186,9 +217,15 @@ func decodePieceFusingJSON(p *entity.TechCardPiece) error {
 			if err != nil {
 				return fmt.Errorf("decode fusing_edges end_mm of piece %q: %w", p.LineKey, err)
 			}
-			p.FusingEdges = append(p.FusingEdges, entity.TechCardPieceFusingEdge{
+			edge := entity.TechCardPieceFusingEdge{
 				Edge: row.Edge, StartMm: start, EndMm: end,
-			})
+				StartMode: entity.TechCardPieceFusingEndMode(row.StartMode),
+				EndMode:   entity.TechCardPieceFusingEndMode(row.EndMode),
+			}
+			if !entity.ValidPieceFusingEndMode(edge.StartMode) || !entity.ValidPieceFusingEndMode(edge.EndMode) {
+				return fmt.Errorf("decode fusing_edges modes of piece %q: got %q / %q", p.LineKey, row.StartMode, row.EndMode)
+			}
+			p.FusingEdges = append(p.FusingEdges, edge)
 		}
 	}
 	if len(p.FusingZoneRaw) == 0 {
@@ -334,12 +371,28 @@ func (cs calloutSync) apply(p *entity.TechCardPiece) {
 // Тот же довод — причина, по которой ЭТА ветка контракта не может обойтись переносом в API-слое
 // (carryOmittedPieceFusingFrom): тот приводит в порядок ДАЙДЖЕСТ, а инвариант колонки обязан
 // держаться и на путях, которые через парсер RPC не идут вовсе.
+//
+// THE MARKUP'S STALENESS KEY (0468, fusing_base_size_id + fusing_base_signature) follows the same
+// presence contract, IF(:fusing_base_omitted, …), with one owner: the key describes the edges / zone
+// and lives exactly as long as they do. pieceFusingMarkupKept restates in SQL whether edges or a zone
+// remain on the row after this UPDATE, with the very expressions that write fusing_edges and
+// fusing_zone; when neither remains, the pair is cleared even if the key was omitted. Both columns
+// come BEFORE fusing_mode / fusing_edges / fusing_zone in the SET list, so the column references in
+// the condition read the STORED values under MySQL's left-to-right assignment order and under any
+// other. The INSERT clears the key when both markup columns are NULL: a new row has nothing stored,
+// so its parameters alone decide.
 const (
+	pieceFusingMarkupKept = `(:fused AND (
+						(IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'strip' AND IF(:fusing_edges_omitted, fusing_edges, :fusing_edges) IS NOT NULL)
+						OR (IF(:fusing_omitted, fusing_mode, :fusing_mode) = 'zone' AND IF(:fusing_zone_omitted, fusing_zone, :fusing_zone) IS NOT NULL)))`
+
 	pieceUpdateQuery = `
 				UPDATE tech_card_piece SET
 					name=:name, pieces_per_garment=:pieces_per_garment, mirrored=:mirrored, grainline=:grainline,
 					cut_symmetry=IF(:cut_symmetry_omitted, cut_symmetry, :cut_symmetry),
 					ungraded=IF(:ungraded_omitted, ungraded, :ungraded),
+					fusing_base_size_id=IF(` + pieceFusingMarkupKept + `, IF(:fusing_base_omitted, fusing_base_size_id, :fusing_base_size_id), NULL),
+					fusing_base_signature=IF(` + pieceFusingMarkupKept + `, IF(:fusing_base_omitted, fusing_base_signature, :fusing_base_signature), NULL),
 					fusing_mode=IF(:fused, IF(:fusing_omitted, fusing_mode, :fusing_mode), NULL),
 					fusing_width_mm=IF(:fused, IF(:fusing_omitted, fusing_width_mm, :fusing_width_mm), NULL),
 					fusing_bom_item_id=IF(:fused, IF(:fusing_bom_omitted, fusing_bom_item_id, :fusing_bom_item_id), NULL),
@@ -356,9 +409,12 @@ const (
 				INSERT INTO tech_card_piece
 					(tech_card_id, name, line_key, pieces_per_garment, mirrored, cut_symmetry, ungraded, grainline, fused, fusing_mode, fusing_width_mm,
 					 fusing_bom_item_id, fusing_edges, fusing_zone, fusing_inset_mm, fusing_inset_net, fusing_grain, fusing_darts,
+					 fusing_base_size_id, fusing_base_signature,
 					 callout_number, detached, note, display_order)
 				VALUES (:tech_card_id, :name, :line_key, :pieces_per_garment, :mirrored, :cut_symmetry, :ungraded, :grainline, :fused, :fusing_mode, :fusing_width_mm,
 					:fusing_bom_item_id, :fusing_edges, :fusing_zone, :fusing_inset_mm, :fusing_inset_net, :fusing_grain, :fusing_darts,
+					IF(:fusing_edges IS NULL AND :fusing_zone IS NULL, NULL, :fusing_base_size_id),
+					IF(:fusing_edges IS NULL AND :fusing_zone IS NULL, NULL, :fusing_base_signature),
 					:callout_number, :detached, :note, :display_order)`
 
 	// The read side of the same row. It has to SELECT every column the write writes and the digest
@@ -369,6 +425,7 @@ const (
 		SELECT p.id, p.tech_card_id, p.name, p.line_key, p.pieces_per_garment, p.mirrored, p.cut_symmetry, p.ungraded,
 		       p.grainline, p.fused, p.fusing_mode, p.fusing_width_mm, p.fusing_bom_item_id,
 		       p.fusing_edges, p.fusing_zone, p.fusing_inset_mm, p.fusing_inset_net, p.fusing_grain, p.fusing_darts,
+		       p.fusing_base_size_id, p.fusing_base_signature,
 		       p.callout_number, p.detached, p.note, fb.line_key AS fusing_bom_line_key
 		FROM tech_card_piece p
 		LEFT JOIN tech_card_bom_item fb ON fb.id = p.fusing_bom_item_id
@@ -546,6 +603,9 @@ func upsertTechCardPieces(ctx context.Context, db dependency.DB, tcID int, piece
 			"fusing_grain_omitted":     p.FusingGrainOmitted,
 			"fusing_darts":             p.FusingDarts,
 			"fusing_darts_omitted":     p.FusingDartsOmitted,
+			"fusing_base_size_id":      p.FusingBaseSizeId,
+			"fusing_base_signature":    p.FusingBaseSignature,
+			"fusing_base_omitted":      p.FusingBaseOmitted,
 			"callout_number":           p.CalloutNumber,
 			"detached":                 p.Detached,
 			"note":                     p.Note,

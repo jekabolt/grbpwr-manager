@@ -797,6 +797,9 @@ func carryOmittedPieceFusingDetailsFrom(stored *entity.TechCard, incoming *entit
 		if piece.FusingZoneOmitted {
 			piece.FusingZone = storedPiece.FusingZone
 		}
+		// Inside a zone or edge list that DID arrive, an older client still drops the per-ring and
+		// per-end carry-over modes it has never heard of.
+		piece.CarryOmittedFusingModesFrom(storedPiece)
 		if piece.FusingInsetMmOmitted {
 			piece.FusingInsetMm = storedPiece.FusingInsetMm
 		}
@@ -808,6 +811,12 @@ func carryOmittedPieceFusingDetailsFrom(stored *entity.TechCard, incoming *entit
 		}
 		if piece.FusingDartsOmitted {
 			piece.FusingDarts = storedPiece.FusingDarts
+		}
+		// The markup's staleness key (0468) is outside the digest; it is carried so the payload the
+		// store and the fusing reconciliation see matches the row the guarded UPDATE will keep.
+		if piece.FusingBaseOmitted {
+			piece.FusingBaseSizeId = storedPiece.FusingBaseSizeId
+			piece.FusingBaseSignature = storedPiece.FusingBaseSignature
 		}
 		piece.NormalizeFusing()
 	}

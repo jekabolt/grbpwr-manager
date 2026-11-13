@@ -3539,12 +3539,24 @@ message TechCardPieceDxfAliasSet {
   repeated TechCardPieceDxfAlias items = 1;
 }
 
+// How one end of a strip-fusing edge is carried from the base size to the other sizes. The trim
+// itself always stays in start_mm / end_mm as base-size millimetres; the mode only tells the size
+// carry-over what to hold constant.
+enum TechCardPieceFusingEndMode {
+  TECH_CARD_PIECE_FUSING_END_MODE_UNKNOWN = 0; // write only: keep the stored mode of this edge (MM when none); reads never return it
+  TECH_CARD_PIECE_FUSING_END_MODE_MM = 1; // the same millimetres from the corner on every size
+  TECH_CARD_PIECE_FUSING_END_MODE_NOTCH = 2; // ends at the notch nearest to the base-size trim, on every size
+  TECH_CARD_PIECE_FUSING_END_MODE_SHARE = 3; // the same share of the edge length on every size
+}
+
 // One selected outline segment for strip fusing. edge is the zero-based segment index in the
 // piece's base-size DXF block; start/end trim that segment inward from its two ends, in millimetres.
 message TechCardPieceFusingEdge {
   int32 edge = 1;
   google.type.Decimal start_mm = 2;
   google.type.Decimal end_mm = 3;
+  TechCardPieceFusingEndMode start_mode = 4;
+  TechCardPieceFusingEndMode end_mode = 5;
 }
 
 // Presence wrapper: absent means an older client did not speak edge selection; present with no
@@ -3568,9 +3580,26 @@ message TechCardPieceFusingSplinePoint {
   bool corner = 3;
 }
 
+// How one fusing ring is carried from the base size to the other sizes.
+enum TechCardPieceFusingGradeMode {
+  TECH_CARD_PIECE_FUSING_GRADE_MODE_UNKNOWN = 0; // write only: an unchanged ring keeps its stored mode (FIXED when none); reads never return it
+  TECH_CARD_PIECE_FUSING_GRADE_MODE_FIXED = 1; // keeps its millimetre shape
+  TECH_CARD_PIECE_FUSING_GRADE_MODE_FOLLOW_LINE = 2; // keeps its shape, travels and rotates with the internal line at anchor
+  TECH_CARD_PIECE_FUSING_GRADE_MODE_GROW = 3; // scales with the piece
+}
+
+// Piece-local point in base-size millimetres that picks the internal line a ring follows.
+message TechCardPieceFusingAnchor {
+  google.type.Decimal x = 1;
+  google.type.Decimal y = 2;
+}
+
 // Closed spline through piece-local points in millimetres. corner keeps that point sharp.
 message TechCardPieceFusingSpline {
   repeated TechCardPieceFusingSplinePoint points = 1;
+  TechCardPieceFusingGradeMode grade_mode = 2;
+  // Required with FOLLOW_LINE and rejected with any other mode.
+  TechCardPieceFusingAnchor anchor = 3;
 }
 
 // Geometry for ZONE fusing: a rectangle or freeform spline drawn on the garment piece, or a
@@ -3587,6 +3616,16 @@ message TechCardPieceFusingZone {
   // Additional disjoint outer rings beside spline. Valid only with spline; spline plus islands has
   // at most 16 outer rings, which may neither overlap, touch, nor nest.
   repeated TechCardPieceFusingSpline islands = 5;
+}
+
+// The base the piece's fusing markup (fusing_edges / fusing_zone) was drawn against: the base size
+// and a signature of that size's piece contour. A client compares it with the current pattern file
+// to tell whether the markup still fits after the pattern was replaced. The server stores it as an
+// opaque pair and never computes or compares the signature itself.
+// Both fields are set together, or both are empty (= clear).
+message TechCardPieceFusingBase {
+  int32 base_size_id = 1; // id of the size whose coordinates the markup is in; > 0 when set
+  string contour_signature = 2; // client-computed signature of that size's contour; 1..64 printable ASCII, no spaces
 }
 
 // TechCardPiece is one structural cut-piece of the garment (полочка, спинка, обтачка горловины…):
@@ -3687,6 +3726,11 @@ message TechCardPiece {
   optional string fusing_grain = 20;
   // Empty/NULL = cut; otherwise cut|fuse.
   optional string fusing_darts = 21;
+  // Staleness key of the fusing markup. Absent = do not touch (an older client keeps the stored
+  // key); present empty = clear; present with both fields = replace. Half a key is rejected. The
+  // server clears it on its own when the piece stops being fused or loses its edges / zone. Reads
+  // return it only when one is stored. Not part of the CONSTRUCTION digest.
+  TechCardPieceFusingBase fusing_base = 22;
 }
 
 // SkuSeason is the normalized style-owned season used in every SKU. The pair is atomic: callers

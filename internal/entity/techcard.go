@@ -4300,6 +4300,49 @@ type TechCardPieceFusingEdge struct {
 	Edge    int
 	StartMm decimal.Decimal
 	EndMm   decimal.Decimal
+	// StartMode / EndMode say what the size carry-over holds constant for that end. The empty
+	// value is the millimetre default, so rows stored before the modes existed read unchanged.
+	StartMode TechCardPieceFusingEndMode
+	EndMode   TechCardPieceFusingEndMode
+	// StartModeOmitted / EndModeOmitted mean the wire carried no mode at all (a client that predates
+	// them), as opposed to an explicit millimetre choice: the stored mode of the same edge is kept.
+	// Write-path only; never stored and never set on a read.
+	StartModeOmitted bool
+	EndModeOmitted   bool
+}
+
+// TechCardPieceFusingEndMode is how one strip end travels across sizes; "" is fixed millimetres.
+type TechCardPieceFusingEndMode string
+
+const (
+	PieceFusingEndModeMm    TechCardPieceFusingEndMode = ""
+	PieceFusingEndModeNotch TechCardPieceFusingEndMode = "notch"
+	PieceFusingEndModeShare TechCardPieceFusingEndMode = "share"
+)
+
+// ValidPieceFusingEndMode reports whether mode is one of the stored spellings.
+func ValidPieceFusingEndMode(mode TechCardPieceFusingEndMode) bool {
+	return mode == PieceFusingEndModeMm || mode == PieceFusingEndModeNotch || mode == PieceFusingEndModeShare
+}
+
+// TechCardPieceFusingGradeMode is how one zone ring travels across sizes; "" keeps its shape.
+type TechCardPieceFusingGradeMode string
+
+const (
+	PieceFusingGradeModeFixed      TechCardPieceFusingGradeMode = ""
+	PieceFusingGradeModeFollowLine TechCardPieceFusingGradeMode = "follow_line"
+	PieceFusingGradeModeGrow       TechCardPieceFusingGradeMode = "grow"
+)
+
+// ValidPieceFusingGradeMode reports whether mode is one of the stored spellings.
+func ValidPieceFusingGradeMode(mode TechCardPieceFusingGradeMode) bool {
+	return mode == PieceFusingGradeModeFixed || mode == PieceFusingGradeModeFollowLine || mode == PieceFusingGradeModeGrow
+}
+
+// TechCardPieceFusingAnchor is the base-size point that picks the internal line a ring follows.
+type TechCardPieceFusingAnchor struct {
+	X decimal.Decimal
+	Y decimal.Decimal
 }
 
 // TechCardPieceFusingRect is a piece-local rectangle in millimetres.
@@ -4320,6 +4363,79 @@ type TechCardPieceFusingSplinePoint struct {
 
 type TechCardPieceFusingSpline struct {
 	Points []TechCardPieceFusingSplinePoint
+	// GradeMode and Anchor travel together: Anchor is set exactly when GradeMode follows a line.
+	GradeMode TechCardPieceFusingGradeMode
+	Anchor    *TechCardPieceFusingAnchor
+	// GradeModeOmitted means the wire carried no mode at all (a client that predates it), as opposed
+	// to an explicit fixed choice: an unchanged ring keeps its stored mode and anchor. Write-path only.
+	GradeModeOmitted bool
+}
+
+// CarryOmittedFusingModesFrom keeps the stored carry-over modes for whatever an older client sent
+// without them. Such a client round-trips geometry it understands and silently drops fields it has
+// never heard of, so its save would otherwise reset every ring to fixed and every end to mm. An edge
+// is matched by its outline segment; a ring by its position and only while its points are untouched,
+// because a ring the old client reshaped or reordered is no longer the ring the mode was chosen for.
+func (p *TechCardPiece) CarryOmittedFusingModesFrom(stored *TechCardPiece) {
+	if p == nil || stored == nil {
+		return
+	}
+	storedEdges := make(map[int]TechCardPieceFusingEdge, len(stored.FusingEdges))
+	for _, edge := range stored.FusingEdges {
+		storedEdges[edge.Edge] = edge
+	}
+	for i := range p.FusingEdges {
+		edge := &p.FusingEdges[i]
+		was, ok := storedEdges[edge.Edge]
+		if !ok {
+			continue
+		}
+		if edge.StartModeOmitted {
+			edge.StartMode = was.StartMode
+		}
+		if edge.EndModeOmitted {
+			edge.EndMode = was.EndMode
+		}
+	}
+	if p.FusingZone == nil || stored.FusingZone == nil || p.FusingZone == stored.FusingZone ||
+		p.FusingZone.Spline == nil || stored.FusingZone.Spline == nil {
+		return
+	}
+	carry := func(ring, was *TechCardPieceFusingSpline) {
+		if !ring.GradeModeOmitted || len(ring.Points) != len(was.Points) {
+			return
+		}
+		for i := range ring.Points {
+			if !ring.Points[i].X.Equal(was.Points[i].X) || !ring.Points[i].Y.Equal(was.Points[i].Y) ||
+				ring.Points[i].Corner != was.Points[i].Corner {
+				return
+			}
+		}
+		ring.GradeMode = was.GradeMode
+		ring.Anchor = nil
+		if was.Anchor != nil {
+			anchor := *was.Anchor
+			ring.Anchor = &anchor
+		}
+	}
+	// The incoming spline may be the very pointer other code still holds; copy before writing.
+	spline := *p.FusingZone.Spline
+	carry(&spline, stored.FusingZone.Spline)
+	zone := *p.FusingZone
+	zone.Spline = &spline
+	zone.Islands = append([]TechCardPieceFusingSpline(nil), p.FusingZone.Islands...)
+	for i := range zone.Islands {
+		if i < len(stored.FusingZone.Islands) {
+			carry(&zone.Islands[i], &stored.FusingZone.Islands[i])
+		}
+	}
+	zone.Holes = append([]TechCardPieceFusingSpline(nil), p.FusingZone.Holes...)
+	for i := range zone.Holes {
+		if i < len(stored.FusingZone.Holes) {
+			carry(&zone.Holes[i], &stored.FusingZone.Holes[i])
+		}
+	}
+	p.FusingZone = &zone
 }
 
 // TechCardPieceFusingZone is the exclusive geometry of ZONE fusing. All shape arms may be empty
@@ -4431,7 +4547,16 @@ type TechCardPiece struct {
 	FusingGrainOmitted    bool                `db:"-"`
 	FusingDarts           sql.NullString      `db:"fusing_darts"`
 	FusingDartsOmitted    bool                `db:"-"`
-	CalloutNumber         sql.NullInt32       `db:"callout_number"`
+	// FusingBaseSizeId + FusingBaseSignature are the staleness key of the edges / zone above (0468):
+	// the size whose coordinates the markup is in and the client's signature of that size's contour.
+	// Opaque to the server and deliberately outside the CONSTRUCTION digest. Both valid or both NULL;
+	// NormalizeFusing and the store clear the pair together with the markup it describes.
+	FusingBaseSizeId    sql.NullInt32  `db:"fusing_base_size_id"`
+	FusingBaseSignature sql.NullString `db:"fusing_base_signature"`
+	// FusingBaseOmitted — the key was not on the wire (an older client): the store keeps the stored
+	// pair, IF(:fusing_base_omitted, …), unless the markup it describes is gone after this write.
+	FusingBaseOmitted bool          `db:"-"`
+	CalloutNumber     sql.NullInt32 `db:"callout_number"`
 	// Detached is set by the store when the piece's callout_number no longer resolves to a callout on
 	// the card (its source sketch callout was removed): the piece survives, visibly detached, instead
 	// of being silently dropped (orphan-control, S8). Output-only; clients do not set it.
@@ -4585,6 +4710,7 @@ func (p *TechCardPiece) NormalizeFusing() {
 		p.FusingInsetNet = sql.NullBool{}
 		p.FusingGrain = sql.NullString{}
 		p.FusingDarts = sql.NullString{}
+		p.clearFusingBase()
 		return
 	}
 	switch PieceFusingModeOrFull(p.FusingMode) {
@@ -4603,6 +4729,70 @@ func (p *TechCardPiece) NormalizeFusing() {
 	} else if p.FusingInsetNet.Valid {
 		p.FusingInsetNet = sql.NullBool{}
 	}
+	// The key describes the edges / zone, so it goes with them.
+	if p.fusingMarkupKnownGone() {
+		p.clearFusingBase()
+	}
+}
+
+// fusingMarkupKnownGone reports whether this write is KNOWN to leave the fused piece with neither
+// edges nor a zone. An omitted mode, edge list or zone keeps the stored one, which only the store
+// sees, so those cases are left to the store's own copy of the rule (pieceFusingMarkupKept in
+// internal/store/techcard). On an INSERT nothing is stored and the store clears the key whenever
+// both markup columns are NULL.
+func (p *TechCardPiece) fusingMarkupKnownGone() bool {
+	if p.FusingOmitted {
+		return false
+	}
+	switch PieceFusingModeOrFull(p.FusingMode) {
+	case PieceFusingModeStrip:
+		return len(p.FusingEdges) == 0 && !p.FusingEdgesOmitted
+	case PieceFusingModeZone:
+		return p.FusingZone == nil && !p.FusingZoneOmitted
+	default:
+		return true // full or unset: neither edges nor a zone survive this write
+	}
+}
+
+func (p *TechCardPiece) clearFusingBase() {
+	p.FusingBaseSizeId = sql.NullInt32{}
+	p.FusingBaseSignature = sql.NullString{}
+}
+
+// TechCardPieceFusingBaseSignatureMaxLen is the width of tech_card_piece.fusing_base_signature (0468).
+const TechCardPieceFusingBaseSignatureMaxLen = 64
+
+// ValidatePieceFusingBase checks the staleness key of a piece's fusing markup: both halves or
+// neither, a positive size id, and a signature of 1..64 printable ASCII characters without spaces.
+// The signature is opaque — the server never computes or compares it — so nothing else is checked,
+// not even that the size belongs to the card's range: the key records what the markup was drawn
+// against, and a key that matches nothing is exactly the stale state the client looks for.
+func ValidatePieceFusingBase(field string, sizeID sql.NullInt32, signature sql.NullString) error {
+	if !sizeID.Valid && !signature.Valid {
+		return nil
+	}
+	if !sizeID.Valid || !signature.Valid {
+		return NewFieldViolation(field, "the fusing base key needs both the base size and the contour signature", "",
+			"send both fields, or an empty key to clear it")
+	}
+	if sizeID.Int32 <= 0 {
+		return NewFieldViolation(field+".base_size_id", "the base size id must be positive",
+			"", "send the id of the size the markup was drawn in")
+	}
+	sig := signature.String
+	if sig == "" || len(sig) > TechCardPieceFusingBaseSignatureMaxLen {
+		return NewFieldViolation(field+".contour_signature",
+			fmt.Sprintf("the contour signature must be 1 to %d characters", TechCardPieceFusingBaseSignatureMaxLen),
+			"", "send the signature the client computed for the base contour")
+	}
+	for i := 0; i < len(sig); i++ {
+		if sig[i] < 0x21 || sig[i] > 0x7e {
+			return NewFieldViolation(field+".contour_signature",
+				"the contour signature may hold only printable ASCII characters without spaces", "",
+				"send the signature the client computed for the base contour")
+		}
+	}
+	return nil
 }
 
 // ValidatePieceFusing checks one piece's fusing marking BEFORE the row reaches MySQL, in the words
@@ -4707,6 +4897,14 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 			return NewFieldViolation(edgeField, "edge-end offsets cannot be negative", "",
 				"use zero for no trim from that end")
 		}
+		if !ValidPieceFusingEndMode(edge.StartMode) {
+			return NewFieldViolation(edgeField+".start_mode", "unknown strip end mode", string(edge.StartMode),
+				"pick mm, notch, or share")
+		}
+		if !ValidPieceFusingEndMode(edge.EndMode) {
+			return NewFieldViolation(edgeField+".end_mode", "unknown strip end mode", string(edge.EndMode),
+				"pick mm, notch, or share")
+		}
 	}
 	if p.FusingZone != nil {
 		if mode != PieceFusingModeZone {
@@ -4760,7 +4958,7 @@ func ValidatePieceFusingDetails(field string, p *TechCardPiece) error {
 		return NewFieldViolation(field+".fusing_darts", "unknown dart treatment", p.FusingDarts.String,
 			"pick cut or fuse")
 	}
-	return nil
+	return ValidatePieceFusingBase(field+".fusing_base", p.FusingBaseSizeId, p.FusingBaseSignature)
 }
 
 // TechCardInsert is the writable payload for a tech card (header + child sections).
