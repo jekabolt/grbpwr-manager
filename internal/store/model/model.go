@@ -94,12 +94,21 @@ func (s *Store) UpdateModel(ctx context.Context, id int, m *entity.ModelInsert) 
 			}); err != nil {
 			return fmt.Errorf("failed to update model: %w", err)
 		}
+		existingMeasurements, err := measurementsByModelIds(ctx, rep.DB(), []int{id})
+		if err != nil {
+			return err
+		}
+		measurements := mergeModelMeasurementsForUpdate(
+			m.Measurements,
+			existingMeasurements[id],
+			m.BodyMeasurementSchemaVersion,
+		)
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
 			`DELETE FROM model_measurement WHERE model_id = :id`,
 			map[string]any{"id": id}); err != nil {
 			return fmt.Errorf("failed to clear model measurements: %w", err)
 		}
-		if err := insertModelMeasurements(ctx, rep.DB(), id, m.Measurements); err != nil {
+		if err := insertModelMeasurements(ctx, rep.DB(), id, measurements); err != nil {
 			return err
 		}
 		if err := storeutil.ExecNamed(ctx, rep.DB(),
@@ -211,10 +220,21 @@ func insertModelMeasurements(ctx context.Context, db dependency.DB, modelID int,
 	}
 	rows := make([]map[string]any, 0, len(ms))
 	for _, m := range ms {
+		var metadataSchemaVersion any
+		var measurementSource any
+		var measurementProtocolID any
+		if m.Metadata != nil {
+			metadataSchemaVersion = m.Metadata.SchemaVersion
+			measurementSource = string(m.Metadata.Source)
+			measurementProtocolID = m.Metadata.ProtocolID
+		}
 		rows = append(rows, map[string]any{
-			"model_id":             modelID,
-			"measurement_name":     string(m.Name),
-			"measurement_value_mm": m.ValueMM,
+			"model_id":                modelID,
+			"measurement_name":        string(m.Name),
+			"measurement_value_mm":    m.ValueMM,
+			"metadata_schema_version": metadataSchemaVersion,
+			"measurement_source":      measurementSource,
+			"measurement_protocol_id": measurementProtocolID,
 		})
 	}
 	if err := storeutil.BulkInsert(ctx, db, "model_measurement", rows); err != nil {
@@ -224,16 +244,100 @@ func insertModelMeasurements(ctx context.Context, db dependency.DB, modelID int,
 }
 
 type modelMeasurementRow struct {
-	ModelID int `db:"model_id"`
-	entity.ModelMeasurement
+	ModelID               int            `db:"model_id"`
+	Name                  string         `db:"measurement_name"`
+	ValueMM               int            `db:"measurement_value_mm"`
+	MetadataSchemaVersion sql.NullInt64  `db:"metadata_schema_version"`
+	MeasurementSource     sql.NullString `db:"measurement_source"`
+	MeasurementProtocolID sql.NullString `db:"measurement_protocol_id"`
 }
 
-func (s *Store) measurementsByModelIds(ctx context.Context, ids []int) (map[int][]entity.ModelMeasurement, error) {
+func (r modelMeasurementRow) measurement() (entity.ModelMeasurement, error) {
+	measurement := entity.ModelMeasurement{
+		Name:    entity.BodyMeasurementName(r.Name),
+		ValueMM: r.ValueMM,
+	}
+	present := 0
+	if r.MetadataSchemaVersion.Valid {
+		present++
+	}
+	if r.MeasurementSource.Valid {
+		present++
+	}
+	if r.MeasurementProtocolID.Valid {
+		present++
+	}
+	if present == 0 {
+		return measurement, nil
+	}
+	if present != 3 {
+		return entity.ModelMeasurement{}, fmt.Errorf("measurement %q has partial metadata tuple", r.Name)
+	}
+	source := entity.BodyMeasurementSource(r.MeasurementSource.String)
+	if r.MetadataSchemaVersion.Int64 != int64(entity.BodyMeasurementMetadataSchemaVersionV1) ||
+		!entity.ValidBodyMeasurementSources[source] ||
+		r.MeasurementProtocolID.String == "" ||
+		strings.TrimSpace(r.MeasurementProtocolID.String) != r.MeasurementProtocolID.String {
+		return entity.ModelMeasurement{}, fmt.Errorf("measurement %q has invalid metadata tuple", r.Name)
+	}
+	measurement.Metadata = &entity.BodyMeasurementMetadataV1{
+		SchemaVersion: uint32(r.MetadataSchemaVersion.Int64),
+		Source:        source,
+		ProtocolID:    r.MeasurementProtocolID.String,
+	}
+	return measurement, nil
+}
+
+func cloneMeasurement(measurement entity.ModelMeasurement) entity.ModelMeasurement {
+	if measurement.Metadata != nil {
+		metadata := *measurement.Metadata
+		measurement.Metadata = &metadata
+	}
+	return measurement
+}
+
+func mergeModelMeasurementsForUpdate(
+	next []entity.ModelMeasurement,
+	previous []entity.ModelMeasurement,
+	schemaVersion uint32,
+) []entity.ModelMeasurement {
+	previousByName := make(map[entity.BodyMeasurementName]entity.ModelMeasurement, len(previous))
+	for _, measurement := range previous {
+		previousByName[measurement.Name] = measurement
+	}
+
+	merged := make([]entity.ModelMeasurement, 0, len(next)+len(previous))
+	seen := make(map[entity.BodyMeasurementName]bool, len(next))
+	for _, measurement := range next {
+		measurement = cloneMeasurement(measurement)
+		// A legacy writer could not represent metadata, so omission preserves
+		// the stored tuple. A P0-aware writer owns metadata presence: nil clears.
+		if schemaVersion == 0 && measurement.Metadata == nil {
+			if stored, ok := previousByName[measurement.Name]; ok && stored.Metadata != nil {
+				metadata := *stored.Metadata
+				measurement.Metadata = &metadata
+			}
+		}
+		merged = append(merged, measurement)
+		seen[measurement.Name] = true
+	}
+	if schemaVersion == 0 {
+		for _, measurement := range previous {
+			if entity.P0BodyMeasurementNames[measurement.Name] && !seen[measurement.Name] {
+				merged = append(merged, cloneMeasurement(measurement))
+			}
+		}
+	}
+	return merged
+}
+
+func measurementsByModelIds(ctx context.Context, db dependency.DB, ids []int) (map[int][]entity.ModelMeasurement, error) {
 	if len(ids) == 0 {
 		return map[int][]entity.ModelMeasurement{}, nil
 	}
-	rows, err := storeutil.QueryListNamed[modelMeasurementRow](ctx, s.DB, `
-		SELECT model_id, measurement_name, measurement_value_mm
+	rows, err := storeutil.QueryListNamed[modelMeasurementRow](ctx, db, `
+		SELECT model_id, measurement_name, measurement_value_mm,
+			metadata_schema_version, measurement_source, measurement_protocol_id
 		FROM model_measurement
 		WHERE model_id IN (:ids)
 		ORDER BY id`, map[string]any{"ids": ids})
@@ -242,9 +346,17 @@ func (s *Store) measurementsByModelIds(ctx context.Context, ids []int) (map[int]
 	}
 	out := make(map[int][]entity.ModelMeasurement, len(ids))
 	for _, r := range rows {
-		out[r.ModelID] = append(out[r.ModelID], r.ModelMeasurement)
+		measurement, err := r.measurement()
+		if err != nil {
+			return nil, fmt.Errorf("can't load model measurements: %w", err)
+		}
+		out[r.ModelID] = append(out[r.ModelID], measurement)
 	}
 	return out, nil
+}
+
+func (s *Store) measurementsByModelIds(ctx context.Context, ids []int) (map[int][]entity.ModelMeasurement, error) {
+	return measurementsByModelIds(ctx, s.DB, ids)
 }
 
 func insertModelMedia(ctx context.Context, db dependency.DB, modelID int, mediaIDs []int) error {
