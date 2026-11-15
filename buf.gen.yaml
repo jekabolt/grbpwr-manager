@@ -2,10 +2,10 @@ version: v1
 managed:
   enabled: true
 plugins:
-  - plugin: buf.build/protocolbuffers/go
+  - plugin: buf.build/protocolbuffers/go:v1.36.12
     out: proto/gen
     opt: paths=source_relative
-  - plugin: buf.build/grpc/go
+  - plugin: buf.build/grpc/go:v1.6.2
     out: proto/gen
     opt: paths=source_relative
   - plugin: buf.build/grpc-ecosystem/gateway:v2.21.0
@@ -13,7 +13,7 @@ plugins:
     opt:
       - paths=source_relative
       - logtostderr=true
-  - plugin: buf.build/grpc-ecosystem/openapiv2
+  - plugin: buf.build/grpc-ecosystem/openapiv2:v2.21.0
     out: proto/swagger
     opt: 
       - json_names_for_fields=true

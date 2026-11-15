@@ -3,8 +3,8 @@ FROM golang:1.26.0-alpine3.22 AS builder
 # Install build dependencies including libwebp-dev
 RUN apk add --no-cache git libgit2-dev alpine-sdk libwebp-dev
 
-# Copy buf tool (cache this layer separately)
-COPY --from=bufbuild/buf:latest /usr/local/bin/buf /usr/local/go/bin/
+# Keep the generator aligned with the version pinned in CI.
+COPY --from=bufbuild/buf:1.28.0 /usr/local/bin/buf /usr/local/go/bin/
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 
@@ -20,14 +20,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Install Go tools (cache this layer - tools rarely change)
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12 && \
     go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.21.0 && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0 && \
-    go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest && \
-    go install golang.org/x/text/cmd/gotext@latest && \
-    go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2 && \
+    go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@v1.16.0 && \
+    go install golang.org/x/text/cmd/gotext@v0.33.0 && \
+    go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@v2.21.0 && \
     go install github.com/vektra/mockery/v2@v2.52.2 && \
-    go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest
+    go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.16.3
 
 
 COPY proto/ ./proto/
@@ -70,7 +70,8 @@ RUN COMMIT_HASH_VALUE="$COMMIT_HASH"; \
     mkdir -p bin && \
     go build -ldflags "-s -w -X main.version=$VERSION -X main.commitHash=$COMMIT_HASH" -o bin/products-manager ./cmd/*.go
 
-FROM alpine:latest
+# Match the builder's Alpine release; use a versioned tag rather than a moving channel.
+FROM alpine:3.22
 
 # Install runtime dependencies: libwebp (go-webp) and libheif (HEIC decode).
 # gen2brain/heic loads libheif at runtime via dlopen by the unversioned name

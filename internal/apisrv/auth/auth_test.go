@@ -398,6 +398,8 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 	assert.NoError(t, err)
 
 	scoped := mint(false, []string{"orders:read", "content:write"})
+	modelsRead := mint(false, []string{"models:read"})
+	modelsWrite := mint(false, []string{"models:write"})
 	super := mint(true, nil)
 	noAccess := mint(false, nil)
 
@@ -421,6 +423,10 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"scoped write on read grant denied", scoped, "/admin.AdminService/RefundOrder", false},
 		{"scoped write allowed", scoped, "/admin.AdminService/UploadContentImage", true},
 		{"scoped other section denied", scoped, "/admin.AdminService/UpsertProduct", false},
+		{"models read may get mannequin pose", modelsRead, "/admin.AdminService/GetModelMannequinPose", true},
+		{"models read may not put mannequin pose", modelsRead, "/admin.AdminService/PutModelMannequinPose", false},
+		{"models write may get mannequin pose", modelsWrite, "/admin.AdminService/GetModelMannequinPose", true},
+		{"models write may put mannequin pose", modelsWrite, "/admin.AdminService/PutModelMannequinPose", true},
 		{"allowlist always allowed", scoped, "/admin.AdminService/GetDictionary", true},
 		{"self view allowlisted", noAccess, "/admin.AdminService/GetCurrentAccount", true},
 		{"no-access denied", noAccess, "/admin.AdminService/ListOrders", false},
