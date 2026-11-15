@@ -1,6 +1,6 @@
 -- +migrate Up
 
--- 0469 originally admitted only the bare-R2000 semantic envelope. Product import writes the
+-- 0471 originally admitted only the bare-R2000 semantic envelope. Product import writes the
 -- manifest-embedded R12 stream and owns a separately versioned canonical envelope; both retain the
 -- same row-lock/DXF/post-save CAS. Replace only the named media check and remain safe after a
 -- mid-file MySQL DDL commit.

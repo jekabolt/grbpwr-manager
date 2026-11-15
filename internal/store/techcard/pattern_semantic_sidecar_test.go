@@ -75,11 +75,11 @@ func TestPatternSemanticSidecarWriteLocksBeforeReadingAndDocumentRewriteInvalida
 	require.Contains(t, invalidationBody, "JOIN tech_card_size_pattern")
 	require.Contains(t, invalidationBody, "pattern.tech_card_id = :tech_card_id")
 
-	migration, err := os.ReadFile("../sql/0469_pattern_semantic_sidecar.sql")
+	migration, err := os.ReadFile("../sql/0471_pattern_semantic_sidecar.sql")
 	require.NoError(t, err)
 	require.Contains(t, string(migration), "card_lock_version INT NOT NULL")
 	require.Contains(t, string(migration), "card_lock_version >= 0")
-	productMediaMigration, err := os.ReadFile("../sql/0470_pattern_semantic_sidecar_product_media.sql")
+	productMediaMigration, err := os.ReadFile("../sql/0472_pattern_semantic_sidecar_product_media.sql")
 	require.NoError(t, err)
 	require.Contains(t, string(productMediaMigration), entity.PatternProductSemanticSidecarMediaType)
 	require.Contains(t, string(productMediaMigration), "chk_pattern_semantic_sidecar_media_type")

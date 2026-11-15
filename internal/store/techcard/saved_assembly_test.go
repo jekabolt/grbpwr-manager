@@ -169,7 +169,7 @@ func TestSavedAssemblyClockAndMigrationWiring(t *testing.T) {
 	require.Equal(t, "asm:v1:0123456789abcdef0123456789abcdef:9",
 		(assemblyClockRow{LineageID: "0123456789abcdef0123456789abcdef", Revision: 9}).Token())
 
-	migration, err := os.ReadFile("../sql/0471_saved_assembly_authority.sql")
+	migration, err := os.ReadFile("../sql/0473_saved_assembly_authority.sql")
 	require.NoError(t, err)
 	sqlText := string(migration)
 	require.Contains(t, sqlText, "saved_row_revision INT UNSIGNED NOT NULL DEFAULT 1")

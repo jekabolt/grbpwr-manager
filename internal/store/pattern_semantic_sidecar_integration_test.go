@@ -129,7 +129,7 @@ func TestPatternSemanticSidecarCASAndInvalidation(t *testing.T) {
 	require.Equal(t, lockB, rebuilt.CardLockVersion)
 	require.Equal(t, payload(lockB, versionB), rebuilt.Payload)
 
-	// 0469 widens only the versioned media envelope. Product R12 semantics use the same row-lock,
+	// 0472 widens only the versioned media envelope. Product R12 semantics use the same row-lock,
 	// DXF revision, receipt and byte-integrity CAS, and may replace the legacy envelope atomically.
 	productPayload := []byte(fmt.Sprintf(
 		`{"schemaVersion":"pattern-import-dxf-product-semantic-sidecar-document/1","mediaType":"%s","encoding":"canonical-json-utf8","product":{"exportSha256":"%s"},"persistence":{"receiptSealSha256":"%s","card":{"techCardId":%d,"observedLockVersion":%d},"pattern":{"lineKey":"%s","version":%d,"sha256":"%s"}}}`,
