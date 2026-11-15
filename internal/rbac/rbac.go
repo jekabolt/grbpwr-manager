@@ -329,11 +329,13 @@ var methodRequirements = map[string]Requirement{
 	"GetCampaignMetrics":         rd(SectionCampaigns),
 	"GetCampaignRecipients":      rd(SectionCampaigns),
 	// models
-	"AddModel":    wr(SectionModels),
-	"GetModel":    rd(SectionModels),
-	"UpdateModel": wr(SectionModels),
-	"DeleteModel": wr(SectionModels),
-	"ListModels":  rd(SectionModels),
+	"AddModel":              wr(SectionModels),
+	"GetModel":              rd(SectionModels),
+	"UpdateModel":           wr(SectionModels),
+	"DeleteModel":           wr(SectionModels),
+	"ListModels":            rd(SectionModels),
+	"GetModelMannequinPose": rd(SectionModels),
+	"PutModelMannequinPose": wr(SectionModels),
 	// fittings
 	"AddFitting":    wr(SectionFittings),
 	"GetFitting":    rd(SectionFittings),

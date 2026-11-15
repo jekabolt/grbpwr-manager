@@ -84,15 +84,15 @@ golangci-lint:
 	docker run --rm -v $$(pwd):/app -v ~/.netrc:/root/.netrc -w /app golangci/golangci-lint:$(GO_LINT_VERSION) golangci-lint run ./...
 
 install:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest || exit 1
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12 || exit 1
 	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.21.0 || exit 1
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.4.0 || exit 1
-	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway@latest || exit 1
-	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@latest || exit 1
-	go install golang.org/x/text/cmd/gotext@latest || exit 1
-	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest || exit 1
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2 || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway@v1.16.0 || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger@v1.16.0 || exit 1
+	go install golang.org/x/text/cmd/gotext@v0.33.0 || exit 1
+	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@v2.21.0 || exit 1
 	go install github.com/vektra/mockery/v2@v2.52.2 || exit 1 
-	go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest || exit 1
+	go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@v1.16.3 || exit 1
 
 REGISTRY=grbpwr
 IMAGE_NAME=grbpwr-pm

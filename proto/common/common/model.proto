@@ -39,6 +39,75 @@ enum BodyMeasurementName {
   BODY_MEASUREMENT_NAME_ACROSS_BACK = 20;
 }
 
+// ModelMannequinPoseSpace names the coordinate/control contract used by a
+// mannequin pose. Stored V2 resources admit only DIRECT_POSE_V9; FULL_BODY_V4
+// remains an explicit migration vocabulary value and must not be guessed.
+enum ModelMannequinPoseSpace {
+  MODEL_MANNEQUIN_POSE_SPACE_UNKNOWN = 0;
+  MODEL_MANNEQUIN_POSE_SPACE_MAKEHUMAN_OPEN_REFERENCE_FULL_BODY_V4 = 1;
+  MODEL_MANNEQUIN_POSE_SPACE_MAKEHUMAN_OPEN_REFERENCE_DIRECT_POSE_V9 = 2;
+}
+
+enum ModelMannequinArmMode {
+  MODEL_MANNEQUIN_ARM_MODE_UNKNOWN = 0;
+  MODEL_MANNEQUIN_ARM_MODE_LINKED = 1;
+  MODEL_MANNEQUIN_ARM_MODE_INDEPENDENT = 2;
+}
+
+message ModelMannequinArmPoseV1 {
+  sint32 shoulder_raise_degrees = 1;
+  sint32 shoulder_forward_degrees = 2;
+  sint32 elbow_bend_degrees = 3;
+  sint32 wrist_bend_degrees = 4;
+}
+
+enum ModelMannequinLegMode {
+  MODEL_MANNEQUIN_LEG_MODE_UNKNOWN = 0;
+  MODEL_MANNEQUIN_LEG_MODE_LINKED = 1;
+  MODEL_MANNEQUIN_LEG_MODE_INDEPENDENT = 2;
+}
+
+message ModelMannequinLegPoseV1 {
+  sint32 hip_forward_degrees = 1;
+  sint32 hip_side_degrees = 2;
+  sint32 knee_bend_degrees = 3;
+  sint32 ankle_bend_degrees = 4;
+}
+
+// ModelMannequinPoseV2 is the typed persistence shape for the direct-pose-v9
+// editor. canonical_sha256 is the lowercase SHA-256 of the canonical frontend
+// V2 JSON document; the server rebuilds and verifies it before every write.
+message ModelMannequinPoseV2 {
+  uint32 schema_version = 1; // exactly 2
+  ModelMannequinPoseSpace pose_space = 2;
+  sint32 body_flexion_degrees = 3;
+  sint32 body_side_bend_degrees = 4;
+  sint32 body_twist_degrees = 5;
+  ModelMannequinArmMode arm_mode = 6;
+  ModelMannequinArmPoseV1 left_arm = 7;
+  ModelMannequinArmPoseV1 right_arm = 8;
+  sint32 head_pitch_degrees = 9;
+  sint32 head_yaw_degrees = 10;
+  sint32 head_side_degrees = 11;
+  ModelMannequinLegMode leg_mode = 12;
+  ModelMannequinLegPoseV1 left_leg = 13;
+  ModelMannequinLegPoseV1 right_leg = 14;
+  string canonical_sha256 = 15;
+  sint32 shoulder_protraction_degrees = 16;
+  sint32 shoulder_elevation_degrees = 17;
+  sint32 shoulder_level_degrees = 18;
+}
+
+message StoredModelMannequinPose {
+  int32 model_id = 1;
+  ModelMannequinPoseV2 pose = 2;
+  // Canonical positive decimal uint64 string. The admin TypeScript generator
+  // maps protobuf uint64 to number, which is lossy above 2^53.
+  string revision = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  string updated_by = 5;
+}
+
 // ModelMeasurement is a single body measurement value, in millimetres.
 message ModelMeasurement {
   BodyMeasurementName name = 1;

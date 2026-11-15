@@ -114,6 +114,21 @@ func TestNoStaleMappings(t *testing.T) {
 	}
 }
 
+func TestModelMannequinPoseUsesModelRights(t *testing.T) {
+	for method, access := range map[string]entity.AccessLevel{
+		"GetModelMannequinPose": entity.AccessRead,
+		"PutModelMannequinPose": entity.AccessWrite,
+	} {
+		req, allowlisted, known := Lookup(MethodPrefix + method)
+		if allowlisted || !known {
+			t.Fatalf("%s must be explicitly classified", method)
+		}
+		if req.Section != SectionModels || req.Access != access {
+			t.Errorf("%s = %s:%s, want %s:%s", method, req.Section, req.Access, SectionModels, access)
+		}
+	}
+}
+
 // aiProviderMethods are the six RPCs of the AI providers panel (ai-providers plan A5).
 var aiProviderMethods = []string{
 	"GetAiProvidersConfig",

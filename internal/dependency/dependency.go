@@ -605,6 +605,8 @@ type (
 		DeleteModel(ctx context.Context, id int) error
 		GetModelById(ctx context.Context, id int) (*entity.Model, error)
 		ListModels(ctx context.Context, limit, offset int, orderFactor entity.OrderFactor, gender, nameSearch string) ([]entity.Model, int, error)
+		GetModelMannequinPose(ctx context.Context, modelID int) (*entity.StoredModelMannequinPose, error)
+		PutModelMannequinPose(ctx context.Context, modelID int, pose entity.ModelMannequinPoseV2, expected entity.ModelMannequinPoseRevisionGuard, updatedBy string) (*entity.StoredModelMannequinPose, error)
 	}
 
 	// Fittings manages garment try-on sessions with their sizes and media, plus the structured S26

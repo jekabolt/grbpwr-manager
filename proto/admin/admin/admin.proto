@@ -1052,6 +1052,21 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/model/{id}"};
   }
 
+  // GetModelMannequinPose returns the dedicated, versioned pose resource. An
+  // existing model with no saved pose returns an empty stored_pose.
+  rpc GetModelMannequinPose(GetModelMannequinPoseRequest) returns (GetModelMannequinPoseResponse) {
+    option (google.api.http) = {get: "/api/admin/model/{model_id}/mannequin-pose"};
+  }
+
+  // PutModelMannequinPose creates or replaces the dedicated pose resource under
+  // optimistic revision control; it never participates in UpdateModel.
+  rpc PutModelMannequinPose(PutModelMannequinPoseRequest) returns (PutModelMannequinPoseResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/model/{model_id}/mannequin-pose"
+      body: "*"
+    };
+  }
+
   // UpdateModel updates a fit-model profile.
   rpc UpdateModel(UpdateModelRequest) returns (UpdateModelResponse) {
     option (google.api.http) = {
@@ -6602,6 +6617,26 @@ message GetModelRequest {
 
 message GetModelResponse {
   common.Model model = 1;
+}
+
+message GetModelMannequinPoseRequest {
+  int32 model_id = 1;
+}
+
+message GetModelMannequinPoseResponse {
+  common.StoredModelMannequinPose stored_pose = 1;
+}
+
+message PutModelMannequinPoseRequest {
+  int32 model_id = 1;
+  common.ModelMannequinPoseV2 pose = 2;
+  // Canonical positive decimal uint64 string. Absent means the caller observed
+  // no stored pose; zero, leading zeroes and non-decimal forms are invalid.
+  optional string expected_revision = 3;
+}
+
+message PutModelMannequinPoseResponse {
+  common.StoredModelMannequinPose stored_pose = 1;
 }
 
 message UpdateModelRequest {
