@@ -459,7 +459,10 @@ var methodRequirements = map[string]Requirement{
 	// выкройках карточки, пишется со вкладки выкроек, и им кормится костинг и гейт релиза.
 	// Плановик производства не должен уметь его переписать: право переписать площади — это право
 	// снять себе блокер.
-	"SaveTechCardPieceAreas": wr(SectionTechCards),
+	"SaveTechCardPieceAreas":            wr(SectionTechCards),
+	"PutTechCardPatternSemanticSidecar": wr(SectionTechCards),
+	"GetTechCardPatternSemanticSidecar": rd(SectionTechCards),
+	"GetTechCardSavedAssemblySnapshot":  rd(SectionTechCards),
 	// Подтверждённые швы (tech_card_seam): тот же уровень, что площади — решение технолога о
 	// сборке из выкроек карточки, пишется с вкладки конструкции. Отдельные RPC, lock_version не
 	// двигают и в дайджест не входят; выпущенная карточка отказывает.

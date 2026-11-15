@@ -2963,6 +2963,28 @@ service AdminService {
     };
   }
 
+  // Post-save CAS for canonical browser-derived DXF semantics. This attachment is invalidated by
+  // the next full card save and therefore must be written only after the final document save.
+  rpc PutTechCardPatternSemanticSidecar(PutTechCardPatternSemanticSidecarRequest) returns (PutTechCardPatternSemanticSidecarResponse) {
+    option (google.api.http) = {
+      put: "/api/admin/tech-card/{tech_card_id}/patterns/{pattern_line_key}/semantic-sidecar"
+      body: "*"
+    };
+  }
+
+  rpc GetTechCardPatternSemanticSidecar(GetTechCardPatternSemanticSidecarRequest) returns (GetTechCardPatternSemanticSidecarResponse) {
+    option (google.api.http) = {get: "/api/admin/tech-card/{tech_card_id}/patterns/{pattern_line_key}/semantic-sidecar"};
+  }
+
+  // Narrow server-transactional authority for reopening one already-saved Assembly Order row.
+  // The expected row is POSTed because all eight identity fields are comparison inputs, not filters.
+  rpc GetTechCardSavedAssemblySnapshot(GetTechCardSavedAssemblySnapshotRequest) returns (GetTechCardSavedAssemblySnapshotResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/tech-card/{tech_card_id}/patterns/{pattern_line_key}:read-assembly-snapshot"
+      body: "*"
+    };
+  }
+
   // UpsertTechCardSeams stores the technologist's seam decisions — confirmed / rejected seams and
   // seams connected by hand on the pieces map — so every reader resolves ONE list.
   //
@@ -12083,6 +12105,90 @@ message SaveTechCardPieceAreasRequest {
 message SaveTechCardPieceAreasResponse {
   string sheet_fingerprint = 1; // what the server recorded
   int32 stored = 2; // rows written for this scope
+}
+
+message TechCardPatternSemanticSidecar {
+  int32 tech_card_id = 1;
+  string pattern_line_key = 2;
+  string dxf_sha256 = 3;
+  int32 pattern_version = 4;
+  string sidecar_sha256 = 5;
+  string media_type = 6;
+  int32 byte_length = 7;
+  bytes sidecar_bytes = 8;
+  string post_save_receipt_sha256 = 9;
+  google.protobuf.Timestamp created_at = 10;
+  string created_by = 11;
+  int32 card_lock_version = 12;
+  uint32 saved_row_revision = 13;
+}
+
+message PutTechCardPatternSemanticSidecarRequest {
+  int32 tech_card_id = 1;
+  string pattern_line_key = 2;
+  string expected_dxf_sha256 = 3;
+  int32 expected_pattern_version = 4;
+  string expected_post_save_receipt_sha256 = 5;
+  string media_type = 6;
+  string sidecar_sha256 = 7;
+  bytes sidecar_bytes = 8;
+  optional int32 expected_card_lock_version = 9;
+  optional uint32 expected_saved_row_revision = 10; // required for composite exact-carrier media
+  optional string expected_previous_sidecar_sha256 = 11; // empty = require absent; hash = exact CAS
+  optional string expected_server_assembly_revision = 12;
+  optional string expected_assembly_topology_sha256 = 13;
+  int32 selected_operation_number = 14; // required for composite exact-carrier media
+}
+
+message PutTechCardPatternSemanticSidecarResponse {
+  TechCardPatternSemanticSidecar semantic_sidecar = 1;
+}
+
+message GetTechCardPatternSemanticSidecarRequest {
+  int32 tech_card_id = 1;
+  string pattern_line_key = 2;
+}
+
+message GetTechCardPatternSemanticSidecarResponse {
+  TechCardPatternSemanticSidecar semantic_sidecar = 1;
+}
+
+message TechCardSavedPatternRowIdentity {
+  int32 tech_card_id = 1;
+  string scope_key = 2;
+  string pattern_line_key = 3;
+  uint32 saved_row_revision = 4;
+  int32 card_lock_version = 5;
+  string url = 6;
+  int64 size_bytes = 7;
+  string sha256 = 8;
+  int32 pattern_version = 9;
+  string download_url = 10;
+}
+
+message GetTechCardSavedAssemblySnapshotRequest {
+  int32 tech_card_id = 1;
+  string pattern_line_key = 2;
+  string expected_scope_key = 3;
+  uint32 expected_saved_row_revision = 4;
+  int32 expected_card_lock_version = 5;
+  string expected_url = 6;
+  int64 expected_size_bytes = 7;
+  string expected_sha256 = 8;
+  int32 selected_operation_number = 9;
+  optional string expected_server_assembly_revision = 10;
+  optional string expected_assembly_topology_sha256 = 11;
+}
+
+message GetTechCardSavedAssemblySnapshotResponse {
+  TechCardSavedPatternRowIdentity row = 1;
+  int32 selected_operation_number = 2;
+  repeated common.TechCardOperation operations = 3;
+  repeated common.TechCardSeam selected_seams = 4;
+  string server_assembly_revision = 5;
+  string assembly_topology_sha256 = 6;
+  bytes topology_canonical_json = 7;
+  optional TechCardPatternSemanticSidecar semantic_sidecar = 8;
 }
 
 message UpsertTechCardSeamsRequest {

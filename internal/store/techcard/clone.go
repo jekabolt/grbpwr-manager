@@ -47,6 +47,9 @@ func (s *Store) CloneTechCardForSeason(ctx context.Context, sourceID, expectedSo
 		if err != nil {
 			return fmt.Errorf("insert cloned tech card: %w", err)
 		}
+		if err := createTechCardAssemblyClock(ctx, db, id); err != nil {
+			return err
+		}
 		if err := syncStyleCategoryTriple(ctx, db, id, tc.CategoryId); err != nil {
 			return err
 		}

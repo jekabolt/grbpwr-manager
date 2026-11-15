@@ -237,6 +237,9 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		if err := writeTechCardSeamsTx(ctx, db, in.TechCardId, in.Seams, in.By, seamWriteOpts{}); err != nil {
 			return err
 		}
+		if err := bumpTechCardAssemblyClock(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
 		// The echo is read in the same transaction: the client re-syncs from what was committed,
 		// not from its optimistic copy. Assigned, never appended — txFunc may retry this closure.
 		list, err := listTechCardSeams(ctx, db, in.TechCardId)
@@ -438,6 +441,11 @@ func (s *Store) DeleteTechCardSeams(ctx context.Context, techCardID int, seamKey
 		n, err := deleteTechCardSeamsTx(ctx, db, techCardID, keys)
 		if err != nil {
 			return err
+		}
+		if n > 0 {
+			if err := bumpTechCardAssemblyClock(ctx, db, techCardID); err != nil {
+				return err
+			}
 		}
 		list, err := listTechCardSeams(ctx, db, techCardID)
 		if err != nil {

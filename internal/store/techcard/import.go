@@ -249,6 +249,9 @@ func (s *Store) ImportTechCardArchive(ctx context.Context, in entity.TechCardArc
 		if err != nil {
 			return fmt.Errorf("insert imported tech card: %w", err)
 		}
+		if err := createTechCardAssemblyClock(ctx, db, newID); err != nil {
+			return err
+		}
 		// The triple goes in BEFORE the children: insertTechCardChildren validates the size range
 		// against the card's category, which it reads back off this row. Same order as AddTechCard
 		// and CloneTechCardForSeason, and for the same reason.

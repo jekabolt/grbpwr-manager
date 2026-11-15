@@ -341,6 +341,9 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 			map[string]any{"id": id}); err != nil {
 			return zero, fmt.Errorf("bump lock_version of tech card %d: %w", id, err)
 		}
+		if err := bumpTechCardAssemblyClock(ctx, db, id); err != nil {
+			return zero, err
+		}
 		newVersion = version + 1
 	}
 

@@ -2376,6 +2376,9 @@ type TechCardSizePattern struct {
 	// patterns are a full-replace child, so the store re-derives this on every save from the rows it
 	// is about to delete — a url it has seen keeps its number, a new one takes MAX+1.
 	Version int `db:"version"`
+	// SavedRowRevision is the server-owned monotonic instance clock for this stable line. It is
+	// distinct from Version: version is human-facing and may be pinned or restored.
+	SavedRowRevision uint32 `db:"saved_row_revision"`
 	// UploadedAt is when the PDF was first attached. Server-owned: carried across the full-replace by
 	// matching the url, so it means what it says instead of drifting to "last card save".
 	UploadedAt sql.NullTime `db:"uploaded_at"`

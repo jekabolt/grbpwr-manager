@@ -1211,6 +1211,15 @@ type (
 		// different set of files would answer for files nobody read, and an understated area
 		// understates the norm, which is discovered in the warehouse rather than on screen.
 		SaveTechCardPieceAreas(ctx context.Context, in entity.PieceAreaWrite) (entity.PieceAreaResult, error)
+		// PutTechCardPatternSemanticSidecar is the post-save, row-locked CAS for canonical browser
+		// semantics. Get returns sql.ErrNoRows when the current pattern has no attachment and refuses
+		// stored digest/revision drift as corruption.
+		PutTechCardPatternSemanticSidecar(ctx context.Context, in entity.PatternSemanticSidecarWrite) (entity.PatternSemanticSidecar, error)
+		GetTechCardPatternSemanticSidecar(ctx context.Context, techCardID int, patternLineKey string) (entity.PatternSemanticSidecar, error)
+		// GetTechCardSavedAssemblySnapshot exact-matches all eight saved-row fields and returns the
+		// selected two-seam Assembly topology, its monotonic clock and optional exact sidecar from one
+		// REPEATABLE READ transaction.
+		GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.SavedAssemblySnapshotRequest) (entity.SavedAssemblySnapshot, error)
 		// GetTechCardSeams returns a card's seam decisions (tech_card_seam) with staleness resolved
 		// against today's sheets + block links of each seam's pieces' fabric scopes.
 		GetTechCardSeams(ctx context.Context, techCardID int) ([]entity.TechCardSeam, error)

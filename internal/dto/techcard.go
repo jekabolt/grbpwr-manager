@@ -2647,15 +2647,16 @@ func techCardPatternsToPb(ps []entity.TechCardSizePattern) []*pb_common.TechCard
 			BomLineKey: pbOptStringFromNull(p.BomLineKey),
 			// ALWAYS present on read (like name / bom_line_key), so a new client round-trips presence
 			// and its saves state the binding explicitly instead of falling into carry-forward.
-			FabricPurpose: pbPtr(pbBomPurpose(p.FabricPurpose)),
-			Url:           p.URL,
-			Filename:      pbStringFromNull(p.Filename),
-			Name:          pbOptStringFromNull(p.Name),
-			SizeBytes:     p.SizeBytes.Int64,
-			Sha256:        pbOptStringFromNull(p.SHA256),
-			Version:       int32(p.Version),
-			UploadedAt:    pbTimestampFromNullTime(p.UploadedAt),
-			History:       techCardPatternHistoryToPb(p.History),
+			FabricPurpose:    pbPtr(pbBomPurpose(p.FabricPurpose)),
+			Url:              p.URL,
+			Filename:         pbStringFromNull(p.Filename),
+			Name:             pbOptStringFromNull(p.Name),
+			SizeBytes:        p.SizeBytes.Int64,
+			Sha256:           pbOptStringFromNull(p.SHA256),
+			Version:          int32(p.Version),
+			SavedRowRevision: p.SavedRowRevision,
+			UploadedAt:       pbTimestampFromNullTime(p.UploadedAt),
+			History:          techCardPatternHistoryToPb(p.History),
 		})
 	}
 	return out

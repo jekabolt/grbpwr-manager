@@ -1,0 +1,320 @@
+package techcard
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+)
+
+type patternSemanticSidecarRow struct {
+	entity.PatternSemanticSidecar
+	CurrentDxfSHA256        string         `db:"current_dxf_sha256"`
+	CurrentPatternVersion   int            `db:"current_pattern_version"`
+	CurrentSavedRowRevision uint32         `db:"current_saved_row_revision"`
+	CurrentCardLockVersion  int            `db:"current_card_lock_version"`
+	CurrentURL              string         `db:"current_url"`
+	CurrentSizeBytes        sql.NullInt64  `db:"current_size_bytes"`
+	CurrentFabricPurpose    sql.NullString `db:"current_fabric_purpose"`
+	CurrentBomLineKey       sql.NullString `db:"current_bom_line_key"`
+}
+
+// PutTechCardPatternSemanticSidecar atomically attaches already-built G4F4 bytes to the exact DXF
+// revision G4F3 reread. The pattern row and card are locked before comparison; a concurrent save
+// therefore either wins first and makes this CAS fail, or waits until these bytes have committed.
+func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity.PatternSemanticSidecarWrite) (entity.PatternSemanticSidecar, error) {
+	if err := entity.ValidatePatternSemanticSidecarWrite(&in); err != nil {
+		return entity.PatternSemanticSidecar{}, err
+	}
+	expectedCardLockVersion := *in.ExpectedCardLockVersion
+	// Validation reads the caller's slice. Own it before the transaction and re-hash the owned copy,
+	// so a caller cannot mutate bytes between the validation and INSERT. The scalar lock token above
+	// likewise owns the pointed-to request value before the transaction starts.
+	in.Payload = append([]byte(nil), in.Payload...)
+	if actual := entity.PatternSemanticSidecarPayloadSHA256(in.Payload); actual != in.SidecarSHA256 {
+		return entity.PatternSemanticSidecar{}, entity.NewFieldViolation(
+			"sidecar_sha256", "digest_mismatch", in.SidecarSHA256, "hash the exact sidecar_bytes")
+	}
+
+	var out entity.PatternSemanticSidecar
+	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		db := rep.DB()
+		cardLockVersion, err := lockTechCardRowVersion(ctx, db, in.TechCardId)
+		if err != nil {
+			return err
+		}
+		if cardLockVersion != expectedCardLockVersion {
+			return fmt.Errorf("tech card lock_version %d does not match expected %d: %w",
+				cardLockVersion, expectedCardLockVersion, entity.ErrTechCardPatternSidecarBindingMoved)
+		}
+		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
+		pattern, err := storeutil.QueryNamedOne[struct {
+			Id               int            `db:"id"`
+			SHA256           string         `db:"sha256"`
+			Version          int            `db:"version"`
+			SavedRowRevision uint32         `db:"saved_row_revision"`
+			FabricPurpose    sql.NullString `db:"fabric_purpose"`
+			BomLineKey       sql.NullString `db:"bom_line_key"`
+			URL              string         `db:"url"`
+			SizeBytes        sql.NullInt64  `db:"size_bytes"`
+		}](ctx, db, `
+			SELECT id, COALESCE(sha256, '') AS sha256, version, saved_row_revision,
+			       fabric_purpose, bom_line_key, url, size_bytes
+			FROM tech_card_size_pattern
+			WHERE tech_card_id = :tech_card_id AND line_key = :line_key
+			FOR UPDATE`, map[string]any{
+			"tech_card_id": in.TechCardId,
+			"line_key":     in.PatternLineKey,
+		})
+		if err != nil {
+			return fmt.Errorf("load current pattern row for semantic sidecar: %w", err)
+		}
+		if pattern.SHA256 != in.ExpectedDxfSHA256 || pattern.Version != in.ExpectedPatternVersion ||
+			(in.ExpectedSavedRowRevision != nil && pattern.SavedRowRevision != *in.ExpectedSavedRowRevision) {
+			return fmt.Errorf("pattern line %s: %w", in.PatternLineKey, entity.ErrTechCardPatternSidecarBindingMoved)
+		}
+		if in.ExpectedPreviousSidecarSHA256 != nil {
+			prior, priorErr := storeutil.QueryNamedOne[struct {
+				SHA256 string `db:"sidecar_sha256"`
+			}](ctx, db, `SELECT sidecar_sha256 FROM tech_card_pattern_semantic_sidecar WHERE pattern_row_id = :id`,
+				map[string]any{"id": pattern.Id})
+			expected := *in.ExpectedPreviousSidecarSHA256
+			switch {
+			case errors.Is(priorErr, sql.ErrNoRows) && expected == "":
+			case priorErr == nil && prior.SHA256 == expected:
+			case priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows):
+				return fmt.Errorf("read prior semantic sidecar CAS: %w", priorErr)
+			default:
+				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+			}
+		}
+		if in.MediaType == entity.PatternProductCompositeSidecarMediaType {
+			clock, err := readTechCardAssemblyClock(ctx, db, in.TechCardId)
+			if err != nil {
+				return err
+			}
+			card, err := rep.TechCards().GetTechCardById(ctx, in.TechCardId)
+			if err != nil {
+				return err
+			}
+			selected, err := selectSavedAssemblySeams(card, in.SelectedOperationNumber)
+			if err != nil {
+				return err
+			}
+			_, topologySHA, err := savedAssemblyTopology(card.Operations, selected, in.SelectedOperationNumber)
+			if err != nil {
+				return err
+			}
+			if clock.Token() != *in.ExpectedServerAssemblyRevision || topologySHA != *in.ExpectedAssemblyTopologySHA256 {
+				return fmt.Errorf("assembly changed before composite sidecar write: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+			}
+			lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
+			if err != nil {
+				return err
+			}
+			scope := entity.ResolveFabricScope(pattern.FabricPurpose.String, pattern.BomLineKey.String, lines)
+			if !scope.Live() || !pattern.SizeBytes.Valid || pattern.SizeBytes.Int64 <= 0 {
+				return fmt.Errorf("pattern line %s has no exact saved-row scope/size: %w",
+					in.PatternLineKey, entity.ErrTechCardPatternSidecarBindingMoved)
+			}
+			if err := entity.ValidatePatternProductCompositeSidecarBinding(in.Payload,
+				entity.PatternProductCompositeSidecarExpected{
+					Row: entity.SavedPatternRowIdentity{
+						TechCardID: in.TechCardId, ScopeKey: scope.Key, PatternLineKey: in.PatternLineKey,
+						SavedRowRevision: pattern.SavedRowRevision, CardLockVersion: cardLockVersion,
+						URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256,
+					},
+					PatternVersion: pattern.Version, PostSaveReceiptSHA256: in.ExpectedPostSaveReceiptSHA256,
+					ExpectedPreviousSidecarSHA256: *in.ExpectedPreviousSidecarSHA256,
+					ServerAssemblyRevision:        clock.Token(),
+					AssemblyTopologySHA256:        topologySHA,
+					SelectedOperationNumber:       in.SelectedOperationNumber,
+				}); err != nil {
+				return err
+			}
+		}
+		if err := storeutil.ExecNamed(ctx, db, `
+			INSERT INTO tech_card_pattern_semantic_sidecar
+				(pattern_row_id, card_lock_version, saved_row_revision, dxf_sha256, pattern_version, sidecar_sha256, media_type,
+				 byte_length, payload, post_save_receipt_sha256, created_by)
+			VALUES
+				(:pattern_row_id, :card_lock_version, :saved_row_revision, :dxf_sha256, :pattern_version, :sidecar_sha256, :media_type,
+				 :byte_length, :payload, :post_save_receipt_sha256, :created_by)
+			ON DUPLICATE KEY UPDATE
+				card_lock_version = VALUES(card_lock_version), saved_row_revision = VALUES(saved_row_revision), dxf_sha256 = VALUES(dxf_sha256),
+				pattern_version = VALUES(pattern_version),
+				sidecar_sha256 = VALUES(sidecar_sha256), media_type = VALUES(media_type),
+				byte_length = VALUES(byte_length), payload = VALUES(payload),
+				post_save_receipt_sha256 = VALUES(post_save_receipt_sha256),
+				created_at = CURRENT_TIMESTAMP(6), created_by = VALUES(created_by)`, map[string]any{
+			"pattern_row_id":           pattern.Id,
+			"card_lock_version":        cardLockVersion,
+			"saved_row_revision":       pattern.SavedRowRevision,
+			"dxf_sha256":               in.ExpectedDxfSHA256,
+			"pattern_version":          in.ExpectedPatternVersion,
+			"sidecar_sha256":           in.SidecarSHA256,
+			"media_type":               in.MediaType,
+			"byte_length":              len(in.Payload),
+			"payload":                  in.Payload,
+			"post_save_receipt_sha256": in.ExpectedPostSaveReceiptSHA256,
+			"created_by":               in.By,
+		}); err != nil {
+			return fmt.Errorf("store pattern semantic sidecar: %w", err)
+		}
+		stored, err := readPatternSemanticSidecar(ctx, db, in.TechCardId, in.PatternLineKey)
+		if err != nil {
+			return err
+		}
+		out = stored
+		return nil
+	})
+	return out, err
+}
+
+// GetTechCardPatternSemanticSidecar returns sql.ErrNoRows when the current pattern has no attached
+// sidecar. A stored row whose metadata/bytes no longer match the active DXF is corruption, not a
+// missing result, and fails explicitly.
+func (s *Store) GetTechCardPatternSemanticSidecar(ctx context.Context, techCardID int, patternLineKey string) (entity.PatternSemanticSidecar, error) {
+	patternLineKey = entity.NormalizeTechCardSeamKey(patternLineKey)
+	if techCardID <= 0 {
+		return entity.PatternSemanticSidecar{}, entity.NewFieldViolation("tech_card_id", "required", "", "")
+	}
+	if !entity.ValidTechCardSeamKey(patternLineKey) {
+		return entity.PatternSemanticSidecar{}, entity.NewFieldViolation("pattern_line_key", "invalid", patternLineKey, "send the current pattern row's 26-char ULID")
+	}
+	return readPatternSemanticSidecar(ctx, s.DB, techCardID, patternLineKey)
+}
+
+func readPatternSemanticSidecar(ctx context.Context, db dependency.DB, techCardID int, patternLineKey string) (entity.PatternSemanticSidecar, error) {
+	row, err := storeutil.QueryNamedOne[patternSemanticSidecarRow](ctx, db, `
+		SELECT s.pattern_row_id, p.tech_card_id, COALESCE(p.line_key, '') AS pattern_line_key,
+		       s.card_lock_version, s.saved_row_revision,
+		       s.dxf_sha256, s.pattern_version, s.sidecar_sha256, s.media_type, s.byte_length,
+		       s.payload, s.post_save_receipt_sha256, s.created_at, s.created_by,
+		       COALESCE(p.sha256, '') AS current_dxf_sha256, p.version AS current_pattern_version,
+		       p.saved_row_revision AS current_saved_row_revision,
+		       card.lock_version AS current_card_lock_version, p.url AS current_url,
+		       p.size_bytes AS current_size_bytes, p.fabric_purpose AS current_fabric_purpose,
+		       p.bom_line_key AS current_bom_line_key
+		FROM tech_card_size_pattern p
+		JOIN tech_card card ON card.id = p.tech_card_id
+		JOIN tech_card_pattern_semantic_sidecar s ON s.pattern_row_id = p.id
+		WHERE p.tech_card_id = :tech_card_id AND p.line_key = :line_key`, map[string]any{
+		"tech_card_id": techCardID,
+		"line_key":     patternLineKey,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return entity.PatternSemanticSidecar{}, sql.ErrNoRows
+		}
+		return entity.PatternSemanticSidecar{}, fmt.Errorf("load pattern semantic sidecar: %w", err)
+	}
+	if err := verifyPatternSemanticSidecarRow(row); err != nil {
+		return entity.PatternSemanticSidecar{}, err
+	}
+	if row.MediaType == entity.PatternProductCompositeSidecarMediaType {
+		lines, err := loadRollGoodsLines(ctx, db, row.TechCardId)
+		if err != nil {
+			return entity.PatternSemanticSidecar{}, err
+		}
+		scope := entity.ResolveFabricScope(row.CurrentFabricPurpose.String, row.CurrentBomLineKey.String, lines)
+		if err := verifyStoredCompositePatternSemanticSidecar(row, scope); err != nil {
+			return entity.PatternSemanticSidecar{}, err
+		}
+	}
+	row.Payload = append([]byte(nil), row.Payload...)
+	return row.PatternSemanticSidecar, nil
+}
+
+// verifyStoredCompositePatternSemanticSidecar proves that the carrier still describes the same
+// pattern row, bytes and material scope it was written for. The card's live lock_version is not
+// part of this corruption check: an Assembly-only edit legitimately moves that version while the
+// old carrier remains readable. Its persisted CardLockVersion stays in the returned sidecar, while
+// GetTechCardSavedAssemblySnapshot returns the new row/Assembly receipts; the client therefore
+// rejects the old carrier as stale and rebuilds it through the normal CAS path.
+func verifyStoredCompositePatternSemanticSidecar(row patternSemanticSidecarRow, scope entity.FabricScope) error {
+	corrupt := func(reason string) error {
+		return fmt.Errorf("pattern semantic sidecar row %d %s: %w",
+			row.PatternRowId, reason, entity.ErrTechCardPatternSidecarCorrupt)
+	}
+	if !scope.Live() || !row.CurrentSizeBytes.Valid || row.CurrentSizeBytes.Int64 <= 0 {
+		return corrupt("no longer matches its exact saved row")
+	}
+	if err := entity.ValidateStoredPatternProductCompositeSidecarExact(row.Payload,
+		entity.SavedPatternRowIdentity{
+			TechCardID: row.TechCardId, ScopeKey: scope.Key, PatternLineKey: row.PatternLineKey,
+			SavedRowRevision: row.CurrentSavedRowRevision,
+			// Validate against the lock version persisted with the carrier. A newer live card lock is
+			// staleness evidence for the caller, not evidence that these stored bytes are corrupt.
+			CardLockVersion: row.CardLockVersion,
+			URL:             row.CurrentURL,
+			SizeBytes:       row.CurrentSizeBytes.Int64,
+			SHA256:          row.CurrentDxfSHA256,
+		}, row.CurrentPatternVersion, row.PostSaveReceiptSHA256); err != nil {
+		return corrupt("exact saved-row binding mismatch")
+	}
+	return nil
+}
+
+func verifyPatternSemanticSidecarRow(row patternSemanticSidecarRow) error {
+	corrupt := func(reason string) error {
+		return fmt.Errorf("pattern semantic sidecar row %d %s: %w", row.PatternRowId, reason, entity.ErrTechCardPatternSidecarCorrupt)
+	}
+	if row.CurrentDxfSHA256 != row.DxfSHA256 || row.CurrentPatternVersion != row.PatternVersion {
+		return corrupt("does not match the active pattern revision")
+	}
+	if row.CurrentSavedRowRevision != row.SavedRowRevision || row.SavedRowRevision == 0 {
+		return corrupt("does not match the active saved row revision")
+	}
+	if !entity.ValidPatternSemanticSidecarMediaType(row.MediaType) {
+		return corrupt("has an unsupported media type")
+	}
+	if row.ByteLength <= 0 || row.ByteLength > entity.PatternSemanticSidecarMaxBytes || row.ByteLength != len(row.Payload) {
+		return corrupt("has inconsistent byte length")
+	}
+	if entity.PatternSemanticSidecarPayloadSHA256(row.Payload) != row.SidecarSHA256 {
+		return corrupt("payload digest mismatch")
+	}
+	if !entity.ValidPatternSemanticSidecarSHA256(row.DxfSHA256) ||
+		!entity.ValidPatternSemanticSidecarSHA256(row.SidecarSHA256) ||
+		!entity.ValidPatternSemanticSidecarSHA256(row.PostSaveReceiptSHA256) {
+		return corrupt("has malformed digest metadata")
+	}
+	if err := entity.ValidatePatternSemanticSidecarPayloadBinding(
+		row.Payload,
+		row.TechCardId,
+		row.PatternLineKey,
+		row.CardLockVersion,
+		row.DxfSHA256,
+		row.PatternVersion,
+		row.SavedRowRevision,
+		row.PostSaveReceiptSHA256,
+		row.MediaType,
+	); err != nil {
+		return corrupt("payload binding mismatch")
+	}
+	return nil
+}
+
+// invalidatePatternSemanticSidecarsForDocumentRewrite runs inside UpdateTechCardTx before any
+// pattern row is rewritten. G4F4 binds more than the DXF blob: its receipt also contains scope,
+// size, piece-line identities and block aliases. The beta table deliberately does not duplicate
+// that whole graph, so the only honest invalidation rule is conservative: every full card rewrite
+// drops every attachment and the browser may rebuild it after the save. A future server-owned graph
+// fingerprint can narrow this without weakening the receipt.
+func invalidatePatternSemanticSidecarsForDocumentRewrite(ctx context.Context, db dependency.DB, techCardID int) error {
+	if err := storeutil.ExecNamed(ctx, db, `
+		DELETE sidecar
+		FROM tech_card_pattern_semantic_sidecar sidecar
+		JOIN tech_card_size_pattern pattern ON pattern.id = sidecar.pattern_row_id
+		WHERE pattern.tech_card_id = :tech_card_id`, map[string]any{"tech_card_id": techCardID}); err != nil {
+		return fmt.Errorf("invalidate pattern semantic sidecars for card %d rewrite: %w", techCardID, err)
+	}
+	return nil
+}

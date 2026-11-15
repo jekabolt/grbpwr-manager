@@ -1649,6 +1649,9 @@ message TechCardSizePattern {
   // Superseded files, newest first. OUTPUT-ONLY: ignored when this message comes back through
   // UpdateTechCard; restoring one means putting its url into the active fields above.
   repeated TechCardPatternRevision history = 14;
+  // SERVER-OWNED monotonic instance clock of this stable line. Distinct from `version`: version is
+  // factory-facing and may be pinned/restored, while this value closes ABA for exact byte reads.
+  uint32 saved_row_revision = 15;
 }
 
 // TechCardLabelType classifies a label / tag (Sheet «Этикетки и упаковка»).

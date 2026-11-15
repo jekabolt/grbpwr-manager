@@ -310,6 +310,9 @@ func (s *Store) AddTechCardWithOpts(ctx context.Context, tc *entity.TechCardInse
 		if err != nil {
 			return fmt.Errorf("failed to insert tech card: %w", err)
 		}
+		if err := createTechCardAssemblyClock(ctx, rep.DB(), id); err != nil {
+			return err
+		}
 		// Derive the top/sub/type triple from category_id BEFORE the children go in:
 		// insertTechCardChildren validates the size range against the card's category, which it reads
 		// back off this row (validateTechCardSizeIDs -> loadTechCardCategoryPath).
@@ -896,6 +899,12 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// The folds it re-created early (insertRestoredPieceFolds) take their fingerprint again here, on the
 	// same restored pieces and sheets as the seams.
 	if err := restampRestoredPieceFolds(ctx, rep.DB(), id, tc); err != nil {
+		return nil, err
+	}
+	// A document save owns the full operation list and pattern bindings. Bump once after every
+	// child mutation (including a restore) and before commit; conservative no-op saves may advance
+	// the clock, which invalidates stale receipts without making an unsafe receipt current.
+	if err := bumpTechCardAssemblyClock(ctx, rep.DB(), id); err != nil {
 		return nil, err
 	}
 	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
@@ -1855,18 +1864,19 @@ func insertTechCardChildren(ctx context.Context, db dependency.DB, id int, tc *e
 // the carry-forward on url alone let one size's sheet inherit the OTHER size's Rev number, and the
 // per-size MAX+1 numbering then skipped or duplicated revisions on later saves.
 type patternHistoryRow struct {
-	Id            int            `db:"id"`
-	LineKey       string         `db:"line_key"`
-	BomLineKey    sql.NullString `db:"bom_line_key"`
-	FabricPurpose sql.NullString `db:"fabric_purpose"`
-	URL           string         `db:"url"`
-	SizeId        int            `db:"size_id"`
-	Version       int            `db:"version"`
-	UploadedAt    sql.NullTime   `db:"uploaded_at"`
-	Name          sql.NullString `db:"name"`
-	Filename      sql.NullString `db:"filename"`
-	SizeBytes     sql.NullInt64  `db:"size_bytes"`
-	SHA256        sql.NullString `db:"sha256"`
+	Id               int            `db:"id"`
+	LineKey          string         `db:"line_key"`
+	BomLineKey       sql.NullString `db:"bom_line_key"`
+	FabricPurpose    sql.NullString `db:"fabric_purpose"`
+	URL              string         `db:"url"`
+	SizeId           int            `db:"size_id"`
+	Version          int            `db:"version"`
+	SavedRowRevision uint32         `db:"saved_row_revision"`
+	UploadedAt       sql.NullTime   `db:"uploaded_at"`
+	Name             sql.NullString `db:"name"`
+	Filename         sql.NullString `db:"filename"`
+	SizeBytes        sql.NullInt64  `db:"size_bytes"`
+	SHA256           sql.NullString `db:"sha256"`
 }
 
 // patternRowsAsSlots projects stored pattern rows onto the shape the slot rule reads.
@@ -1898,7 +1908,7 @@ func techCardPatternRows(ctx context.Context, db dependency.DB, techCardID int) 
 		// COALESCE on size_id: NULL is the graded sheet (0281) and reads as 0 in the entity, the
 		// same value the wire uses for it.
 		`SELECT id, COALESCE(line_key, '') AS line_key, bom_line_key, fabric_purpose,
-		        url, COALESCE(size_id, 0) AS size_id, version, uploaded_at, name,
+		        url, COALESCE(size_id, 0) AS size_id, version, saved_row_revision, uploaded_at, name,
 		        filename, size_bytes, sha256
 		 FROM tech_card_size_pattern WHERE tech_card_id = :id`,
 		map[string]any{"id": techCardID})
@@ -1959,6 +1969,11 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 	prior, err := techCardPatternRows(ctx, db, id)
 	if err != nil {
 		return fmt.Errorf("failed to read tech card patterns: %w", err)
+	}
+	// Persisted browser semantics bind child identities and aliases as well as the pattern blob.
+	// Until the server owns that whole graph, a full card rewrite invalidates every attachment.
+	if err := invalidatePatternSemanticSidecarsForDocumentRewrite(ctx, db, id); err != nil {
+		return err
 	}
 	// One pattern file per material slot. This is the single write funnel for creates, updates,
 	// restores, clones and archive imports, and the only layer that knows what is already stored: a
@@ -2358,6 +2373,7 @@ func insertTechCardPatterns(ctx context.Context, db dependency.DB, id int, patte
 					line_key = :line_key, bom_line_key = :bom_line_key, fabric_purpose = :fabric_purpose,
 					size_id = :size_id, url = :url,
 					filename = :filename, name = :name, size_bytes = :size_bytes, sha256 = :sha256, version = :version,
+					saved_row_revision = saved_row_revision + 1,
 					uploaded_at = :uploaded_at, display_order = :display_order
 				WHERE id = :id`, params); err != nil {
 				return fmt.Errorf("failed to update tech card pattern: %w", err)
