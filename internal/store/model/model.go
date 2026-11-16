@@ -321,11 +321,12 @@ func mergeModelMeasurementsForUpdate(
 		merged = append(merged, measurement)
 		seen[measurement.Name] = true
 	}
-	if schemaVersion == 0 {
-		for _, measurement := range previous {
-			if entity.P0BodyMeasurementNames[measurement.Name] && !seen[measurement.Name] {
-				merged = append(merged, cloneMeasurement(measurement))
-			}
+	// A writer cannot authoritatively delete a name introduced after its
+	// schema version (v0: P0 + P1, v1: P1/neck), so absence preserves it.
+	for _, measurement := range previous {
+		if !seen[measurement.Name] &&
+			entity.BodyMeasurementIntroducedInSchemaVersion(measurement.Name) > schemaVersion {
+			merged = append(merged, cloneMeasurement(measurement))
 		}
 	}
 	return merged

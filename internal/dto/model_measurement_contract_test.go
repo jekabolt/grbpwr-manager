@@ -51,7 +51,7 @@ func TestP0BodyMeasurementContractRoundTrip(t *testing.T) {
 	}
 
 	roundTrip := ConvertEntityModelToPb(&entity.Model{Id: 1, ModelInsert: *converted})
-	if roundTrip.Model.BodyMeasurementSchemaVersion != entity.BodyMeasurementSchemaVersionP0 {
+	if roundTrip.Model.BodyMeasurementSchemaVersion != entity.BodyMeasurementSchemaVersionCurrent {
 		t.Fatalf("emitted schema version = %d", roundTrip.Model.BodyMeasurementSchemaVersion)
 	}
 	for i, measurement := range roundTrip.Model.Measurements {
@@ -91,7 +91,7 @@ func TestBodyMeasurementMetadataValidationAndLegacyWriterVersion(t *testing.T) {
 
 	tests := map[string]func(*pb_common.ModelInsert){
 		"null measurement":      func(in *pb_common.ModelInsert) { in.Measurements[0] = nil },
-		"future writer version": func(in *pb_common.ModelInsert) { in.BodyMeasurementSchemaVersion = 2 },
+		"future writer version": func(in *pb_common.ModelInsert) { in.BodyMeasurementSchemaVersion = 3 },
 		"metadata version zero": func(in *pb_common.ModelInsert) { in.Measurements[0].Metadata.SchemaVersion = 0 },
 		"unknown source": func(in *pb_common.ModelInsert) {
 			in.Measurements[0].Metadata.Source = pb_common.BodyMeasurementSource_BODY_MEASUREMENT_SOURCE_UNKNOWN
@@ -111,5 +111,94 @@ func TestBodyMeasurementMetadataValidationAndLegacyWriterVersion(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestP1NeckBodyMeasurementContract(t *testing.T) {
+	neck := pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK
+	if neck == pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK_BASE {
+		t.Fatal("NECK must be a separate enum value from NECK_BASE")
+	}
+	if int32(neck) != 35 {
+		t.Fatalf("NECK wire number = %d, want 35 (append-only)", int32(neck))
+	}
+	if got := bodyMeasurementPbToEntity[neck]; got != entity.BodyNeck {
+		t.Fatalf("NECK maps to %q, want %q", got, entity.BodyNeck)
+	}
+	if got := bodyMeasurementPbToEntity[pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK_BASE]; got != entity.BodyNeckBase {
+		t.Fatalf("NECK_BASE maps to %q, want %q", got, entity.BodyNeckBase)
+	}
+
+	// Every named enum value has exactly one storage key and vice versa.
+	for value, name := range pb_common.BodyMeasurementName_name {
+		if value == 0 {
+			continue
+		}
+		key, ok := bodyMeasurementPbToEntity[pb_common.BodyMeasurementName(value)]
+		if !ok {
+			t.Errorf("enum %s has no storage key", name)
+			continue
+		}
+		if !entity.ValidBodyMeasurementNames[key] {
+			t.Errorf("enum %s maps to %q, which is not an accepted key", name, key)
+		}
+	}
+	if len(bodyMeasurementPbToEntity) != len(entity.ValidBodyMeasurementNames) ||
+		len(bodyMeasurementEntityToPb) != len(bodyMeasurementPbToEntity) {
+		t.Fatalf("pb map %d, reverse map %d, accepted keys %d must be equal",
+			len(bodyMeasurementPbToEntity), len(bodyMeasurementEntityToPb), len(entity.ValidBodyMeasurementNames))
+	}
+
+	in := func(version uint32) *pb_common.ModelInsert {
+		return &pb_common.ModelInsert{
+			Name: "neck",
+			Measurements: []*pb_common.ModelMeasurement{
+				{Name: pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK_BASE, ValueMm: 400},
+				{
+					Name:    neck,
+					ValueMm: 360,
+					Metadata: &pb_common.BodyMeasurementMetadataV1{
+						SchemaVersion: entity.BodyMeasurementMetadataSchemaVersionV1,
+						Source:        pb_common.BodyMeasurementSource_BODY_MEASUREMENT_SOURCE_MANUAL_TAPE,
+						ProtocolId:    "internal/tape-v1",
+					},
+				},
+			},
+			BodyMeasurementSchemaVersion: version,
+		}
+	}
+
+	for _, version := range []uint32{0, entity.BodyMeasurementSchemaVersionP0, entity.BodyMeasurementSchemaVersionP1} {
+		// Older writers may echo a stored neck back from a read; that must not fail the save.
+		converted, err := ConvertPbModelInsertToEntity(in(version))
+		if err != nil {
+			t.Fatalf("writer version %d with NECK: %v", version, err)
+		}
+		if converted.BodyMeasurementSchemaVersion != version {
+			t.Fatalf("writer version = %d, want %d", converted.BodyMeasurementSchemaVersion, version)
+		}
+		if len(converted.Measurements) != 2 ||
+			converted.Measurements[0].Name != entity.BodyNeckBase || converted.Measurements[0].ValueMM != 400 ||
+			converted.Measurements[1].Name != entity.BodyNeck || converted.Measurements[1].ValueMM != 360 {
+			t.Fatalf("converted measurements = %+v", converted.Measurements)
+		}
+	}
+
+	converted, err := ConvertPbModelInsertToEntity(in(entity.BodyMeasurementSchemaVersionP1))
+	if err != nil {
+		t.Fatalf("to entity: %v", err)
+	}
+	roundTrip := ConvertEntityModelToPb(&entity.Model{Id: 1, ModelInsert: *converted})
+	if roundTrip.Model.BodyMeasurementSchemaVersion != entity.BodyMeasurementSchemaVersionP1 {
+		t.Fatalf("emitted schema version = %d, want %d", roundTrip.Model.BodyMeasurementSchemaVersion, entity.BodyMeasurementSchemaVersionP1)
+	}
+	if len(roundTrip.Model.Measurements) != 2 ||
+		roundTrip.Model.Measurements[0].Name != pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK_BASE ||
+		roundTrip.Model.Measurements[0].ValueMm != 400 ||
+		roundTrip.Model.Measurements[1].Name != neck ||
+		roundTrip.Model.Measurements[1].ValueMm != 360 ||
+		roundTrip.Model.Measurements[1].Metadata == nil ||
+		roundTrip.Model.Measurements[1].Metadata.ProtocolId != "internal/tape-v1" {
+		t.Fatalf("neck round-trip = %+v", roundTrip.Model.Measurements)
 	}
 }

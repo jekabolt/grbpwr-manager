@@ -45,6 +45,9 @@ const (
 	BodyArmscyeCircumference BodyMeasurementName = "armscye_circumference"
 	BodyBustApexToApex       BodyMeasurementName = "bust_apex_to_apex"
 	BodyHPSToBustApex        BodyMeasurementName = "hps_to_bust_apex"
+	// BodyNeck is the mid-neck circumference. It is a separate observation
+	// from BodyNeckBase; neither is ever derived from the other.
+	BodyNeck BodyMeasurementName = "neck"
 )
 
 // ValidBodyMeasurementNames is the set of accepted measurement keys.
@@ -83,12 +86,21 @@ var ValidBodyMeasurementNames = map[BodyMeasurementName]bool{
 	BodyArmscyeCircumference: true,
 	BodyBustApexToApex:       true,
 	BodyHPSToBustApex:        true,
+	BodyNeck:                 true,
 }
 
-// BodyMeasurementSchemaVersionP0 is emitted to measurement-aware clients. A
+// BodyMeasurementSchemaVersionP0 marks a writer that knows the P0 set. A
 // request with version 0 is a legacy writer and cannot authoritatively delete
 // P0 fields that it could not represent.
 const BodyMeasurementSchemaVersionP0 uint32 = 1
+
+// BodyMeasurementSchemaVersionP1 marks a writer that also knows the P1 set
+// (neck). A writer below this version cannot authoritatively delete P1 fields.
+const BodyMeasurementSchemaVersionP1 uint32 = 2
+
+// BodyMeasurementSchemaVersionCurrent is emitted to measurement-aware clients
+// and is the highest writer version the server accepts.
+const BodyMeasurementSchemaVersionCurrent = BodyMeasurementSchemaVersionP1
 
 // P0BodyMeasurementNames is the append-only set introduced by schema version 1.
 var P0BodyMeasurementNames = map[BodyMeasurementName]bool{
@@ -106,6 +118,25 @@ var P0BodyMeasurementNames = map[BodyMeasurementName]bool{
 	BodyArmscyeCircumference: true,
 	BodyBustApexToApex:       true,
 	BodyHPSToBustApex:        true,
+}
+
+// P1BodyMeasurementNames is the append-only set introduced by schema version 2.
+var P1BodyMeasurementNames = map[BodyMeasurementName]bool{
+	BodyNeck: true,
+}
+
+// BodyMeasurementIntroducedInSchemaVersion returns the writer schema version
+// that first knew name. A writer with a lower version could not represent the
+// name, so its omission from an update must not delete a stored value.
+func BodyMeasurementIntroducedInSchemaVersion(name BodyMeasurementName) uint32 {
+	switch {
+	case P1BodyMeasurementNames[name]:
+		return BodyMeasurementSchemaVersionP1
+	case P0BodyMeasurementNames[name]:
+		return BodyMeasurementSchemaVersionP0
+	default:
+		return 0
+	}
 }
 
 // BodyMeasurementSource records acquisition provenance; it does not make an
