@@ -85,6 +85,41 @@ func TestPatternSemanticSidecarWriteLocksBeforeReadingAndDocumentRewriteInvalida
 	require.Contains(t, string(productMediaMigration), "chk_pattern_semantic_sidecar_media_type")
 }
 
+func TestCompositeSidecarStoreDispatchesV3V4V5UnderLockAndOnStoredRead(t *testing.T) {
+	put := funcBody(t, "pattern_semantic_sidecar.go", "func (s *Store) PutTechCardPatternSemanticSidecar")
+	lock := strings.Index(put, "lockTechCardRowVersion(")
+	dispatch := strings.Index(put, "selectSavedAssemblySeamsForCompositeMedia(")
+	validate := strings.Index(put, "validatePatternProductCompositeSidecarBinding(")
+	require.GreaterOrEqual(t, lock, 0)
+	require.Greater(t, dispatch, lock, "media-aware topology selection must run under the card lock")
+	require.Greater(t, validate, dispatch, "the exact media validator must run after topology CAS")
+
+	selector := funcBody(t, "pattern_semantic_sidecar.go", "func selectSavedAssemblySeamsForCompositeMedia")
+	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarMediaType:")
+	require.Contains(t, selector, "selectSavedAssemblySeamsV3(")
+	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV4MediaType:")
+	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV5MediaType:")
+	require.Contains(t, selector, "selectSavedAssemblySeams(")
+
+	writeValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validatePatternProductCompositeSidecarBinding")
+	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarBinding(")
+	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV4Binding(")
+	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV5Binding(")
+
+	storedValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validateStoredPatternProductCompositeSidecarExact")
+	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarExact(")
+	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV4Exact(")
+	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV5Exact(")
+
+	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV4Transition(")
+	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV5Transition(")
+	require.Contains(t, put, "composite_v5_prior_required")
+
+	read := funcBody(t, "pattern_semantic_sidecar.go", "func readPatternSemanticSidecar")
+	require.Contains(t, read, "isPatternProductCompositeSidecarMediaType(row.MediaType)")
+	require.Contains(t, read, "verifyStoredCompositePatternSemanticSidecar(row, scope)")
+}
+
 func TestVerifyPatternSemanticSidecarRow(t *testing.T) {
 	require.NoError(t, verifyPatternSemanticSidecarRow(validPatternSemanticSidecarRow()))
 }
@@ -206,4 +241,55 @@ func TestStoredCompositeSidecarRemainsReadableAcrossAssemblyOnlyCardLockDrift(t 
 		require.ErrorIs(t, verifyStoredCompositePatternSemanticSidecar(corrupt, scope),
 			entity.ErrTechCardPatternSidecarCorrupt)
 	})
+}
+
+func TestStoredCompositeV5SidecarUsesExactV5ReadValidator(t *testing.T) {
+	var fixture struct {
+		Row struct {
+			TechCardID      int    `json:"techCardId"`
+			ScopeKey        string `json:"scopeKey"`
+			PatternLineKey  string `json:"patternLineKey"`
+			Revision        uint32 `json:"revision"`
+			CardLockVersion int    `json:"cardLockVersion"`
+			URL             string `json:"url"`
+			SizeBytes       int64  `json:"sizeBytes"`
+			SHA256          string `json:"sha256"`
+		} `json:"row"`
+		PatternVersion        int    `json:"patternVersion"`
+		PostSaveReceiptSHA256 string `json:"postSaveReceiptSha256"`
+		OuterBase64           string `json:"outerBase64"`
+		OuterSHA256           string `json:"outerSha256"`
+		OuterByteLength       int    `json:"outerByteLength"`
+	}
+	fixtureJSON, err := os.ReadFile("../../entity/testdata/pattern_product_composite_v5_ts_kat.json")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(fixtureJSON, &fixture))
+	payload, err := base64.StdEncoding.Strict().DecodeString(fixture.OuterBase64)
+	require.NoError(t, err)
+
+	row := patternSemanticSidecarRow{
+		PatternSemanticSidecar: entity.PatternSemanticSidecar{
+			PatternRowId: 10, TechCardId: fixture.Row.TechCardID,
+			PatternLineKey: fixture.Row.PatternLineKey, CardLockVersion: fixture.Row.CardLockVersion,
+			DxfSHA256: fixture.Row.SHA256, PatternVersion: fixture.PatternVersion,
+			SavedRowRevision: fixture.Row.Revision, SidecarSHA256: fixture.OuterSHA256,
+			MediaType:  entity.PatternProductCompositeSidecarV5MediaType,
+			ByteLength: fixture.OuterByteLength, Payload: payload,
+			PostSaveReceiptSHA256: fixture.PostSaveReceiptSHA256,
+		},
+		CurrentDxfSHA256: fixture.Row.SHA256, CurrentPatternVersion: fixture.PatternVersion,
+		CurrentSavedRowRevision: fixture.Row.Revision,
+		CurrentCardLockVersion:  fixture.Row.CardLockVersion + 1,
+		CurrentURL:              fixture.Row.URL,
+		CurrentSizeBytes:        sql.NullInt64{Int64: fixture.Row.SizeBytes, Valid: true},
+	}
+	scope := entity.FabricScope{Key: fixture.Row.ScopeKey, LineKeys: []string{"BOM-LINE"}}
+
+	require.NoError(t, verifyPatternSemanticSidecarRow(row))
+	require.NoError(t, verifyStoredCompositePatternSemanticSidecar(row, scope))
+
+	corrupt := row
+	corrupt.CurrentURL = "/patterns/replaced.dxf"
+	require.ErrorIs(t, verifyStoredCompositePatternSemanticSidecar(corrupt, scope),
+		entity.ErrTechCardPatternSidecarCorrupt)
 }

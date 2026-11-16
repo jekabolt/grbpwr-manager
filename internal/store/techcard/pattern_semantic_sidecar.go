@@ -23,6 +23,12 @@ type patternSemanticSidecarRow struct {
 	CurrentBomLineKey       sql.NullString `db:"current_bom_line_key"`
 }
 
+type priorPatternSemanticSidecar struct {
+	SHA256    string `db:"sidecar_sha256"`
+	MediaType string `db:"media_type"`
+	Payload   []byte `db:"payload"`
+}
+
 // PutTechCardPatternSemanticSidecar atomically attaches already-built G4F4 bytes to the exact DXF
 // revision G4F3 reread. The pattern row and card are locked before comparison; a concurrent save
 // therefore either wins first and makes this CAS fail, or waits until these bytes have committed.
@@ -79,22 +85,23 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 			(in.ExpectedSavedRowRevision != nil && pattern.SavedRowRevision != *in.ExpectedSavedRowRevision) {
 			return fmt.Errorf("pattern line %s: %w", in.PatternLineKey, entity.ErrTechCardPatternSidecarBindingMoved)
 		}
+		var prior *priorPatternSemanticSidecar
 		if in.ExpectedPreviousSidecarSHA256 != nil {
-			prior, priorErr := storeutil.QueryNamedOne[struct {
-				SHA256 string `db:"sidecar_sha256"`
-			}](ctx, db, `SELECT sidecar_sha256 FROM tech_card_pattern_semantic_sidecar WHERE pattern_row_id = :id`,
+			storedPrior, priorErr := storeutil.QueryNamedOne[priorPatternSemanticSidecar](ctx, db,
+				`SELECT sidecar_sha256, media_type, payload FROM tech_card_pattern_semantic_sidecar WHERE pattern_row_id = :id`,
 				map[string]any{"id": pattern.Id})
 			expected := *in.ExpectedPreviousSidecarSHA256
 			switch {
 			case errors.Is(priorErr, sql.ErrNoRows) && expected == "":
-			case priorErr == nil && prior.SHA256 == expected:
+			case priorErr == nil && storedPrior.SHA256 == expected:
+				prior = &storedPrior
 			case priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows):
 				return fmt.Errorf("read prior semantic sidecar CAS: %w", priorErr)
 			default:
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if in.MediaType == entity.PatternProductCompositeSidecarMediaType {
+		if isPatternProductCompositeSidecarMediaType(in.MediaType) {
 			clock, err := readTechCardAssemblyClock(ctx, db, in.TechCardId)
 			if err != nil {
 				return err
@@ -103,7 +110,7 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 			if err != nil {
 				return err
 			}
-			selected, err := selectSavedAssemblySeams(card, in.SelectedOperationNumber)
+			selected, err := selectSavedAssemblySeamsForCompositeMedia(card, in.SelectedOperationNumber, in.MediaType)
 			if err != nil {
 				return err
 			}
@@ -123,7 +130,7 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("pattern line %s has no exact saved-row scope/size: %w",
 					in.PatternLineKey, entity.ErrTechCardPatternSidecarBindingMoved)
 			}
-			if err := entity.ValidatePatternProductCompositeSidecarBinding(in.Payload,
+			if err := validatePatternProductCompositeSidecarBinding(in.MediaType, in.Payload,
 				entity.PatternProductCompositeSidecarExpected{
 					Row: entity.SavedPatternRowIdentity{
 						TechCardID: in.TechCardId, ScopeKey: scope.Key, PatternLineKey: in.PatternLineKey,
@@ -137,6 +144,19 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 					SelectedOperationNumber:       in.SelectedOperationNumber,
 				}); err != nil {
 				return err
+			}
+			if in.MediaType == entity.PatternProductCompositeSidecarV4MediaType && prior != nil {
+				if err := entity.ValidatePatternProductCompositeSidecarV4Transition(in.Payload, prior.MediaType, prior.Payload); err != nil {
+					return err
+				}
+			}
+			if in.MediaType == entity.PatternProductCompositeSidecarV5MediaType {
+				if prior == nil {
+					return entity.NewFieldViolation("semantic_sidecar", "composite_v5_prior_required", "", "persist and read back Composite V4 before writing Composite V5")
+				}
+				if err := entity.ValidatePatternProductCompositeSidecarV5Transition(in.Payload, prior.MediaType, prior.Payload); err != nil {
+					return err
+				}
 			}
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
@@ -218,7 +238,7 @@ func readPatternSemanticSidecar(ctx context.Context, db dependency.DB, techCardI
 	if err := verifyPatternSemanticSidecarRow(row); err != nil {
 		return entity.PatternSemanticSidecar{}, err
 	}
-	if row.MediaType == entity.PatternProductCompositeSidecarMediaType {
+	if isPatternProductCompositeSidecarMediaType(row.MediaType) {
 		lines, err := loadRollGoodsLines(ctx, db, row.TechCardId)
 		if err != nil {
 			return entity.PatternSemanticSidecar{}, err
@@ -246,7 +266,7 @@ func verifyStoredCompositePatternSemanticSidecar(row patternSemanticSidecarRow, 
 	if !scope.Live() || !row.CurrentSizeBytes.Valid || row.CurrentSizeBytes.Int64 <= 0 {
 		return corrupt("no longer matches its exact saved row")
 	}
-	if err := entity.ValidateStoredPatternProductCompositeSidecarExact(row.Payload,
+	if err := validateStoredPatternProductCompositeSidecarExact(row.MediaType, row.Payload,
 		entity.SavedPatternRowIdentity{
 			TechCardID: row.TechCardId, ScopeKey: scope.Key, PatternLineKey: row.PatternLineKey,
 			SavedRowRevision: row.CurrentSavedRowRevision,
@@ -260,6 +280,52 @@ func verifyStoredCompositePatternSemanticSidecar(row patternSemanticSidecarRow, 
 		return corrupt("exact saved-row binding mismatch")
 	}
 	return nil
+}
+
+func isPatternProductCompositeSidecarMediaType(mediaType string) bool {
+	return mediaType == entity.PatternProductCompositeSidecarMediaType ||
+		mediaType == entity.PatternProductCompositeSidecarV4MediaType ||
+		mediaType == entity.PatternProductCompositeSidecarV5MediaType
+}
+
+func selectSavedAssemblySeamsForCompositeMedia(card *entity.TechCard, selectedOperationNumber int, mediaType string) ([]entity.TechCardSeam, error) {
+	switch mediaType {
+	case entity.PatternProductCompositeSidecarMediaType:
+		return selectSavedAssemblySeamsV3(card, selectedOperationNumber)
+	case entity.PatternProductCompositeSidecarV4MediaType:
+		return selectSavedAssemblySeams(card, selectedOperationNumber)
+	case entity.PatternProductCompositeSidecarV5MediaType:
+		return selectSavedAssemblySeams(card, selectedOperationNumber)
+	default:
+		return nil, fmt.Errorf("unsupported composite sidecar media type %q: %w",
+			mediaType, entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+}
+
+func validatePatternProductCompositeSidecarBinding(mediaType string, payload []byte, expected entity.PatternProductCompositeSidecarExpected) error {
+	switch mediaType {
+	case entity.PatternProductCompositeSidecarMediaType:
+		return entity.ValidatePatternProductCompositeSidecarBinding(payload, expected)
+	case entity.PatternProductCompositeSidecarV4MediaType:
+		return entity.ValidatePatternProductCompositeSidecarV4Binding(payload, expected)
+	case entity.PatternProductCompositeSidecarV5MediaType:
+		return entity.ValidatePatternProductCompositeSidecarV5Binding(payload, expected)
+	default:
+		return entity.NewFieldViolation("media_type", "unsupported", mediaType, "send a supported composite sidecar media type")
+	}
+}
+
+func validateStoredPatternProductCompositeSidecarExact(mediaType string, payload []byte, row entity.SavedPatternRowIdentity, patternVersion int, receiptSHA string) error {
+	switch mediaType {
+	case entity.PatternProductCompositeSidecarMediaType:
+		return entity.ValidateStoredPatternProductCompositeSidecarExact(payload, row, patternVersion, receiptSHA)
+	case entity.PatternProductCompositeSidecarV4MediaType:
+		return entity.ValidateStoredPatternProductCompositeSidecarV4Exact(payload, row, patternVersion, receiptSHA)
+	case entity.PatternProductCompositeSidecarV5MediaType:
+		return entity.ValidateStoredPatternProductCompositeSidecarV5Exact(payload, row, patternVersion, receiptSHA)
+	default:
+		return entity.NewFieldViolation("media_type", "unsupported", mediaType, "send a supported composite sidecar media type")
+	}
 }
 
 func verifyPatternSemanticSidecarRow(row patternSemanticSidecarRow) error {

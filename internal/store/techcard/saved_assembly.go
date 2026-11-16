@@ -184,16 +184,19 @@ func selectSavedAssemblySeams(card *entity.TechCard, selectedOperationNumber int
 		}
 		selected = op
 	}
-	if selected == nil || len(selected.SeamKeys) != 2 ||
-		entity.NormalizeTechCardSeamKey(selected.SeamKeys[0]) == entity.NormalizeTechCardSeamKey(selected.SeamKeys[1]) {
-		return nil, fmt.Errorf("operation %d must own exactly two distinct seams: %w", selectedOperationNumber, entity.ErrTechCardSavedAssemblyUnsupported)
+	if selected == nil || len(selected.SeamKeys) == 0 {
+		return nil, fmt.Errorf("operation %d must own at least one seam: %w", selectedOperationNumber, entity.ErrTechCardSavedAssemblyUnsupported)
 	}
 	if !phaseEStructuralWorkTokensV1[selected.Work.String] {
 		return nil, fmt.Errorf("operation %d does not name a structural stitch work: %w", selectedOperationNumber, entity.ErrTechCardSavedAssemblyUnsupported)
 	}
-	owned := map[string]bool{}
+	owned := make(map[string]bool, len(selected.SeamKeys))
 	for _, key := range selected.SeamKeys {
-		owned[entity.NormalizeTechCardSeamKey(key)] = true
+		normalized := entity.NormalizeTechCardSeamKey(key)
+		if normalized == "" || owned[normalized] {
+			return nil, fmt.Errorf("operation %d must own distinct seam keys: %w", selectedOperationNumber, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		owned[normalized] = true
 	}
 	for i := range card.Operations {
 		op := &card.Operations[i]
@@ -211,8 +214,7 @@ func selectSavedAssemblySeams(card *entity.TechCard, selectedOperationNumber int
 		key := entity.NormalizeTechCardSeamKey(seam.SeamKey)
 		byKey[key] = append(byKey[key], seam)
 	}
-	result := make([]entity.TechCardSeam, 0, 2)
-	var pair []string
+	result := make([]entity.TechCardSeam, 0, len(selected.SeamKeys))
 	for _, rawKey := range selected.SeamKeys {
 		key := entity.NormalizeTechCardSeamKey(rawKey)
 		matches := byKey[key]
@@ -232,15 +234,37 @@ func selectSavedAssemblySeams(card *entity.TechCard, selectedOperationNumber int
 		if currentPair[0] == "" || currentPair[1] == "" || currentPair[0] == currentPair[1] {
 			return nil, fmt.Errorf("selected seam %s has an invalid piece pair: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
-		sort.Strings(currentPair)
-		if pair == nil {
-			pair = currentPair
-		} else if pair[0] != currentPair[0] || pair[1] != currentPair[1] {
-			return nil, fmt.Errorf("selected seams do not share one piece pair: %w", entity.ErrTechCardSavedAssemblyUnsupported)
-		}
 		result = append(result, seam)
 	}
 	return result, nil
+}
+
+// selectSavedAssemblySeamsV3 preserves the original composite V3 contract. V5 and the saved
+// snapshot authority can represent one or many seams, but V3's exact-topology component encodes
+// exactly two seams joining one piece pair and must remain fail-closed on every other shape.
+func selectSavedAssemblySeamsV3(card *entity.TechCard, selectedOperationNumber int) ([]entity.TechCardSeam, error) {
+	selected, err := selectSavedAssemblySeams(card, selectedOperationNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) != 2 {
+		return nil, fmt.Errorf("operation %d must own exactly two distinct seams for composite V3: %w",
+			selectedOperationNumber, entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+	var pair []string
+	for _, seam := range selected {
+		currentPair := []string{seam.SideA[0].PieceLineKey, seam.SideB[0].PieceLineKey}
+		sort.Strings(currentPair)
+		if pair == nil {
+			pair = currentPair
+			continue
+		}
+		if pair[0] != currentPair[0] || pair[1] != currentPair[1] {
+			return nil, fmt.Errorf("selected composite V3 seams do not share one piece pair: %w",
+				entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+	}
+	return selected, nil
 }
 
 func savedAssemblyKnownSeamValues(seam entity.TechCardSeam) bool {

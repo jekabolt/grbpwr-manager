@@ -84,26 +84,88 @@ func TestSavedAssemblyTopologyRejectsNegativeZero(t *testing.T) {
 	require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
 }
 
-func TestSelectSavedAssemblySeamsFailsClosed(t *testing.T) {
-	base := &entity.TechCard{
+func savedAssemblyTestSeam(key, pieceA, pieceB string) entity.TechCardSeam {
+	return entity.TechCardSeam{TechCardSeamInput: entity.TechCardSeamInput{
+		SeamKey: key, Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
+		Direction: entity.TechCardSeamSame, Source: entity.TechCardSeamSourceManual, AnchoredSize: "M",
+		SideA: []entity.TechCardSeamAnchor{{PieceLineKey: pieceA}},
+		SideB: []entity.TechCardSeamAnchor{{PieceLineKey: pieceB}},
+	}}
+}
+
+func savedAssemblyTestCard(seams ...entity.TechCardSeam) *entity.TechCard {
+	keys := make([]string, len(seams))
+	for i := range seams {
+		keys[i] = seams[i].SeamKey
+	}
+	return &entity.TechCard{
 		TechCardInsert: entity.TechCardInsert{Operations: []entity.TechCardOperation{{
 			OperationNumber: sql.NullInt32{Int32: 10, Valid: true},
 			Work:            sql.NullString{String: "join_lockstitch", Valid: true},
-			SeamKeys:        []string{"S-1", "S-2"},
+			SeamKeys:        keys,
 		}}},
-		Seams: []entity.TechCardSeam{
-			{TechCardSeamInput: entity.TechCardSeamInput{
-				SeamKey: "S-1", Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
-				Direction: entity.TechCardSeamSame, Source: entity.TechCardSeamSourceManual, AnchoredSize: "M",
-				SideA: []entity.TechCardSeamAnchor{{PieceLineKey: "P-A"}}, SideB: []entity.TechCardSeamAnchor{{PieceLineKey: "P-B"}},
-			}},
-			{TechCardSeamInput: entity.TechCardSeamInput{
-				SeamKey: "S-2", Status: entity.TechCardSeamConfirmed, Kind: entity.TechCardSeamKindEdge,
-				Direction: entity.TechCardSeamSame, Source: entity.TechCardSeamSourceManual, AnchoredSize: "M",
-				SideA: []entity.TechCardSeamAnchor{{PieceLineKey: "P-A"}}, SideB: []entity.TechCardSeamAnchor{{PieceLineKey: "P-B"}},
-			}},
-		},
+		Seams: seams,
 	}
+}
+
+func TestSelectSavedAssemblySeamsGeneralizesSnapshotAndV5ButPreservesV3Gate(t *testing.T) {
+	t.Run("single seam", func(t *testing.T) {
+		card := savedAssemblyTestCard(savedAssemblyTestSeam("S-1", "P-A", "P-B"))
+		selected, err := selectSavedAssemblySeams(card, 10)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		_, err = selectSavedAssemblySeamsV3(card, 10)
+		require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+	})
+
+	t.Run("many seams across piece pairs", func(t *testing.T) {
+		card := savedAssemblyTestCard(
+			savedAssemblyTestSeam("S-1", "P-A", "P-B"),
+			savedAssemblyTestSeam("S-2", "P-B", "P-C"),
+			savedAssemblyTestSeam("S-3", "P-C", "P-D"),
+		)
+		selected, err := selectSavedAssemblySeams(card, 10)
+		require.NoError(t, err)
+		require.Len(t, selected, 3)
+		require.Equal(t, []string{"S-1", "S-2", "S-3"}, []string{
+			selected[0].SeamKey, selected[1].SeamKey, selected[2].SeamKey,
+		})
+		_, err = selectSavedAssemblySeamsV3(card, 10)
+		require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+	})
+
+	t.Run("legacy two seam pair", func(t *testing.T) {
+		card := savedAssemblyTestCard(
+			savedAssemblyTestSeam("S-1", "P-A", "P-B"),
+			savedAssemblyTestSeam("S-2", "P-B", "P-A"),
+		)
+		selected, err := selectSavedAssemblySeamsV3(card, 10)
+		require.NoError(t, err)
+		require.Len(t, selected, 2)
+	})
+}
+
+func TestSelectSavedAssemblySeamsDispatchesByCompositeMedia(t *testing.T) {
+	card := savedAssemblyTestCard(savedAssemblyTestSeam("S-1", "P-A", "P-B"))
+
+	selected, err := selectSavedAssemblySeamsForCompositeMedia(
+		card, 10, entity.PatternProductCompositeSidecarV5MediaType)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+
+	_, err = selectSavedAssemblySeamsForCompositeMedia(
+		card, 10, entity.PatternProductCompositeSidecarMediaType)
+	require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+
+	_, err = selectSavedAssemblySeamsForCompositeMedia(card, 10, "application/json")
+	require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+}
+
+func TestSelectSavedAssemblySeamsFailsClosed(t *testing.T) {
+	base := savedAssemblyTestCard(
+		savedAssemblyTestSeam("S-1", "P-A", "P-B"),
+		savedAssemblyTestSeam("S-2", "P-A", "P-B"),
+	)
 
 	t.Run("duplicate operation number", func(t *testing.T) {
 		card := *base
@@ -137,6 +199,14 @@ func TestSelectSavedAssemblySeamsFailsClosed(t *testing.T) {
 		card := *base
 		card.Seams = append([]entity.TechCardSeam(nil), base.Seams...)
 		card.Seams[1].SideB = []entity.TechCardSeamAnchor{{PieceLineKey: "P-C"}}
+		_, err := selectSavedAssemblySeamsV3(&card, 10)
+		require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+	})
+
+	t.Run("duplicate selected seam key", func(t *testing.T) {
+		card := *base
+		card.Operations = append([]entity.TechCardOperation(nil), base.Operations...)
+		card.Operations[0].SeamKeys = []string{"S-1", "s-1"}
 		_, err := selectSavedAssemblySeams(&card, 10)
 		require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
 	})

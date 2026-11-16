@@ -12,14 +12,16 @@ import (
 )
 
 const (
-	PatternSemanticSidecarMediaType         = "application/vnd.grbpwr.pattern-dxf-semantics.v1+json"
-	PatternProductSemanticSidecarMediaType  = "application/vnd.grbpwr.pattern-dxf-product-semantics.v1+json"
-	PatternProductCompositeSidecarMediaType = "application/vnd.grbpwr.pattern-dxf-product-composite.v3+json"
-	PatternSemanticSidecarMaxBytes          = 4 * 1024 * 1024
-	patternSemanticSidecarDocument          = "pattern-import-dxf-semantic-sidecar-document/1"
-	patternProductSemanticSidecarDocument   = "pattern-import-dxf-product-semantic-sidecar-document/1"
-	patternProductCompositeSidecarDocument  = "pattern-import-dxf-product-composite-sidecar-document/3"
-	patternSemanticSidecarEncoding          = "canonical-json-utf8"
+	PatternSemanticSidecarMediaType           = "application/vnd.grbpwr.pattern-dxf-semantics.v1+json"
+	PatternProductSemanticSidecarMediaType    = "application/vnd.grbpwr.pattern-dxf-product-semantics.v1+json"
+	PatternProductCompositeSidecarMediaType   = "application/vnd.grbpwr.pattern-dxf-product-composite.v3+json"
+	PatternProductCompositeSidecarV4MediaType = "application/vnd.grbpwr.pattern-dxf-product-composite.v4+json"
+	PatternProductCompositeSidecarV5MediaType = "application/vnd.grbpwr.pattern-dxf-product-composite.v5+json"
+	PatternSemanticSidecarMaxBytes            = 4 * 1024 * 1024
+	patternSemanticSidecarDocument            = "pattern-import-dxf-semantic-sidecar-document/1"
+	patternProductSemanticSidecarDocument     = "pattern-import-dxf-product-semantic-sidecar-document/1"
+	patternProductCompositeSidecarDocument    = "pattern-import-dxf-product-composite-sidecar-document/3"
+	patternSemanticSidecarEncoding            = "canonical-json-utf8"
 )
 
 var (
@@ -86,7 +88,8 @@ func PatternSemanticSidecarPayloadSHA256(payload []byte) string {
 
 func ValidPatternSemanticSidecarMediaType(value string) bool {
 	return value == PatternSemanticSidecarMediaType || value == PatternProductSemanticSidecarMediaType ||
-		value == PatternProductCompositeSidecarMediaType
+		value == PatternProductCompositeSidecarMediaType || value == PatternProductCompositeSidecarV4MediaType ||
+		value == PatternProductCompositeSidecarV5MediaType
 }
 
 // ValidatePatternSemanticSidecarPayloadBinding checks the cross-binding duplicated inside G4F4's
@@ -110,6 +113,18 @@ func ValidatePatternSemanticSidecarPayloadBinding(
 			TechCardID: techCardID, PatternLineKey: patternLineKey, SavedRowRevision: savedRowRevision,
 			CardLockVersion: cardLockVersion, SHA256: dxfSHA256,
 		}, patternVersion, postSaveReceiptSHA256)
+	}
+	if mediaType == PatternProductCompositeSidecarV4MediaType {
+		return validateStoredPatternProductCompositeSidecarV4(payload, SavedPatternRowIdentity{
+			TechCardID: techCardID, PatternLineKey: patternLineKey, SavedRowRevision: savedRowRevision,
+			CardLockVersion: cardLockVersion, SHA256: dxfSHA256,
+		}, patternVersion, postSaveReceiptSHA256, false)
+	}
+	if mediaType == PatternProductCompositeSidecarV5MediaType {
+		return validateStoredPatternProductCompositeSidecarV5(payload, SavedPatternRowIdentity{
+			TechCardID: techCardID, PatternLineKey: patternLineKey, SavedRowRevision: savedRowRevision,
+			CardLockVersion: cardLockVersion, SHA256: dxfSHA256,
+		}, patternVersion, postSaveReceiptSHA256, false)
 	}
 	return validateLegacyPatternSemanticSidecarPayloadBinding(payload, techCardID, patternLineKey,
 		cardLockVersion, dxfSHA256, patternVersion, postSaveReceiptSHA256, mediaType)
@@ -218,13 +233,13 @@ func ValidatePatternSemanticSidecarWrite(in *PatternSemanticSidecarWrite) error 
 	if !ValidPatternSemanticSidecarMediaType(in.MediaType) {
 		return NewFieldViolation(
 			"media_type", "unsupported", in.MediaType,
-			PatternSemanticSidecarMediaType+", "+PatternProductSemanticSidecarMediaType+" or "+PatternProductCompositeSidecarMediaType)
+			PatternSemanticSidecarMediaType+", "+PatternProductSemanticSidecarMediaType+", "+PatternProductCompositeSidecarMediaType+", "+PatternProductCompositeSidecarV4MediaType+" or "+PatternProductCompositeSidecarV5MediaType)
 	}
-	if in.MediaType == PatternProductCompositeSidecarMediaType {
+	if in.MediaType == PatternProductCompositeSidecarMediaType || in.MediaType == PatternProductCompositeSidecarV4MediaType || in.MediaType == PatternProductCompositeSidecarV5MediaType {
 		if in.ExpectedSavedRowRevision == nil || in.ExpectedPreviousSidecarSHA256 == nil ||
 			in.ExpectedServerAssemblyRevision == nil || in.ExpectedAssemblyTopologySHA256 == nil ||
 			in.SelectedOperationNumber <= 0 {
-			return NewFieldViolation("semantic_sidecar", "assembly_cas_required", "", "composite V3 requires saved-row, prior-sidecar and Assembly CAS fields")
+			return NewFieldViolation("semantic_sidecar", "assembly_cas_required", "", "composite sidecars require saved-row, prior-sidecar and Assembly CAS fields")
 		}
 		if !strings.HasPrefix(*in.ExpectedServerAssemblyRevision, "asm:v1:") ||
 			!ValidPatternSemanticSidecarSHA256(*in.ExpectedAssemblyTopologySHA256) {
@@ -240,8 +255,8 @@ func ValidatePatternSemanticSidecarWrite(in *PatternSemanticSidecarWrite) error 
 	if actual := PatternSemanticSidecarPayloadSHA256(in.Payload); actual != in.SidecarSHA256 {
 		return NewFieldViolation("sidecar_sha256", "digest_mismatch", in.SidecarSHA256, "hash the exact sidecar_bytes")
 	}
-	if in.MediaType == PatternProductCompositeSidecarMediaType {
-		if err := validatePatternProductCompositeSidecar(in.Payload, PatternProductCompositeSidecarExpected{
+	if in.MediaType == PatternProductCompositeSidecarMediaType || in.MediaType == PatternProductCompositeSidecarV4MediaType || in.MediaType == PatternProductCompositeSidecarV5MediaType {
+		expected := PatternProductCompositeSidecarExpected{
 			Row: SavedPatternRowIdentity{
 				TechCardID: in.TechCardId, PatternLineKey: in.PatternLineKey,
 				SavedRowRevision: *in.ExpectedSavedRowRevision, CardLockVersion: *in.ExpectedCardLockVersion,
@@ -252,7 +267,17 @@ func ValidatePatternSemanticSidecarWrite(in *PatternSemanticSidecarWrite) error 
 			ServerAssemblyRevision:        *in.ExpectedServerAssemblyRevision,
 			AssemblyTopologySHA256:        *in.ExpectedAssemblyTopologySHA256,
 			SelectedOperationNumber:       in.SelectedOperationNumber,
-		}, false); err != nil {
+		}
+		var err error
+		switch in.MediaType {
+		case PatternProductCompositeSidecarV5MediaType:
+			err = validatePatternProductCompositeSidecarV5(in.Payload, expected, false)
+		case PatternProductCompositeSidecarV4MediaType:
+			err = validatePatternProductCompositeSidecarV4(in.Payload, expected, false)
+		default:
+			err = validatePatternProductCompositeSidecar(in.Payload, expected, false)
+		}
+		if err != nil {
 			return err
 		}
 	} else if err := ValidatePatternSemanticSidecarPayloadBinding(

@@ -3,7 +3,10 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,61 @@ import (
 )
 
 const patternSemanticSidecarHandlerKey = "01JABCDEFGHJKMNPQRSTVWXYZ0"
+
+type patternSemanticSidecarV5HandlerFixture struct {
+	Row struct {
+		TechCardID      int    `json:"techCardId"`
+		PatternLineKey  string `json:"patternLineKey"`
+		Revision        uint32 `json:"revision"`
+		CardLockVersion int    `json:"cardLockVersion"`
+		SHA256          string `json:"sha256"`
+	} `json:"row"`
+	PatternVersion                int    `json:"patternVersion"`
+	PostSaveReceiptSHA256         string `json:"postSaveReceiptSha256"`
+	ExpectedPreviousSidecarSHA256 string `json:"expectedPreviousSidecarSha256"`
+	ServerAssemblyRevision        string `json:"serverAssemblyRevision"`
+	AssemblyTopologySHA256        string `json:"assemblyTopologySha256"`
+	SelectedOperationNumber       int    `json:"selectedOperationNumber"`
+	OuterBase64                   string `json:"outerBase64"`
+	OuterSHA256                   string `json:"outerSha256"`
+	OuterByteLength               int    `json:"outerByteLength"`
+	Payload                       []byte `json:"-"`
+	V4Payload                     []byte `json:"-"`
+	V4SHA256                      string `json:"-"`
+	V4PreviousSHA256              string `json:"-"`
+}
+
+func loadPatternSemanticSidecarV5HandlerFixture(t *testing.T) patternSemanticSidecarV5HandlerFixture {
+	t.Helper()
+	var fixture patternSemanticSidecarV5HandlerFixture
+	body, err := os.ReadFile("../../entity/testdata/pattern_product_composite_v5_ts_kat.json")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &fixture))
+	fixture.Payload, err = base64.StdEncoding.Strict().DecodeString(fixture.OuterBase64)
+	require.NoError(t, err)
+	require.Len(t, fixture.Payload, fixture.OuterByteLength)
+	require.Equal(t, fixture.OuterSHA256, entity.PatternSemanticSidecarPayloadSHA256(fixture.Payload))
+	var outer struct {
+		Components []struct {
+			Kind   string `json:"kind"`
+			Base64 string `json:"base64"`
+		} `json:"components"`
+	}
+	require.NoError(t, json.Unmarshal(fixture.Payload, &outer))
+	require.NotEmpty(t, outer.Components)
+	require.Equal(t, "composite-v4", outer.Components[0].Kind)
+	fixture.V4Payload, err = base64.StdEncoding.Strict().DecodeString(outer.Components[0].Base64)
+	require.NoError(t, err)
+	fixture.V4SHA256 = entity.PatternSemanticSidecarPayloadSHA256(fixture.V4Payload)
+	var v4 struct {
+		WriteCAS struct {
+			ExpectedPreviousSidecarSHA256 string `json:"expectedPreviousSidecarSha256"`
+		} `json:"writeCas"`
+	}
+	require.NoError(t, json.Unmarshal(fixture.V4Payload, &v4))
+	fixture.V4PreviousSHA256 = v4.WriteCAS.ExpectedPreviousSidecarSHA256
+	return fixture
+}
 
 func patternSemanticSidecarHandlerRequest() *pb_admin.PutTechCardPatternSemanticSidecarRequest {
 	dxfSHA := strings.Repeat("a", 64)
@@ -83,6 +141,64 @@ func TestPutTechCardPatternSemanticSidecarPassesOwnedBytesAndEchoesStoredRow(t *
 	require.EqualValues(t, 4, res.GetSemanticSidecar().GetSavedRowRevision())
 	require.Equal(t, wantPayload, res.GetSemanticSidecar().GetSidecarBytes())
 	require.EqualValues(t, len(wantPayload), res.GetSemanticSidecar().GetByteLength())
+}
+
+func TestPutTechCardPatternSemanticSidecarMapsCompositeV4V5AssemblyCASAndEchoesBytes(t *testing.T) {
+	fixture := loadPatternSemanticSidecarV5HandlerFixture(t)
+	for _, test := range []struct {
+		name, media, sha, previous string
+		payload                    []byte
+	}{
+		{name: "Composite V4", media: entity.PatternProductCompositeSidecarV4MediaType, sha: fixture.V4SHA256, previous: fixture.V4PreviousSHA256, payload: fixture.V4Payload},
+		{name: "Composite V5", media: entity.PatternProductCompositeSidecarV5MediaType, sha: fixture.OuterSHA256, previous: fixture.ExpectedPreviousSidecarSHA256, payload: fixture.Payload},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lockVersion := int32(fixture.Row.CardLockVersion)
+			savedRowRevision := fixture.Row.Revision
+			previousSHA := test.previous
+			assemblyRevision := fixture.ServerAssemblyRevision
+			topologySHA := fixture.AssemblyTopologySHA256
+			req := &pb_admin.PutTechCardPatternSemanticSidecarRequest{
+				TechCardId: int32(fixture.Row.TechCardID), PatternLineKey: fixture.Row.PatternLineKey,
+				ExpectedCardLockVersion: &lockVersion, ExpectedSavedRowRevision: &savedRowRevision,
+				ExpectedPreviousSidecarSha256:  &previousSHA,
+				ExpectedServerAssemblyRevision: &assemblyRevision,
+				ExpectedAssemblyTopologySha256: &topologySHA,
+				SelectedOperationNumber:        int32(fixture.SelectedOperationNumber),
+				ExpectedDxfSha256:              fixture.Row.SHA256, ExpectedPatternVersion: int32(fixture.PatternVersion),
+				ExpectedPostSaveReceiptSha256: fixture.PostSaveReceiptSHA256,
+				MediaType:                     test.media, SidecarSha256: test.sha, SidecarBytes: append([]byte(nil), test.payload...),
+			}
+
+			repo := mocks.NewMockRepository(t)
+			techCards := mocks.NewMockTechCards(t)
+			repo.EXPECT().TechCards().Return(techCards)
+			techCards.EXPECT().PutTechCardPatternSemanticSidecar(mock.Anything, mock.MatchedBy(func(in entity.PatternSemanticSidecarWrite) bool {
+				return in.TechCardId == fixture.Row.TechCardID && in.PatternLineKey == fixture.Row.PatternLineKey &&
+					in.ExpectedCardLockVersion != nil && *in.ExpectedCardLockVersion == fixture.Row.CardLockVersion &&
+					in.ExpectedSavedRowRevision != nil && *in.ExpectedSavedRowRevision == fixture.Row.Revision &&
+					in.ExpectedPreviousSidecarSHA256 != nil && *in.ExpectedPreviousSidecarSHA256 == test.previous &&
+					in.ExpectedServerAssemblyRevision != nil && *in.ExpectedServerAssemblyRevision == fixture.ServerAssemblyRevision &&
+					in.ExpectedAssemblyTopologySHA256 != nil && *in.ExpectedAssemblyTopologySHA256 == fixture.AssemblyTopologySHA256 &&
+					in.SelectedOperationNumber == fixture.SelectedOperationNumber && in.MediaType == test.media &&
+					in.SidecarSHA256 == test.sha && string(in.Payload) == string(test.payload) && in.By == "ann"
+			})).Return(entity.PatternSemanticSidecar{
+				TechCardId: fixture.Row.TechCardID, PatternLineKey: fixture.Row.PatternLineKey,
+				CardLockVersion: fixture.Row.CardLockVersion, SavedRowRevision: fixture.Row.Revision,
+				DxfSHA256: fixture.Row.SHA256, PatternVersion: fixture.PatternVersion,
+				MediaType: test.media, SidecarSHA256: test.sha, ByteLength: len(test.payload), Payload: test.payload,
+				PostSaveReceiptSHA256: fixture.PostSaveReceiptSHA256, CreatedBy: "ann",
+			}, nil)
+
+			ctx := authsrv.PutAdminUsername(fullAccessCtx(), "ann")
+			res, err := (&Server{repo: repo}).PutTechCardPatternSemanticSidecar(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, test.media, res.GetSemanticSidecar().GetMediaType())
+			require.Equal(t, test.payload, res.GetSemanticSidecar().GetSidecarBytes())
+			require.Equal(t, test.sha, res.GetSemanticSidecar().GetSidecarSha256())
+			require.EqualValues(t, fixture.Row.Revision, res.GetSemanticSidecar().GetSavedRowRevision())
+		})
+	}
 }
 
 func TestPutTechCardPatternSemanticSidecarRefusesBeforeStoreAndMapsMovedBinding(t *testing.T) {

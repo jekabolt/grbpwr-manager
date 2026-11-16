@@ -10,7 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
+	"os"
 	"testing"
 	"time"
 
@@ -26,39 +26,76 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type patternSemanticSidecarV5StackFixture struct {
+	Row struct {
+		TechCardID      int    `json:"techCardId"`
+		PatternLineKey  string `json:"patternLineKey"`
+		Revision        uint32 `json:"revision"`
+		CardLockVersion int    `json:"cardLockVersion"`
+		SHA256          string `json:"sha256"`
+	} `json:"row"`
+	PatternVersion                int    `json:"patternVersion"`
+	PostSaveReceiptSHA256         string `json:"postSaveReceiptSha256"`
+	ExpectedPreviousSidecarSHA256 string `json:"expectedPreviousSidecarSha256"`
+	ServerAssemblyRevision        string `json:"serverAssemblyRevision"`
+	AssemblyTopologySHA256        string `json:"assemblyTopologySha256"`
+	SelectedOperationNumber       int    `json:"selectedOperationNumber"`
+	OuterBase64                   string `json:"outerBase64"`
+	OuterSHA256                   string `json:"outerSha256"`
+	OuterByteLength               int    `json:"outerByteLength"`
+	Payload                       []byte `json:"-"`
+}
+
+func loadPatternSemanticSidecarV5StackFixture(t *testing.T) patternSemanticSidecarV5StackFixture {
+	t.Helper()
+	var fixture patternSemanticSidecarV5StackFixture
+	body, err := os.ReadFile("../../entity/testdata/pattern_product_composite_v5_ts_kat.json")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(body, &fixture))
+	fixture.Payload, err = base64.StdEncoding.Strict().DecodeString(fixture.OuterBase64)
+	require.NoError(t, err)
+	require.Len(t, fixture.Payload, fixture.OuterByteLength)
+	require.Equal(t, fixture.OuterSHA256, entity.PatternSemanticSidecarPayloadSHA256(fixture.Payload))
+	return fixture
+}
+
 // TestPatternSemanticSidecarThroughAuthenticatedStack covers the production HTTP listener,
 // WithAuth, loopback gRPC, unary auth/RBAC interceptors, real handlers and JSON/base64 marshaling.
 // The store is mocked here because the real MySQL serialization is independently exercised by
 // TestPatternSemanticSidecarCASAndInvalidation in internal/store.
 func TestPatternSemanticSidecarThroughAuthenticatedStack(t *testing.T) {
-	const lineKey = "01JABCDEFGHJKMNPQRSTVWXYZ0"
-	dxfSHA := strings.Repeat("a", 64)
-	receiptSHA := strings.Repeat("b", 64)
-	payload := []byte(fmt.Sprintf(
-		`{"schemaVersion":"pattern-import-dxf-semantic-sidecar-document/1","mediaType":"%s","encoding":"canonical-json-utf8","dxf":{"exportSha256":"%s"},"persistence":{"receiptSealSha256":"%s","card":{"techCardId":44,"observedLockVersion":8},"pattern":{"lineKey":"%s","version":2,"sha256":"%s"}}}`,
-		entity.PatternSemanticSidecarMediaType, dxfSHA, receiptSHA, lineKey, dxfSHA,
-	))
-	sidecarSHA := entity.PatternSemanticSidecarPayloadSHA256(payload)
+	fixture := loadPatternSemanticSidecarV5StackFixture(t)
+	lineKey := fixture.Row.PatternLineKey
+	dxfSHA := fixture.Row.SHA256
+	receiptSHA := fixture.PostSaveReceiptSHA256
+	payload := fixture.Payload
+	sidecarSHA := fixture.OuterSHA256
 	row := entity.PatternSemanticSidecar{
-		PatternRowId: 91, TechCardId: 44, PatternLineKey: lineKey, CardLockVersion: 8,
-		DxfSHA256: dxfSHA, PatternVersion: 2, SidecarSHA256: sidecarSHA,
-		MediaType: entity.PatternSemanticSidecarMediaType, ByteLength: len(payload),
+		PatternRowId: 91, TechCardId: fixture.Row.TechCardID, PatternLineKey: lineKey,
+		CardLockVersion: fixture.Row.CardLockVersion, SavedRowRevision: fixture.Row.Revision,
+		DxfSHA256: dxfSHA, PatternVersion: fixture.PatternVersion, SidecarSHA256: sidecarSHA,
+		MediaType: entity.PatternProductCompositeSidecarV5MediaType, ByteLength: len(payload),
 		Payload: payload, PostSaveReceiptSHA256: receiptSHA, CreatedAt: time.Unix(10, 0), CreatedBy: "ann",
 	}
 
 	techCards := mocks.NewMockTechCards(t)
 	matchWrite := mock.MatchedBy(func(in entity.PatternSemanticSidecarWrite) bool {
-		return in.TechCardId == 44 && in.PatternLineKey == lineKey &&
-			in.ExpectedCardLockVersion != nil && *in.ExpectedCardLockVersion == 8 &&
-			in.ExpectedDxfSHA256 == dxfSHA && in.ExpectedPatternVersion == 2 &&
+		return in.TechCardId == fixture.Row.TechCardID && in.PatternLineKey == lineKey &&
+			in.ExpectedCardLockVersion != nil && *in.ExpectedCardLockVersion == fixture.Row.CardLockVersion &&
+			in.ExpectedSavedRowRevision != nil && *in.ExpectedSavedRowRevision == fixture.Row.Revision &&
+			in.ExpectedPreviousSidecarSHA256 != nil && *in.ExpectedPreviousSidecarSHA256 == fixture.ExpectedPreviousSidecarSHA256 &&
+			in.ExpectedServerAssemblyRevision != nil && *in.ExpectedServerAssemblyRevision == fixture.ServerAssemblyRevision &&
+			in.ExpectedAssemblyTopologySHA256 != nil && *in.ExpectedAssemblyTopologySHA256 == fixture.AssemblyTopologySHA256 &&
+			in.SelectedOperationNumber == fixture.SelectedOperationNumber &&
+			in.ExpectedDxfSHA256 == dxfSHA && in.ExpectedPatternVersion == fixture.PatternVersion &&
 			in.ExpectedPostSaveReceiptSHA256 == receiptSHA && in.SidecarSHA256 == sidecarSHA &&
-			bytes.Equal(in.Payload, payload) && in.By == "ann"
+			in.MediaType == entity.PatternProductCompositeSidecarV5MediaType && bytes.Equal(in.Payload, payload) && in.By == "ann"
 	})
 	techCards.EXPECT().PutTechCardPatternSemanticSidecar(mock.Anything, matchWrite).Return(row, nil).Once()
-	techCards.EXPECT().GetTechCardPatternSemanticSidecar(mock.Anything, 44, lineKey).Return(row, nil).Once()
+	techCards.EXPECT().GetTechCardPatternSemanticSidecar(mock.Anything, fixture.Row.TechCardID, lineKey).Return(row, nil).Once()
 	techCards.EXPECT().PutTechCardPatternSemanticSidecar(mock.Anything, matchWrite).
 		Return(entity.PatternSemanticSidecar{}, fmt.Errorf("late put: %w", entity.ErrTechCardPatternSidecarBindingMoved)).Once()
-	techCards.EXPECT().GetTechCardPatternSemanticSidecar(mock.Anything, 44, lineKey).
+	techCards.EXPECT().GetTechCardPatternSemanticSidecar(mock.Anything, fixture.Row.TechCardID, lineKey).
 		Return(entity.PatternSemanticSidecar{}, sql.ErrNoRows).Once()
 	repo := mocks.NewMockRepository(t)
 	repo.EXPECT().TechCards().Return(techCards).Times(4)
@@ -106,14 +143,20 @@ func TestPatternSemanticSidecarThroughAuthenticatedStack(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 
 	body, err := json.Marshal(map[string]any{
-		"techCardId": 44, "patternLineKey": lineKey, "expectedCardLockVersion": 8,
-		"expectedDxfSha256": dxfSHA, "expectedPatternVersion": 2,
+		"techCardId": fixture.Row.TechCardID, "patternLineKey": lineKey,
+		"expectedCardLockVersion":        fixture.Row.CardLockVersion,
+		"expectedSavedRowRevision":       fixture.Row.Revision,
+		"expectedPreviousSidecarSha256":  fixture.ExpectedPreviousSidecarSHA256,
+		"expectedServerAssemblyRevision": fixture.ServerAssemblyRevision,
+		"expectedAssemblyTopologySha256": fixture.AssemblyTopologySHA256,
+		"selectedOperationNumber":        fixture.SelectedOperationNumber,
+		"expectedDxfSha256":              dxfSHA, "expectedPatternVersion": fixture.PatternVersion,
 		"expectedPostSaveReceiptSha256": receiptSHA,
-		"mediaType":                     entity.PatternSemanticSidecarMediaType, "sidecarSha256": sidecarSHA,
+		"mediaType":                     entity.PatternProductCompositeSidecarV5MediaType, "sidecarSha256": sidecarSHA,
 		"sidecarBytes": base64.StdEncoding.EncodeToString(payload),
 	})
 	require.NoError(t, err)
-	path := "/api/admin/tech-card/44/patterns/" + lineKey + "/semantic-sidecar"
+	path := fmt.Sprintf("/api/admin/tech-card/%d/patterns/%s/semantic-sidecar", fixture.Row.TechCardID, lineKey)
 	call := func(method, bearer string, requestBody []byte) (int, []byte) {
 		request, requestErr := http.NewRequest(method, baseURL+path, bytes.NewReader(requestBody))
 		require.NoError(t, requestErr)
@@ -134,11 +177,14 @@ func TestPatternSemanticSidecarThroughAuthenticatedStack(t *testing.T) {
 
 	statusCode, raw = call(http.MethodPut, writeToken, body)
 	require.Equal(t, http.StatusOK, statusCode, "%.300s", raw)
-	require.Contains(t, string(raw), `"cardLockVersion":8`)
+	require.Contains(t, string(raw), fmt.Sprintf(`"cardLockVersion":%d`, fixture.Row.CardLockVersion))
+	require.Contains(t, string(raw), `"mediaType":"`+entity.PatternProductCompositeSidecarV5MediaType+`"`)
 	require.Contains(t, string(raw), `"sidecarBytes":"`+base64.StdEncoding.EncodeToString(payload)+`"`)
 	statusCode, raw = call(http.MethodGet, readToken, nil)
 	require.Equal(t, http.StatusOK, statusCode, "%.300s", raw)
 	require.Contains(t, string(raw), `"sidecarSha256":"`+sidecarSHA+`"`)
+	require.Contains(t, string(raw), `"mediaType":"`+entity.PatternProductCompositeSidecarV5MediaType+`"`)
+	require.Contains(t, string(raw), `"sidecarBytes":"`+base64.StdEncoding.EncodeToString(payload)+`"`)
 
 	statusCode, raw = call(http.MethodPut, writeToken, body)
 	require.Equal(t, http.StatusBadRequest, statusCode, "%.300s", raw)

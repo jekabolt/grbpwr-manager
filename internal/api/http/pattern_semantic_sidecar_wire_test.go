@@ -20,6 +20,7 @@ type patternSemanticSidecarWireStub struct {
 	lastPut       *pb_admin.PutTechCardPatternSemanticSidecarRequest
 	lastGet       *pb_admin.GetTechCardPatternSemanticSidecarRequest
 	lastSnapshot  *pb_admin.GetTechCardSavedAssemblySnapshotRequest
+	getSidecar    *pb_admin.TechCardPatternSemanticSidecar
 }
 
 func (s *patternSemanticSidecarWireStub) GetTechCardSavedAssemblySnapshot(
@@ -67,7 +68,7 @@ func (s *patternSemanticSidecarWireStub) GetTechCardPatternSemanticSidecar(
 ) (*pb_admin.GetTechCardPatternSemanticSidecarResponse, error) {
 	s.getCalls++
 	s.lastGet = req
-	return &pb_admin.GetTechCardPatternSemanticSidecarResponse{}, nil
+	return &pb_admin.GetTechCardPatternSemanticSidecarResponse{SemanticSidecar: s.getSidecar}, nil
 }
 
 func TestPatternSemanticSidecarProductionGatewayWire(t *testing.T) {
@@ -147,4 +148,131 @@ func TestPatternSemanticSidecarProductionGatewayWire(t *testing.T) {
 	defer func() { _ = badResponse.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, badResponse.StatusCode)
 	require.Equal(t, 1, stub.putCalls, "an unknown lock field must fail before the RPC")
+}
+
+func TestPatternSemanticSidecarCompositeV5GatewayPreservesAssemblyCASAndEcho(t *testing.T) {
+	stub := &patternSemanticSidecarWireStub{}
+	mux := newAdminServeMux()
+	require.NoError(t, pb_admin.RegisterAdminServiceHandlerServer(context.Background(), mux, stub))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	const lineKey = "01JABCDEFGHJKMNPQRSTVWXYZ0"
+	previousSHA := strings.Repeat("c", 64)
+	topologySHA := strings.Repeat("d", 64)
+	body := `{"techCardId":44,"patternLineKey":"` + lineKey + `",` +
+		`"expectedDxfSha256":"` + strings.Repeat("a", 64) + `","expectedPatternVersion":2,` +
+		`"expectedPostSaveReceiptSha256":"` + strings.Repeat("b", 64) + `",` +
+		`"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v5+json",` +
+		`"sidecarSha256":"` + strings.Repeat("e", 64) + `","sidecarBytes":"eyJ2Ijo1fQ==",` +
+		`"expectedCardLockVersion":8,"expectedSavedRowRevision":7,` +
+		`"expectedPreviousSidecarSha256":"` + previousSHA + `",` +
+		`"expectedServerAssemblyRevision":"asm:v1:0123456789abcdef0123456789abcdef:9",` +
+		`"expectedAssemblyTopologySha256":"` + topologySHA + `","selectedOperationNumber":120}`
+	request, err := http.NewRequest(http.MethodPut,
+		server.URL+"/api/admin/tech-card/44/patterns/"+lineKey+"/semantic-sidecar",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer func() { _ = response.Body.Close() }()
+	responseBody, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(responseBody))
+
+	require.Equal(t, 1, stub.putCalls)
+	require.NotNil(t, stub.lastPut)
+	require.Equal(t, "application/vnd.grbpwr.pattern-dxf-product-composite.v5+json", stub.lastPut.GetMediaType())
+	require.Equal(t, []byte(`{"v":5}`), stub.lastPut.GetSidecarBytes())
+	require.NotNil(t, stub.lastPut.ExpectedCardLockVersion)
+	require.EqualValues(t, 8, stub.lastPut.GetExpectedCardLockVersion())
+	require.NotNil(t, stub.lastPut.ExpectedSavedRowRevision)
+	require.EqualValues(t, 7, stub.lastPut.GetExpectedSavedRowRevision())
+	require.NotNil(t, stub.lastPut.ExpectedPreviousSidecarSha256)
+	require.Equal(t, previousSHA, stub.lastPut.GetExpectedPreviousSidecarSha256())
+	require.NotNil(t, stub.lastPut.ExpectedServerAssemblyRevision)
+	require.Equal(t, "asm:v1:0123456789abcdef0123456789abcdef:9", stub.lastPut.GetExpectedServerAssemblyRevision())
+	require.NotNil(t, stub.lastPut.ExpectedAssemblyTopologySha256)
+	require.Equal(t, topologySHA, stub.lastPut.GetExpectedAssemblyTopologySha256())
+	require.EqualValues(t, 120, stub.lastPut.GetSelectedOperationNumber())
+	require.Contains(t, string(responseBody), `"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v5+json"`)
+	require.Contains(t, string(responseBody), `"sidecarBytes":"eyJ2Ijo1fQ=="`)
+
+	stub.getSidecar = &pb_admin.TechCardPatternSemanticSidecar{
+		TechCardId: 44, PatternLineKey: lineKey,
+		MediaType:    "application/vnd.grbpwr.pattern-dxf-product-composite.v5+json",
+		SidecarBytes: []byte(`{"v":5}`), SidecarSha256: strings.Repeat("e", 64),
+		ByteLength: 7,
+	}
+	getResponse, err := http.Get(server.URL + "/api/admin/tech-card/44/patterns/" + lineKey + "/semantic-sidecar")
+	require.NoError(t, err)
+	defer func() { _ = getResponse.Body.Close() }()
+	getBody, err := io.ReadAll(getResponse.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, getResponse.StatusCode, string(getBody))
+	require.Equal(t, 1, stub.getCalls)
+	require.Contains(t, string(getBody), `"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v5+json"`)
+	require.Contains(t, string(getBody), `"sidecarBytes":"eyJ2Ijo1fQ=="`)
+}
+
+func TestPatternSemanticSidecarCompositeV4GatewayPreservesAssemblyCASAndEcho(t *testing.T) {
+	stub := &patternSemanticSidecarWireStub{}
+	mux := newAdminServeMux()
+	require.NoError(t, pb_admin.RegisterAdminServiceHandlerServer(context.Background(), mux, stub))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	const lineKey = "01JABCDEFGHJKMNPQRSTVWXYZ0"
+	previousSHA := strings.Repeat("c", 64)
+	topologySHA := strings.Repeat("d", 64)
+	body := `{"techCardId":44,"patternLineKey":"` + lineKey + `",` +
+		`"expectedDxfSha256":"` + strings.Repeat("a", 64) + `","expectedPatternVersion":2,` +
+		`"expectedPostSaveReceiptSha256":"` + strings.Repeat("b", 64) + `",` +
+		`"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v4+json",` +
+		`"sidecarSha256":"` + strings.Repeat("e", 64) + `","sidecarBytes":"eyJ2Ijo0fQ==",` +
+		`"expectedCardLockVersion":8,"expectedSavedRowRevision":7,` +
+		`"expectedPreviousSidecarSha256":"` + previousSHA + `",` +
+		`"expectedServerAssemblyRevision":"asm:v1:0123456789abcdef0123456789abcdef:9",` +
+		`"expectedAssemblyTopologySha256":"` + topologySHA + `","selectedOperationNumber":120}`
+	request, err := http.NewRequest(http.MethodPut,
+		server.URL+"/api/admin/tech-card/44/patterns/"+lineKey+"/semantic-sidecar",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer func() { _ = response.Body.Close() }()
+	responseBody, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(responseBody))
+
+	require.Equal(t, 1, stub.putCalls)
+	require.NotNil(t, stub.lastPut)
+	require.Equal(t, "application/vnd.grbpwr.pattern-dxf-product-composite.v4+json", stub.lastPut.GetMediaType())
+	require.Equal(t, []byte(`{"v":4}`), stub.lastPut.GetSidecarBytes())
+	require.EqualValues(t, 8, stub.lastPut.GetExpectedCardLockVersion())
+	require.EqualValues(t, 7, stub.lastPut.GetExpectedSavedRowRevision())
+	require.Equal(t, previousSHA, stub.lastPut.GetExpectedPreviousSidecarSha256())
+	require.Equal(t, "asm:v1:0123456789abcdef0123456789abcdef:9", stub.lastPut.GetExpectedServerAssemblyRevision())
+	require.Equal(t, topologySHA, stub.lastPut.GetExpectedAssemblyTopologySha256())
+	require.EqualValues(t, 120, stub.lastPut.GetSelectedOperationNumber())
+	require.Contains(t, string(responseBody), `"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v4+json"`)
+	require.Contains(t, string(responseBody), `"sidecarBytes":"eyJ2Ijo0fQ=="`)
+
+	stub.getSidecar = &pb_admin.TechCardPatternSemanticSidecar{
+		TechCardId: 44, PatternLineKey: lineKey,
+		MediaType:    "application/vnd.grbpwr.pattern-dxf-product-composite.v4+json",
+		SidecarBytes: []byte(`{"v":4}`), SidecarSha256: strings.Repeat("e", 64),
+		ByteLength: 7,
+	}
+	getResponse, err := http.Get(server.URL + "/api/admin/tech-card/44/patterns/" + lineKey + "/semantic-sidecar")
+	require.NoError(t, err)
+	defer func() { _ = getResponse.Body.Close() }()
+	getBody, err := io.ReadAll(getResponse.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, getResponse.StatusCode, string(getBody))
+	require.Equal(t, 1, stub.getCalls)
+	require.Contains(t, string(getBody), `"mediaType":"application/vnd.grbpwr.pattern-dxf-product-composite.v4+json"`)
+	require.Contains(t, string(getBody), `"sidecarBytes":"eyJ2Ijo0fQ=="`)
 }
