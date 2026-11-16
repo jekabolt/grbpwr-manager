@@ -58,6 +58,7 @@ var bodyMeasurementPbToEntity = map[pb_common.BodyMeasurementName]entity.BodyMea
 	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_ARMSCYE_CIRCUMFERENCE: entity.BodyArmscyeCircumference,
 	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_BUST_APEX_TO_APEX:     entity.BodyBustApexToApex,
 	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_HPS_TO_BUST_APEX:      entity.BodyHPSToBustApex,
+	pb_common.BodyMeasurementName_BODY_MEASUREMENT_NAME_NECK:                  entity.BodyNeck,
 }
 
 var bodyMeasurementEntityToPb = func() map[entity.BodyMeasurementName]pb_common.BodyMeasurementName {
@@ -171,8 +172,11 @@ func ConvertPbModelInsertToEntity(pb *pb_common.ModelInsert) (*entity.ModelInser
 			Metadata: metadata,
 		})
 	}
-	if pb.BodyMeasurementSchemaVersion > entity.BodyMeasurementSchemaVersionP0 {
-		return nil, fmt.Errorf("body_measurement_schema_version must be 0 or %d", entity.BodyMeasurementSchemaVersionP0)
+	// A writer older than a name may still echo it back from a read (the admin
+	// form round-trips every stored measurement), so a lower version is not a
+	// reason to reject a newer name; it only limits what omission may delete.
+	if pb.BodyMeasurementSchemaVersion > entity.BodyMeasurementSchemaVersionCurrent {
+		return nil, fmt.Errorf("body_measurement_schema_version must be 0..%d", entity.BodyMeasurementSchemaVersionCurrent)
 	}
 
 	mediaIds := make([]int, 0, len(pb.MediaIds))
@@ -253,7 +257,7 @@ func ConvertEntityModelToPb(m *entity.Model) *pb_common.Model {
 			Gender:                       pbGenderFromNull(m.Gender),
 			ThumbnailId:                  pbInt32FromNull(m.ThumbnailId),
 			Measurements:                 measurements,
-			BodyMeasurementSchemaVersion: entity.BodyMeasurementSchemaVersionP0,
+			BodyMeasurementSchemaVersion: entity.BodyMeasurementSchemaVersionCurrent,
 			MediaIds:                     mediaIds,
 			DefaultSizeIds:               defaultSizeIds,
 		},
