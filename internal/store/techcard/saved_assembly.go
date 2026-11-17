@@ -380,7 +380,7 @@ func savedFullAssemblyAOContent(row entity.SavedPatternRowIdentity, serverAssemb
 		})
 	}
 	if len(receipts) == 0 {
-		return nil, "", fmt.Errorf("Full Assembly has no seam-bearing operation: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+		return nil, "", fmt.Errorf("full assembly has no seam-bearing operation: %w", entity.ErrTechCardSavedAssemblyUnsupported)
 	}
 	payload := map[string]any{
 		"row": map[string]any{
