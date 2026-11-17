@@ -414,6 +414,23 @@ func canonicalMannequinArrangementV1(document map[string]any) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+func compositeV6ComponentsForTransition(payload []byte) ([]byte, []byte, error) {
+	document, _, _, err := validOuterCompositeDocument(payload, patternProductCompositeSidecarDocumentV6,
+		PatternProductCompositeSidecarV6MediaType, patternProductCompositeClaimsV6)
+	if err != nil || len(document.Components) != 2 {
+		return nil, nil, fmt.Errorf("composite V6 is invalid")
+	}
+	v5, err := compositeComponentBytes(document.Components[0], "composite-v5", PatternProductCompositeSidecarV5MediaType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("nested composite V5: %w", err)
+	}
+	arrangement, err := compositeComponentBytes(document.Components[1], "cad-mannequin-arrangement-v1", mannequinArrangementMediaTypeV1)
+	if err != nil {
+		return nil, nil, fmt.Errorf("nested mannequin arrangement: %w", err)
+	}
+	return v5, arrangement, nil
+}
+
 func compositeV5BytesForV6Transition(mediaType string, payload []byte) ([]byte, error) {
 	switch mediaType {
 	case PatternProductCompositeSidecarV5MediaType:
@@ -423,38 +440,60 @@ func compositeV5BytesForV6Transition(mediaType string, payload []byte) ([]byte, 
 		}
 		return payload, nil
 	case PatternProductCompositeSidecarV6MediaType:
-		document, _, _, err := validOuterCompositeDocument(payload, patternProductCompositeSidecarDocumentV6,
-			PatternProductCompositeSidecarV6MediaType, patternProductCompositeClaimsV6)
-		if err != nil || len(document.Components) != 2 {
-			return nil, fmt.Errorf("prior composite V6 is invalid")
+		v5, _, err := compositeV6ComponentsForTransition(payload)
+		if err != nil {
+			return nil, fmt.Errorf("prior composite V6 is invalid: %w", err)
 		}
-		return compositeComponentBytes(document.Components[0], "composite-v5", PatternProductCompositeSidecarV5MediaType)
+		return v5, nil
 	default:
 		return nil, fmt.Errorf("prior media type %q is not composite V5 or V6", mediaType)
 	}
 }
 
-// ValidatePatternProductCompositeSidecarV6Transition proves under the row lock that the current
-// verified Composite V5 bytes are carried into V6 unchanged. A V6 replacement may change only its
-// presentation-only mannequin arrangement and outer CAS binding.
+// ValidatePatternProductCompositeSidecarV6Transition enforces two lossless write lanes under the
+// row lock. V5 -> V6 carries the verified V5 bytes unchanged. V6 -> V6 may change either the
+// presentation-only arrangement while carrying V5 unchanged, or the annotations nested in V5
+// while carrying both the verified V4 and arrangement bytes unchanged. A single write may never
+// change both nested V5 and arrangement. The wire claim nestedCompositeV5BytesPreservedExactly
+// describes byte-exact embedding and round-trip of the supplied V5 component; prior-carrier
+// equality is this transition policy rather than a different V6 document schema.
 func ValidatePatternProductCompositeSidecarV6Transition(nextPayload []byte, priorMediaType string, priorPayload []byte) error {
-	nextDocument, _, _, err := validOuterCompositeDocument(nextPayload, patternProductCompositeSidecarDocumentV6,
-		PatternProductCompositeSidecarV6MediaType, patternProductCompositeClaimsV6)
-	if err != nil || len(nextDocument.Components) != 2 {
+	nextV5, nextArrangement, err := compositeV6ComponentsForTransition(nextPayload)
+	if err != nil {
 		return compositeV5Violation("invalid_composite_v6_transition", "next Composite V6 envelope is invalid")
 	}
-	nextV5, err := compositeComponentBytes(nextDocument.Components[0], "composite-v5", PatternProductCompositeSidecarV5MediaType)
-	if err != nil {
-		return compositeV5Violation("invalid_composite_v6_transition", err.Error())
+	switch priorMediaType {
+	case PatternProductCompositeSidecarV5MediaType:
+		priorV5, priorErr := compositeV5BytesForV6Transition(priorMediaType, priorPayload)
+		if priorErr != nil {
+			return compositeV5Violation("composite_v6_prior_required", priorErr.Error())
+		}
+		if !bytes.Equal(nextV5, priorV5) {
+			return compositeV5Violation("composite_v6_nested_v5_changed", "V5 to V6 must preserve the current Composite V5 bytes exactly")
+		}
+		return nil
+	case PatternProductCompositeSidecarV6MediaType:
+		priorV5, priorArrangement, priorErr := compositeV6ComponentsForTransition(priorPayload)
+		if priorErr != nil {
+			return compositeV5Violation("composite_v6_prior_required", priorErr.Error())
+		}
+		v5Changed := !bytes.Equal(nextV5, priorV5)
+		arrangementChanged := !bytes.Equal(nextArrangement, priorArrangement)
+		if !v5Changed {
+			return nil
+		}
+		if arrangementChanged {
+			return compositeV5Violation("composite_v6_components_changed_together", "change either Composite V5 annotations or the mannequin arrangement, never both in one write")
+		}
+		if err := ValidatePatternProductCompositeSidecarV5Transition(
+			nextV5, PatternProductCompositeSidecarV5MediaType, priorV5,
+		); err != nil {
+			return compositeV5Violation("composite_v6_nested_v5_transition_invalid", err.Error())
+		}
+		return nil
+	default:
+		return compositeV5Violation("composite_v6_prior_required", fmt.Sprintf("prior media type %q is not composite V5 or V6", priorMediaType))
 	}
-	priorV5, err := compositeV5BytesForV6Transition(priorMediaType, priorPayload)
-	if err != nil {
-		return compositeV5Violation("composite_v6_prior_required", err.Error())
-	}
-	if !bytes.Equal(nextV5, priorV5) {
-		return compositeV5Violation("composite_v6_nested_v5_changed", "preserve the current Composite V5 bytes exactly")
-	}
-	return nil
 }
 
 // ValidatePatternProductCompositeSidecarV6Binding is the under-lock Composite V6 admission gate.

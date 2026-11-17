@@ -87,6 +87,62 @@ func buildCompositeV6TestFixture(t *testing.T) compositeV6TestFixture {
 	return compositeV6TestFixture{Payload: payload, V5: v5.Payload, Arrangement: arrangement, Expected: expected}
 }
 
+func compositeV6TransitionPayload(t *testing.T, current []byte, previous string, v5, arrangement []byte) []byte {
+	t.Helper()
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(current, &document))
+	document["writeCas"].(map[string]any)["expectedPreviousSidecarSha256"] = previous
+	document["components"] = []any{
+		compositeV5TestComponent("composite-v5", PatternProductCompositeSidecarV5MediaType, v5),
+		compositeV5TestComponent("cad-mannequin-arrangement-v1", mannequinArrangementMediaTypeV1, arrangement),
+	}
+	return canonicalV5TestJSON(t, document)
+}
+
+func compositeV6TestV5WithChangedAnnotations(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(payload, &document))
+	component := document["components"].([]any)[1].(map[string]any)
+	annotations, err := base64.StdEncoding.Strict().DecodeString(component["base64"].(string))
+	require.NoError(t, err)
+	var annotationsDocument map[string]any
+	require.NoError(t, json.Unmarshal(annotations, &annotationsDocument))
+	annotationsDocument["callouts"].([]any)[0].(map[string]any)["text"] = "Updated annotation"
+	changedAnnotations := canonicalV5TestJSON(t, annotationsDocument)
+	document["components"].([]any)[1] = compositeV5TestComponent(
+		"phase-e-topology-annotations-v1", patternTopologyAnnotationsMediaTypeV1, changedAnnotations,
+	)
+	return canonicalV5TestJSON(t, document)
+}
+
+func compositeV6TestV5WithChangedV4(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(payload, &document))
+	component := document["components"].([]any)[0].(map[string]any)
+	v4, err := base64.StdEncoding.Strict().DecodeString(component["base64"].(string))
+	require.NoError(t, err)
+	var v4Document map[string]any
+	require.NoError(t, json.Unmarshal(v4, &v4Document))
+	v4Document["writeCas"].(map[string]any)["expectedPreviousSidecarSha256"] = strings.Repeat("1", 64)
+	changedV4 := canonicalV5TestJSON(t, v4Document)
+	document["components"].([]any)[0] = compositeV5TestComponent(
+		"composite-v4", PatternProductCompositeSidecarV4MediaType, changedV4,
+	)
+	return canonicalV5TestJSON(t, document)
+}
+
+func compositeV6TestChangedArrangement(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(payload, &document))
+	document["pieces"].([]any)[0].(map[string]any)["transform"].(map[string]any)["rotationRad"] = 0.75
+	changed, err := canonicalMannequinArrangementV1(document)
+	require.NoError(t, err)
+	return changed
+}
+
 func TestPatternProductCompositeSidecarV6BindingAndExactByteRoundTrip(t *testing.T) {
 	fixture := buildCompositeV6TestFixture(t)
 	require.True(t, ValidPatternSemanticSidecarMediaType(PatternProductCompositeSidecarV6MediaType))
@@ -195,6 +251,65 @@ func TestPatternProductCompositeSidecarV6RejectsArrangementAndV5TransitionDrift(
 		"a canonical but byte-different current V5 must not be replaced by the nested V5")
 	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(
 		fixture.Payload, PatternProductCompositeSidecarV4MediaType, fixture.V5))
+}
+
+func TestPatternProductCompositeSidecarV6TransitionHasTwoLosslessWriteLanes(t *testing.T) {
+	fixture := buildCompositeV6TestFixture(t)
+	currentSHA := PatternSemanticSidecarPayloadSHA256(fixture.Payload)
+	nextExpected := fixture.Expected
+	nextExpected.ExpectedPreviousSidecarSHA256 = currentSHA
+
+	changedArrangement := compositeV6TestChangedArrangement(t, fixture.Arrangement)
+	arrangementOnly := compositeV6TransitionPayload(
+		t, fixture.Payload, currentSHA, fixture.V5, changedArrangement,
+	)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV6Binding(arrangementOnly, nextExpected))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV6Transition(
+		arrangementOnly, PatternProductCompositeSidecarV6MediaType, fixture.Payload,
+	))
+
+	changedAnnotations := compositeV6TestV5WithChangedAnnotations(t, fixture.V5)
+	annotationsOnly := compositeV6TransitionPayload(
+		t, fixture.Payload, currentSHA, changedAnnotations, fixture.Arrangement,
+	)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV6Binding(annotationsOnly, nextExpected))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV6Transition(
+		annotationsOnly, PatternProductCompositeSidecarV6MediaType, fixture.Payload,
+	))
+
+	bothChanged := compositeV6TransitionPayload(
+		t, fixture.Payload, currentSHA, changedAnnotations, changedArrangement,
+	)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV6Binding(bothChanged, nextExpected))
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(
+		bothChanged, PatternProductCompositeSidecarV6MediaType, fixture.Payload,
+	))
+}
+
+func TestPatternProductCompositeSidecarV6TransitionRejectsV4DriftAndV5UpgradeDrift(t *testing.T) {
+	fixture := buildCompositeV6TestFixture(t)
+	currentSHA := PatternSemanticSidecarPayloadSHA256(fixture.Payload)
+	changedV4 := compositeV6TestV5WithChangedV4(t, fixture.V5)
+	nestedV4Drift := compositeV6TransitionPayload(
+		t, fixture.Payload, currentSHA, changedV4, fixture.Arrangement,
+	)
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(
+		nestedV4Drift, PatternProductCompositeSidecarV6MediaType, fixture.Payload,
+	))
+
+	changedAnnotations := compositeV6TestV5WithChangedAnnotations(t, fixture.V5)
+	v5ToV6Drift := compositeV6TransitionPayload(
+		t, fixture.Payload, PatternSemanticSidecarPayloadSHA256(fixture.V5), changedAnnotations, fixture.Arrangement,
+	)
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(
+		v5ToV6Drift, PatternProductCompositeSidecarV5MediaType, fixture.V5,
+	))
+
+	corruptPrior := append([]byte(nil), fixture.Payload...)
+	corruptPrior[0] = '['
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(
+		fixture.Payload, PatternProductCompositeSidecarV6MediaType, corruptPrior,
+	))
 }
 
 func TestPatternProductCompositeSidecarV6ArrangementUsesFrontendJSONOrder(t *testing.T) {

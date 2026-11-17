@@ -126,6 +126,8 @@ func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *t
 	v6Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV6Transition(")
 	require.GreaterOrEqual(t, priorQuery, 0, "the locked prior row query must load all integrity metadata")
 	require.Contains(t, put[priorQuery:], "WHERE pattern_row_id = :id FOR UPDATE")
+	require.Greater(t, v5Transition, validate, "V5 transition policy must run after full next-payload binding validation")
+	require.Greater(t, v6Transition, validate, "V6 transition policy must run after full next-payload binding validation")
 	require.Greater(t, firstPriorValidation, priorQuery)
 	require.Greater(t, v5Transition, firstPriorValidation, "V5 must consume only a revalidated prior carrier")
 	require.Greater(t, lastPriorValidation, v5Transition)
