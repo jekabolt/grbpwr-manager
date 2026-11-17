@@ -46,15 +46,19 @@ type savedPatternAuthorityRow struct {
 	Filename         sql.NullString `db:"filename"`
 }
 
-// GetTechCardSavedAssemblySnapshot returns one fail-closed authority receipt from one REPEATABLE
-// READ transaction. The card, exact pattern row, assembly clock and optional sidecar are therefore
-// never projections from different commits.
+// GetTechCardSavedAssemblySnapshot returns selected topology or the opt-in complete saved source.
+// The card, pattern rows, clock and any selected-profile sidecar share one REPEATABLE READ snapshot.
 func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.SavedAssemblySnapshotRequest) (entity.SavedAssemblySnapshot, error) {
 	if err := validateSavedAssemblySnapshotRequest(in); err != nil {
 		return entity.SavedAssemblySnapshot{}, err
 	}
 	var out entity.SavedAssemblySnapshot
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+			if err := validateCompleteSourcePieceInputOwnership(ctx, rep.DB(), in.ExpectedRow.TechCardID); err != nil {
+				return err
+			}
+		}
 		card, err := rep.TechCards().GetTechCardById(ctx, in.ExpectedRow.TechCardID)
 		if err != nil {
 			return err
@@ -78,8 +82,12 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		if !scope.Live() || strings.TrimSpace(scope.Key) == "" {
 			return fmt.Errorf("pattern line %s has no live fabric scope: %w", pattern.LineKey, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
+		scopeKey := scope.Key
+		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+			scopeKey = entity.FabricScopeIdentity(pattern.FabricPurpose.String, pattern.BomLineKey.String, lines)
+		}
 		row := entity.SavedPatternRowIdentity{
-			TechCardID: card.Id, ScopeKey: scope.Key, PatternLineKey: pattern.LineKey,
+			TechCardID: card.Id, ScopeKey: scopeKey, PatternLineKey: pattern.LineKey,
 			SavedRowRevision: pattern.SavedRowRevision, CardLockVersion: card.LockVersion,
 			URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256.String,
 			PatternVersion: pattern.PatternVersion,
@@ -100,6 +108,19 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		token := clock.Token()
 		if in.ExpectedServerAssemblyRevision != "" && in.ExpectedServerAssemblyRevision != token {
 			return fmt.Errorf("assembly revision changed: %w", entity.ErrTechCardSavedAssemblyMoved)
+		}
+		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+			source, err := buildSavedAssemblyCompleteSourceV1(card, row, lines, token)
+			if err != nil {
+				return err
+			}
+			if in.ExpectedCompleteSourceSHA256 != "" && source.SourceSHA256 != in.ExpectedCompleteSourceSHA256 {
+				return fmt.Errorf("complete Assembly source changed: %w", entity.ErrTechCardSavedAssemblyMoved)
+			}
+			out = entity.SavedAssemblySnapshot{
+				Row: row, Card: card, ServerAssemblyRevision: token, CompleteSourceV1: source,
+			}
+			return nil
 		}
 		selected, err := selectSavedAssemblySeams(card, in.SelectedOperationNumber)
 		if err != nil {
@@ -153,8 +174,29 @@ func validateSavedAssemblySnapshotRequest(in entity.SavedAssemblySnapshotRequest
 		!entity.ValidPatternSemanticSidecarSHA256(r.SHA256) {
 		return entity.NewFieldViolation("expected_row", "incomplete", "", "send all eight exact saved-row fields")
 	}
-	if in.SelectedOperationNumber <= 0 {
-		return entity.NewFieldViolation("selected_operation_number", "invalid", fmt.Sprint(in.SelectedOperationNumber), "send a positive stored operation number")
+	switch in.Profile {
+	case entity.SavedAssemblySnapshotSelected:
+		if in.SelectedOperationNumber <= 0 {
+			return entity.NewFieldViolation("selected_operation_number", "invalid", fmt.Sprint(in.SelectedOperationNumber), "send a positive stored operation number")
+		}
+		if in.ExpectedCompleteSourceSHA256 != "" {
+			return entity.NewFieldViolation("expected_complete_source_sha256", "invalid", "", "select the complete-source profile to check this digest")
+		}
+	case entity.SavedAssemblySnapshotCompleteSourceV1:
+		if in.SelectedOperationNumber != 0 || in.ExpectedTopologySHA256 != "" {
+			return entity.NewFieldViolation("profile", "incompatible", "", "omit selected-operation fields for the complete-source profile")
+		}
+		if len(r.URL) > savedAssemblyMaxSourceURLBytes || r.SizeBytes > savedAssemblyMaxJSSafeInteger {
+			return entity.NewFieldViolation("expected_row", "out_of_bounds", "", "send a bounded URL and exact byte count")
+		}
+		if in.ExpectedCompleteSourceSHA256 != "" && !entity.ValidPatternSemanticSidecarSHA256(in.ExpectedCompleteSourceSHA256) {
+			return entity.NewFieldViolation("expected_complete_source_sha256", "invalid", "", "send a lowercase SHA-256")
+		}
+		if in.ExpectedServerAssemblyRevision != "" && !validCompleteSourceAssemblyRevision(in.ExpectedServerAssemblyRevision) {
+			return entity.NewFieldViolation("expected_server_assembly_revision", "invalid", "", "send the complete Assembly clock token returned by this RPC")
+		}
+	default:
+		return entity.NewFieldViolation("profile", "invalid", "", "send a supported saved Assembly snapshot profile")
 	}
 	if in.ExpectedServerAssemblyRevision != "" && !strings.HasPrefix(in.ExpectedServerAssemblyRevision, "asm:v1:") {
 		return entity.NewFieldViolation("expected_server_assembly_revision", "invalid", in.ExpectedServerAssemblyRevision, "send the opaque token returned by this RPC")
@@ -233,7 +275,7 @@ func selectSavedAssemblySeams(card *entity.TechCard, selectedOperationNumber int
 			len(seam.SideA) != 1 || len(seam.SideB) != 1 {
 			return nil, fmt.Errorf("selected seam %s is not exact/current: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
-		if !savedAssemblyKnownSeamValues(seam) {
+		if !savedAssemblyKnownSeamValues(seam, false) {
 			return nil, fmt.Errorf("selected seam %s has an unknown enum value: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
 		currentPair := []string{seam.SideA[0].PieceLineKey, seam.SideB[0].PieceLineKey}
@@ -273,14 +315,19 @@ func selectSavedAssemblySeamsV3(card *entity.TechCard, selectedOperationNumber i
 	return selected, nil
 }
 
-func savedAssemblyKnownSeamValues(seam entity.TechCardSeam) bool {
+func savedAssemblyKnownSeamValues(seam entity.TechCardSeam, allowWorkflow bool) bool {
 	switch seam.Kind {
 	case entity.TechCardSeamKindEdge, entity.TechCardSeamKindPartial, entity.TechCardSeamKindComposite,
 		entity.TechCardSeamKindSurface, entity.TechCardSeamKindClosure:
+	case entity.TechCardSeamKindPose:
+		if !allowWorkflow {
+			return false
+		}
 	default:
 		return false
 	}
-	if seam.Direction != entity.TechCardSeamSame && seam.Direction != entity.TechCardSeamReversed {
+	if seam.Direction != entity.TechCardSeamSame && seam.Direction != entity.TechCardSeamReversed &&
+		!(allowWorkflow && seam.Direction == entity.TechCardSeamDirectionUnknown) {
 		return false
 	}
 	switch seam.Source {

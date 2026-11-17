@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,7 +30,7 @@ func (s *patternSemanticSidecarWireStub) GetTechCardSavedAssemblySnapshot(
 ) (*pb_admin.GetTechCardSavedAssemblySnapshotResponse, error) {
 	s.snapshotCalls++
 	s.lastSnapshot = req
-	return &pb_admin.GetTechCardSavedAssemblySnapshotResponse{
+	out := &pb_admin.GetTechCardSavedAssemblySnapshotResponse{
 		Row: &pb_admin.TechCardSavedPatternRowIdentity{
 			TechCardId: req.GetTechCardId(), ScopeKey: req.GetExpectedScopeKey(),
 			PatternLineKey: req.GetPatternLineKey(), SavedRowRevision: req.GetExpectedSavedRowRevision(),
@@ -41,7 +42,20 @@ func (s *patternSemanticSidecarWireStub) GetTechCardSavedAssemblySnapshot(
 		ServerAssemblyRevision:  "asm:v1:0123456789abcdef0123456789abcdef:9",
 		AssemblyTopologySha256:  strings.Repeat("d", 64),
 		TopologyCanonicalJson:   []byte("{}"),
-	}, nil
+	}
+	if req.GetProfile() == pb_admin.TechCardSavedAssemblySnapshotProfile_TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_V1 {
+		out.AssemblyTopologySha256 = ""
+		out.TopologyCanonicalJson = nil
+		out.CompleteSourceV1 = &pb_admin.TechCardSavedAssemblyCompleteSourceV1{
+			Rows: []*pb_admin.TechCardSavedPatternRowIdentity{out.Row},
+			OwnedSeams: []*pb_common.TechCardSeam{{
+				Kind: pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE,
+			}},
+			GarmentLabels: []*pb_common.TechCardGarmentLabel{{LineKey: "01M75ACEBB74BMT91RJ7WSTTJY"}},
+			SourceSha256:  strings.Repeat("a", 64), CanonicalJson: []byte("{}"),
+		}
+	}
+	return out, nil
 }
 
 func (s *patternSemanticSidecarWireStub) PutTechCardPatternSemanticSidecar(
@@ -136,6 +150,8 @@ func TestPatternSemanticSidecarProductionGatewayWire(t *testing.T) {
 	require.EqualValues(t, 120, stub.lastSnapshot.GetSelectedOperationNumber())
 	require.Contains(t, string(snapshotResponseBody), `"topologyCanonicalJson":"e30="`)
 	require.Contains(t, string(snapshotResponseBody), `"downloadUrl":"https://signed.example/pattern.dxf"`)
+	require.NotContains(t, string(snapshotResponseBody), "completeSourceV1",
+		"selected V1 must not gain an unpopulated extra field")
 
 	badBody := strings.Replace(body, "expectedCardLockVersion", "expectedCardLockVerzion", 1)
 	badRequest, err := http.NewRequest(http.MethodPut,
@@ -148,6 +164,39 @@ func TestPatternSemanticSidecarProductionGatewayWire(t *testing.T) {
 	defer func() { _ = badResponse.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, badResponse.StatusCode)
 	require.Equal(t, 1, stub.putCalls, "an unknown lock field must fail before the RPC")
+}
+
+func TestGetTechCardSavedAssemblySnapshotCompleteSourceGatewayWire(t *testing.T) {
+	stub := &patternSemanticSidecarWireStub{}
+	mux := newAdminServeMux()
+	require.NoError(t, pb_admin.RegisterAdminServiceHandlerServer(context.Background(), mux, stub))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	const line = "01JABCDEFGHJKMNPQRSTVWXYZ0"
+	sha := strings.Repeat("a", 64)
+	body := `{"techCardId":44,"patternLineKey":"` + line + `",` +
+		`"expectedScopeKey":"main","expectedSavedRowRevision":7,"expectedCardLockVersion":8,` +
+		`"expectedUrl":"patterns/main.dxf","expectedSizeBytes":"1234","expectedSha256":"` + sha + `",` +
+		`"profile":"TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_V1",` +
+		`"expectedCompleteSourceSha256":"` + sha + `"}`
+	response, err := http.Post(
+		server.URL+"/api/admin/tech-card/44/patterns/"+line+":read-assembly-snapshot",
+		"application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = response.Body.Close() }()
+	res, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(res))
+	require.EqualValues(t, 0, stub.lastSnapshot.GetSelectedOperationNumber())
+	require.Equal(t, pb_admin.TechCardSavedAssemblySnapshotProfile_TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_V1, stub.lastSnapshot.GetProfile())
+	require.Equal(t, sha, stub.lastSnapshot.GetExpectedCompleteSourceSha256())
+	require.Contains(t, string(res), `"completeSourceV1":{`)
+	require.Contains(t, string(res), `"kind":"TECH_CARD_SEAM_KIND_POSE"`)
+	require.Contains(t, string(res), `"anchoredSize":""`)
+	require.Contains(t, string(res), `"garmentLabels":[`)
+	require.Contains(t, string(res), `"lineKey":"01M75ACEBB74BMT91RJ7WSTTJY"`)
+	require.Contains(t, string(res), `"canonicalJson":"e30="`)
 }
 
 func TestPatternSemanticSidecarCompositeV5GatewayPreservesAssemblyCASAndEcho(t *testing.T) {

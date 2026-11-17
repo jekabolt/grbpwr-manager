@@ -27,6 +27,32 @@ type SavedAssemblySnapshotRequest struct {
 	SelectedOperationNumber        int
 	ExpectedServerAssemblyRevision string
 	ExpectedTopologySHA256         string
+	Profile                        SavedAssemblySnapshotProfile
+	ExpectedCompleteSourceSHA256   string
+}
+
+type SavedAssemblySnapshotProfile int32
+
+const (
+	SavedAssemblySnapshotSelected SavedAssemblySnapshotProfile = iota
+	SavedAssemblySnapshotCompleteSourceV1
+)
+
+type SavedAssemblySourceAliasV1 struct {
+	ScopeKey     string
+	BlockName    string
+	PieceLineKey string
+}
+
+// SavedAssemblyCompleteSourceV1 commits persisted inputs only. It cannot authorize a DXF edge,
+// convert an old POSE to physical placement, or imply that any seam is ready for simulation.
+type SavedAssemblyCompleteSourceV1 struct {
+	Rows          []SavedPatternRowIdentity
+	OwnedSeams    []TechCardSeam
+	Aliases       []SavedAssemblySourceAliasV1
+	GarmentLabels []TechCardGarmentLabel
+	SourceSHA256  string
+	CanonicalJSON []byte
 }
 
 type SavedAssemblySnapshot struct {
@@ -38,4 +64,5 @@ type SavedAssemblySnapshot struct {
 	TopologySHA256          string
 	TopologyCanonicalJSON   []byte
 	SemanticSidecar         *PatternSemanticSidecar
+	CompleteSourceV1        *SavedAssemblyCompleteSourceV1
 }

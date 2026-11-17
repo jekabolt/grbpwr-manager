@@ -115,9 +115,8 @@ func (s *Server) PutTechCardPatternSemanticSidecar(ctx context.Context, req *pb_
 	}, nil
 }
 
-// GetTechCardSavedAssemblySnapshot returns one exact saved pattern row, its current Assembly graph
-// and any stored carrier from a single server REPEATABLE READ snapshot. The signed download URL is
-// minted only after that snapshot, but names the exact canonical object URL read inside it.
+// GetTechCardSavedAssemblySnapshot reads selected topology or the opt-in complete saved source in
+// one REPEATABLE READ snapshot. Download URLs are minted separately for those exact object URLs.
 func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_admin.GetTechCardSavedAssemblySnapshotRequest) (*pb_admin.GetTechCardSavedAssemblySnapshotResponse, error) {
 	in := entity.SavedAssemblySnapshotRequest{
 		ExpectedRow: entity.SavedPatternRowIdentity{
@@ -130,7 +129,9 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 			SizeBytes:        req.GetExpectedSizeBytes(),
 			SHA256:           req.GetExpectedSha256(),
 		},
-		SelectedOperationNumber: int(req.GetSelectedOperationNumber()),
+		SelectedOperationNumber:      int(req.GetSelectedOperationNumber()),
+		Profile:                      entity.SavedAssemblySnapshotProfile(req.GetProfile()),
+		ExpectedCompleteSourceSHA256: req.GetExpectedCompleteSourceSha256(),
 	}
 	if req.ExpectedServerAssemblyRevision != nil {
 		in.ExpectedServerAssemblyRevision = req.GetExpectedServerAssemblyRevision()
@@ -143,32 +144,39 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		return nil, savedAssemblySnapshotError(ctx, in.ExpectedRow.TechCardID, err)
 	}
 
-	pattern := &pb_common.TechCardSizePattern{
-		Url:      snapshot.Row.URL,
-		Filename: snapshot.Row.Filename,
-		LineKey:  snapshot.Row.PatternLineKey,
-	}
-	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, []*pb_common.TechCardSizePattern{pattern})
-	card := dto.ConvertEntityTechCardToPb(snapshot.Card, dto.CostingFx{})
 	response := &pb_admin.GetTechCardSavedAssemblySnapshotResponse{
-		Row: &pb_admin.TechCardSavedPatternRowIdentity{
-			TechCardId:       int32(snapshot.Row.TechCardID),
-			ScopeKey:         snapshot.Row.ScopeKey,
-			PatternLineKey:   snapshot.Row.PatternLineKey,
-			SavedRowRevision: snapshot.Row.SavedRowRevision,
-			CardLockVersion:  int32(snapshot.Row.CardLockVersion),
-			Url:              snapshot.Row.URL,
-			SizeBytes:        snapshot.Row.SizeBytes,
-			Sha256:           snapshot.Row.SHA256,
-			PatternVersion:   int32(snapshot.Row.PatternVersion),
-			DownloadUrl:      pattern.GetDownloadUrl(),
-		},
+		Row:                     dto.SavedPatternRowIdentityToPb(snapshot.Row),
 		SelectedOperationNumber: int32(snapshot.SelectedOperationNumber),
 		SelectedSeams:           dto.TechCardSeamsToPb(snapshot.SelectedSeams),
 		ServerAssemblyRevision:  snapshot.ServerAssemblyRevision,
 		AssemblyTopologySha256:  snapshot.TopologySHA256,
 		TopologyCanonicalJson:   append([]byte(nil), snapshot.TopologyCanonicalJSON...),
 	}
+	if snapshot.CompleteSourceV1 != nil {
+		source := snapshot.CompleteSourceV1
+		response.CompleteSourceV1 = dto.SavedAssemblyCompleteSourceV1ToPb(source)
+		response.Operations = dto.TechCardOperationsToPbForSavedAssembly(snapshot.Card.Operations)
+		patterns := make([]*pb_common.TechCardSizePattern, 0, len(source.Rows))
+		for _, row := range source.Rows {
+			patterns = append(patterns, savedAssemblyPatternForDownload(row))
+		}
+		s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, patterns)
+		for i, pattern := range patterns {
+			url := pattern.GetDownloadUrl()
+			if url == "" {
+				return nil, status.Error(codes.FailedPrecondition, "saved Assembly source download is unavailable")
+			}
+			response.CompleteSourceV1.Rows[i].DownloadUrl = url
+			if pattern.GetLineKey() == snapshot.Row.PatternLineKey {
+				response.Row.DownloadUrl = url
+			}
+		}
+		return response, nil
+	}
+	pattern := savedAssemblyPatternForDownload(snapshot.Row)
+	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, []*pb_common.TechCardSizePattern{pattern})
+	response.Row.DownloadUrl = pattern.GetDownloadUrl()
+	card := dto.ConvertEntityTechCardToPb(snapshot.Card, dto.CostingFx{})
 	if card != nil && card.GetTechCard() != nil {
 		response.Operations = card.GetTechCard().GetOperations()
 	}
@@ -176,6 +184,10 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		response.SemanticSidecar = patternSemanticSidecarToPb(*snapshot.SemanticSidecar)
 	}
 	return response, nil
+}
+
+func savedAssemblyPatternForDownload(row entity.SavedPatternRowIdentity) *pb_common.TechCardSizePattern {
+	return &pb_common.TechCardSizePattern{Url: row.URL, Filename: row.Filename, LineKey: row.PatternLineKey}
 }
 
 func savedAssemblySnapshotError(ctx context.Context, techCardID int, err error) error {

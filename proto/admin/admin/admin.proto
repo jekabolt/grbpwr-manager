@@ -12166,6 +12166,11 @@ message TechCardSavedPatternRowIdentity {
   string download_url = 10;
 }
 
+enum TechCardSavedAssemblySnapshotProfile {
+  TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_UNKNOWN = 0; // existing selected-operation read
+  TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_V1 = 1;
+}
+
 message GetTechCardSavedAssemblySnapshotRequest {
   int32 tech_card_id = 1;
   string pattern_line_key = 2;
@@ -12178,6 +12183,35 @@ message GetTechCardSavedAssemblySnapshotRequest {
   int32 selected_operation_number = 9;
   optional string expected_server_assembly_revision = 10;
   optional string expected_assembly_topology_sha256 = 11;
+  optional TechCardSavedAssemblySnapshotProfile profile = 12;
+  optional string expected_complete_source_sha256 = 13;
+}
+
+message TechCardSavedAssemblySourceAliasV1 {
+  string scope_key = 1;
+  string block_name = 2;
+  string piece_line_key = 3;
+}
+
+// Exact saved source data. Confirmed status, samples, POSE transforms, and missing anchor sizes
+// are persisted facts, not native DXF edge bindings or physical admission.
+message TechCardSavedAssemblyCompleteSourceV1 {
+  // Sorted by canonical scope and stable pattern line key. Download URLs are minted separately.
+  repeated TechCardSavedPatternRowIdentity rows = 1;
+  // Same order as the top-level operations' seam_keys concatenated in operation order.
+  repeated common.TechCardSeam owned_seams = 2;
+  // Sorted by scope and stored block name. A scope can have several sheets.
+  repeated TechCardSavedAssemblySourceAliasV1 aliases = 3;
+  // SHA-256("tech-card-saved-assembly-complete-source/1" + NUL + canonical_json).
+  string source_sha256 = 4;
+  // Sorted-key JSON of serverAssemblyRevision, rows (without downloadUrl), full AO operations,
+  // ownedSeams, aliases and garmentLabels in their response order. The wire lists use lowerCamelCase and
+  // the same EmitUnpopulated protobuf JSON projection as the production gateway.
+  bytes canonical_json = 5;
+  // Card-owned generated sources referenced by AO label keys or owned anchors, sorted by line key.
+  // The existing label wire preserves saved dimensions and fold/stitch settings. An unset dimension
+  // stays unknown here, and no label acquires DXF edge authority.
+  repeated common.TechCardGarmentLabel garment_labels = 6;
 }
 
 message GetTechCardSavedAssemblySnapshotResponse {
@@ -12189,6 +12223,8 @@ message GetTechCardSavedAssemblySnapshotResponse {
   string assembly_topology_sha256 = 6;
   bytes topology_canonical_json = 7;
   optional TechCardPatternSemanticSidecar semantic_sidecar = 8;
+  // Present only for COMPLETE_SOURCE_V1, which leaves the selected-operation fields unset.
+  optional TechCardSavedAssemblyCompleteSourceV1 complete_source_v1 = 9;
 }
 
 message UpsertTechCardSeamsRequest {
