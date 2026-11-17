@@ -82,7 +82,7 @@ func validatePatternProductCompositeSidecarV7(
 
 // V7's transport anchor may name a different selected operation than the nested historical V6.
 // The exact row and server Assembly revision must agree; the nested topology digest remains its own
-// valid V6 authority and is preserved byte-for-byte by the V7 transition policy.
+// valid V6 authority; arrangement-only transitions preserve its nested V5 bytes.
 func validateNestedCompositeV6ForV7(payload []byte, outerRow SavedPatternRowIdentity, expected PatternProductCompositeSidecarExpected) error {
 	document, row, previous, err := validOuterCompositeDocument(payload, patternProductCompositeSidecarDocumentV6,
 		PatternProductCompositeSidecarV6MediaType, patternProductCompositeClaimsV6)
@@ -320,28 +320,53 @@ func compositeV7ComponentsForTransition(payload []byte) ([]byte, []byte, error) 
 	return v6, physical, nil
 }
 
-// ValidatePatternProductCompositeSidecarV7Transition preserves the proven V6 chain exactly. A
-// first V7 wraps the currently stored V6; later V7 writes may replace the Full Assembly physical
-// component but cannot silently rewrite the historical composite chain.
+// ValidatePatternProductCompositeSidecarV7Transition allows two lossless lanes after the first
+// V7 wraps the current V6 exactly: physical updates preserve V6, while presentation arrangement
+// updates preserve both physical initialization and nested V5. These placements are not physics.
 func ValidatePatternProductCompositeSidecarV7Transition(nextPayload []byte, priorMediaType string, priorPayload []byte) error {
-	nextV6, _, err := compositeV7ComponentsForTransition(nextPayload)
+	nextV6, nextPhysical, err := compositeV7ComponentsForTransition(nextPayload)
 	if err != nil {
 		return compositeV5Violation("invalid_composite_v7_transition", err.Error())
 	}
-	var priorV6 []byte
+	var priorV6, priorPhysical []byte
 	switch priorMediaType {
 	case PatternProductCompositeSidecarV6MediaType:
 		priorV6 = priorPayload
 	case PatternProductCompositeSidecarV7MediaType:
-		priorV6, _, err = compositeV7ComponentsForTransition(priorPayload)
+		priorV6, priorPhysical, err = compositeV7ComponentsForTransition(priorPayload)
 		if err != nil {
 			return compositeV5Violation("composite_v7_prior_required", err.Error())
 		}
 	default:
 		return compositeV5Violation("composite_v7_prior_required", fmt.Sprintf("prior media type %q is not composite V6 or V7", priorMediaType))
 	}
-	if !bytes.Equal(nextV6, priorV6) {
-		return compositeV5Violation("composite_v7_nested_v6_changed", "Composite V7 must preserve the current Composite V6 bytes exactly")
+	if bytes.Equal(nextV6, priorV6) {
+		return nil
+	}
+	if priorMediaType != PatternProductCompositeSidecarV7MediaType {
+		return compositeV5Violation("composite_v7_nested_v6_changed", "First Composite V7 must preserve the current Composite V6 bytes exactly")
+	}
+	if !bytes.Equal(nextPhysical, priorPhysical) {
+		return compositeV5Violation("composite_v7_components_changed_together", "change either the presentation arrangement or physical component, never both")
+	}
+	nextV5, nextArrangement, err := compositeV6ComponentsForTransition(nextV6)
+	if err != nil {
+		return compositeV5Violation("invalid_composite_v7_transition", err.Error())
+	}
+	priorV5, _, err := compositeV6ComponentsForTransition(priorV6)
+	if err != nil || !bytes.Equal(nextV5, priorV5) {
+		return compositeV5Violation("composite_v7_nested_v5_changed", "presentation arrangement updates must preserve Composite V5 bytes exactly")
+	}
+	if err := ValidatePatternProductCompositeSidecarV6Transition(nextV6, PatternProductCompositeSidecarV6MediaType, priorV6); err != nil {
+		return compositeV5Violation("composite_v7_nested_v6_transition_invalid", err.Error())
+	}
+	_, row, _, err := validOuterCompositeDocument(nextPayload, patternProductCompositeSidecarDocumentV7,
+		PatternProductCompositeSidecarV7MediaType, patternProductCompositeClaimsV7)
+	if err != nil {
+		return compositeV5Violation("invalid_composite_v7_transition", err.Error())
+	}
+	if err := validateMannequinArrangementV1(nextArrangement, row); err != nil {
+		return compositeV5Violation("composite_v7_arrangement_invalid", err.Error())
 	}
 	return nil
 }
