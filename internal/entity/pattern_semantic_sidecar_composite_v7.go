@@ -157,6 +157,11 @@ func validateSavedFullAssemblyPhysicalV1(
 		if err := validateSavedNativeDrawnSewingSourceV1(graphDocument["source"], row); err != nil {
 			return err
 		}
+	} else if source, ok := graphDocument["source"].(map[string]any); ok {
+		if handoff, ok := source["handoffSource"].(map[string]any); ok &&
+			handoff["exporterId"] == savedFullAssemblyNativeDrawnSewingExporterV1 {
+			return fmt.Errorf("native drawn sewing exporter requires its physical profile")
+		}
 	}
 	graphSHA, graphSHAOK := document["graphCanonicalSha256"].(string)
 	compileSHA, compileSHAOK := document["compileInputSha256"].(string)
