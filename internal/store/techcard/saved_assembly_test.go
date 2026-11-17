@@ -1,7 +1,10 @@
 package techcard
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"os"
 	"strings"
@@ -72,6 +75,56 @@ func TestSavedAssemblyCanonicalJSONMatchesJSONStringEscaping(t *testing.T) {
 	require.Equal(t,
 		"{\"escaped\":\"quote=\\\" slash=\\\\ control=\\u0001\",\"name\":\"A <B> & C\u2028D\u2029E\"}",
 		string(canonical))
+}
+
+func TestSavedFullAssemblyAOContentUsesCompleteWireOperationsAndOrderedTopologyReceipts(t *testing.T) {
+	card := savedAssemblyTestCard(savedAssemblyTestSeam("S-1", "P-A", "P-B"))
+	card.Operations[0].InputKeys = []string{"P-A", "P-B"}
+	card.Operations[0].OutputUnitKey = sql.NullString{String: "unit:body", Valid: true}
+	card.Operations[0].OutputUnitName = sql.NullString{String: "Body", Valid: true}
+	card.Operations[0].Note = sql.NullString{String: "Complete wire field", Valid: true}
+	row := entity.SavedPatternRowIdentity{
+		TechCardID: 7, ScopeKey: "fabric:main", PatternLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ0",
+		SavedRowRevision: 4, CardLockVersion: 8, URL: "patterns/main.dxf", SizeBytes: 1234,
+		SHA256: strings.Repeat("a", 64),
+	}
+	revision := "asm:v1:0123456789abcdef0123456789abcdef:9"
+	canonical, digest, err := savedFullAssemblyAOContent(row, revision, card)
+	require.NoError(t, err)
+	require.Len(t, digest, 64)
+	sum := sha256.Sum256(append([]byte(savedFullAssemblyAOContentDomainV1+"\x00"), canonical...))
+	require.Equal(t, hex.EncodeToString(sum[:]), digest)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(canonical, &payload))
+	require.ElementsMatch(t, []string{
+		"row", "serverAssemblyRevision", "operationsPayloadCanonicalJson", "selectedTopologyReceipts",
+	}, mapKeys(payload))
+	require.NotContains(t, payload, "outer")
+	require.NotContains(t, payload, "snapshotSha256")
+	require.Equal(t, revision, payload["serverAssemblyRevision"])
+	wireOperations, err := savedAssemblyOperationsWireCanonicalJSON(card.Operations)
+	require.NoError(t, err)
+	require.Equal(t, string(wireOperations), payload["operationsPayloadCanonicalJson"])
+	require.Contains(t, string(wireOperations), `"note":"Complete wire field"`)
+	receipts := payload["selectedTopologyReceipts"].([]any)
+	require.Len(t, receipts, 1)
+	require.EqualValues(t, 10, receipts[0].(map[string]any)["sourceOperationNumber"])
+
+	changed := *card
+	changed.Operations = append([]entity.TechCardOperation(nil), card.Operations...)
+	changed.Operations[0].Note = sql.NullString{String: "Changed complete wire field", Valid: true}
+	_, changedDigest, err := savedFullAssemblyAOContent(row, revision, &changed)
+	require.NoError(t, err)
+	require.NotEqual(t, digest, changedDigest, "workflow-only AO fields are part of the complete digest")
+}
+
+func mapKeys(value map[string]any) []string {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func TestSavedAssemblyTopologyRejectsNegativeZero(t *testing.T) {
@@ -150,6 +203,11 @@ func TestSelectSavedAssemblySeamsDispatchesByCompositeMedia(t *testing.T) {
 
 	selected, err := selectSavedAssemblySeamsForCompositeMedia(
 		card, 10, entity.PatternProductCompositeSidecarV5MediaType)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+
+	selected, err = selectSavedAssemblySeamsForCompositeMedia(
+		card, 10, entity.PatternProductCompositeSidecarV7MediaType)
 	require.NoError(t, err)
 	require.Len(t, selected, 1)
 

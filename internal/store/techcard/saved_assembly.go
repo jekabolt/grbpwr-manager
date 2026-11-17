@@ -16,11 +16,17 @@ import (
 	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-const savedAssemblyTopologyDomainV1 = "pattern-import-dxf-phase-e-saved-row-server-topology/1"
+const (
+	savedAssemblyTopologyDomainV1      = "pattern-import-dxf-phase-e-saved-row-server-topology/1"
+	savedFullAssemblyAOContentDomainV1 = "saved-full-assembly-physical-ao-content/1"
+)
 
 var phaseEStructuralWorkTokensV1 = map[string]bool{
 	"join_lockstitch": true, "topstitch": true, "overlock_serge": true,
@@ -330,6 +336,97 @@ func savedAssemblyTopology(operations []entity.TechCardOperation, seams []entity
 	}
 	sum := sha256.Sum256(append([]byte(savedAssemblyTopologyDomainV1+"\x00"), canonical...))
 	return canonical, hex.EncodeToString(sum[:]), nil
+}
+
+// savedFullAssemblyAOContent reproduces the browser's complete AO-only fingerprint from server
+// authority. It deliberately excludes the stored outer sidecar, the full-graph payload and the
+// joined snapshot digest. The operation JSON comes from the same protobuf projection and
+// EmitUnpopulated option as the production admin gateway; hand-building it from entity fields would
+// silently omit workflow fields and make the browser/server contract diverge.
+func savedFullAssemblyAOContent(row entity.SavedPatternRowIdentity, serverAssemblyRevision string, card *entity.TechCard) ([]byte, string, error) {
+	if card == nil || row.TechCardID <= 0 || row.SavedRowRevision == 0 || row.CardLockVersion < 0 ||
+		row.URL == "" || row.SizeBytes <= 0 || row.SizeBytes > 1<<53-1 ||
+		!entity.ValidPatternSemanticSidecarSHA256(row.SHA256) ||
+		!strings.HasPrefix(serverAssemblyRevision, "asm:v1:") {
+		return nil, "", fmt.Errorf("incomplete Full Assembly authority: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+	operationsCanonical, err := savedAssemblyOperationsWireCanonicalJSON(card.Operations)
+	if err != nil {
+		return nil, "", err
+	}
+	receipts := make([]any, 0, len(card.Operations))
+	for i := range card.Operations {
+		op := card.Operations[i]
+		if len(op.SeamKeys) == 0 {
+			continue
+		}
+		if !op.OperationNumber.Valid || op.OperationNumber.Int32 <= 0 {
+			return nil, "", fmt.Errorf("seam-bearing operation at index %d has no positive number: %w",
+				i, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		number := int(op.OperationNumber.Int32)
+		selected, err := selectSavedAssemblySeams(card, number)
+		if err != nil {
+			return nil, "", err
+		}
+		canonical, digest, err := savedAssemblyTopology(card.Operations, selected, number)
+		if err != nil {
+			return nil, "", err
+		}
+		receipts = append(receipts, map[string]any{
+			"sourceOperationNumber": number,
+			"sha256":                digest,
+			"canonicalJson":         string(canonical),
+		})
+	}
+	if len(receipts) == 0 {
+		return nil, "", fmt.Errorf("full assembly has no seam-bearing operation: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+	payload := map[string]any{
+		"row": map[string]any{
+			"techCardId":      row.TechCardID,
+			"scopeKey":        row.ScopeKey,
+			"patternLineKey":  row.PatternLineKey,
+			"revision":        int(row.SavedRowRevision),
+			"cardLockVersion": row.CardLockVersion,
+			"url":             row.URL,
+			"sizeBytes":       int(row.SizeBytes),
+			"sha256":          row.SHA256,
+		},
+		"serverAssemblyRevision":         serverAssemblyRevision,
+		"operationsPayloadCanonicalJson": string(operationsCanonical),
+		"selectedTopologyReceipts":       receipts,
+	}
+	canonical, err := savedAssemblyCanonicalJSON(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("canonicalize complete Assembly Order content: %w", err)
+	}
+	sum := sha256.Sum256(append([]byte(savedFullAssemblyAOContentDomainV1+"\x00"), canonical...))
+	return canonical, hex.EncodeToString(sum[:]), nil
+}
+
+func savedAssemblyOperationsWireCanonicalJSON(operations []entity.TechCardOperation) ([]byte, error) {
+	wire, err := (protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: false}).Marshal(
+		&pb_admin.GetTechCardSavedAssemblySnapshotResponse{
+			Operations: dto.TechCardOperationsToPbForSavedAssembly(operations),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("marshal complete Assembly Order operations: %w", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(wire, &response); err != nil {
+		return nil, fmt.Errorf("decode complete Assembly Order operations wire JSON: %w", err)
+	}
+	operationsValue, ok := response["operations"]
+	if !ok {
+		return nil, fmt.Errorf("operations missing from production wire projection: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+	canonical, err := savedAssemblyCanonicalJSON(operationsValue)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize complete Assembly Order operations: %w", err)
+	}
+	return canonical, nil
 }
 
 // savedAssemblyCanonicalJSON mirrors the browser contract's sorted-key JSON.stringify encoder.

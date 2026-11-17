@@ -30,6 +30,11 @@ func TestPatternSemanticSidecarCompositeV4V5MigrationReplay(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migration.UpStatements)
 	require.NotEmpty(t, migration.DownStatements)
+	v6Body, err := os.ReadFile("sql/0475_pattern_semantic_sidecar_composite_v6_media.sql")
+	require.NoError(t, err)
+	v6Migration, err := sqlparse.ParseMigration(strings.NewReader(string(v6Body)))
+	require.NoError(t, err)
+	require.NotEmpty(t, v6Migration.UpStatements)
 
 	conn, err := testDB.Conn(ctx)
 	require.NoError(t, err)
@@ -41,8 +46,9 @@ func TestPatternSemanticSidecarCompositeV4V5MigrationReplay(t *testing.T) {
 			require.NoError(t, execErr, "%s statement %d", label, index+1)
 		}
 	}
-	// Always hand the rest of the integration package the current schema, even when an assertion
-	// after Down fails. Up is itself replay-safe, so this cleanup is harmless before Down as well.
+	// Always hand the rest of the integration package the latest schema, even when an assertion
+	// after Down fails. Both Up migrations are replay-safe; 0475 must run after this historical test
+	// restores 0474 or gorp would still record 0475 while the live CHECK admitted only through V5.
 	t.Cleanup(func() {
 		restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer restoreCancel()
@@ -59,6 +65,12 @@ func TestPatternSemanticSidecarCompositeV4V5MigrationReplay(t *testing.T) {
 		for index, statement := range migration.UpStatements {
 			if _, restoreErr = restoreConn.ExecContext(restoreCtx, statement); restoreErr != nil {
 				t.Errorf("restore 0474 Up statement %d: %v", index+1, restoreErr)
+				return
+			}
+		}
+		for index, statement := range v6Migration.UpStatements {
+			if _, restoreErr = restoreConn.ExecContext(restoreCtx, statement); restoreErr != nil {
+				t.Errorf("restore 0475 Up statement %d: %v", index+1, restoreErr)
 				return
 			}
 		}
