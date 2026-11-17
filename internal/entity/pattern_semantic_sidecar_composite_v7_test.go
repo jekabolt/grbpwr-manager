@@ -20,6 +20,11 @@ type compositeV7TestFixture struct {
 
 func buildCompositeV7TestFixture(t *testing.T) compositeV7TestFixture {
 	t.Helper()
+	return buildCompositeV7TestFixtureWithProfile(t, savedFullAssemblyPhysicalProfileV1)
+}
+
+func buildCompositeV7TestFixtureWithProfile(t *testing.T, profile string) compositeV7TestFixture {
+	t.Helper()
 	v6 := buildCompositeV6TestFixture(t)
 	expected := v6.Expected
 	expected.ExpectedPreviousSidecarSHA256 = PatternSemanticSidecarPayloadSHA256(v6.Payload)
@@ -45,6 +50,18 @@ func buildCompositeV7TestFixture(t *testing.T) compositeV7TestFixture {
 		"seams":                  []any{},
 		"compile":                map[string]any{},
 	}
+	if profile == savedFullAssemblyNativeDrawnSewingProfileV1 {
+		graph["source"] = map[string]any{
+			"sourceFileId": "source:1", "nativeDxfSha256": expected.Row.SHA256,
+			"sizeToken": "M", "handoffCanonicalSha256": strings.Repeat("6", 64),
+			"handoffSource": map[string]any{
+				"format": "DXF", "documentId": "document:1", "revision": "revision:1", "units": "mm",
+				"sourceSha256": strings.Repeat("5", 64), "exportSha256": expected.Row.SHA256,
+				"exporterId": savedFullAssemblyNativeDrawnSewingExporterV1, "exporterVersion": "1",
+				"provenanceKind": "untrusted-product", "corpusEntryId": nil,
+			},
+		}
+	}
 	graphCanonical, err := canonicalCompositeValue(graph)
 	require.NoError(t, err)
 	graphDigest := sha256.Sum256(append([]byte(dxfExactAssemblyGraphFingerprintDomainV1+"\x00"), graphCanonical...))
@@ -64,7 +81,7 @@ func buildCompositeV7TestFixture(t *testing.T) compositeV7TestFixture {
 		"schemaVersion": savedFullAssemblyPhysicalDocumentV1,
 		"mediaType":     savedFullAssemblyPhysicalMediaTypeV1,
 		"encoding":      patternSemanticSidecarEncoding,
-		"profile":       savedFullAssemblyPhysicalProfileV1,
+		"profile":       profile,
 		"bindings": map[string]any{
 			"row": row, "serverAssemblyRevision": expected.ServerAssemblyRevision,
 			"aoContentSha256": expected.AssemblyOrderContentSHA256,
@@ -131,6 +148,58 @@ func TestPatternProductCompositeSidecarV7RequiresServerAOContentDigest(t *testin
 	wrong := fixture.Expected
 	wrong.AssemblyOrderContentSHA256 = strings.Repeat("0", 64)
 	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(fixture.Payload, wrong))
+}
+
+func TestPatternProductCompositeSidecarV7NativeDrawnSewingProfile(t *testing.T) {
+	fixture := buildCompositeV7TestFixtureWithProfile(t, savedFullAssemblyNativeDrawnSewingProfileV1)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(fixture.Payload, fixture.Expected))
+	require.NoError(t, ValidateStoredPatternProductCompositeSidecarV7Exact(
+		fixture.Payload, fixture.Expected.Row, fixture.Expected.PatternVersion, fixture.Expected.PostSaveReceiptSHA256))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Transition(
+		fixture.Payload, PatternProductCompositeSidecarV6MediaType, fixture.V6))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Transition(
+		fixture.Payload, PatternProductCompositeSidecarV7MediaType, fixture.Payload))
+
+	wrongAO := fixture.Expected
+	wrongAO.AssemblyOrderContentSHA256 = strings.Repeat("0", 64)
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(fixture.Payload, wrongAO))
+	wrongCAS := fixture.Expected
+	wrongCAS.ExpectedPreviousSidecarSHA256 = strings.Repeat("0", 64)
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(fixture.Payload, wrongCAS))
+}
+
+func TestPatternProductCompositeSidecarV7NativeDrawnSewingRejectsSourceSubstitution(t *testing.T) {
+	fixture := buildCompositeV7TestFixtureWithProfile(t, savedFullAssemblyNativeDrawnSewingProfileV1)
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"unknown profile", func(p map[string]any) { p["profile"] = "saved-full-assembly-physical/unknown/1" }, "physical schema differs"},
+		{"writer exporter", func(p map[string]any) {
+			p["graph"].(map[string]any)["source"].(map[string]any)["handoffSource"].(map[string]any)["exporterId"] = "grbpwr.pattern-import.writeDxfDetailed"
+		}, "native drawn sewing handoff source differs"},
+		{"writer hash as export", func(p map[string]any) {
+			p["graph"].(map[string]any)["source"].(map[string]any)["handoffSource"].(map[string]any)["exportSha256"] = strings.Repeat("0", 64)
+		}, "native drawn sewing handoff source differs"},
+		{"different native bytes", func(p map[string]any) {
+			p["graph"].(map[string]any)["source"].(map[string]any)["nativeDxfSha256"] = strings.Repeat("0", 64)
+		}, "native drawn sewing saved DXF binding differs"},
+		{"trusted corpus substitution", func(p map[string]any) {
+			p["graph"].(map[string]any)["source"].(map[string]any)["handoffSource"].(map[string]any)["provenanceKind"] = "trusted-corpus"
+		}, "native drawn sewing handoff source differs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var physical, outer map[string]any
+			require.NoError(t, json.Unmarshal(fixture.Physical, &physical))
+			require.NoError(t, json.Unmarshal(fixture.Payload, &outer))
+			test.mutate(physical)
+			outer["components"].([]any)[1] = compositeV5TestComponent(
+				patternProductCompositeV7PhysicalKind, savedFullAssemblyPhysicalMediaTypeV1, canonicalV5TestJSON(t, physical))
+			require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Binding(
+				canonicalV5TestJSON(t, outer), fixture.Expected), test.want)
+		})
+	}
 }
 
 func TestPatternProductCompositeSidecarV7RequestValidationKeepsExistingWriteSurface(t *testing.T) {

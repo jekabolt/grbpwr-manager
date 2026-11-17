@@ -21,6 +21,8 @@ const (
 	dxfExactAssemblyGraphDocumentV1                 = "dxf-exact-assembly-graph/1"
 	dxfExactAssemblyGraphFingerprintDomainV1        = "dxf-exact-assembly-graph-fingerprint/1"
 	savedFullAssemblyPhysicalProfileV1              = "saved-full-assembly-physical/sewing-surface-zero-allowance/1"
+	savedFullAssemblyNativeDrawnSewingProfileV1     = "saved-full-assembly-physical/native-drawn-sewing/1"
+	savedFullAssemblyNativeDrawnSewingExporterV1    = "grbpwr.saved-native-drawn-sewing"
 	savedFullAssemblyPhysicalReplayProfileV1        = "garment-material-contact-replay/1"
 	savedFullAssemblyPhysicalInitializationMaxBytes = 256 * 1024
 )
@@ -110,10 +112,11 @@ func validateSavedFullAssemblyPhysicalV1(
 	document, ok := exactJSONObject(graph,
 		"schemaVersion", "mediaType", "encoding", "profile", "bindings", "graph",
 		"graphCanonicalSha256", "compileInputSha256", "physicalInitialization", "savedSourceReplay", "claims")
-	if !ok || document["schemaVersion"] != savedFullAssemblyPhysicalDocumentV1 ||
+	profile, profileOK := document["profile"].(string)
+	if !ok || !profileOK || document["schemaVersion"] != savedFullAssemblyPhysicalDocumentV1 ||
 		document["mediaType"] != savedFullAssemblyPhysicalMediaTypeV1 ||
 		document["encoding"] != patternSemanticSidecarEncoding ||
-		document["profile"] != savedFullAssemblyPhysicalProfileV1 {
+		(profile != savedFullAssemblyPhysicalProfileV1 && profile != savedFullAssemblyNativeDrawnSewingProfileV1) {
 		return fmt.Errorf("Full Assembly physical schema differs")
 	}
 	canonical, err := canonicalJSONWithJSNumbers(payload)
@@ -149,6 +152,11 @@ func validateSavedFullAssemblyPhysicalV1(
 	graphRevision, graphRevisionOK := graphDocument["serverAssemblyRevision"].(string)
 	if !graphRowOK || !graphRevisionOK || !exactCompositeRow(graphRow, row) || graphRevision != serverRevision {
 		return fmt.Errorf("exact Assembly graph authority differs")
+	}
+	if profile == savedFullAssemblyNativeDrawnSewingProfileV1 {
+		if err := validateSavedNativeDrawnSewingSourceV1(graphDocument["source"], row); err != nil {
+			return err
+		}
 	}
 	graphSHA, graphSHAOK := document["graphCanonicalSha256"].(string)
 	compileSHA, compileSHAOK := document["compileInputSha256"].(string)
@@ -193,6 +201,27 @@ func validateSavedFullAssemblyPhysicalV1(
 	}
 	if !validSavedFullAssemblyPhysicalClaims(document["claims"]) {
 		return fmt.Errorf("Full Assembly physical claims differ")
+	}
+	return nil
+}
+
+// Native drawn sewing retains the original saved DXF as export authority. Canonical writer
+// reconstruction is separate client evidence and must not replace this digest. This checks the
+// persisted envelope only; it does not mint native contour or runtime authority on the server.
+func validateSavedNativeDrawnSewingSourceV1(value any, row SavedPatternRowIdentity) error {
+	source, ok := exactJSONObject(value,
+		"sourceFileId", "nativeDxfSha256", "sizeToken", "handoffCanonicalSha256", "handoffSource")
+	if !ok || source["nativeDxfSha256"] != row.SHA256 {
+		return fmt.Errorf("native drawn sewing saved DXF binding differs")
+	}
+	handoff, ok := exactJSONObject(source["handoffSource"],
+		"format", "documentId", "revision", "units", "sourceSha256", "exportSha256",
+		"exporterId", "exporterVersion", "provenanceKind", "corpusEntryId")
+	if !ok || handoff["format"] != "DXF" || handoff["units"] != "mm" ||
+		handoff["exporterId"] != savedFullAssemblyNativeDrawnSewingExporterV1 ||
+		handoff["exportSha256"] != row.SHA256 || handoff["provenanceKind"] != "untrusted-product" ||
+		handoff["corpusEntryId"] != nil {
+		return fmt.Errorf("native drawn sewing handoff source differs")
 	}
 	return nil
 }
