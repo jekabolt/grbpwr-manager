@@ -93,6 +93,10 @@ func validateMannequinArrangementV1(payload []byte, outerRow SavedPatternRowIden
 	if len(payload) == 0 || len(payload) > PatternSemanticSidecarMaxBytes {
 		return fmt.Errorf("arrangement is outside the 4 MiB production bound")
 	}
+	// Go strings cannot preserve lone UTF-16 surrogate code units: encoding/json decodes their JSON
+	// escapes as U+FFFD. The exact canonical-byte comparison below deliberately fails closed. The
+	// frontend arrangement codec must reject lone surrogates before Composite V6 can claim complete
+	// cross-runtime canonical parity; accepting and silently rewriting them here would corrupt bytes.
 	graph, err := decodeJSONGraph(payload)
 	if err != nil {
 		return fmt.Errorf("decode arrangement: %w", err)

@@ -24,9 +24,15 @@ type patternSemanticSidecarRow struct {
 }
 
 type priorPatternSemanticSidecar struct {
-	SHA256    string `db:"sidecar_sha256"`
-	MediaType string `db:"media_type"`
-	Payload   []byte `db:"payload"`
+	CardLockVersion       int    `db:"card_lock_version"`
+	SavedRowRevision      uint32 `db:"saved_row_revision"`
+	DxfSHA256             string `db:"dxf_sha256"`
+	PatternVersion        int    `db:"pattern_version"`
+	SHA256                string `db:"sidecar_sha256"`
+	MediaType             string `db:"media_type"`
+	ByteLength            int    `db:"byte_length"`
+	Payload               []byte `db:"payload"`
+	PostSaveReceiptSHA256 string `db:"post_save_receipt_sha256"`
 }
 
 // PutTechCardPatternSemanticSidecar atomically attaches already-built G4F4 bytes to the exact DXF
@@ -88,7 +94,9 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 		var prior *priorPatternSemanticSidecar
 		if in.ExpectedPreviousSidecarSHA256 != nil {
 			storedPrior, priorErr := storeutil.QueryNamedOne[priorPatternSemanticSidecar](ctx, db,
-				`SELECT sidecar_sha256, media_type, payload FROM tech_card_pattern_semantic_sidecar WHERE pattern_row_id = :id`,
+				`SELECT card_lock_version, saved_row_revision, dxf_sha256, pattern_version,
+				        sidecar_sha256, media_type, byte_length, payload, post_save_receipt_sha256
+				 FROM tech_card_pattern_semantic_sidecar WHERE pattern_row_id = :id FOR UPDATE`,
 				map[string]any{"id": pattern.Id})
 			expected := *in.ExpectedPreviousSidecarSHA256
 			switch {
@@ -130,13 +138,14 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("pattern line %s has no exact saved-row scope/size: %w",
 					in.PatternLineKey, entity.ErrTechCardPatternSidecarBindingMoved)
 			}
+			currentSavedRow := entity.SavedPatternRowIdentity{
+				TechCardID: in.TechCardId, ScopeKey: scope.Key, PatternLineKey: in.PatternLineKey,
+				SavedRowRevision: pattern.SavedRowRevision, CardLockVersion: cardLockVersion,
+				URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256,
+			}
 			if err := validatePatternProductCompositeSidecarBinding(in.MediaType, in.Payload,
 				entity.PatternProductCompositeSidecarExpected{
-					Row: entity.SavedPatternRowIdentity{
-						TechCardID: in.TechCardId, ScopeKey: scope.Key, PatternLineKey: in.PatternLineKey,
-						SavedRowRevision: pattern.SavedRowRevision, CardLockVersion: cardLockVersion,
-						URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256,
-					},
+					Row:            currentSavedRow,
 					PatternVersion: pattern.Version, PostSaveReceiptSHA256: in.ExpectedPostSaveReceiptSHA256,
 					ExpectedPreviousSidecarSHA256: *in.ExpectedPreviousSidecarSHA256,
 					ServerAssemblyRevision:        clock.Token(),
@@ -154,6 +163,9 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				if prior == nil {
 					return entity.NewFieldViolation("semantic_sidecar", "composite_v5_prior_required", "", "persist and read back Composite V4 before writing Composite V5")
 				}
+				if err := validatePriorCompositeSidecarForTransition(*prior, currentSavedRow, pattern.Version); err != nil {
+					return err
+				}
 				if err := entity.ValidatePatternProductCompositeSidecarV5Transition(in.Payload, prior.MediaType, prior.Payload); err != nil {
 					return err
 				}
@@ -161,6 +173,9 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 			if in.MediaType == entity.PatternProductCompositeSidecarV6MediaType {
 				if prior == nil {
 					return entity.NewFieldViolation("semantic_sidecar", "composite_v6_prior_required", "", "persist and read back Composite V5 before writing Composite V6")
+				}
+				if err := validatePriorCompositeSidecarForTransition(*prior, currentSavedRow, pattern.Version); err != nil {
+					return err
 				}
 				if err := entity.ValidatePatternProductCompositeSidecarV6Transition(in.Payload, prior.MediaType, prior.Payload); err != nil {
 					return err
@@ -341,6 +356,36 @@ func validateStoredPatternProductCompositeSidecarExact(mediaType string, payload
 	default:
 		return entity.NewFieldViolation("media_type", "unsupported", mediaType, "send a supported composite sidecar media type")
 	}
+}
+
+// validatePriorCompositeSidecarForTransition re-proves the current stored carrier before its bytes
+// become transition authority. The CAS digest alone is not enough: an out-of-band metadata or blob
+// corruption must fail closed instead of being preserved into the next V5/V6 carrier.
+func validatePriorCompositeSidecarForTransition(prior priorPatternSemanticSidecar, currentRow entity.SavedPatternRowIdentity, currentPatternVersion int) error {
+	corrupt := func(reason string) error {
+		return fmt.Errorf("prior pattern semantic sidecar %s: %w", reason, entity.ErrTechCardPatternSidecarCorrupt)
+	}
+	if !isPatternProductCompositeSidecarMediaType(prior.MediaType) ||
+		!entity.ValidPatternSemanticSidecarSHA256(prior.SHA256) ||
+		!entity.ValidPatternSemanticSidecarSHA256(prior.DxfSHA256) ||
+		!entity.ValidPatternSemanticSidecarSHA256(prior.PostSaveReceiptSHA256) {
+		return corrupt("has invalid media or digest metadata")
+	}
+	if prior.ByteLength <= 0 || prior.ByteLength > entity.PatternSemanticSidecarMaxBytes ||
+		prior.ByteLength != len(prior.Payload) || entity.PatternSemanticSidecarPayloadSHA256(prior.Payload) != prior.SHA256 {
+		return corrupt("payload length or digest mismatch")
+	}
+	if prior.SavedRowRevision == 0 || prior.SavedRowRevision != currentRow.SavedRowRevision ||
+		prior.DxfSHA256 != currentRow.SHA256 || prior.PatternVersion != currentPatternVersion {
+		return corrupt("does not match the current saved pattern row")
+	}
+	priorRow := currentRow
+	priorRow.CardLockVersion = prior.CardLockVersion
+	if err := validateStoredPatternProductCompositeSidecarExact(
+		prior.MediaType, prior.Payload, priorRow, prior.PatternVersion, prior.PostSaveReceiptSHA256); err != nil {
+		return corrupt("exact stored-row or nested component validation failed")
+	}
+	return nil
 }
 
 func verifyPatternSemanticSidecarRow(row patternSemanticSidecarRow) error {

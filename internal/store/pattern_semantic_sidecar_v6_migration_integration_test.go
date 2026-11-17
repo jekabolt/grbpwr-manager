@@ -147,6 +147,17 @@ func TestPatternSemanticSidecarCompositeV6MigrationReplay(t *testing.T) {
 	require.Error(t, insertSidecar(patternIDs[1], entity.PatternProductCompositeSidecarV6MediaType, "rejected-v6"),
 		"restored 0474 CHECK must reject Composite V6")
 
+	// Simulate the half-applied state left by the superseded two-DDL rollback implementation. Down
+	// must first restore the permissive V6 CHECK, then atomically narrow it; it may never leave the
+	// table unconstrained when replayed.
+	_, err = conn.ExecContext(ctx, `ALTER TABLE tech_card_pattern_semantic_sidecar
+		DROP CHECK chk_pattern_semantic_sidecar_media_type`)
+	require.NoError(t, err)
+	execStatements("0475 Down recovers absent CHECK", migration.DownStatements)
+	require.Equal(t, 1, countMedia(entity.PatternProductCompositeSidecarV5MediaType))
+	require.Error(t, insertSidecar(patternIDs[1], entity.PatternProductCompositeSidecarV6MediaType, "rejected-after-recovery"),
+		"half-apply recovery must finish with the V5 CHECK installed")
+
 	execStatements("0475 Up after rollback", migration.UpStatements)
 	execStatements("0475 Up replay after rollback", migration.UpStatements)
 	require.NoError(t, insertSidecar(patternIDs[1], entity.PatternProductCompositeSidecarV6MediaType, "v6-readmitted"))

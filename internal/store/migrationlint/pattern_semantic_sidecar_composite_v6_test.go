@@ -24,7 +24,11 @@ func TestPatternSemanticSidecarCompositeV6MigrationWidensOnlyTheMediaCheck(t *te
 	}
 	assertMediaAllowlist(t, up, append(append([]string(nil), wantV5...),
 		"application/vnd.grbpwr.pattern-dxf-product-composite.v6+json"))
-	assertMediaAllowlist(t, down, wantV5)
+	narrowingAt := strings.Index(down, "SET @composite_v6_rows")
+	if narrowingAt < 0 {
+		t.Fatal("rollback has no V6-row refusal gate")
+	}
+	assertMediaAllowlist(t, down[narrowingAt:], wantV5)
 
 	for _, required := range []string{
 		"information_schema.TABLE_CONSTRAINTS",
@@ -55,7 +59,12 @@ func TestPatternSemanticSidecarCompositeV6RollbackFailsClosedAndPreservesV5(t *t
 	}
 	refusal := strings.Index(down, "SIGNAL SQLSTATE ''45000''")
 	dropCheck := strings.Index(down, "DROP CHECK chk_pattern_semantic_sidecar_media_type")
-	addOldCheck := strings.Index(down, "ADD CONSTRAINT chk_pattern_semantic_sidecar_media_type CHECK")
+	addOldCheck := -1
+	if dropCheck >= 0 {
+		if relative := strings.Index(down[dropCheck:], "ADD CONSTRAINT chk_pattern_semantic_sidecar_media_type CHECK"); relative >= 0 {
+			addOldCheck = dropCheck + relative
+		}
+	}
 	if refusal < 0 || dropCheck < 0 || addOldCheck < 0 || refusal >= dropCheck || dropCheck >= addOldCheck {
 		t.Fatalf("rollback refusal/drop/add order is unsafe: refusal=%d drop=%d add=%d", refusal, dropCheck, addOldCheck)
 	}
@@ -66,7 +75,24 @@ func TestPatternSemanticSidecarCompositeV6RollbackFailsClosedAndPreservesV5(t *t
 		t.Error("rollback must not silently destroy Composite V6 arrangement state")
 	}
 	if got := strings.Count(down, "information_schema.TABLE_CONSTRAINTS"); got != 2 {
-		t.Errorf("rollback must guard both DROP and ADD for partial retry; got %d guards", got)
+		t.Errorf("rollback must audit recovery and atomic narrowing state; got %d guards", got)
+	}
+	atomicNarrowing := "DROP CHECK chk_pattern_semantic_sidecar_media_type, ADD CONSTRAINT chk_pattern_semantic_sidecar_media_type CHECK"
+	if !strings.Contains(down, atomicNarrowing) {
+		t.Error("rollback must replace the V6 CHECK with the V5 CHECK in one atomic ALTER")
+	}
+	standaloneDrop := "DROP CHECK chk_pattern_semantic_sidecar_media_type',"
+	if strings.Contains(down, standaloneDrop) {
+		t.Error("rollback must never commit a standalone DROP CHECK before adding its replacement")
+	}
+	recovery := strings.Index(down, "@has_media_check = 0")
+	refusalGate := strings.Index(down, "SET @composite_v6_rows")
+	if recovery < 0 || refusalGate < 0 || recovery >= refusalGate {
+		t.Fatalf("rollback must restore an absent V6 CHECK before counting/refusing rows: recovery=%d refusal=%d", recovery, refusalGate)
+	}
+	recoverySection := down[recovery:refusalGate]
+	if !strings.Contains(recoverySection, "pattern-dxf-product-composite.v6+json") {
+		t.Error("half-applied rollback recovery must restore the permissive V6 CHECK before narrowing")
 	}
 }
 

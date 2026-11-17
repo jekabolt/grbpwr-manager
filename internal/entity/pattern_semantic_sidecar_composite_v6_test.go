@@ -205,6 +205,22 @@ func TestPatternProductCompositeSidecarV6ArrangementUsesFrontendJSONOrder(t *tes
 	require.Equal(t, fixture.Arrangement, []byte(base64RoundTrip(t, fixture.Arrangement)))
 }
 
+func TestPatternProductCompositeSidecarV6FailsClosedOnLoneUTF16Surrogate(t *testing.T) {
+	fixture := buildCompositeV6TestFixture(t)
+	// JSON.parse/JSON.stringify can preserve this lone UTF-16 code unit in JavaScript. Go cannot:
+	// encoding/json replaces it with U+FFFD, so the backend must reject until the frontend codec
+	// explicitly forbids lone surrogates and both runtimes share the same string domain.
+	surrogateArrangement := bytes.Replace(
+		fixture.Arrangement, []byte("pose:a-rest"), []byte(`pose:\ud800`), 1)
+	require.NotEqual(t, fixture.Arrangement, surrogateArrangement)
+	var outer map[string]any
+	require.NoError(t, json.Unmarshal(fixture.Payload, &outer))
+	outer["components"].([]any)[1] = compositeV5TestComponent(
+		"cad-mannequin-arrangement-v1", mannequinArrangementMediaTypeV1, surrogateArrangement)
+	payload := canonicalV5TestJSON(t, outer)
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Binding(payload, fixture.Expected))
+}
+
 func base64RoundTrip(t *testing.T, payload []byte) string {
 	t.Helper()
 	encoded := base64.StdEncoding.EncodeToString(payload)

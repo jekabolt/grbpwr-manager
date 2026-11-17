@@ -119,10 +119,250 @@ func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *t
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV6Transition(")
 	require.Contains(t, put, "composite_v5_prior_required")
 	require.Contains(t, put, "composite_v6_prior_required")
+	priorQuery := strings.Index(put, "SELECT card_lock_version, saved_row_revision, dxf_sha256, pattern_version,")
+	firstPriorValidation := strings.Index(put, "validatePriorCompositeSidecarForTransition(")
+	v5Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV5Transition(")
+	lastPriorValidation := strings.LastIndex(put, "validatePriorCompositeSidecarForTransition(")
+	v6Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV6Transition(")
+	require.GreaterOrEqual(t, priorQuery, 0, "the locked prior row query must load all integrity metadata")
+	require.Contains(t, put[priorQuery:], "WHERE pattern_row_id = :id FOR UPDATE")
+	require.Greater(t, firstPriorValidation, priorQuery)
+	require.Greater(t, v5Transition, firstPriorValidation, "V5 must consume only a revalidated prior carrier")
+	require.Greater(t, lastPriorValidation, v5Transition)
+	require.Greater(t, v6Transition, lastPriorValidation, "V6 must consume only a revalidated prior carrier")
 
 	read := funcBody(t, "pattern_semantic_sidecar.go", "func readPatternSemanticSidecar")
 	require.Contains(t, read, "isPatternProductCompositeSidecarMediaType(row.MediaType)")
 	require.Contains(t, read, "verifyStoredCompositePatternSemanticSidecar(row, scope)")
+}
+
+type compositePriorTestFixture struct {
+	Prior          priorPatternSemanticSidecar
+	Row            entity.SavedPatternRowIdentity
+	PatternVersion int
+	Bindings       map[string]any
+}
+
+func loadCompositeV5PriorTestFixture(t *testing.T) compositePriorTestFixture {
+	t.Helper()
+	var fixture struct {
+		Row struct {
+			TechCardID      int    `json:"techCardId"`
+			ScopeKey        string `json:"scopeKey"`
+			PatternLineKey  string `json:"patternLineKey"`
+			Revision        uint32 `json:"revision"`
+			CardLockVersion int    `json:"cardLockVersion"`
+			URL             string `json:"url"`
+			SizeBytes       int64  `json:"sizeBytes"`
+			SHA256          string `json:"sha256"`
+		} `json:"row"`
+		PatternVersion        int    `json:"patternVersion"`
+		PostSaveReceiptSHA256 string `json:"postSaveReceiptSha256"`
+		OuterBase64           string `json:"outerBase64"`
+		OuterSHA256           string `json:"outerSha256"`
+		OuterByteLength       int    `json:"outerByteLength"`
+	}
+	raw, err := os.ReadFile("../../entity/testdata/pattern_product_composite_v5_ts_kat.json")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &fixture))
+	payload, err := base64.StdEncoding.Strict().DecodeString(fixture.OuterBase64)
+	require.NoError(t, err)
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(payload, &document))
+	row := entity.SavedPatternRowIdentity{
+		TechCardID: fixture.Row.TechCardID, ScopeKey: fixture.Row.ScopeKey,
+		PatternLineKey: fixture.Row.PatternLineKey, SavedRowRevision: fixture.Row.Revision,
+		CardLockVersion: fixture.Row.CardLockVersion, URL: fixture.Row.URL,
+		SizeBytes: fixture.Row.SizeBytes, SHA256: fixture.Row.SHA256,
+	}
+	return compositePriorTestFixture{
+		Prior: priorPatternSemanticSidecar{
+			CardLockVersion: fixture.Row.CardLockVersion, SavedRowRevision: fixture.Row.Revision,
+			DxfSHA256: fixture.Row.SHA256, PatternVersion: fixture.PatternVersion,
+			SHA256: fixture.OuterSHA256, MediaType: entity.PatternProductCompositeSidecarV5MediaType,
+			ByteLength: fixture.OuterByteLength, Payload: payload,
+			PostSaveReceiptSHA256: fixture.PostSaveReceiptSHA256,
+		},
+		Row: row, PatternVersion: fixture.PatternVersion,
+		Bindings: document["bindings"].(map[string]any),
+	}
+}
+
+func TestValidatePriorCompositeSidecarForTransitionRejectsCorruptV5MetadataAndPayload(t *testing.T) {
+	fixture := loadCompositeV5PriorTestFixture(t)
+	require.NoError(t, validatePriorCompositeSidecarForTransition(fixture.Prior, fixture.Row, fixture.PatternVersion))
+
+	tests := []struct {
+		name   string
+		mutate func(*priorPatternSemanticSidecar)
+	}{
+		{name: "stored byte length", mutate: func(prior *priorPatternSemanticSidecar) { prior.ByteLength++ }},
+		{name: "stored digest", mutate: func(prior *priorPatternSemanticSidecar) { prior.SHA256 = strings.Repeat("0", 64) }},
+		{name: "payload bytes", mutate: func(prior *priorPatternSemanticSidecar) { prior.Payload = append(prior.Payload, '\n') }},
+		{name: "saved row metadata", mutate: func(prior *priorPatternSemanticSidecar) { prior.SavedRowRevision++ }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prior := fixture.Prior
+			prior.Payload = append([]byte(nil), prior.Payload...)
+			tt.mutate(&prior)
+			require.ErrorIs(t,
+				validatePriorCompositeSidecarForTransition(prior, fixture.Row, fixture.PatternVersion),
+				entity.ErrTechCardPatternSidecarCorrupt)
+		})
+	}
+}
+
+type mannequinArrangementTestDocument struct {
+	SchemaVersion string `json:"schemaVersion"`
+	MediaType     string `json:"mediaType"`
+	Encoding      string `json:"encoding"`
+	Bindings      struct {
+		Card struct {
+			TechCardID      int `json:"techCardId"`
+			CardLockVersion int `json:"cardLockVersion"`
+		} `json:"card"`
+		Scope struct {
+			ScopeKey       string `json:"scopeKey"`
+			PatternLineKey string `json:"patternLineKey"`
+			SizeToken      string `json:"sizeToken"`
+		} `json:"scope"`
+		SavedRow struct {
+			Revision  uint32 `json:"revision"`
+			DxfSHA256 string `json:"dxfSha256"`
+		} `json:"savedRow"`
+		Source struct {
+			CatalogCanonicalSHA256       string `json:"catalogCanonicalSha256"`
+			SizeSelectionCanonicalSHA256 string `json:"sizeSelectionCanonicalSha256"`
+		} `json:"source"`
+		Mannequin struct {
+			BaseModelID            int    `json:"baseModelId"`
+			ModelFormRevisionKeyV1 string `json:"modelFormRevisionKeyV1"`
+			PoseBinding            struct {
+				CanonicalKey string `json:"canonicalKey"`
+			} `json:"poseBinding"`
+		} `json:"mannequin"`
+	} `json:"bindings"`
+	Pieces []struct {
+		PieceKey     string `json:"pieceKey"`
+		ScopeKey     string `json:"scopeKey"`
+		PieceID      string `json:"pieceId"`
+		PieceLineKey string `json:"pieceLineKey"`
+		Transform    struct {
+			OffsetM     [3]float64 `json:"offsetM"`
+			RotationRad float64    `json:"rotationRad"`
+		} `json:"transform"`
+	} `json:"pieces"`
+	Claims struct {
+		PresentationOnly       bool `json:"presentationOnly"`
+		DxfAuthority           bool `json:"dxfAuthority"`
+		AssemblyOrderAuthority bool `json:"assemblyOrderAuthority"`
+		ClothAuthority         bool `json:"clothAuthority"`
+		ScalePersisted         bool `json:"scalePersisted"`
+	} `json:"claims"`
+}
+
+func buildCompositeV6PriorTestFixture(t *testing.T) compositePriorTestFixture {
+	t.Helper()
+	fixture := loadCompositeV5PriorTestFixture(t)
+	arrangement := mannequinArrangementTestDocument{
+		SchemaVersion: "grbpwr.cad-mannequin-arrangement/v1",
+		MediaType:     "application/vnd.grbpwr.cad-mannequin-arrangement.v1+json",
+		Encoding:      "canonical-json-utf8",
+	}
+	arrangement.Bindings.Card.TechCardID = fixture.Row.TechCardID
+	arrangement.Bindings.Card.CardLockVersion = fixture.Row.CardLockVersion
+	arrangement.Bindings.Scope.ScopeKey = fixture.Row.ScopeKey
+	arrangement.Bindings.Scope.PatternLineKey = fixture.Row.PatternLineKey
+	arrangement.Bindings.Scope.SizeToken = "M"
+	arrangement.Bindings.SavedRow.Revision = fixture.Row.SavedRowRevision
+	arrangement.Bindings.SavedRow.DxfSHA256 = fixture.Row.SHA256
+	arrangement.Bindings.Source.CatalogCanonicalSHA256 = strings.Repeat("c", 64)
+	arrangement.Bindings.Source.SizeSelectionCanonicalSHA256 = strings.Repeat("d", 64)
+	arrangement.Bindings.Mannequin.BaseModelID = 1
+	arrangement.Bindings.Mannequin.ModelFormRevisionKeyV1 = "model:1"
+	arrangement.Bindings.Mannequin.PoseBinding.CanonicalKey = "pose:a-rest"
+	arrangement.Pieces = make([]struct {
+		PieceKey     string `json:"pieceKey"`
+		ScopeKey     string `json:"scopeKey"`
+		PieceID      string `json:"pieceId"`
+		PieceLineKey string `json:"pieceLineKey"`
+		Transform    struct {
+			OffsetM     [3]float64 `json:"offsetM"`
+			RotationRad float64    `json:"rotationRad"`
+		} `json:"transform"`
+	}, 1)
+	arrangement.Pieces[0].PieceKey = "piece:front"
+	arrangement.Pieces[0].ScopeKey = fixture.Row.ScopeKey
+	arrangement.Pieces[0].PieceID = "front"
+	arrangement.Pieces[0].PieceLineKey = "piece:front"
+	arrangement.Claims.PresentationOnly = true
+	arrangementBytes, err := json.Marshal(arrangement)
+	require.NoError(t, err)
+	component := func(kind, media string, payload []byte) map[string]any {
+		return map[string]any{
+			"kind": kind, "mediaType": media,
+			"sha256":     entity.PatternSemanticSidecarPayloadSHA256(payload),
+			"byteLength": len(payload), "base64": base64.StdEncoding.EncodeToString(payload),
+		}
+	}
+	outer := map[string]any{
+		"schemaVersion": "pattern-import-dxf-product-composite-sidecar-document/6",
+		"mediaType":     entity.PatternProductCompositeSidecarV6MediaType, "encoding": "canonical-json-utf8",
+		"bindings": fixture.Bindings,
+		"writeCas": map[string]any{"expectedPreviousSidecarSha256": fixture.Prior.SHA256},
+		"components": []any{
+			component("composite-v5", entity.PatternProductCompositeSidecarV5MediaType, fixture.Prior.Payload),
+			component("cad-mannequin-arrangement-v1", "application/vnd.grbpwr.cad-mannequin-arrangement.v1+json", arrangementBytes),
+		},
+		"claims": map[string]any{
+			"nestedCompositeV5BytesPreservedExactly":         true,
+			"mannequinArrangementCanonicalAndDigestVerified": true,
+			"exactCardScopeAndSavedRowBound":                 true, "canonicalComponentOrderAndBase64Required": true,
+			"previousSidecarCasExpectationBound": true, "mannequinArrangementPresentationOnly": true,
+			"dxfAuthorityAdded": false, "assemblyOrderAuthorityAdded": false, "clothAuthorityAdded": false,
+			"persistenceIntegrated": false, "productionReady": false,
+		},
+	}
+	payload, err := json.Marshal(outer)
+	require.NoError(t, err)
+	fixture.Prior.MediaType = entity.PatternProductCompositeSidecarV6MediaType
+	fixture.Prior.Payload = payload
+	fixture.Prior.ByteLength = len(payload)
+	fixture.Prior.SHA256 = entity.PatternSemanticSidecarPayloadSHA256(payload)
+	return fixture
+}
+
+func TestValidatePriorCompositeSidecarForTransitionRejectsCorruptV6PayloadAndArrangement(t *testing.T) {
+	fixture := buildCompositeV6PriorTestFixture(t)
+	require.NoError(t, validatePriorCompositeSidecarForTransition(fixture.Prior, fixture.Row, fixture.PatternVersion))
+
+	outerCorrupt := fixture.Prior
+	outerCorrupt.Payload = append([]byte(nil), outerCorrupt.Payload...)
+	outerCorrupt.Payload[0] = '['
+	outerCorrupt.SHA256 = entity.PatternSemanticSidecarPayloadSHA256(outerCorrupt.Payload)
+	require.ErrorIs(t,
+		validatePriorCompositeSidecarForTransition(outerCorrupt, fixture.Row, fixture.PatternVersion),
+		entity.ErrTechCardPatternSidecarCorrupt)
+
+	var outer map[string]any
+	require.NoError(t, json.Unmarshal(fixture.Prior.Payload, &outer))
+	arrangementComponent := outer["components"].([]any)[1].(map[string]any)
+	arrangementBytes, err := base64.StdEncoding.Strict().DecodeString(arrangementComponent["base64"].(string))
+	require.NoError(t, err)
+	arrangementBytes = append([]byte{' '}, arrangementBytes...)
+	arrangementComponent["base64"] = base64.StdEncoding.EncodeToString(arrangementBytes)
+	arrangementComponent["byteLength"] = len(arrangementBytes)
+	arrangementComponent["sha256"] = entity.PatternSemanticSidecarPayloadSHA256(arrangementBytes)
+	arrangementCorruptPayload, err := json.Marshal(outer)
+	require.NoError(t, err)
+	arrangementCorrupt := fixture.Prior
+	arrangementCorrupt.Payload = arrangementCorruptPayload
+	arrangementCorrupt.ByteLength = len(arrangementCorruptPayload)
+	arrangementCorrupt.SHA256 = entity.PatternSemanticSidecarPayloadSHA256(arrangementCorruptPayload)
+	require.ErrorIs(t,
+		validatePriorCompositeSidecarForTransition(arrangementCorrupt, fixture.Row, fixture.PatternVersion),
+		entity.ErrTechCardPatternSidecarCorrupt)
 }
 
 func TestVerifyPatternSemanticSidecarRow(t *testing.T) {
