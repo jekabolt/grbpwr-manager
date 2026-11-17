@@ -175,6 +175,9 @@ func TestPatternProductCompositeSidecarV7NativeDrawnSewingRejectsSourceSubstitut
 		mutate func(map[string]any)
 		want   string
 	}{
+		{"native exporter relabeled zero allowance", func(p map[string]any) {
+			p["profile"] = savedFullAssemblyPhysicalProfileV1
+		}, "native drawn sewing exporter requires its physical profile"},
 		{"unknown profile", func(p map[string]any) { p["profile"] = "saved-full-assembly-physical/unknown/1" }, "physical schema differs"},
 		{"writer exporter", func(p map[string]any) {
 			p["graph"].(map[string]any)["source"].(map[string]any)["handoffSource"].(map[string]any)["exporterId"] = "grbpwr.pattern-import.writeDxfDetailed"
