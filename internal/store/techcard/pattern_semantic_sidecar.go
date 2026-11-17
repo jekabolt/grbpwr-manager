@@ -158,6 +158,14 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 					return err
 				}
 			}
+			if in.MediaType == entity.PatternProductCompositeSidecarV6MediaType {
+				if prior == nil {
+					return entity.NewFieldViolation("semantic_sidecar", "composite_v6_prior_required", "", "persist and read back Composite V5 before writing Composite V6")
+				}
+				if err := entity.ValidatePatternProductCompositeSidecarV6Transition(in.Payload, prior.MediaType, prior.Payload); err != nil {
+					return err
+				}
+			}
 		}
 		if err := storeutil.ExecNamed(ctx, db, `
 			INSERT INTO tech_card_pattern_semantic_sidecar
@@ -285,7 +293,8 @@ func verifyStoredCompositePatternSemanticSidecar(row patternSemanticSidecarRow, 
 func isPatternProductCompositeSidecarMediaType(mediaType string) bool {
 	return mediaType == entity.PatternProductCompositeSidecarMediaType ||
 		mediaType == entity.PatternProductCompositeSidecarV4MediaType ||
-		mediaType == entity.PatternProductCompositeSidecarV5MediaType
+		mediaType == entity.PatternProductCompositeSidecarV5MediaType ||
+		mediaType == entity.PatternProductCompositeSidecarV6MediaType
 }
 
 func selectSavedAssemblySeamsForCompositeMedia(card *entity.TechCard, selectedOperationNumber int, mediaType string) ([]entity.TechCardSeam, error) {
@@ -295,6 +304,8 @@ func selectSavedAssemblySeamsForCompositeMedia(card *entity.TechCard, selectedOp
 	case entity.PatternProductCompositeSidecarV4MediaType:
 		return selectSavedAssemblySeams(card, selectedOperationNumber)
 	case entity.PatternProductCompositeSidecarV5MediaType:
+		return selectSavedAssemblySeams(card, selectedOperationNumber)
+	case entity.PatternProductCompositeSidecarV6MediaType:
 		return selectSavedAssemblySeams(card, selectedOperationNumber)
 	default:
 		return nil, fmt.Errorf("unsupported composite sidecar media type %q: %w",
@@ -310,6 +321,8 @@ func validatePatternProductCompositeSidecarBinding(mediaType string, payload []b
 		return entity.ValidatePatternProductCompositeSidecarV4Binding(payload, expected)
 	case entity.PatternProductCompositeSidecarV5MediaType:
 		return entity.ValidatePatternProductCompositeSidecarV5Binding(payload, expected)
+	case entity.PatternProductCompositeSidecarV6MediaType:
+		return entity.ValidatePatternProductCompositeSidecarV6Binding(payload, expected)
 	default:
 		return entity.NewFieldViolation("media_type", "unsupported", mediaType, "send a supported composite sidecar media type")
 	}
@@ -323,6 +336,8 @@ func validateStoredPatternProductCompositeSidecarExact(mediaType string, payload
 		return entity.ValidateStoredPatternProductCompositeSidecarV4Exact(payload, row, patternVersion, receiptSHA)
 	case entity.PatternProductCompositeSidecarV5MediaType:
 		return entity.ValidateStoredPatternProductCompositeSidecarV5Exact(payload, row, patternVersion, receiptSHA)
+	case entity.PatternProductCompositeSidecarV6MediaType:
+		return entity.ValidateStoredPatternProductCompositeSidecarV6Exact(payload, row, patternVersion, receiptSHA)
 	default:
 		return entity.NewFieldViolation("media_type", "unsupported", mediaType, "send a supported composite sidecar media type")
 	}

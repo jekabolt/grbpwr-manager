@@ -85,7 +85,7 @@ func TestPatternSemanticSidecarWriteLocksBeforeReadingAndDocumentRewriteInvalida
 	require.Contains(t, string(productMediaMigration), "chk_pattern_semantic_sidecar_media_type")
 }
 
-func TestCompositeSidecarStoreDispatchesV3V4V5UnderLockAndOnStoredRead(t *testing.T) {
+func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *testing.T) {
 	put := funcBody(t, "pattern_semantic_sidecar.go", "func (s *Store) PutTechCardPatternSemanticSidecar")
 	lock := strings.Index(put, "lockTechCardRowVersion(")
 	dispatch := strings.Index(put, "selectSavedAssemblySeamsForCompositeMedia(")
@@ -99,21 +99,26 @@ func TestCompositeSidecarStoreDispatchesV3V4V5UnderLockAndOnStoredRead(t *testin
 	require.Contains(t, selector, "selectSavedAssemblySeamsV3(")
 	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV4MediaType:")
 	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV5MediaType:")
+	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV6MediaType:")
 	require.Contains(t, selector, "selectSavedAssemblySeams(")
 
 	writeValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validatePatternProductCompositeSidecarBinding")
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarBinding(")
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV4Binding(")
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV5Binding(")
+	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV6Binding(")
 
 	storedValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validateStoredPatternProductCompositeSidecarExact")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarExact(")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV4Exact(")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV5Exact(")
+	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV6Exact(")
 
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV4Transition(")
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV5Transition(")
+	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV6Transition(")
 	require.Contains(t, put, "composite_v5_prior_required")
+	require.Contains(t, put, "composite_v6_prior_required")
 
 	read := funcBody(t, "pattern_semantic_sidecar.go", "func readPatternSemanticSidecar")
 	require.Contains(t, read, "isPatternProductCompositeSidecarMediaType(row.MediaType)")
