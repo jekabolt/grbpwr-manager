@@ -37,6 +37,7 @@ type PatternProductCompositeSidecarExpected struct {
 	ExpectedPreviousSidecarSHA256 string // empty means the V3 JSON writeCas value must be null
 	ServerAssemblyRevision        string
 	AssemblyTopologySHA256        string
+	AssemblyOrderContentSHA256    string
 	SelectedOperationNumber       int
 }
 

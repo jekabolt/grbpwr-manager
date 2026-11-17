@@ -85,7 +85,7 @@ func TestPatternSemanticSidecarWriteLocksBeforeReadingAndDocumentRewriteInvalida
 	require.Contains(t, string(productMediaMigration), "chk_pattern_semantic_sidecar_media_type")
 }
 
-func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *testing.T) {
+func TestCompositeSidecarStoreDispatchesV3ThroughV7UnderLockAndOnStoredRead(t *testing.T) {
 	put := funcBody(t, "pattern_semantic_sidecar.go", "func (s *Store) PutTechCardPatternSemanticSidecar")
 	lock := strings.Index(put, "lockTechCardRowVersion(")
 	dispatch := strings.Index(put, "selectSavedAssemblySeamsForCompositeMedia(")
@@ -100,6 +100,7 @@ func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *t
 	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV4MediaType:")
 	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV5MediaType:")
 	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV6MediaType:")
+	require.Contains(t, selector, "case entity.PatternProductCompositeSidecarV7MediaType:")
 	require.Contains(t, selector, "selectSavedAssemblySeams(")
 
 	writeValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validatePatternProductCompositeSidecarBinding")
@@ -107,31 +108,42 @@ func TestCompositeSidecarStoreDispatchesV3ThroughV6UnderLockAndOnStoredRead(t *t
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV4Binding(")
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV5Binding(")
 	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV6Binding(")
+	require.Contains(t, writeValidator, "ValidatePatternProductCompositeSidecarV7Binding(")
 
 	storedValidator := funcBody(t, "pattern_semantic_sidecar.go", "func validateStoredPatternProductCompositeSidecarExact")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarExact(")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV4Exact(")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV5Exact(")
 	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV6Exact(")
+	require.Contains(t, storedValidator, "ValidateStoredPatternProductCompositeSidecarV7Exact(")
 
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV4Transition(")
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV5Transition(")
 	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV6Transition(")
+	require.Contains(t, put, "ValidatePatternProductCompositeSidecarV7Transition(")
 	require.Contains(t, put, "composite_v5_prior_required")
 	require.Contains(t, put, "composite_v6_prior_required")
+	require.Contains(t, put, "composite_v7_prior_required")
+	aoDigest := strings.Index(put, "savedFullAssemblyAOContent(")
+	require.Greater(t, aoDigest, dispatch, "complete AO digest must be recomputed under the card lock")
+	require.Less(t, aoDigest, validate, "server AO digest must be ready before V7 binding validation")
 	priorQuery := strings.Index(put, "SELECT card_lock_version, saved_row_revision, dxf_sha256, pattern_version,")
 	firstPriorValidation := strings.Index(put, "validatePriorCompositeSidecarForTransition(")
 	v5Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV5Transition(")
-	lastPriorValidation := strings.LastIndex(put, "validatePriorCompositeSidecarForTransition(")
 	v6Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV6Transition(")
+	v7Transition := strings.Index(put, "ValidatePatternProductCompositeSidecarV7Transition(")
+	v6PriorValidation := strings.Index(put[v5Transition:], "validatePriorCompositeSidecarForTransition(") + v5Transition
+	v7PriorValidation := strings.LastIndex(put, "validatePriorCompositeSidecarForTransition(")
 	require.GreaterOrEqual(t, priorQuery, 0, "the locked prior row query must load all integrity metadata")
 	require.Contains(t, put[priorQuery:], "WHERE pattern_row_id = :id FOR UPDATE")
 	require.Greater(t, v5Transition, validate, "V5 transition policy must run after full next-payload binding validation")
 	require.Greater(t, v6Transition, validate, "V6 transition policy must run after full next-payload binding validation")
 	require.Greater(t, firstPriorValidation, priorQuery)
 	require.Greater(t, v5Transition, firstPriorValidation, "V5 must consume only a revalidated prior carrier")
-	require.Greater(t, lastPriorValidation, v5Transition)
-	require.Greater(t, v6Transition, lastPriorValidation, "V6 must consume only a revalidated prior carrier")
+	require.Greater(t, v6PriorValidation, v5Transition)
+	require.Greater(t, v6Transition, v6PriorValidation, "V6 must consume only a revalidated prior carrier")
+	require.Greater(t, v7PriorValidation, v6Transition)
+	require.Greater(t, v7Transition, v7PriorValidation, "V7 must consume only a revalidated prior carrier")
 
 	read := funcBody(t, "pattern_semantic_sidecar.go", "func readPatternSemanticSidecar")
 	require.Contains(t, read, "isPatternProductCompositeSidecarMediaType(row.MediaType)")

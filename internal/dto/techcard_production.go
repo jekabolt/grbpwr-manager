@@ -1026,6 +1026,14 @@ func techCardOperationsToPb(ops []entity.TechCardOperation) []*pb_common.TechCar
 	return out
 }
 
+// TechCardOperationsToPbForSavedAssembly returns the exact operation projection used by
+// GetTechCardSavedAssemblySnapshot. The saved Full Assembly admission path uses this narrow
+// export to reproduce the production admin-gateway JSON before hashing complete AO content;
+// keeping the projection here prevents a second, drifting operation serializer in the store.
+func TechCardOperationsToPbForSavedAssembly(ops []entity.TechCardOperation) []*pb_common.TechCardOperation {
+	return techCardOperationsToPb(ops)
+}
+
 var validOperationReview = map[string]bool{
 	"reshaped": true,
 	"remapped": true,
