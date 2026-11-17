@@ -47,7 +47,7 @@ type savedPatternAuthorityRow struct {
 }
 
 // GetTechCardSavedAssemblySnapshot returns selected topology or the opt-in complete saved source.
-// The card, pattern rows, clock and any selected-profile sidecar share one REPEATABLE READ snapshot.
+// The card, pattern rows, clock and existing anchor sidecar share one REPEATABLE READ snapshot.
 func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.SavedAssemblySnapshotRequest) (entity.SavedAssemblySnapshot, error) {
 	if err := validateSavedAssemblySnapshotRequest(in); err != nil {
 		return entity.SavedAssemblySnapshot{}, err
@@ -117,8 +117,13 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			if in.ExpectedCompleteSourceSHA256 != "" && source.SourceSHA256 != in.ExpectedCompleteSourceSHA256 {
 				return fmt.Errorf("complete Assembly source changed: %w", entity.ErrTechCardSavedAssemblyMoved)
 			}
+			sidecar, err := readSavedAssemblyAnchorSidecar(ctx, rep.DB(), row)
+			if err != nil {
+				return err
+			}
 			out = entity.SavedAssemblySnapshot{
 				Row: row, Card: card, ServerAssemblyRevision: token, CompleteSourceV1: source,
+				SemanticSidecar: sidecar,
 			}
 			return nil
 		}
@@ -134,16 +139,9 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			return fmt.Errorf("assembly topology changed: %w", entity.ErrTechCardSavedAssemblyMoved)
 		}
 
-		var sidecar *entity.PatternSemanticSidecar
-		stored, sidecarErr := readPatternSemanticSidecar(ctx, rep.DB(), row.TechCardID, row.PatternLineKey)
-		switch {
-		case sidecarErr == nil:
-			copy := stored
-			sidecar = &copy
-		case errors.Is(sidecarErr, sql.ErrNoRows):
-			// Observable legacy/absent state. The caller must not infer an exact carrier.
-		default:
-			return sidecarErr
+		sidecar, err := readSavedAssemblyAnchorSidecar(ctx, rep.DB(), row)
+		if err != nil {
+			return err
 		}
 		out = entity.SavedAssemblySnapshot{
 			Row: row, SelectedOperationNumber: in.SelectedOperationNumber, Card: card,
@@ -157,6 +155,17 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		return entity.SavedAssemblySnapshot{}, err
 	}
 	return out, nil
+}
+
+func readSavedAssemblyAnchorSidecar(ctx context.Context, db dependency.DB, row entity.SavedPatternRowIdentity) (*entity.PatternSemanticSidecar, error) {
+	stored, err := readPatternSemanticSidecar(ctx, db, row.TechCardID, row.PatternLineKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &stored, nil
 }
 
 func validateSavedAssemblySnapshotRequest(in entity.SavedAssemblySnapshotRequest) error {

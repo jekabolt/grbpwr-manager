@@ -12222,6 +12222,7 @@ message GetTechCardSavedAssemblySnapshotResponse {
   string server_assembly_revision = 5;
   string assembly_topology_sha256 = 6;
   bytes topology_canonical_json = 7;
+  // Existing anchor carrier read in the same database snapshot. Its own CAS governs carrier bytes.
   optional TechCardPatternSemanticSidecar semantic_sidecar = 8;
   // Present only for COMPLETE_SOURCE_V1, which leaves the selected-operation fields unset.
   optional TechCardSavedAssemblyCompleteSourceV1 complete_source_v1 = 9;

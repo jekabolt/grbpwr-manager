@@ -53,6 +53,8 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 				{Key: mainKey, Filename: "main.dxf"}, {Key: pocketKey, Filename: "pocket.dxf"},
 			}).Return(access, nil).Once()
 			digest := strings.Repeat("b", 64)
+			carrierPayload := []byte(`{"prior":"carrier"}`)
+			carrierSHA := entity.PatternSemanticSidecarPayloadSHA256(carrierPayload)
 			techCards.EXPECT().GetTechCardSavedAssemblySnapshot(mock.Anything, mock.MatchedBy(func(in entity.SavedAssemblySnapshotRequest) bool {
 				return in.ExpectedRow.TechCardID == main.TechCardID &&
 					in.ExpectedRow.PatternLineKey == main.PatternLineKey &&
@@ -65,6 +67,13 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 					{OperationNumber: sql.NullInt32{Int32: 150, Valid: true}},
 				}}},
 				ServerAssemblyRevision: "asm:v1:0123456789abcdef0123456789abcdef:9",
+				SemanticSidecar: &entity.PatternSemanticSidecar{
+					TechCardId: main.TechCardID, PatternLineKey: main.PatternLineKey,
+					CardLockVersion: main.CardLockVersion, SavedRowRevision: main.SavedRowRevision,
+					DxfSHA256: main.SHA256, PatternVersion: main.PatternVersion,
+					MediaType:  entity.PatternProductCompositeSidecarV4MediaType,
+					ByteLength: len(carrierPayload), Payload: carrierPayload, SidecarSHA256: carrierSHA,
+				},
 				CompleteSourceV1: &entity.SavedAssemblyCompleteSourceV1{
 					Rows: []entity.SavedPatternRowIdentity{main, pocket},
 					OwnedSeams: []entity.TechCardSeam{{TechCardSeamInput: entity.TechCardSeamInput{
@@ -91,6 +100,9 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 			require.Empty(t, res.GetSelectedSeams())
 			require.Empty(t, res.GetAssemblyTopologySha256())
 			require.Len(t, res.GetOperations(), 1)
+			require.Equal(t, main.PatternLineKey, res.GetSemanticSidecar().GetPatternLineKey())
+			require.Equal(t, carrierSHA, res.GetSemanticSidecar().GetSidecarSha256())
+			require.Equal(t, carrierPayload, res.GetSemanticSidecar().GetSidecarBytes())
 			complete := res.GetCompleteSourceV1()
 			require.Len(t, complete.GetRows(), 2)
 			require.Equal(t, complete.GetRows()[0].GetDownloadUrl(), res.GetRow().GetDownloadUrl())

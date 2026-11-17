@@ -152,6 +152,9 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		AssemblyTopologySha256:  snapshot.TopologySHA256,
 		TopologyCanonicalJson:   append([]byte(nil), snapshot.TopologyCanonicalJSON...),
 	}
+	if snapshot.SemanticSidecar != nil {
+		response.SemanticSidecar = patternSemanticSidecarToPb(*snapshot.SemanticSidecar)
+	}
 	if snapshot.CompleteSourceV1 != nil {
 		source := snapshot.CompleteSourceV1
 		response.CompleteSourceV1 = dto.SavedAssemblyCompleteSourceV1ToPb(source)
@@ -179,9 +182,6 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 	card := dto.ConvertEntityTechCardToPb(snapshot.Card, dto.CostingFx{})
 	if card != nil && card.GetTechCard() != nil {
 		response.Operations = card.GetTechCard().GetOperations()
-	}
-	if snapshot.SemanticSidecar != nil {
-		response.SemanticSidecar = patternSemanticSidecarToPb(*snapshot.SemanticSidecar)
 	}
 	return response, nil
 }
