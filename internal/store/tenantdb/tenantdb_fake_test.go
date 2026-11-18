@@ -23,6 +23,10 @@ type fakeServer struct {
 	failUse      bool
 	failCommit   bool
 	failRollback bool
+	// skipArgs makes a query or exec with arguments answer driver.ErrSkip, as go-sql-driver/mysql
+	// does without interpolateParams: database/sql then prepares the statement and runs it.
+	skipArgs bool
+	prepares int
 }
 
 type fakeConnector struct {
@@ -46,16 +50,30 @@ type fakeConn struct {
 	inTx bool
 }
 
-func (c *fakeConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("fake: no prepare") }
-func (c *fakeConn) Close() error                        { return nil }
-func (c *fakeConn) Begin() (driver.Tx, error)           { return nil, errors.New("fake: use BeginTx") }
+func (c *fakeConn) Prepare(string) (driver.Stmt, error) {
+	c.srv.mu.Lock()
+	defer c.srv.mu.Unlock()
+	c.srv.prepares++
+	return &fakeStmt{c: c}, nil
+}
+func (c *fakeConn) Close() error              { return nil }
+func (c *fakeConn) Begin() (driver.Tx, error) { return nil, errors.New("fake: use BeginTx") }
+
+func (c *fakeConn) skip(args []driver.NamedValue) bool {
+	c.srv.mu.Lock()
+	defer c.srv.mu.Unlock()
+	return c.srv.skipArgs && len(args) > 0
+}
 
 func (c *fakeConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
 	c.inTx = true
 	return &fakeTx{c: c}, nil
 }
 
-func (c *fakeConn) ExecContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Result, error) {
+func (c *fakeConn) ExecContext(_ context.Context, q string, args []driver.NamedValue) (driver.Result, error) {
+	if c.skip(args) {
+		return nil, driver.ErrSkip
+	}
 	if db, ok := strings.CutPrefix(q, "USE `"); ok {
 		c.db = strings.TrimSuffix(db, "`")
 		c.srv.mu.Lock()
@@ -71,8 +89,27 @@ func (c *fakeConn) ExecContext(_ context.Context, q string, _ []driver.NamedValu
 }
 
 // QueryContext answers any query with one row: connection id, database, open transaction.
-func (c *fakeConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+func (c *fakeConn) QueryContext(_ context.Context, _ string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.skip(args) {
+		return nil, driver.ErrSkip
+	}
 	return &fakeRows{vals: []driver.Value{int64(c.id), c.db, c.inTx}}, nil
+}
+
+type fakeStmt struct{ c *fakeConn }
+
+func (s *fakeStmt) Close() error                               { return nil }
+func (s *fakeStmt) NumInput() int                              { return -1 }
+func (s *fakeStmt) Exec([]driver.Value) (driver.Result, error) { return driver.RowsAffected(1), nil }
+func (s *fakeStmt) Query([]driver.Value) (driver.Rows, error)  { return s.rows(), nil }
+func (s *fakeStmt) ExecContext(context.Context, []driver.NamedValue) (driver.Result, error) {
+	return driver.RowsAffected(1), nil
+}
+func (s *fakeStmt) QueryContext(context.Context, []driver.NamedValue) (driver.Rows, error) {
+	return s.rows(), nil
+}
+func (s *fakeStmt) rows() driver.Rows {
+	return &fakeRows{vals: []driver.Value{int64(s.c.id), s.c.db, s.c.inTx}}
 }
 
 type fakeTx struct{ c *fakeConn }
@@ -207,4 +244,78 @@ func TestFakeBrokenSessionNeverReachesAnotherTeam(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFakeMissingCtxCountsOncePerQuery — teams mode off: a query without a team adds exactly one to
+// tenant_missing_ctx_total, whichever path database/sql takes to run it. A query with arguments goes
+// QueryContext → ErrSkip → PrepareContext → statement, which passes the router three times; it is
+// still one query. A prepared statement counts once per run, not at prepare; a transaction counts its
+// start and each statement in it. Calls with a team never count.
+//
+// MUTATION: count in target/route again → the "with args" cases read +3.
+func TestFakeMissingCtxCountsOncePerQuery(t *testing.T) {
+	const home = "grbpwr_fake"
+	srv := &fakeServer{skipArgs: true}
+	conn, err := tenantdb.NewConnectorOver(&fakeConnector{srv: srv, home: home}, home,
+		tenantdb.Options{Team1: tenant.TeamOne(home), DBPrefix: "tdbt_"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(conn)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	bg := context.Background()
+	scan := func(r *sql.Row) error { return r.Scan(new(int64), new(string), new(bool)) }
+	step := func(label string, want int64, run func() error) {
+		t.Helper()
+		before := conn.Stats().MissingCtx
+		if err := run(); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		if got := conn.Stats().MissingCtx - before; got != want {
+			t.Fatalf("%s: missing-ctx +%d, want +%d", label, got, want)
+		}
+	}
+
+	step("query, no args", 1, func() error { return scan(db.QueryRowContext(bg, "SELECT state")) })
+	prepBefore := srv.prepares
+	step("query with args", 1, func() error { return scan(db.QueryRowContext(bg, "SELECT state WHERE id = ?", 1)) })
+	if srv.prepares == prepBefore {
+		t.Fatal("the fake did not take the ErrSkip → prepare path (the test proves nothing)")
+	}
+	step("exec, no args", 1, func() error { _, err := db.ExecContext(bg, "UPDATE x SET y = 1"); return err })
+	step("exec with args", 1, func() error { _, err := db.ExecContext(bg, "UPDATE x SET y = ?", 1); return err })
+
+	var ps *sql.Stmt
+	step("prepare", 0, func() error { ps, err = db.PrepareContext(bg, "SELECT state WHERE id = ?"); return err })
+	step("prepared, twice", 2, func() error {
+		if err := scan(ps.QueryRowContext(bg, 1)); err != nil {
+			return err
+		}
+		return scan(ps.QueryRowContext(bg, 2))
+	})
+	_ = ps.Close()
+
+	step("transaction: begin + one query", 2, func() error {
+		tx, err := db.BeginTx(bg, nil)
+		if err != nil {
+			return err
+		}
+		if err := scan(tx.QueryRowContext(bg, "SELECT state WHERE id = ?", 1)); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		return tx.Commit()
+	})
+
+	withTeam := tenant.With(bg, tenant.TeamOne(home))
+	step("with a team", 0, func() error {
+		if err := scan(db.QueryRowContext(withTeam, "SELECT state WHERE id = ?", 1)); err != nil {
+			return err
+		}
+		_, err := db.ExecContext(withTeam, "UPDATE x SET y = 1")
+		return err
+	})
 }
