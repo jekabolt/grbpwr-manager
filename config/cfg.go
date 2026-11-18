@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
@@ -31,13 +32,16 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
+	"github.com/jekabolt/grbpwr-manager/internal/store/tenantdb"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/taskarchive"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 	"github.com/jekabolt/grbpwr-manager/log"
 	"github.com/spf13/viper"
@@ -136,6 +140,44 @@ type Config struct {
 	// Sentry is error reporting (internal/observability): SENTRY_DSN unset = off, nothing is sent.
 	// SENTRY_ENVIRONMENT defaults to "beta" in code; the prod app sets it to "prod".
 	Sentry observability.Config `mapstructure:"sentry"`
+	// Platform is teams mode (lekalo.studio): PLATFORM_MYSQL_DSN empty = off, the binary behaves as
+	// the single-tenant one. See Platform.
+	Platform Platform `mapstructure:"platform"`
+}
+
+// Platform is the teams section (02-DESIGN §14). It is platformstore.Config itself: the API
+// servers take it in SetPlatform, and they cannot import this package (it imports them).
+type Platform = platformstore.Config
+
+// defaultStorefrontTeamID: the public storefront reads team #1 (grbpwr) unless told otherwise.
+const defaultStorefrontTeamID = 1
+
+// resolveTenant fills team #1's database from MYSQL_DSN when TENANT_TEAM1_DB is unset, refuses a
+// TENANT_TEAM1_DB that is not the MYSQL_DSN database (the shared pool starts every connection on
+// the DSN database, so they must be the same), and sets the store's routing options.
+func (c *Config) resolveTenant() error {
+	if c.Platform.StorefrontTeamID == 0 {
+		c.Platform.StorefrontTeamID = defaultStorefrontTeamID
+	}
+	if c.DB.DSN == "" {
+		return nil
+	}
+	mc, err := mysql.ParseDSN(c.DB.DSN)
+	if err != nil {
+		return fmt.Errorf("mysql.dsn: %w", err)
+	}
+	switch {
+	case c.Platform.Team1DB == "":
+		c.Platform.Team1DB = mc.DBName
+	case c.Platform.Team1DB != mc.DBName:
+		return fmt.Errorf("TENANT_TEAM1_DB %q is not the MYSQL_DSN database %q", c.Platform.Team1DB, mc.DBName)
+	}
+	c.DB.Tenant = tenantdb.Options{
+		Team1:    tenant.TeamOne(c.Platform.Team1DB),
+		Strict:   c.Platform.Enabled(),
+		DBPrefix: c.Platform.DBPrefix,
+	}
+	return nil
 }
 
 // AIConfig configures internal/aiprov.
@@ -300,6 +342,10 @@ func loadConfig(cfgFile string, validate func(*Config) error) (*Config, error) {
 	// `go test` (detected via the testing framework's registered -test.v flag),
 	// where tests intentionally construct minimal env-only configs (no MySQL
 	// DSN) to exercise the viper bind/unmarshal path in isolation.
+	if err := config.resolveTenant(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	if !runningUnderTest() {
 		if err := validate(&config); err != nil {
 			return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -401,6 +447,21 @@ func bindEnvVars() {
 	// rather than a second BindEnv call below.
 	viper.BindEnv("security.trust_proxy_hops", "SECURITY_TRUST_PROXY_HOPS", "TRUST_PROXY_HOPS")
 	viper.BindEnv("security.hero_embed_allowed_hosts", "SECURITY_HERO_EMBED_ALLOWED_HOSTS", "HERO_EMBED_ALLOWED_HOSTS")
+
+	// Teams mode (lekalo.studio), 02-DESIGN §14. PLATFORM_MYSQL_DSN empty = off.
+	viper.BindEnv("platform.dsn", "PLATFORM_MYSQL_DSN")
+	viper.BindEnv("platform.base_domain", "PLATFORM_BASE_DOMAIN")
+	viper.BindEnv("platform.legacy_admin_origins", "PLATFORM_LEGACY_ADMIN_ORIGINS")
+	viper.BindEnv("platform.operator_emails", "PLATFORM_OPERATOR_EMAILS")
+	viper.BindEnv("platform.mail_from", "PLATFORM_MAIL_FROM")
+	viper.BindEnv("platform.mailer_enabled", "PLATFORM_MAILER_ENABLED")
+	viper.BindEnv("platform.token_pepper", "PLATFORM_TOKEN_PEPPER")
+	viper.BindEnv("platform.db_prefix", "TENANT_DB_PREFIX")
+	viper.BindEnv("platform.team1_db", "TENANT_TEAM1_DB")
+	viper.BindEnv("platform.storefront_team_id", "TENANT_STOREFRONT_TEAM_ID")
+	viper.BindEnv("platform.spares", "TENANT_SPARES")
+	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
+	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 
 	// MySQL
 	viper.BindEnv("mysql.dsn", "MYSQL_DSN")

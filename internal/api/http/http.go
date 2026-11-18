@@ -181,6 +181,44 @@ type Server struct {
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
+	tenantBinder            TenantBinder
+}
+
+// TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
+type TenantBinder interface {
+	Unary() grpc.UnaryServerInterceptor
+	Stream() grpc.StreamServerInterceptor
+	Middleware(next http.Handler) http.Handler
+}
+
+// SetTenantBinder installs the edge team binder. Unset = requests carry no team (tests).
+func (s *Server) SetTenantBinder(b TenantBinder) {
+	s.tenantBinder = b
+}
+
+func (s *Server) tenantUnary() grpc.UnaryServerInterceptor {
+	if s.tenantBinder == nil {
+		return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+			return h(ctx, req)
+		}
+	}
+	return s.tenantBinder.Unary()
+}
+
+func (s *Server) tenantStream() grpc.StreamServerInterceptor {
+	if s.tenantBinder == nil {
+		return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.StreamHandler) error {
+			return h(srv, ss)
+		}
+	}
+	return s.tenantBinder.Stream()
+}
+
+func (s *Server) tenantMiddleware(next http.Handler) http.Handler {
+	if s.tenantBinder == nil {
+		return next
+	}
+	return s.tenantBinder.Middleware(next)
 }
 
 // New creates a new server
@@ -478,6 +516,8 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.Use(observability.HTTPMiddleware)
 	}
 	r.Use(middleware.Recover)
+	// Team of the request (wave 1: team #1 on everything) before any handler touches the store.
+	r.Use(s.tenantMiddleware)
 
 	adminHandler, err := s.adminJSONGateway(ctx)
 	if err != nil {
@@ -1013,12 +1053,15 @@ func (s *Server) Start(ctx context.Context,
 			// handler gets. A pass-through when SENTRY_DSN is unset.
 			observability.UnaryServerInterceptor(),
 			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
+			// Team of the call, before auth (auth reads the team's admins).
+			s.tenantUnary(),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
 		),
 		grpc.ChainStreamInterceptor(
 			observability.StreamServerInterceptor(),
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
+			s.tenantStream(),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 		),
 	)

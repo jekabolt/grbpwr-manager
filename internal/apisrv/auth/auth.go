@@ -57,6 +57,9 @@ const (
 // Server implements the heartbeat service.
 type Server struct {
 	auth.UnimplementedAuthServiceServer
+	// platform is the control plane in teams mode (platform.go); zero = teams mode off.
+	platform platformHandle
+
 	adminRepository dependency.Admin
 	pwhash          *pwhash.PasswordHasher
 	JwtAuth         *jwtauth.JWTAuth

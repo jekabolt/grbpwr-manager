@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"log/slog"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
@@ -55,6 +57,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
@@ -64,6 +67,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/taskarchive"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
 )
 
@@ -144,6 +149,15 @@ type App struct {
 	// boot-error cleanup in cmd/run.go. Without it, a second caller would panic
 	// on close(a.done) (double close).
 	stopping atomic.Bool
+
+	// teamOne is team #1 (today's grbpwr database). The root ctx of Start and of Stop carries it,
+	// so every boot step and worker that is not per-team yet runs on team #1.
+	teamOne tenant.Team
+	// platform is the control plane; nil with teams mode off (PLATFORM_MYSQL_DSN empty).
+	platform *platformstore.Store
+	// stopTeamsMail / stopProvisioner stop the teams-mode workers; nil with teams mode off.
+	stopTeamsMail   func()
+	stopProvisioner func()
 }
 
 // New returns a new instance of App
@@ -159,9 +173,22 @@ func (a *App) Start(ctx context.Context) error {
 	var err error
 	slog.Default().InfoContext(ctx, "starting product manager")
 
+	// Team #1 on the root ctx before anything touches the database or starts a goroutine.
+	if a.teamOne, err = a.teamOneFromConfig(); err != nil {
+		return err
+	}
+	ctx = tenant.With(ctx, a.teamOne)
+
 	a.db, err = store.New(ctx, a.c.DB)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "couldn't connect to mysql",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
+	if err := a.startPlatform(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start teams mode",
 			slog.String("err", err.Error()),
 		)
 		return err
@@ -970,6 +997,15 @@ func (a *App) Start(ctx context.Context) error {
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
+	binder, err := tenantbind.NewCompat(a.teamOne)
+	if err != nil {
+		return err
+	}
+	a.hs.SetTenantBinder(binder)
+	if a.platform != nil {
+		authS.SetPlatform(a.platform, a.c.Platform)
+		adminS.SetPlatform(a.platform, a.c.Platform)
+	}
 
 	// Set up database health checker if store supports it
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
@@ -1105,6 +1141,13 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := a.startTeamsWorkers(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, "couldn't start teams workers",
+			slog.String("err", err.Error()),
+		)
+		return err
+	}
+
 	// Bridge an unexpected listener exit to a full shutdown. hs.Start is
 	// non-blocking; if the HTTP server later stops on its own (fatal serve error,
 	// a bind failure surfaced post-start), nothing else would notice and the
@@ -1130,6 +1173,9 @@ func (a *App) Stop(ctx context.Context) {
 	// return immediately so close(a.done) runs exactly once.
 	if !a.stopping.CompareAndSwap(false, true) {
 		return
+	}
+	if a.teamOne.ID > 0 {
+		ctx = tenant.With(ctx, a.teamOne)
 	}
 
 	// Drain in-flight gRPC/REST requests and stop the listener before tearing
@@ -1271,8 +1317,19 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
 	// failed before store.New assigned a.db.
+	if a.stopProvisioner != nil {
+		a.stopProvisioner()
+	}
+	if a.stopTeamsMail != nil {
+		a.stopTeamsMail()
+	}
 	if a.db != nil {
 		a.db.Close()
+	}
+	if a.platform != nil {
+		if err := a.platform.Close(); err != nil {
+			slog.Default().WarnContext(ctx, "closing the control plane failed", slog.String("err", err.Error()))
+		}
 	}
 	close(a.done)
 }
@@ -1440,4 +1497,69 @@ func (e *stripeOrderExpirer) ExpireOrderPayment(ctx context.Context, orderUUID s
 	// cancels orders whose payment is not done, so it is safe as a fallback.
 	_, err = e.repo.Order().ExpireOrderPayment(ctx, orderUUID)
 	return err
+}
+
+// teamOneFromConfig is team #1 on TENANT_TEAM1_DB, which config resolved from MYSQL_DSN.
+func (a *App) teamOneFromConfig() (tenant.Team, error) {
+	db := a.c.Platform.Team1DB
+	if db == "" {
+		mc, err := mysql.ParseDSN(a.c.DB.DSN)
+		if err != nil {
+			return tenant.Team{}, fmt.Errorf("team #1 database: %w", err)
+		}
+		db = mc.DBName
+	}
+	if db == "" {
+		return tenant.Team{}, errors.New("team #1 database: MYSQL_DSN names no database")
+	}
+	return tenant.TeamOne(db), nil
+}
+
+// startPlatform opens the control plane and adopts team #1 (teams mode on only). ctx carries team
+// #1, so the admins list is read from team #1's database.
+func (a *App) startPlatform(ctx context.Context) error {
+	if !a.c.Platform.Enabled() {
+		return nil
+	}
+	st, err := platformstore.Open(ctx, a.c.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	accounts, err := a.db.Admin().ListAccounts(ctx)
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("list team #1 admins: %w", err)
+	}
+	admins := make([]platformstore.TeamOneAdmin, 0, len(accounts))
+	for _, acc := range accounts {
+		admins = append(admins, platformstore.TeamOneAdmin{
+			Username:     acc.Username,
+			PasswordHash: acc.PasswordHash,
+			Super:        acc.IsSuper,
+			Disabled:     acc.Disabled,
+		})
+	}
+	if err := st.EnsureTeamOne(ctx, a.teamOne.DBName, admins); err != nil {
+		_ = st.Close()
+		return err
+	}
+	a.platform = st
+	return nil
+}
+
+// startTeamsWorkers starts the teams-mode workers (teams mode on only).
+func (a *App) startTeamsWorkers(ctx context.Context) error {
+	if a.platform == nil {
+		return nil
+	}
+	stop, err := a.startTeamsMail(ctx)
+	if err != nil {
+		return fmt.Errorf("teams mail: %w", err)
+	}
+	a.stopTeamsMail = stop
+	if stop, err = a.startProvisioner(ctx); err != nil {
+		return fmt.Errorf("provisioner: %w", err)
+	}
+	a.stopProvisioner = stop
+	return nil
 }

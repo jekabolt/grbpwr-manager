@@ -55,6 +55,9 @@ const maxConcurrentEnhance = 4
 // Server implements handlers for admin.
 type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
+	// platform is the control plane in teams mode (platform.go); zero = teams mode off.
+	platform platformHandle
+
 	repo   dependency.Repository
 	bucket dependency.FileStore
 	// patternURLs mints output-only view_url/download_url on pattern messages (Ф7).
