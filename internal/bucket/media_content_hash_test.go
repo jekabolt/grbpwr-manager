@@ -58,10 +58,22 @@ type fakeS3 struct {
 	// puts counts every object that ever ARRIVED, so an assertion on an empty store can tell
 	// "it was taken back" from "it was never sent" — the two look identical in `objects`.
 	puts int
+	// requests records every call as "METHOD key", so a test can prove a call was never made.
+	requests []string
+}
+
+// requestLog returns a copy of every call the store received, in order.
+func (f *fakeS3) requestLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/"+f.bucket+"/")
+	f.mu.Lock()
+	f.requests = append(f.requests, r.Method+" "+key)
+	f.mu.Unlock()
 	switch r.Method {
 	case http.MethodPut:
 		body, err := io.ReadAll(r.Body)

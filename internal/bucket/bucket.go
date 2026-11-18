@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -24,6 +25,12 @@ type Config struct {
 	S3BucketLocation  string `mapstructure:"s3_bucket_location"`
 	BaseFolder        string `mapstructure:"base_folder"`
 	SubdomainEndpoint string `mapstructure:"subdomain_endpoint"`
+	// ReadOnlyHosts (BUCKET_S3_READONLY_HOSTS): comma-separated hosts of another installation's
+	// files that this one may READ but never change (see readonly.go). Empty = today's behaviour.
+	ReadOnlyHosts string `mapstructure:"readonly_hosts"`
+	// TeamsMode is set by the app (PLATFORM_MYSQL_DSN present), not by env: with it on, the
+	// read-only hosts are honoured for team #1 only.
+	TeamsMode bool `mapstructure:"-"`
 }
 
 // String renders the config with the S3 credentials redacted so an accidental %v/%+v/%s of the bucket
@@ -31,9 +38,9 @@ type Config struct {
 // 007). fmt routes %v, %+v and %s through Stringer, so all three are covered.
 func (c Config) String() string {
 	return fmt.Sprintf("bucket.Config{S3AccessKey:%s S3SecretAccessKey:%s S3Endpoint:%s S3BucketName:%s "+
-		"S3BucketLocation:%s BaseFolder:%s SubdomainEndpoint:%s}",
+		"S3BucketLocation:%s BaseFolder:%s SubdomainEndpoint:%s ReadOnlyHosts:%s}",
 		redactSecret(c.S3AccessKey), redactSecret(c.S3SecretAccessKey), c.S3Endpoint, c.S3BucketName,
-		c.S3BucketLocation, c.BaseFolder, c.SubdomainEndpoint)
+		c.S3BucketLocation, c.BaseFolder, c.SubdomainEndpoint, c.ReadOnlyHosts)
 }
 
 // redactSecret masks a secret value while preserving whether it was set (empty stays empty so an
@@ -49,9 +56,14 @@ type Bucket struct {
 	*minio.Client
 	*Config
 	ms dependency.Media
+	// legacyHTTP reads objects from a read-only host; nil = defaultLegacyHTTP (tests inject one).
+	legacyHTTP *http.Client
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
+	if err := ValidateReadOnlyHosts(c.ReadOnlyHosts); err != nil {
+		return nil, err
+	}
 	cli, err := minio.New(c.S3Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(c.S3AccessKey, c.S3SecretAccessKey, ""),
 		Secure: true,
@@ -157,6 +169,10 @@ func ManagedObjectKeyFromURL(c *Config, rawURL string) (string, error) {
 		originHost = strings.ToLower(c.S3BucketName + "." + endpointHost)
 	}
 	requestHost := strings.ToLower(u.Host)
+	// A read-only host is never ours to change, even when it is also configured as our own host.
+	if c.isReadOnlyHost(requestHost) {
+		return "", fmt.Errorf("%w: %q", ErrReadOnlyHost, u.Host)
+	}
 	if requestHost != cdnHost && requestHost != originHost {
 		return "", fmt.Errorf("media url host %q is not a configured bucket host", u.Host)
 	}
@@ -205,6 +221,13 @@ func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
 	var firstErr error
 	for _, raw := range urls {
 		if raw == "" {
+			continue
+		}
+		// A read-only host is refused BEFORE any network call and is not an error: the object is
+		// not ours, so the caller goes on (a row can still be removed).
+		if u, ok := b.Config.readOnlyURL(raw); ok {
+			slog.Default().WarnContext(ctx, "refusing to delete: read-only host",
+				slog.String("host", u.Host), slog.String("key", strings.Trim(u.Path, "/")))
 			continue
 		}
 		key, err := b.managedObjectKeyFromURL(raw)
