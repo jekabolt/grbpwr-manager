@@ -13,7 +13,8 @@ import (
 // MigrateFleetOnce brings every active / suspended team and every ready spare whose schema_version
 // is not the binary's latest forward, one database at a time, then checks its fingerprint against
 // the reference (G8). Team #1 is never migrated here (store.New does it at boot); it is only
-// fingerprinted and compared. Each database is migrated under its lease (DBLeaseKey), taken in a
+// fingerprinted and compared. Each database is migrated under its lease (DBLeaseKey, scheduling)
+// and its lock (Schema.Lock, the fence held on a connection for the whole run), the lease taken in a
 // short control-plane statement, never a transaction held across the migration; a database whose
 // lease another instance holds is skipped this pass. A failure leaves that database behind (its calls answer UNAVAILABLE)
 // and is retried on the next pass.
@@ -69,7 +70,16 @@ func (w *Worker) migrateSpare(ctx context.Context, dbName string) error {
 		return err
 	}
 	held, err := w.withLease(ctx, platformstore.DBLeaseKey(dbName), func(ctx context.Context, token string) error {
-		version, err := w.schema.Migrate(ctx, dbName)
+		lock, ok, err := w.schema.Lock(ctx, dbName)
+		if err != nil {
+			return fmt.Errorf("provision: lock spare %s: %w", dbName, err)
+		}
+		if !ok {
+			w.log.InfoContext(ctx, "provision: spare locked by another worker; skipped", slog.String("db", dbName))
+			return nil
+		}
+		defer lock.Release(ctx)
+		version, err := lock.Migrate(ctx)
 		if err != nil {
 			w.log.ErrorContext(ctx, "spare_migrate_failed", slog.String("db", dbName), slog.String("err", err.Error()))
 			return err
@@ -95,7 +105,18 @@ func (w *Worker) migrateTeam(ctx context.Context, id int64, slug, dbName string)
 		return err
 	}
 	held, err := w.withLease(ctx, platformstore.DBLeaseKey(dbName), func(ctx context.Context, token string) error {
-		version, err := w.schema.Migrate(ctx, dbName)
+		// The lease only schedules; the database lock is the fence: a second migrator (one that took
+		// an expired lease) cannot start while this one's lock connection lives.
+		lock, ok, err := w.schema.Lock(ctx, dbName)
+		if err != nil {
+			return fmt.Errorf("provision: lock team %s: %w", slug, err)
+		}
+		if !ok {
+			w.log.InfoContext(ctx, "provision: team database locked by another worker; skipped", slog.String("slug", slug))
+			return nil
+		}
+		defer lock.Release(ctx)
+		version, err := lock.Migrate(ctx)
 		if err != nil {
 			w.log.ErrorContext(ctx, "team_migrate_failed",
 				slog.Int64("tid", id), slog.String("slug", slug), slog.String("version", w.schema.Latest()),

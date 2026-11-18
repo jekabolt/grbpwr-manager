@@ -314,6 +314,38 @@ func TestProvisionLease(t *testing.T) {
 // TestSpareQuota: the hourly cap is one reservation shared by every caller — eight concurrent
 // reservations under a cap of three get exactly three; failed rows count; the keeper stops at
 // its spare count (control plane only).
+// TestSpareBreaker: three failed spares of one version stop reservations for that version (control
+// plane only); another version, or clearing a failed row, opens the way again.
+func TestSpareBreaker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e := newEnv(t, ctx)
+	for _, n := range []string{"prvt_brk00001", "prvt_brk00002", "prvt_brk00003"} {
+		if err := e.pf.ReserveSpare(ctx, n, "v1", 10, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.pf.MarkSpareFailed(ctx, n, "migrate: boom"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.pf.ReserveSpare(ctx, "prvt_brk00004", "v1", 10, 0); !errors.Is(err, platformstore.ErrSpareBreaker) {
+		t.Fatalf("fourth spare of a failing version: %v", err)
+	}
+	var fourth int
+	if err := e.pf.DB().Get(&fourth, `SELECT COUNT(*) FROM spare_db WHERE db_name = 'prvt_brk00004'`); err != nil || fourth != 0 {
+		t.Fatalf("fourth row %d %v", fourth, err)
+	}
+	if err := e.pf.ReserveSpare(ctx, "prvt_brk00005", "v2", 10, 0); err != nil {
+		t.Fatalf("another version: %v", err)
+	}
+	if _, err := e.pf.DB().Exec(`DELETE FROM spare_db WHERE db_name = 'prvt_brk00003'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pf.ReserveSpare(ctx, "prvt_brk00006", "v1", 10, 0); err != nil {
+		t.Fatalf("after an operator cleared a failed spare: %v", err)
+	}
+}
+
 func TestSpareQuota(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -541,6 +573,90 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	after := rowCounts(t, teamDB)
 	if d := diffCounts(before, after); d != "" {
 		t.Fatalf("a refused seed changed rows: %s", d)
+	}
+
+	// The database lock on the real server (fixes 1 and 2). A live row the scrub would delete.
+	if _, err := teamDB.Exec(`INSERT INTO file_topic (name) VALUES ('live topic')`); err != nil {
+		t.Fatal(err)
+	}
+	liveTopics := func() int {
+		var n int
+		_ = teamDB.QueryRow(`SELECT COUNT(*) FROM file_topic WHERE name = 'live topic'`).Scan(&n)
+		return n
+	}
+	pt := platformstore.ProvisioningTeam{ID: spareTeam, Slug: tmA.Slug, OwnerHandle: owner}
+	staleTok, ok, err := e.pf.AcquireLease(ctx, platformstore.TeamLeaseKey(spareTeam), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("stale lease %v %v", ok, err)
+	}
+	if _, err := e.pf.DB().Exec(`UPDATE provision_lease SET expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND WHERE lease_key = ?`, platformstore.TeamLeaseKey(spareTeam)); err != nil {
+		t.Fatal(err)
+	}
+	freshTok, ok, err := e.pf.AcquireLease(ctx, platformstore.TeamLeaseKey(spareTeam), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("fresh lease %v %v", ok, err)
+	}
+	// While another holder has the database lock, a worker that lost its lease does not even start,
+	// and a second holder cannot take the lock (a second migrator refuses the same way).
+	held, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
+	if err != nil || !ok {
+		t.Fatalf("lock %v %v", ok, err)
+	}
+	if _, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName); err != nil || ok {
+		t.Fatalf("second holder took a held database lock: %v %v", ok, err)
+	}
+	if err := w.SeedAndActivateForTest(ctx, pt, staleTok, tmA.DBName, true); err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("seed under another holder's lock: %v", err)
+	}
+	held.Release(ctx)
+	// With the lock free, the control row is re-read inside it: the stale holder and even the current
+	// lease holder find the team active and run nothing.
+	if err := w.SeedAndActivateForTest(ctx, pt, staleTok, tmA.DBName, true); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("stale holder on an active team: %v", err)
+	}
+	if err := w.SeedAndActivateForTest(ctx, pt, freshTok, tmA.DBName, true); err != nil {
+		t.Fatalf("lease holder on an active team: %v", err)
+	}
+	_ = e.pf.ReleaseLease(ctx, platformstore.TeamLeaseKey(spareTeam), freshTok)
+	if liveTopics() != 1 {
+		t.Fatal("a live row was deleted from an activated team database")
+	}
+	// The fence dies with its connection: once killed, statements on it fail, Migrate refuses, and
+	// the next holder gets the lock.
+	lost, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
+	if err != nil || !ok {
+		t.Fatalf("lock %v %v", ok, err)
+	}
+	var lockConn int64
+	if err := e.root.QueryRow(`SELECT IS_USED_LOCK(?)`, store.TeamLockName(tmA.DBName)).Scan(&lockConn); err != nil || lockConn == 0 {
+		t.Fatalf("lock owner %d %v", lockConn, err)
+	}
+	if _, err := e.root.Exec(fmt.Sprintf("KILL %d", lockConn)); err != nil {
+		t.Fatal(err)
+	}
+	if err := lost.Alive(ctx); !errors.Is(err, store.ErrTeamLockLost) {
+		t.Fatalf("killed lock alive: %v", err)
+	}
+	if _, err := lost.ExecContext(ctx, `DELETE FROM file_topic`); err == nil {
+		t.Fatal("a statement ran on a killed lock connection")
+	}
+	if _, err := lost.Migrate(ctx); !errors.Is(err, store.ErrTeamLockLost) {
+		t.Fatalf("migrate under a killed lock: %v", err)
+	}
+	lost.Release(ctx)
+	next, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
+	if err != nil || !ok {
+		t.Fatalf("lock after the holder died %v %v", ok, err)
+	}
+	if v, err := next.Migrate(ctx); err != nil || v != latest {
+		t.Fatalf("migrate under the lock %q %v", v, err)
+	}
+	next.Release(ctx)
+	if liveTopics() != 1 {
+		t.Fatal("a live row was deleted")
+	}
+	if _, err := teamDB.Exec(`DELETE FROM file_topic WHERE name = 'live topic'`); err != nil {
+		t.Fatal(err)
 	}
 
 	// No grbpwr text anywhere in the fresh team.

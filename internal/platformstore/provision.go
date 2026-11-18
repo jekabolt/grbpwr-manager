@@ -81,14 +81,23 @@ var ErrSpareQuota = errors.New("platformstore: hourly database creation cap reac
 // ErrEnoughSpares: enough spares are ready or being created; the keeper has nothing to do.
 var ErrEnoughSpares = errors.New("platformstore: enough spare databases")
 
+// ErrSpareBreaker: the last SpareBreakerFailures spares reserved for this schema version all failed;
+// no new database is created for it until a binary with another version runs or an operator clears
+// the failed rows (a permanently broken migration must not create databases forever).
+var ErrSpareBreaker = errors.New("platformstore: the last spare databases of this version all failed")
+
+// SpareBreakerFailures is how many failed spares in a row of one version open the breaker.
+const SpareBreakerFailures = 3
+
 // quotaRow is the provision_lease row every reservation locks (0003_provision_lease.sql).
 const quotaRow = "spare-quota"
 
 // ReserveSpare is the only way a spare database comes to exist: in one control-plane transaction,
 // serialised on the quota row, it counts the spare_db rows created in the last hour (every state)
 // and refuses with ErrSpareQuota at perHour; with keep > 0 (the keeper) it also refuses with
-// ErrEnoughSpares when keep spares are ready at version or still being created; otherwise it
-// records dbName in state creating. The row exists before CREATE DATABASE runs, so a crash leaves a
+// ErrEnoughSpares when keep spares are ready at version or still being created; it refuses with
+// ErrSpareBreaker when the last SpareBreakerFailures rows reserved for version all failed; otherwise
+// it records dbName in state creating, with the version it is meant for. The row exists before CREATE DATABASE runs, so a crash leaves a
 // visible row, never an unknown database, and the cap counts it.
 func (s *Store) ReserveSpare(ctx context.Context, dbName, version string, perHour, keep int) error {
 	if perHour <= 0 {
@@ -120,16 +129,33 @@ FROM spare_db`, version).Scan(&c.Ready, &c.Creating, &c.CreatedSince); err != ni
 	if keep > 0 && c.Ready+c.Creating >= keep {
 		return ErrEnoughSpares
 	}
+	var last []string
+	if err := tx.SelectContext(ctx, &last, `SELECT status FROM spare_db WHERE schema_version = ?
+ORDER BY created_at DESC, db_name DESC LIMIT ?`, version, SpareBreakerFailures); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: breaker: %w", err)
+	}
+	if len(last) == SpareBreakerFailures && allFailed(last) {
+		return ErrSpareBreaker
+	}
 	if c.CreatedSince >= perHour {
 		return ErrSpareQuota
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO spare_db (db_name, status, created_at) VALUES (?, 'creating', UTC_TIMESTAMP(3))`, dbName); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO spare_db (db_name, status, schema_version, created_at) VALUES (?, 'creating', ?, UTC_TIMESTAMP(3))`, dbName, version); err != nil {
 		return fmt.Errorf("platformstore: reserve spare %s: %w", dbName, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platformstore: reserve spare: commit: %w", err)
 	}
 	return nil
+}
+
+func allFailed(statuses []string) bool {
+	for _, st := range statuses {
+		if st != SpareFailed {
+			return false
+		}
+	}
+	return true
 }
 
 // MarkSpareReady records a migrated spare: version and fingerprint, state ready.

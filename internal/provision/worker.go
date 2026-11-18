@@ -16,7 +16,13 @@
 //
 // Every spare database, the keeper's and the cold path's alike, is reserved through
 // Platform.ReserveSpare: one control-plane transaction that enforces the hourly cap across all
-// workers, failed databases included.
+// workers, failed databases included, and stops creating for a schema version whose last three
+// spares failed (breaker).
+//
+// Leases in the control plane only schedule work. The fence on a team database is its MySQL named
+// lock (Schema.Lock), held on a dedicated connection to that database for the whole scrub + seed +
+// activation or migration: a holder whose lease expired while it paused still holds the lock, so no
+// second worker starts on that database until the first one's connection releases it or dies.
 //
 // Every database name read from the control plane or generated here passes the allowlist
 // (store.NewTeamDBName: TENANT_DB_PREFIX + 8 [a-z0-9], never team #1's database) before it reaches
@@ -96,9 +102,24 @@ var _ Platform = (*platformstore.Store)(nil)
 // allowlist.
 type Schema interface {
 	Create(ctx context.Context, dbName string) error
+	// Migrate migrates a database nobody else can reach yet (a spare being created). Every other
+	// migration runs through Lock(...).Migrate.
 	Migrate(ctx context.Context, dbName string) (version string, err error)
 	Lines(ctx context.Context, dbName string) ([]string, error)
 	Latest() string
+	// Lock takes the database's fence (store.TeamDBLock) without waiting; ok false = held by
+	// another worker, nothing held.
+	Lock(ctx context.Context, dbName string) (lock DBLock, ok bool, err error)
+}
+
+// DBLock is a held fence on one team database (*store.TeamDBLock): scrub, seed and migration of a
+// database that a team or the fleet can reach run only under it, the scrub on its own connection.
+type DBLock interface {
+	Execer
+	Migrate(ctx context.Context) (version string, err error)
+	// Alive fails once the lock is no longer held.
+	Alive(ctx context.Context) error
+	Release(ctx context.Context)
 }
 
 // StoreSchema is Schema over the store package on the server of BaseDSN (MYSQL_DSN).
@@ -116,6 +137,13 @@ func (s StoreSchema) Lines(ctx context.Context, dbName string) ([]string, error)
 	return store.SchemaLines(ctx, s.BaseDSN, dbName)
 }
 func (s StoreSchema) Latest() string { return store.LatestMigrationID() }
+func (s StoreSchema) Lock(ctx context.Context, dbName string) (DBLock, bool, error) {
+	l, ok, err := store.LockTeamDB(ctx, s.BaseDSN, s.Prefix, dbName)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return l, true, nil
+}
 
 // Config configures the worker.
 type Config struct {
@@ -138,12 +166,14 @@ type Worker struct {
 	admins dependency.Admin
 	now    func() time.Time
 	log    *slog.Logger
-	// seed seeds the team in ctx under guard; Seed over db / admins unless a test replaces it.
-	seed func(ctx context.Context, ownerHandle string, guard func(context.Context) error) error
+	// seed seeds the team in ctx through exec (the database lock's connection) under guard; Seed
+	// over exec / admins unless a test replaces it.
+	seed func(ctx context.Context, exec Execer, ownerHandle string, guard func(context.Context) error) error
 
 	mu      sync.Mutex
 	backoff map[int64]retry // team id → next attempt
 	capLog  time.Time       // last "cap reached" log
+	tripLog time.Time       // last "spare breaker open" log
 }
 
 type retry struct {
@@ -194,8 +224,8 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins depend
 		log:     slog.Default(),
 		backoff: map[int64]retry{},
 	}
-	w.seed = func(ctx context.Context, owner string, guard func(context.Context) error) error {
-		return Seed(ctx, w.db, w.admins, owner, guard)
+	w.seed = func(ctx context.Context, exec Execer, owner string, guard func(context.Context) error) error {
+		return Seed(ctx, exec, w.admins, owner, guard)
 	}
 	return w, nil
 }
@@ -258,8 +288,25 @@ func (w *Worker) KeepSparesOnce(ctx context.Context) error {
 	case errors.Is(err, platformstore.ErrSpareQuota):
 		w.capReached(ctx)
 		return nil
+	case errors.Is(err, platformstore.ErrSpareBreaker):
+		w.breakerOpen(ctx)
+		return nil
 	}
 	return err
+}
+
+// breakerOpen logs the open spare breaker at most every 10 minutes.
+func (w *Worker) breakerOpen(ctx context.Context) {
+	w.mu.Lock()
+	quiet := !w.tripLog.IsZero() && w.now().Sub(w.tripLog) < 10*time.Minute
+	if !quiet {
+		w.tripLog = w.now()
+	}
+	w.mu.Unlock()
+	if !quiet {
+		w.log.WarnContext(ctx, "provision: the last spare databases of this version all failed; no new database until a new version or the failed spares are cleared",
+			slog.String("version", w.schema.Latest()), slog.Int("failed_in_a_row", platformstore.SpareBreakerFailures))
+	}
 }
 
 // capReached logs the hourly cap at most every 10 minutes.
@@ -275,9 +322,9 @@ func (w *Worker) capReached(ctx context.Context) {
 	}
 }
 
-// makeSpare reserves (under the shared hourly cap; keep > 0 = only while fewer than keep spares are
-// ready or being created), creates, migrates and fingerprints one spare database.
-// ErrSpareQuota / ErrEnoughSpares come back unwrapped.
+// makeSpare reserves (under the shared hourly cap and the failure breaker; keep > 0 = only while
+// fewer than keep spares are ready or being created), creates, migrates and fingerprints one spare
+// database. ErrSpareQuota / ErrEnoughSpares / ErrSpareBreaker come back unwrapped.
 func (w *Worker) makeSpare(ctx context.Context, keep int) (string, error) {
 	latest := w.schema.Latest()
 	if latest == "" {
@@ -290,12 +337,12 @@ func (w *Worker) makeSpare(ctx context.Context, keep int) (string, error) {
 			return "", err
 		}
 		err = w.pf.ReserveSpare(ctx, name, latest, w.cfg.PerHour, keep)
-		if err == nil || errors.Is(err, platformstore.ErrSpareQuota) || errors.Is(err, platformstore.ErrEnoughSpares) {
+		if err == nil || reserveRefused(err) {
 			break
 		}
 	}
 	if err != nil {
-		if !errors.Is(err, platformstore.ErrSpareQuota) && !errors.Is(err, platformstore.ErrEnoughSpares) {
+		if !reserveRefused(err) {
 			w.log.ErrorContext(ctx, "provision: reserve spare", slog.String("err", err.Error()))
 		}
 		return "", err
@@ -332,6 +379,12 @@ func (w *Worker) makeSpare(ctx context.Context, keep int) (string, error) {
 	w.log.InfoContext(ctx, "provision: spare ready",
 		slog.String("db", name), slog.String("version", version), slog.Duration("took", w.now().Sub(start)))
 	return name, nil
+}
+
+// reserveRefused: ReserveSpare said no (cap, enough spares, breaker), not a failure.
+func reserveRefused(err error) bool {
+	return errors.Is(err, platformstore.ErrSpareQuota) || errors.Is(err, platformstore.ErrEnoughSpares) ||
+		errors.Is(err, platformstore.ErrSpareBreaker)
 }
 
 // ─── leases ────────────────────────────────────────────────────────────────────────────────────
@@ -456,6 +509,9 @@ func (w *Worker) provision(ctx context.Context, t platformstore.ProvisioningTeam
 			if errors.Is(err, platformstore.ErrSpareQuota) {
 				w.capReached(ctx)
 			}
+			if errors.Is(err, platformstore.ErrSpareBreaker) {
+				w.breakerOpen(ctx)
+			}
 			return fmt.Errorf("cold path: %w", err)
 		}
 		dbName, claimed, err = w.pf.ClaimSpare(ctx, t.ID, latest)
@@ -479,20 +535,37 @@ func (w *Worker) provision(ctx context.Context, t platformstore.ProvisioningTeam
 }
 
 // seedAndActivate brings the team's database forward (unless just claimed at latest), seeds it and
-// activates the team; it holds the team lease token and the database's lease.
+// activates the team; it holds the team lease token and the database's lease. All of it runs under
+// the database's fence (Schema.Lock): the control row is re-read inside the lock before anything
+// touches the database, the scrub runs on the lock's own connection, and the team is activated
+// before the lock is released. A worker whose lease expired while it paused can therefore never
+// scrub a team another worker activated meanwhile: that worker needed the lock to seed, and when
+// the paused one gets it back, the re-read finds the team no longer provisioning.
 func (w *Worker) seedAndActivate(ctx context.Context, t platformstore.ProvisioningTeam, token, dbName string, claimed bool) error {
-	guard := func(ctx context.Context) error { return w.pf.CheckProvisionLease(ctx, t.ID, dbName, token) }
+	lock, ok, err := w.schema.Lock(ctx, dbName)
+	if err != nil {
+		return fmt.Errorf("lock database: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("database %s is locked by another worker", dbName)
+	}
+	defer lock.Release(ctx)
+	guard := func(ctx context.Context) error {
+		if err := w.pf.CheckProvisionLease(ctx, t.ID, dbName, token); err != nil {
+			return err
+		}
+		return lock.Alive(ctx)
+	}
 	if err := guard(ctx); err != nil {
 		if errors.Is(err, platformstore.ErrNotProvisioning) {
-			return nil // moved on between the claim and here: nothing touched
+			return nil // moved on before the lock was ours: nothing touched
 		}
 		return err
 	}
 	version := w.schema.Latest()
 	if !claimed {
 		// A rerun after a crash, possibly by an older binary: bring the database forward first.
-		var err error
-		if version, err = w.schema.Migrate(ctx, dbName); err != nil {
+		if version, err = lock.Migrate(ctx); err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
@@ -505,12 +578,15 @@ func (w *Worker) seedAndActivate(ctx context.Context, t platformstore.Provisioni
 	if got, _ := tenant.From(tctx); got.DBName != dbName {
 		return fmt.Errorf("directory says database %q, claim said %q", got.DBName, dbName)
 	}
-	if err := w.seed(tctx, t.OwnerHandle, guard); err != nil {
+	if err := w.seed(tctx, lock, t.OwnerHandle, guard); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
 	lines, err := w.schema.Lines(ctx, dbName)
 	if err != nil {
 		return fmt.Errorf("fingerprint: %w", err)
+	}
+	if err := lock.Alive(ctx); err != nil {
+		return err
 	}
 	if err := w.pf.ActivateTeam(ctx, t.ID, token, version, store.FingerprintOf(lines)); err != nil {
 		return fmt.Errorf("activate: %w", err)

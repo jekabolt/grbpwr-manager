@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -15,8 +16,14 @@ import (
 // yet", the state the migration seeds. Kept here too so a scrub can never leave a team without it.
 const workshopDefaults = `INSERT IGNORE INTO workshop_settings (id) VALUES (1)`
 
-// Seed prepares a freshly migrated team database for its owner, through the routing pool under the
-// team in ctx. Idempotent: rerunning after a crash at any point converges on the same rows.
+// Execer runs one statement (the database lock's connection, or the routing pool in tests).
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// Seed prepares a freshly migrated team database for its owner: scrub and defaults through db (the
+// worker passes its database lock, so they run on the lock's own connection), the owner through
+// admins under the team in ctx. Idempotent: rerunning after a crash at any point converges on the same rows.
 //
 //  1. scrub: delete grbpwr's brand rows the migration chain seeded (seed/scrub.sql);
 //  2. workshop_settings defaults;
@@ -25,9 +32,9 @@ const workshopDefaults = `INSERT IGNORE INTO workshop_settings (id) VALUES (1)`
 // The owner comes last, so a scrub statement added later (say, one that empties seeded people) can
 // never remove the owner on a rerun. Team #1 is refused before any statement. Seed runs only on a
 // team the directory shows provisioning, and guard (required: the worker's lease check, see
-// platformstore.CheckProvisionLease) must pass before every statement — a live team is never
-// scrubbed, whoever calls.
-func Seed(ctx context.Context, db dependency.DB, admins dependency.Admin, ownerHandle string, guard func(context.Context) error) error {
+// platformstore.CheckProvisionLease plus the database lock still held) must pass before every
+// statement — a live team is never scrubbed, whoever calls.
+func Seed(ctx context.Context, db Execer, admins dependency.Admin, ownerHandle string, guard func(context.Context) error) error {
 	t, ok := tenant.From(ctx)
 	if !ok {
 		return tenant.ErrNoTenant

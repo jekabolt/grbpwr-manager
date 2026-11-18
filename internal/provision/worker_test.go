@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,6 +115,13 @@ type fakeSchema struct {
 	created  []string
 	migrated []string
 	failOn   map[string]error // db → Migrate error
+	failAll  bool             // every Migrate fails
+	// onMigrate runs at the start of every migration, outside mu (it may block or steal a lease).
+	onMigrate func(db string)
+	locks     map[string]bool // db → named lock held
+	running   map[string]int  // db → migrations running now
+	overlap   int             // most migrations seen running at once on one database
+	execs     []string        // statements run through a lock: "db: query"
 }
 
 func (s *fakeSchema) Create(_ context.Context, db string) error {
@@ -123,12 +132,59 @@ func (s *fakeSchema) Create(_ context.Context, db string) error {
 }
 func (s *fakeSchema) Migrate(_ context.Context, db string) (string, error) {
 	s.mu.Lock()
+	if s.running == nil {
+		s.running = map[string]int{}
+	}
+	s.running[db]++
+	s.overlap = max(s.overlap, s.running[db])
+	hook := s.onMigrate
+	s.mu.Unlock()
+	if hook != nil {
+		hook(db)
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.running[db]--
+	if s.failAll {
+		return "", errors.New("boom")
+	}
 	if err := s.failOn[db]; err != nil {
 		return "", err
 	}
 	s.migrated = append(s.migrated, db)
 	return s.latest, nil
+}
+func (s *fakeSchema) Lock(_ context.Context, db string) (provision.DBLock, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.locks == nil {
+		s.locks = map[string]bool{}
+	}
+	if s.locks[db] {
+		return nil, false, nil
+	}
+	s.locks[db] = true
+	return &fakeLock{s: s, db: db}, true, nil
+}
+
+// fakeLock is a named lock: one holder per database until Release.
+type fakeLock struct {
+	s  *fakeSchema
+	db string
+}
+
+func (l *fakeLock) ExecContext(_ context.Context, q string, _ ...any) (sql.Result, error) {
+	l.s.mu.Lock()
+	defer l.s.mu.Unlock()
+	l.s.execs = append(l.s.execs, l.db+": "+q)
+	return nil, nil
+}
+func (l *fakeLock) Migrate(ctx context.Context) (string, error) { return l.s.Migrate(ctx, l.db) }
+func (l *fakeLock) Alive(context.Context) error                 { return nil }
+func (l *fakeLock) Release(context.Context) {
+	l.s.mu.Lock()
+	defer l.s.mu.Unlock()
+	delete(l.s.locks, l.db)
 }
 func (s *fakeSchema) Lines(_ context.Context, db string) ([]string, error) {
 	return []string{"c\tt\tid\tint\tNO\t<null>\t"}, nil
@@ -159,6 +215,7 @@ type fakeTeam struct {
 type fakePlatform struct {
 	mu           sync.Mutex
 	spares       map[string]*platformstore.Spare
+	order        []string // spare names in reservation order
 	teams        map[int64]*fakeTeam
 	leases       map[string]string // key → token
 	createdSince int
@@ -168,6 +225,13 @@ type fakePlatform struct {
 
 func newFakePlatform() *fakePlatform {
 	return &fakePlatform{spares: map[string]*platformstore.Spare{}, teams: map[int64]*fakeTeam{}, leases: map[string]string{}}
+}
+
+// expire drops key's lease, as if its holder stopped renewing it past the TTL: anyone may take it.
+func (p *fakePlatform) expire(key string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.leases, key)
 }
 
 // steal hands key's lease to another worker (as if this one's expired and was taken over).
@@ -235,10 +299,21 @@ func (p *fakePlatform) ReserveSpare(_ context.Context, db, v string, perHour, ke
 	if keep > 0 && ready+creating >= keep {
 		return platformstore.ErrEnoughSpares
 	}
+	// The breaker, as platformstore.ReserveSpare: the last three rows of this version all failed.
+	var last []string
+	for i := len(p.order) - 1; i >= 0 && len(last) < platformstore.SpareBreakerFailures; i-- {
+		if s := p.spares[p.order[i]]; s.SchemaVersion.String == v {
+			last = append(last, s.Status)
+		}
+	}
+	if len(last) == platformstore.SpareBreakerFailures && !slices.ContainsFunc(last, func(st string) bool { return st != platformstore.SpareFailed }) {
+		return platformstore.ErrSpareBreaker
+	}
 	if p.createdSince >= perHour {
 		return platformstore.ErrSpareQuota
 	}
-	p.spares[db] = &platformstore.Spare{DBName: db, Status: platformstore.SpareCreating}
+	p.spares[db] = &platformstore.Spare{DBName: db, Status: platformstore.SpareCreating, SchemaVersion: ns(v)}
+	p.order = append(p.order, db)
 	p.createdSince++
 	return nil
 }
@@ -386,8 +461,8 @@ func TestWorkerFailedSpareStaysFailed(t *testing.T) {
 	pf := newFakePlatform()
 	sc := &fakeSchema{latest: "0477_x.sql", failOn: map[string]error{}}
 	w := newWorker(t, pf, sc, 1)
-	// Fail every migrate: the name is random, so fail through a wrapper.
-	failing := &failingSchema{fakeSchema: sc}
+	// Fail every migrate: the name is random.
+	failing := &fakeSchema{latest: "0477_x.sql", failAll: true}
 	w2, _ := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, failing, nopDB{}, nopAdmin{})
 	_ = w
 	if err := w2.KeepSparesOnce(context.Background()); err == nil {
@@ -401,12 +476,6 @@ func TestWorkerFailedSpareStaysFailed(t *testing.T) {
 			t.Fatalf("spare state %s", s.Status)
 		}
 	}
-}
-
-type failingSchema struct{ *fakeSchema }
-
-func (f *failingSchema) Migrate(context.Context, string) (string, error) {
-	return "", errors.New("boom")
 }
 
 func TestWorkerClaimSeedActivate(t *testing.T) {
@@ -578,7 +647,7 @@ func TestWorkerStaleRowNeverReseedsActiveTeam(t *testing.T) {
 // most PerHour databases, however many teams wait and however often they retry.
 func TestWorkerColdPathStopsAtHourlyCap(t *testing.T) {
 	pf := newFakePlatform()
-	failing := &failingSchema{fakeSchema: &fakeSchema{latest: "0477_x.sql"}}
+	failing := &fakeSchema{latest: "0477_x.sql", failAll: true}
 	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 3}, pf, failing, nopDB{}, nopAdmin{})
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +702,12 @@ func TestWorkerLostLeaseNeverActivates(t *testing.T) {
 // mid-migration does not write the schema version.
 func TestWorkerFleetHonoursDatabaseLease(t *testing.T) {
 	pf := newFakePlatform()
-	sc := &stealingSchema{fakeSchema: &fakeSchema{latest: "0477_x.sql"}, pf: pf, steal: "lkb_t_lost0000"}
+	sc := &fakeSchema{latest: "0477_x.sql"}
+	sc.onMigrate = func(db string) { // the lease of this database goes to another worker mid-migration
+		if db == "lkb_t_lost0000" {
+			pf.steal(platformstore.DBLeaseKey(db))
+		}
+	}
 	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, sc, nopDB{}, nopAdmin{})
 	if err != nil {
 		t.Fatal(err)
@@ -651,20 +725,6 @@ func TestWorkerFleetHonoursDatabaseLease(t *testing.T) {
 	if pf.teams[2].version != "0476_y.sql" || pf.teams[3].version != "0476_y.sql" || pf.teams[4].version != "0477_x.sql" {
 		t.Fatalf("versions held=%s lost=%s free=%s", pf.teams[2].version, pf.teams[3].version, pf.teams[4].version)
 	}
-}
-
-// stealingSchema hands the lease of one database to another worker while migrating it.
-type stealingSchema struct {
-	*fakeSchema
-	pf    *fakePlatform
-	steal string
-}
-
-func (s *stealingSchema) Migrate(ctx context.Context, db string) (string, error) {
-	if db == s.steal {
-		s.pf.steal(platformstore.DBLeaseKey(db))
-	}
-	return s.fakeSchema.Migrate(ctx, db)
 }
 
 // A lease taken over while its holder works cancels the holder's context (renewal finds it gone).
@@ -716,5 +776,131 @@ func TestSchemaCurrent(t *testing.T) {
 		if got := store.SchemaCurrent(c.team, c.latest); got != c.want {
 			t.Fatalf("SchemaCurrent(%+v, %q) = %v", c.team, c.latest, got)
 		}
+	}
+}
+
+// Fix 1: worker A passes its lease check, then stalls past its lease; worker B takes the expired
+// leases. B cannot seed or activate while A holds the database lock, so A's scrub can never land on
+// a team B activated meanwhile; once A is gone, B provisions the team. Without the lock, B activates
+// during A's stall and A's DELETE runs against the live team.
+func TestWorkerLostLeaseHolderNeverScrubsActivatedTeam(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	wA, wB := newWorker(t, pf, sc, 1), newWorker(t, pf, sc, 1)
+	ctx := context.Background()
+	if err := wA.KeepSparesOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "provisioning", owner: "kate"}
+	stalled, resume := make(chan struct{}), make(chan struct{})
+	var scrubbedLive bool
+	wA.SetSeedExecForTest(func(ctx context.Context, exec provision.Execer, _ string, guard func(context.Context) error) error {
+		if err := guard(ctx); err != nil {
+			return err
+		}
+		close(stalled) // checked and authorised; now A pauses
+		<-resume
+		pf.mu.Lock()
+		live := pf.teams[7].status != "provisioning"
+		pf.mu.Unlock()
+		if _, err := exec.ExecContext(ctx, "DELETE FROM shipment_carrier_price"); err != nil {
+			return err
+		}
+		scrubbedLive = live
+		return nil
+	})
+	wB.SetSeedForTest(func(context.Context, string) error { return nil })
+	errA := make(chan error, 1)
+	go func() { errA <- wA.ClaimOnce(ctx) }()
+	<-stalled
+	pf.mu.Lock()
+	db := pf.teams[7].db
+	pf.mu.Unlock()
+	pf.expire(platformstore.TeamLeaseKey(7)) // A stopped renewing: both its leases ran out
+	pf.expire(platformstore.DBLeaseKey(db))
+	errB := wB.ProvisionTeam(ctx, platformstore.ProvisioningTeam{ID: 7, Slug: "alpha", OwnerHandle: "kate"})
+	pf.mu.Lock()
+	during := pf.teams[7].status
+	pf.mu.Unlock()
+	close(resume)
+	if err := <-errA; !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("A with an expired lease: %v", err)
+	}
+	if errB == nil || during != "provisioning" {
+		t.Fatalf("B provisioned while A held the database: err=%v status=%s", errB, during)
+	}
+	if scrubbedLive {
+		t.Fatal("A's scrub ran against an activated team")
+	}
+	// A is gone (lock released): B now provisions the team.
+	if err := wB.ProvisionTeam(ctx, platformstore.ProvisioningTeam{ID: 7, Slug: "alpha", OwnerHandle: "kate"}); err != nil || pf.teams[7].status != "active" {
+		t.Fatalf("B after A: %v %s", err, pf.teams[7].status)
+	}
+}
+
+// Fix 2: migrator A stalls mid-migration past its lease; migrator B takes the expired lease but
+// cannot take the database lock, so it never starts the same migration. Without the lock both run
+// DDL on one database at once.
+func TestWorkerFleetMigratorsNeverOverlap(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	wA, wB := newWorker(t, pf, sc, 1), newWorker(t, pf, sc, 1)
+	pf.teams[2] = &fakeTeam{slug: "slow", status: "active", db: "lkb_t_slow0000", version: "0476_y.sql"}
+	started, resume := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	sc.onMigrate = func(string) { // only the first migration stalls; any second one runs straight on
+		if first.CompareAndSwap(false, true) {
+			close(started)
+			<-resume
+		}
+	}
+	ctx := context.Background()
+	errA := make(chan error, 1)
+	go func() { errA <- wA.MigrateFleetOnce(ctx) }()
+	<-started
+	pf.expire(platformstore.DBLeaseKey("lkb_t_slow0000"))
+	if err := wB.MigrateFleetOnce(ctx); err != nil {
+		t.Fatalf("B: %v", err)
+	}
+	close(resume)
+	<-errA // A's version write is refused (lease gone); what matters is the DDL
+	if sc.overlap != 1 {
+		t.Fatalf("%d migrations ran at once on one database", sc.overlap)
+	}
+	if n := strings.Count(fmt.Sprint(sc.migrated), "lkb_t_slow0000"); n != 1 {
+		t.Fatalf("migrated %d times: %v", n, sc.migrated)
+	}
+}
+
+// Fix 3: three failed spares of one version open the breaker: no fourth database is created for it,
+// however much hourly quota is left and however often the keeper and the cold path ask; a new
+// version starts again.
+func TestWorkerSpareBreakerStopsAfterThreeFailures(t *testing.T) {
+	pf := newFakePlatform()
+	sc := &fakeSchema{latest: "0477_x.sql", failAll: true}
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 10}, pf, sc, nopDB{}, nopAdmin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	w.SetNowForTest(func() time.Time { return now })
+	w.SetSeedForTest(func(context.Context, string) error { return nil })
+	pf.teams[11] = &fakeTeam{slug: "cold", status: "provisioning", owner: "o"}
+	ctx := context.Background()
+	for range 6 {
+		_ = w.KeepSparesOnce(ctx)
+		_ = w.ClaimOnce(ctx)
+		now = now.Add(10 * time.Minute)
+	}
+	if n := len(sc.created); n != 3 {
+		t.Fatalf("%d databases created for a version whose migration always fails, want 3", n)
+	}
+	if err := w.KeepSparesOnce(ctx); err != nil {
+		t.Fatalf("an open breaker is not a keeper error: %v", err)
+	}
+	// A binary with a newer version tries again.
+	sc.mu.Lock()
+	sc.latest, sc.failAll = "0478_z.sql", false
+	sc.mu.Unlock()
+	if err := w.KeepSparesOnce(ctx); err != nil || len(sc.created) != 4 {
+		t.Fatalf("new version: %v, created %d", err, len(sc.created))
 	}
 }
