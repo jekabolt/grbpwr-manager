@@ -109,7 +109,11 @@ func buildSavedAssemblyCompleteSourceV1(
 	if err != nil {
 		return nil, err
 	}
-	seams, err := completeSourceOwnedSeams(card, pieceScopes, labels)
+	strips, err := completeSourceStripKeys(card, pieceScopes, labels)
+	if err != nil {
+		return nil, err
+	}
+	seams, err := completeSourceOwnedSeams(card, pieceScopes, labels, strips)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +121,13 @@ func buildSavedAssemblyCompleteSourceV1(
 	if err != nil {
 		return nil, err
 	}
-	source := &entity.SavedAssemblyCompleteSourceV1{Rows: rows, OwnedSeams: seams, Aliases: aliases, GarmentLabels: usedLabels}
+	usedStrips, err := completeSourceReferencedCutStrips(card, seams, strips)
+	if err != nil {
+		return nil, err
+	}
+	source := &entity.SavedAssemblyCompleteSourceV1{
+		Rows: rows, OwnedSeams: seams, Aliases: aliases, GarmentLabels: usedLabels, CutStrips: usedStrips,
+	}
 	data, err := completeSourceCanonicalJSON(card.Operations, source, revision)
 	if err != nil {
 		return nil, err
@@ -286,7 +296,71 @@ func completeSourceReferencedLabels(ops []entity.TechCardOperation, seams []enti
 	return out, nil
 }
 
-func completeSourceOwnedSeams(card *entity.TechCard, pieceScopes map[string]bool, labels map[string]entity.TechCardGarmentLabel) ([]entity.TechCardSeam, error) {
+func completeSourceStripKeys(card *entity.TechCard, pieces map[string]bool, labels map[string]entity.TechCardGarmentLabel) (map[string]entity.TechCardCutStrip, error) {
+	if len(card.CutStrips) > entity.CutStripMaxPerCard {
+		return nil, fmt.Errorf("complete Assembly source exceeds its cut strip bound: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+	}
+	strips := make(map[string]entity.TechCardCutStrip, len(card.CutStrips))
+	for _, strip := range card.CutStrips {
+		key := strip.LineKey
+		_, used := strips[key]
+		_, label := labels[key]
+		if strip.TechCardId != card.Id || !entity.ValidTechCardSeamKey(key) || used || pieces[key] || label {
+			return nil, fmt.Errorf("cut strip %q has no unique local line key: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		strips[key] = strip
+	}
+	return strips, nil
+}
+
+func completeSourceReferencedCutStrips(card *entity.TechCard, seams []entity.TechCardSeam, strips map[string]entity.TechCardCutStrip) ([]entity.SavedAssemblyCutStripSourceV1, error) {
+	if len(strips) == 0 {
+		return nil, nil
+	}
+	used := make(map[string]entity.TechCardCutStrip)
+	for _, seam := range seams {
+		for _, side := range [][]entity.TechCardSeamAnchor{seam.SideA, seam.SideB} {
+			for _, anchor := range side {
+				if strip, ok := strips[anchor.PieceLineKey]; ok {
+					used[anchor.PieceLineKey] = strip
+				}
+			}
+		}
+	}
+	if len(used) == 0 {
+		return nil, nil
+	}
+	lines := make(map[string]entity.TechCardBomItem, len(card.BomItems))
+	for _, line := range card.BomItems {
+		if _, duplicate := lines[line.LineKey]; duplicate {
+			return nil, fmt.Errorf("BOM line %q is repeated: %w", line.LineKey, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		lines[line.LineKey] = line
+	}
+	out := make([]entity.SavedAssemblyCutStripSourceV1, 0, len(used))
+	for key, strip := range used {
+		line, ok := lines[strip.BomLineKey]
+		if !ok || line.Id != strip.BomItemId || !entity.ValidTechCardSeamKey(strip.BomLineKey) {
+			return nil, fmt.Errorf("cut strip %q has no matching card BOM line: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		material := card.LinkedMaterials[int(line.MaterialId.Int64)]
+		unit := entity.ResolveBomLineUnit(line.Section, line.Unit.String, material.Unit.String)
+		if entity.CutStripLineProblem(unit, line.Section, line.Purpose.String) != "" {
+			return nil, fmt.Errorf("cut strip %q has an unsupported BOM unit or purpose: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
+		binding := entity.SavedAssemblyCutStripSourceV1{
+			Strip: strip, SizeIDs: card.SizeIds, BomSection: line.Section, BomUnit: unit,
+		}
+		if line.MaterialId.Valid {
+			binding.BomMaterialID = &line.MaterialId.Int64
+		}
+		out = append(out, binding)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Strip.LineKey < out[j].Strip.LineKey })
+	return out, nil
+}
+
+func completeSourceOwnedSeams(card *entity.TechCard, pieceScopes map[string]bool, labels map[string]entity.TechCardGarmentLabel, strips map[string]entity.TechCardCutStrip) ([]entity.TechCardSeam, error) {
 	byKey := make(map[string]entity.TechCardSeam, len(card.Seams))
 	for _, seam := range card.Seams {
 		if !entity.ValidTechCardSeamKey(seam.SeamKey) || seam.TechCardId != card.Id {
@@ -319,7 +393,7 @@ func completeSourceOwnedSeams(card *entity.TechCard, pieceScopes map[string]bool
 			if !exists || owned[key] {
 				return nil, fmt.Errorf("operation %d seam %q is missing or has multiple owners: %w", number, key, entity.ErrTechCardSavedAssemblyUnsupported)
 			}
-			if err := validateCompleteSourceSeam(seam, pieceScopes, labels); err != nil {
+			if err := validateCompleteSourceSeam(seam, pieceScopes, labels, strips); err != nil {
 				return nil, err
 			}
 			owned[key] = true
@@ -329,7 +403,7 @@ func completeSourceOwnedSeams(card *entity.TechCard, pieceScopes map[string]bool
 	return out, nil
 }
 
-func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string]bool, labels map[string]entity.TechCardGarmentLabel) error {
+func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string]bool, labels map[string]entity.TechCardGarmentLabel, strips map[string]entity.TechCardCutStrip) error {
 	// The wire converter maps unknown stored enum values to unspecified. Refuse those values
 	// here so distinct stored values cannot get the same exact-source digest.
 	if !savedAssemblyKnownSeamValues(seam, true) ||
@@ -344,7 +418,8 @@ func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string
 		}
 		for _, a := range side {
 			_, label := labels[a.PieceLineKey]
-			if (!pieceScopes[a.PieceLineKey] && !label) || len(a.Samples) > entity.TechCardSeamSamplesPerAnchor {
+			_, strip := strips[a.PieceLineKey]
+			if (!pieceScopes[a.PieceLineKey] && !label && !strip) || len(a.Samples) > entity.TechCardSeamSamplesPerAnchor {
 				return fmt.Errorf("seam %q anchor has invalid samples or no local saved source: %w", seam.SeamKey, entity.ErrTechCardSavedAssemblyUnsupported)
 			}
 			numbers := []float64{a.PerimShare, a.LenMm, a.TurnDeg, a.RangeFrom, a.RangeTo}
@@ -406,6 +481,7 @@ func completeSourceCanonicalJSON(
 			OwnedSeams    []any
 			Aliases       []any
 			GarmentLabels []any
+			CutStrips     []any
 		}
 	}
 	if err := json.Unmarshal(wire, &value); err != nil {
@@ -418,10 +494,14 @@ func completeSourceCanonicalJSON(
 	for _, row := range value.CompleteSourceV1.Rows {
 		rows = append(rows, row)
 	}
-	return savedAssemblyCanonicalJSON(map[string]any{
+	projection := map[string]any{
 		"serverAssemblyRevision": revision,
 		"operations":             value.Operations, "rows": rows,
 		"ownedSeams": value.CompleteSourceV1.OwnedSeams, "aliases": value.CompleteSourceV1.Aliases,
 		"garmentLabels": value.CompleteSourceV1.GarmentLabels,
-	})
+	}
+	if len(value.CompleteSourceV1.CutStrips) > 0 {
+		projection["cutStrips"] = value.CompleteSourceV1.CutStrips
+	}
+	return savedAssemblyCanonicalJSON(projection)
 }

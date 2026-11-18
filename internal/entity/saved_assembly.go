@@ -54,8 +54,18 @@ type SavedAssemblyCompleteSourceV1 struct {
 	OwnedSeams    []TechCardSeam
 	Aliases       []SavedAssemblySourceAliasV1
 	GarmentLabels []TechCardGarmentLabel
+	CutStrips     []SavedAssemblyCutStripSourceV1
 	SourceSHA256  string
 	CanonicalJSON []byte
+}
+
+// SavedAssemblyCutStripSourceV1 identifies a card-owned generated trim, separate from DXF rows.
+type SavedAssemblyCutStripSourceV1 struct {
+	Strip         TechCardCutStrip
+	SizeIDs       []int
+	BomSection    TechCardBomSection
+	BomUnit       string
+	BomMaterialID *int64
 }
 
 type SavedAssemblyAuthoredFoldV1 struct {

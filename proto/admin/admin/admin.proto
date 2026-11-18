@@ -12259,6 +12259,16 @@ message TechCardSavedAssemblyCompleteSourceV1 {
   // The existing label wire preserves saved dimensions and fold/stitch settings. An unset dimension
   // stays unknown here, and no label acquires DXF edge authority.
   repeated common.TechCardGarmentLabel garment_labels = 6;
+  // Cut-to-length trim referenced by owned seam anchors. The canonical JSON includes these only
+  // when present; old strip-free sources keep exactly the same seal.
+  repeated TechCardSavedAssemblyCutStripSourceV1 cut_strips = 7;
+}
+
+message TechCardSavedAssemblyCutStripSourceV1 {
+  common.TechCardCutStrip strip = 1;
+  string bom_section = 2;
+  string bom_unit = 3;
+  optional int64 bom_material_id = 4;
 }
 
 message TechCardSavedAssemblyAuthoredFoldV1 {

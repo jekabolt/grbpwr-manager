@@ -33,6 +33,15 @@ func SavedAssemblyCompleteSourceV1ToPb(source *entity.SavedAssemblyCompleteSourc
 		SourceSha256:  source.SourceSHA256,
 		CanonicalJson: append([]byte(nil), source.CanonicalJSON...),
 	}
+	for _, binding := range source.CutStrips {
+		strip := TechCardCutStripsToPb([]entity.TechCardCutStrip{binding.Strip}, binding.SizeIDs)[0]
+		out.CutStrips = append(out.CutStrips, &pb_admin.TechCardSavedAssemblyCutStripSourceV1{
+			Strip:         strip,
+			BomSection:    string(binding.BomSection),
+			BomUnit:       binding.BomUnit,
+			BomMaterialId: binding.BomMaterialID,
+		})
+	}
 	for _, row := range source.Rows {
 		out.Rows = append(out.Rows, SavedPatternRowIdentityToPb(row))
 	}
