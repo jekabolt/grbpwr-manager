@@ -14,6 +14,23 @@ func verifyGuardedPieceRenameUnderLock(ctx context.Context, db dependency.DB, ca
 	if _, err := entity.GuardedPieceRenamePiece(card, intent); err != nil {
 		return err
 	}
+	used, err := hasGuardedPatternAttachments(ctx, db, cardID)
+	if err != nil {
+		return fmt.Errorf("check protected piece-rename attachments: %w", err)
+	}
+	if used {
+		return entity.ErrTechCardPieceRenameProtected
+	}
+
+	lines := entity.RollGoodsLinesOfBom(card.BomItems)
+	if !matchesGuardedPieceRenamePattern(card, lines, intent) {
+		return entity.ErrTechCardPieceRenameProtected
+	}
+	return nil
+}
+
+// Called with the card row locked, including against sidecar writers that do not advance its version.
+func hasGuardedPatternAttachments(ctx context.Context, db dependency.DB, cardID int) (bool, error) {
 	// Every semantic sidecar writer takes the same card lock, including V1 writers that do not
 	// advance it. Test every pattern on the card before the ordinary document rewrite can delete one.
 	protection, err := storeutil.QueryNamedOne[struct {
@@ -25,18 +42,7 @@ func verifyGuardedPieceRenameUnderLock(ctx context.Context, db dependency.DB, ca
 		OR EXISTS(SELECT 1 FROM tech_card_piece_area WHERE tech_card_id = :id)
 		OR EXISTS(SELECT 1 FROM tech_card_marker WHERE tech_card_id = :id)
 	) AS attached`, map[string]any{"id": cardID})
-	if err != nil {
-		return fmt.Errorf("check protected piece-rename attachments: %w", err)
-	}
-	if protection.Attached {
-		return entity.ErrTechCardPieceRenameProtected
-	}
-
-	lines := entity.RollGoodsLinesOfBom(card.BomItems)
-	if !matchesGuardedPieceRenamePattern(card, lines, intent) {
-		return entity.ErrTechCardPieceRenameProtected
-	}
-	return nil
+	return protection.Attached, err
 }
 
 func matchesGuardedPieceRenamePattern(card *entity.TechCard, lines []entity.RollGoodsLine, intent *entity.GuardedZeroOperationPieceRename) bool {
