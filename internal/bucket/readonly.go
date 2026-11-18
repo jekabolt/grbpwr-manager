@@ -194,17 +194,17 @@ func isAllowedReadOnlyKey(key string) bool {
 	return true
 }
 
+// legacyClient is the https client of read-only reads: the injected one (tests) or a fresh client on
+// the shared default transport. Redirects are refused either way — a redirect would be a fetch of a
+// host nobody configured.
 func (b *Bucket) legacyClient() *http.Client {
+	c := &http.Client{Timeout: 5 * time.Minute}
 	if b.legacyHTTP != nil {
-		return b.legacyHTTP
+		cp := *b.legacyHTTP
+		c = &cp
 	}
-	return defaultLegacyHTTP
-}
-
-var defaultLegacyHTTP = &http.Client{
-	Timeout: 5 * time.Minute,
-	// A redirect would be a fetch of a host nobody configured.
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 func (b *Bucket) openReadOnly(ctx context.Context, u *url.URL) (io.ReadCloser, int64, error) {
@@ -220,13 +220,7 @@ func (b *Bucket) openReadOnly(ctx context.Context, u *url.URL) (io.ReadCloser, i
 	if err != nil {
 		return nil, 0, fmt.Errorf("read-only object %q: %w", key, err)
 	}
-	client := b.legacyClient()
-	if client.CheckRedirect == nil {
-		c := *client
-		c.CheckRedirect = defaultLegacyHTTP.CheckRedirect
-		client = &c
-	}
-	resp, err := client.Do(req)
+	resp, err := b.legacyClient().Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read-only object %q on %s: %w", key, u.Host, err)
 	}

@@ -56,7 +56,7 @@ type Bucket struct {
 	*minio.Client
 	*Config
 	ms dependency.Media
-	// legacyHTTP reads objects from a read-only host; nil = defaultLegacyHTTP (tests inject one).
+	// legacyHTTP reads objects from a read-only host; nil = a default client (tests inject one).
 	legacyHTTP *http.Client
 }
 
