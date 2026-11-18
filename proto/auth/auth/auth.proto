@@ -207,6 +207,8 @@ message TeamRef {
   bool read_only = 4;
   // ready is false while the team is provisioning.
   bool ready = 5;
+  // awaiting_approval is true while the team waits for an operator's approval; ready is false then.
+  bool awaiting_approval = 6;
 }
 
 message SignUpRequest {
@@ -237,6 +239,8 @@ message VerifyEmailRequest {
 message VerifyEmailResponse {
   string team_slug = 1;
   string handoff_code = 2;
+  // awaiting_approval is true when the team waits for an operator's approval; handoff_code is empty then.
+  bool awaiting_approval = 3;
 }
 
 message ResendVerificationRequest {

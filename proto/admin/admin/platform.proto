@@ -48,13 +48,29 @@ service PlatformService {
       body: "*"
     };
   }
+
+  // ApproveTeam lets a team that waits for approval start provisioning.
+  rpc ApproveTeam(ApproveTeamRequest) returns (ApproveTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/approve"
+      body: "*"
+    };
+  }
+
+  // DeclineTeam rejects a team that waits for approval.
+  rpc DeclineTeam(DeclineTeamRequest) returns (DeclineTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/decline"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
 message PlatformTeam {
   string slug = 1;
   string name = 2;
-  // status is active, read_only, provisioning or pending.
+  // status is active, read_only, provisioning, pending or review (waits for approval).
   string status = 3;
   int32 people = 4;
   google.protobuf.Timestamp created_at = 5;
@@ -136,3 +152,17 @@ message RenameTeamRequest {
 message RenameTeamResponse {
   PlatformTeam team = 1;
 }
+
+message ApproveTeamRequest {
+  string team_slug = 1;
+}
+
+message ApproveTeamResponse {
+  PlatformTeam team = 1;
+}
+
+message DeclineTeamRequest {
+  string team_slug = 1;
+}
+
+message DeclineTeamResponse {}
