@@ -306,6 +306,8 @@ message GetInviteResponse {
 message AcceptInviteRequest {
   string token = 1;
   string password = 2;
+  // handle is the person's name inside the team when the invited email has no account yet.
+  string handle = 3;
 }
 
 message AcceptInviteResponse {
