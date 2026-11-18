@@ -54,7 +54,8 @@ type Options struct {
 
 // Stats are the connector's counters since start.
 type Stats struct {
-	// MissingCtx counts calls that arrived without a team (tenant_missing_ctx_total).
+	// MissingCtx counts statements and transaction starts that ran without a team, one per query
+	// whatever path database/sql took (tenant_missing_ctx_total).
 	MissingCtx int64
 	// Uses counts USE statements issued (a switch of a connection to another team's database).
 	Uses int64
@@ -162,15 +163,15 @@ func (c *Connector) Stats() Stats {
 // Strict reports whether teams mode is on.
 func (c *Connector) Strict() bool { return c.strict }
 
-// target resolves the database a call with ctx must run on.
+// target resolves the database a call with ctx must run on. It does not count a miss: route runs
+// several times for one query (the driver's ErrSkip → prepare → statement path), so the count is
+// taken once where the statement actually runs (noteMissing).
 func (c *Connector) target(ctx context.Context) (string, error) {
 	t, ok := tenant.From(ctx)
 	if !ok {
 		if c.strict {
 			return "", tenant.ErrNoTenant
 		}
-		n := c.missing.Add(1)
-		c.warnMissing(ctx, n)
 		return c.homeDB, nil
 	}
 	if t.DBName == "" {
@@ -180,6 +181,18 @@ func (c *Connector) target(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("tenantdb: database name %q of team %d is outside the allowlist", t.DBName, t.ID)
 	}
 	return t.DBName, nil
+}
+
+// noteMissing counts one statement (or transaction start) that ran on team #1 because ctx had no
+// team: one missing-ctx query = one count, whatever path database/sql took to run it.
+func (c *Connector) noteMissing(ctx context.Context) {
+	if c.strict {
+		return
+	}
+	if _, ok := tenant.From(ctx); ok {
+		return
+	}
+	c.warnMissing(ctx, c.missing.Add(1))
 }
 
 func (c *Connector) warnMissing(ctx context.Context, total int64) {
@@ -263,7 +276,12 @@ func (cn *conn) ExecContext(ctx context.Context, query string, args []driver.Nam
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	return ex.ExecContext(ctx, query, args)
+	res, err := ex.ExecContext(ctx, query, args)
+	if !errors.Is(err, driver.ErrSkip) {
+		// ErrSkip: database/sql runs it again through PrepareContext + the statement, which counts.
+		cn.c.noteMissing(ctx)
+	}
+	return res, err
 }
 
 func (cn *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -274,7 +292,11 @@ func (cn *conn) QueryContext(ctx context.Context, query string, args []driver.Na
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	return q.QueryContext(ctx, query, args)
+	rows, err := q.QueryContext(ctx, query, args)
+	if !errors.Is(err, driver.ErrSkip) {
+		cn.c.noteMissing(ctx)
+	}
+	return rows, err
 }
 
 func (cn *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -317,6 +339,7 @@ func (cn *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, 
 	if err != nil {
 		return nil, err
 	}
+	cn.c.noteMissing(ctx)
 	cn.txDB = db
 	return &tx{cn: cn, inner: itx}, nil
 }
@@ -434,6 +457,7 @@ func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 	if err := s.ready(ctx); err != nil {
 		return nil, err
 	}
+	s.cn.c.noteMissing(ctx)
 	if e, ok := s.inner.(driver.StmtExecContext); ok {
 		return e.ExecContext(ctx, args)
 	}
@@ -444,6 +468,7 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	if err := s.ready(ctx); err != nil {
 		return nil, err
 	}
+	s.cn.c.noteMissing(ctx)
 	if q, ok := s.inner.(driver.StmtQueryContext); ok {
 		return q.QueryContext(ctx, args)
 	}
