@@ -50,6 +50,8 @@ func (s *Server) WithAdminAuthz(next http.Handler) http.Handler {
 		ctx, err := s.adminChain(r.Context(), adminCall{
 			token:    token,
 			origin:   r.Header.Get("Origin"),
+			host:     r.Host,
+			xteam:    httpXTeam(r),
 			method:   r.Method + " " + pattern,
 			readOnly: r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions,
 			features: func() ([]feature.Key, bool) { return feature.ForRoute(r.Method, pattern) },
@@ -103,4 +105,15 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
+}
+
+// httpXTeam is the team a plain HTTP request names in its X-Team header (the gateway spelling
+// Grpc-Metadata-X-Team included).
+func httpXTeam(r *http.Request) string {
+	for _, h := range []string{"X-Team", "Grpc-Metadata-X-Team"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			return v
+		}
+	}
+	return ""
 }

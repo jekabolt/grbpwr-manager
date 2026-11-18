@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,7 +23,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
-	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -43,7 +43,31 @@ type controlPlane interface {
 	SessionActive(ctx context.Context, sid string) (bool, error)
 	FeatureOverrides(ctx context.Context, teamID int64) (map[string]bool, error)
 	OperatorActive(ctx context.Context, userID int64) (bool, error)
+	// TeamSession reads the live tuple behind a team token: the session sid of user uid in team
+	// tid (aud team) is not revoked, the platform user is active and the membership is active.
+	// ok=false when any part is missing; role is the membership role.
+	TeamSession(ctx context.Context, sid string, uid, tid int64) (role string, ok bool, err error)
 }
+
+// Membership is the live state behind a team token (TeamSession).
+type Membership struct {
+	UserID int64
+	TeamID int64
+	Role   string // "owner" or "member"
+	Active bool
+}
+
+type memberEntry struct {
+	m       Membership
+	expires time.Time
+}
+
+// MsgTeamMismatch is the error text when the Host / X-Team of a request name no team that can serve
+// it (an invalid or unknown address, Host and X-Team disagree) or not the token's team.
+const MsgTeamMismatch = "team_mismatch"
+
+// teamMismatchStatus is the refusal RequestedTeam returns for such a request (a func, not a package var: G4).
+func teamMismatchStatus() error { return status.Error(codes.PermissionDenied, MsgTeamMismatch) }
 
 type featureEntry struct {
 	eff     map[feature.Key]bool
@@ -57,9 +81,8 @@ type boolEntry struct {
 
 // Binder is the edge binder.
 type Binder struct {
-	teamOne      tenant.Team
-	latestSchema string
-	now          func() time.Time
+	teamOne tenant.Team
+	now     func() time.Time
 
 	mu            sync.RWMutex
 	plane         controlPlane // nil = teams mode off
@@ -67,11 +90,13 @@ type Binder struct {
 	storefrontID  int64
 	baseDomain    string
 	legacyOrigins map[string]bool
+	behind        func(tenant.Team) bool // nil = every team is current
 
 	cacheMu   sync.Mutex
 	features  map[int64]featureEntry
 	sessions  map[string]boolEntry
 	operators map[int64]boolEntry
+	members   map[string]memberEntry
 }
 
 // New returns the binder for team #1 with teams mode off. UsePlatform switches teams mode on.
@@ -85,13 +110,13 @@ func New(teamOne tenant.Team) (*Binder, error) {
 	}
 	return &Binder{
 		teamOne:      teamOne,
-		latestSchema: store.LatestMigrationID(),
 		now:          time.Now,
 		dir:          dir,
 		storefrontID: tenant.TeamOneID,
 		features:     map[int64]featureEntry{},
 		sessions:     map[string]boolEntry{},
 		operators:    map[int64]boolEntry{},
+		members:      map[string]memberEntry{},
 	}, nil
 }
 
@@ -172,14 +197,154 @@ func (b *Binder) StorefrontTeam(ctx context.Context) (tenant.Team, error) {
 	return b.TeamByID(ctx, id)
 }
 
-// SchemaBehind reports whether a team's database is behind the binary's migrations (its calls
-// answer UNAVAILABLE until the fleet migrator catches it up). Team #1 migrates synchronously at
+// UseSchemaCheck injects the predicate «this team's database is behind the binary's migrations»
+// (the fleet migrator's). nil restores the default: every team is current.
+func (b *Binder) UseSchemaCheck(behind func(tenant.Team) bool) {
+	b.mu.Lock()
+	b.behind = behind
+	b.mu.Unlock()
+}
+
+// SchemaBehind reports whether a team's database is behind the binary's migrations: its calls
+// answer UNAVAILABLE until the fleet migrator catches it up. Team #1 migrates synchronously at
 // boot and is never behind.
 func (b *Binder) SchemaBehind(t tenant.Team) bool {
-	if t.ID == tenant.TeamOneID || b.latestSchema == "" {
+	if t.ID == tenant.TeamOneID {
 		return false
 	}
-	return t.SchemaVersion == "" || t.SchemaVersion < b.latestSchema
+	b.mu.RLock()
+	behind := b.behind
+	b.mu.RUnlock()
+	return behind != nil && behind(t)
+}
+
+// RequestedTeam is the team a request names by its Host and X-Team header (teams §6). ok=false: it
+// names none (teams mode off; the API, root or any non-team host; no header). Host and X-Team
+// must agree when both name a team. Host is lower-cased and loses its port and trailing dot; a team
+// label is one ASCII slug label under the base domain. An invalid, reserved or unknown address and a
+// disagreement is refused with PermissionDenied team_mismatch; a control-plane failure is
+// Unavailable. The Origin is not consulted: it is a browser defence only.
+func (b *Binder) RequestedTeam(ctx context.Context, host, xteam string) (tenant.Team, bool, error) {
+	if !b.TeamsMode() {
+		return tenant.Team{}, false, nil
+	}
+	b.mu.RLock()
+	base := b.baseDomain
+	b.mu.RUnlock()
+
+	fromHost, err := b.hostSlug(host, base)
+	if err != nil {
+		return tenant.Team{}, false, err
+	}
+	fromHeader := ""
+	if h := strings.ToLower(strings.TrimSpace(xteam)); h != "" {
+		if !b.validTeamLabel(h) {
+			return tenant.Team{}, false, teamMismatchStatus()
+		}
+		fromHeader = h
+	}
+	slug := fromHost
+	switch {
+	case fromHost != "" && fromHeader != "" && fromHost != fromHeader:
+		return tenant.Team{}, false, teamMismatchStatus()
+	case slug == "":
+		slug = fromHeader
+	}
+	if slug == "" {
+		return tenant.Team{}, false, nil
+	}
+	t, err := b.teamBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, tenant.ErrNotFound) {
+			return tenant.Team{}, false, teamMismatchStatus()
+		}
+		return tenant.Team{}, false, status.Error(codes.Unavailable, "team lookup unavailable")
+	}
+	return t, true, nil
+}
+
+// hostSlug returns the team label of a Host under base, "" for a host that names no team.
+func (b *Binder) hostSlug(host, base string) (string, error) {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if hh, _, err := net.SplitHostPort(h); err == nil {
+		h = hh
+	}
+	h = strings.TrimSuffix(h, ".")
+	if base == "" || h == "" || h == base || !strings.HasSuffix(h, "."+base) {
+		return "", nil
+	}
+	label := strings.TrimSuffix(h, "."+base)
+	if !strings.Contains(label, ".") && label != b.teamOne.Slug && tenant.IsReservedSlug(label) {
+		return "", nil // a platform host (api, console, www …)
+	}
+	if strings.Contains(label, ".") || !b.validTeamLabel(label) {
+		return "", teamMismatchStatus()
+	}
+	return label, nil
+}
+
+// validTeamLabel: team #1's own slug, or a valid (ASCII, unreserved) workspace address.
+func (b *Binder) validTeamLabel(l string) bool {
+	return l == b.teamOne.Slug || tenant.ValidSlug(l) == nil
+}
+
+// TeamSession re-checks the live tuple behind a team token (15 s cache by sid; the cached answer
+// must match uid and tid). Teams mode off or an empty sid: not active.
+func (b *Binder) TeamSession(ctx context.Context, sid string, uid, tid int64) (role string, active bool, err error) {
+	m, err := b.teamSession(ctx, sid, uid, tid)
+	return m.Role, m.Active, err
+}
+
+func (b *Binder) teamSession(ctx context.Context, sid string, uid, tid int64) (Membership, error) {
+	p, _ := b.state()
+	if p == nil || sid == "" || uid <= 0 || tid <= 0 {
+		return Membership{}, nil
+	}
+	now := b.now()
+	b.cacheMu.Lock()
+	e, hit := b.members[sid]
+	b.cacheMu.Unlock()
+	if !hit || !now.Before(e.expires) || e.m.UserID != uid || e.m.TeamID != tid {
+		role, ok, err := p.TeamSession(ctx, sid, uid, tid)
+		if err != nil {
+			return Membership{}, err
+		}
+		e = memberEntry{m: Membership{UserID: uid, TeamID: tid, Role: role, Active: ok}, expires: now.Add(cacheTTL)}
+		b.cacheMu.Lock()
+		if len(b.members) >= sessionCacheMax {
+			for k, old := range b.members {
+				if !now.Before(old.expires) {
+					delete(b.members, k)
+				}
+			}
+			if len(b.members) >= sessionCacheMax {
+				b.members = map[string]memberEntry{}
+			}
+		}
+		b.members[sid] = e
+		b.cacheMu.Unlock()
+	}
+	return e.m, nil
+}
+
+// InvalidateSession drops the cached session and membership answers of sid on this instance
+// (removal, demotion, sign-out). Other instances see the change within cacheTTL.
+func (b *Binder) InvalidateSession(sid string) {
+	b.cacheMu.Lock()
+	delete(b.members, sid)
+	delete(b.sessions, sid)
+	b.cacheMu.Unlock()
+}
+
+// InvalidateMember drops every cached answer of user uid in team tid on this instance.
+func (b *Binder) InvalidateMember(uid, tid int64) {
+	b.cacheMu.Lock()
+	for k, e := range b.members {
+		if e.m.UserID == uid && e.m.TeamID == tid {
+			delete(b.members, k)
+		}
+	}
+	b.cacheMu.Unlock()
 }
 
 // OriginAllowed is the second lock of the admin chain (teams §6). An empty origin passes (no
@@ -316,6 +481,7 @@ func (b *Binder) InvalidateTeam(teamID int64) {
 	b.cacheMu.Lock()
 	if teamID == 0 {
 		b.features = map[int64]featureEntry{}
+		b.members = map[string]memberEntry{}
 	} else {
 		delete(b.features, teamID)
 	}
@@ -341,6 +507,9 @@ func (b *Binder) bindFor(ctx context.Context, c Class) (context.Context, error) 
 		t, err := b.StorefrontTeam(ctx)
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, "storefront team unavailable")
+		}
+		if b.SchemaBehind(t) {
+			return nil, status.Error(codes.Unavailable, "team is being updated")
 		}
 		return tenant.With(ctx, t), nil
 	case ClassToken:
@@ -424,6 +593,9 @@ func (p storePlane) FeatureOverrides(ctx context.Context, teamID int64) (map[str
 	return p.st.FeatureOverrides(ctx, teamID)
 }
 
+func (p storePlane) TeamSession(ctx context.Context, sid string, uid, tid int64) (string, bool, error) {
+	return p.st.TeamSession(ctx, sid, uid, tid)
+}
 func (p storePlane) OperatorActive(ctx context.Context, userID int64) (bool, error) {
 	var row struct {
 		IsOperator bool   `db:"is_operator"`

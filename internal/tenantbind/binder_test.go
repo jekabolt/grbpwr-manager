@@ -46,6 +46,7 @@ type fakePlane struct {
 	sessions  map[string]bool
 	overrides map[int64]map[string]bool
 	operators map[int64]bool
+	members   map[string]Membership
 	calls     int
 	err       error
 }
@@ -58,6 +59,14 @@ func (p *fakePlane) SessionActive(_ context.Context, sid string) (bool, error) {
 func (p *fakePlane) FeatureOverrides(_ context.Context, id int64) (map[string]bool, error) {
 	p.calls++
 	return p.overrides[id], p.err
+}
+func (p *fakePlane) TeamSession(_ context.Context, sid string, uid, tid int64) (string, bool, error) {
+	p.calls++
+	m, ok := p.members[sid]
+	if !ok || m.UserID != uid || m.TeamID != tid {
+		return "", false, p.err
+	}
+	return m.Role, true, p.err
 }
 func (p *fakePlane) OperatorActive(_ context.Context, id int64) (bool, error) {
 	p.calls++
@@ -223,26 +232,6 @@ func TestOriginAllowed(t *testing.T) {
 		if got := b.OriginAllowed(c.origin, c.team, c.legacy); got != c.want {
 			t.Errorf("%s: OriginAllowed(%q) = %v, want %v", c.name, c.origin, got, c.want)
 		}
-	}
-}
-
-func TestSchemaBehind(t *testing.T) {
-	b := newBinder(t)
-	b.latestSchema = "0300_x.sql"
-	if b.SchemaBehind(teamOne) {
-		t.Fatal("team #1 behind")
-	}
-	if !b.SchemaBehind(acme) {
-		t.Fatal("team with no schema version not behind")
-	}
-	a := acme
-	a.SchemaVersion = "0299_y.sql"
-	if !b.SchemaBehind(a) {
-		t.Fatal("older schema not behind")
-	}
-	a.SchemaVersion = "0300_x.sql"
-	if b.SchemaBehind(a) {
-		t.Fatal("current schema behind")
 	}
 }
 

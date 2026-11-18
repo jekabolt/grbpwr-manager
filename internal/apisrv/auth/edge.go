@@ -32,7 +32,14 @@ type Edge interface {
 	TeamByID(ctx context.Context, id int64) (tenant.Team, error)
 	SchemaBehind(t tenant.Team) bool
 	OriginAllowed(origin string, t tenant.Team, legacy bool) bool
+	// SessionActive: a console / root session (PlatformService chain) is live.
 	SessionActive(ctx context.Context, sid string) (bool, error)
+	// TeamSession re-checks the live tuple behind a team token: session sid of user uid in team
+	// tid unrevoked, platform user active, membership active. role is the membership role.
+	TeamSession(ctx context.Context, sid string, uid, tid int64) (role string, active bool, err error)
+	// RequestedTeam is the team a request names by Host / X-Team (named=false: none). Its errors
+	// are gRPC statuses (PermissionDenied team_mismatch, Unavailable).
+	RequestedTeam(ctx context.Context, host, xteam string) (team tenant.Team, named bool, err error)
 	Features(ctx context.Context, t tenant.Team) (map[feature.Key]bool, error)
 	Operator(ctx context.Context, userID int64) (bool, error)
 }
@@ -82,12 +89,16 @@ func GetPlatformCaller(ctx context.Context) (PlatformCaller, bool) {
 const (
 	msgTeamReadOnly = "team_read_only"
 	msgFeatureOff   = "feature_off"
+	msgTeamMismatch = "team_mismatch"
 )
 
 // adminCall is one admin request as the chain sees it.
 type adminCall struct {
 	token  string
 	origin string
+	// host and xteam name the team the request is presented as (Host / X-Forwarded-Host, X-Team).
+	host  string
+	xteam string
 	// method is the gRPC full method, or "METHOD /route/pattern" on the chi routes (for logs).
 	method string
 	// readOnly: the call only reads, so it passes on a suspended team.
@@ -148,17 +159,19 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 				slog.Int64("tid", team.ID), slog.String("origin", call.origin), slog.Bool("legacy", claims.Legacy))
 			return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 		}
-		// An empty sid is only possible on a legacy (tid 1, old Login) token, which the
-		// account-state check below still covers.
-		if !claims.Legacy {
-			ok, err := s.edge.SessionActive(ctx, claims.SessionID)
-			if err != nil {
-				slog.Default().ErrorContext(ctx, "admin call: session check failed", slog.String("err", err.Error()))
-				return ctx, status.Error(codes.Unavailable, "session check unavailable")
-			}
-			if !ok {
-				return ctx, status.Error(codes.Unauthenticated, "unauthorized")
-			}
+		// The team the request is presented as (Host / X-Team) must be the token's team: a
+		// team-A token never runs while the request names team B.
+		named, isNamed, err := s.edge.RequestedTeam(ctx, call.host, call.xteam)
+		if err != nil {
+			slog.Default().WarnContext(ctx, "admin call: requested team refused",
+				slog.Int64("tid", team.ID), slog.String("host", call.host), slog.String("x_team", call.xteam),
+				slog.String("err", err.Error()))
+			return ctx, err
+		}
+		if isNamed && named.ID != team.ID {
+			slog.Default().WarnContext(ctx, "admin call presented as another team",
+				slog.Int64("tid", team.ID), slog.Int64("requested", named.ID))
+			return ctx, status.Error(codes.PermissionDenied, msgTeamMismatch)
 		}
 	}
 
@@ -211,8 +224,13 @@ const claimOperator = "op"
 // authenticate for WithAuth) calls it, no handler looks membership up on its own. ctx carries the
 // team already (the account lookup reads the team's admins table).
 //
-// Today: the subject's admins row in the team must exist and be enabled; the authorization is the
-// token's super / perms claims. Operator entry is added HERE when the console lane lands (an op
+// Today, in this order: an op token is refused; in teams mode a team token's live control tuple must
+// hold (session unrevoked and matching sid / uid / tid, platform user active, membership active —
+// a removed member or a disabled user is refused within the binder's cache TTL, at once on the
+// instance that removed them); the subject's admins row in the team must exist and be enabled. The
+// authorization is the token's perms and its super claim, the latter only while the membership is
+// still owner (a demoted owner loses super at once). Mode OFF a pre-RBAC token keeps full non-super
+// access. Operator entry is added HERE when the console lane lands (an op
 // token: check the platform user is a live operator and the hand-off grant, skip the admins row,
 // decide its authorization); until then an op token is refused, fail closed.
 func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string, claims jwt.TeamClaims) (AdminAuthz, error) {
@@ -220,6 +238,20 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 		slog.Default().WarnContext(ctx, "operator-entry token refused: not supported yet",
 			slog.Int64("tid", team.ID), slog.String("sub", claims.Handle))
 		return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	super := claims.Super
+	if s.teamsMode() && !claims.Legacy {
+		role, active, err := s.edge.TeamSession(ctx, claims.SessionID, claims.UserID, team.ID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "admin call: session check failed", slog.String("err", err.Error()))
+			return AdminAuthz{}, status.Error(codes.Unavailable, "session check unavailable")
+		}
+		if !active {
+			slog.Default().WarnContext(ctx, "admin call: session, user or membership not live",
+				slog.Int64("tid", team.ID), slog.Int64("uid", claims.UserID))
+			return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+		}
+		super = super && role == roleOwner
 	}
 	if err := s.checkAdminAccountState(ctx, claims.Handle); err != nil {
 		return AdminAuthz{}, err
@@ -229,8 +261,11 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 	if !s.teamsMode() && claims.Legacy && !hasClaim(s.JwtAuth, token, claimSuper) {
 		return AdminAuthz{Legacy: true}, nil
 	}
-	return AdminAuthz{Super: claims.Super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
+	return AdminAuthz{Super: super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
 }
+
+// roleOwner is the team_member role that may carry super.
+const roleOwner = "owner"
 
 // claimSuper is the super claim of an admin token; its absence marks a pre-RBAC token.
 const claimSuper = "super"
@@ -364,6 +399,8 @@ func (s *Server) guard(ctx context.Context, fullMethod string) (context.Context,
 		return s.adminChain(ctx, adminCall{
 			token:      token,
 			origin:     grpcOrigin(ctx),
+			host:       grpcHost(ctx),
+			xteam:      tenant.HeaderSlug(ctx),
 			method:     fullMethod,
 			readOnly:   access == entity.AccessRead,
 			features:   func() ([]feature.Key, bool) { return feature.ForMethod(fullMethod) },
@@ -414,6 +451,21 @@ func grpcOrigin(ctx context.Context) string {
 		return ""
 	}
 	for _, k := range []string{"grpcgateway-origin", "origin"} {
+		if v := md.Get(k); len(v) > 0 && strings.TrimSpace(v[0]) != "" {
+			return strings.TrimSpace(v[0])
+		}
+	}
+	return ""
+}
+
+// grpcHost is the host a gRPC call was addressed to: the public Host the grpc-gateway forwards as
+// x-forwarded-host, else the :authority of a direct gRPC call.
+func grpcHost(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	for _, k := range []string{"x-forwarded-host", ":authority"} {
 		if v := md.Get(k); len(v) > 0 && strings.TrimSpace(v[0]) != "" {
 			return strings.TrimSpace(v[0])
 		}

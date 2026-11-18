@@ -31,6 +31,8 @@ type fakeEdge struct {
 	features map[int64]map[feature.Key]bool
 	sessions map[string]bool
 	ops      map[int64]bool
+	removed  map[int64]bool   // uid → membership removed / user disabled
+	roles    map[int64]string // uid → membership role (default owner)
 }
 
 const (
@@ -65,6 +67,43 @@ func (e *fakeEdge) Features(_ context.Context, t tenant.Team) (map[feature.Key]b
 	}
 	return feature.Effective(t.ID, t.Profile, nil), nil
 }
+func (e *fakeEdge) TeamSession(_ context.Context, sid string, uid, tid int64) (string, bool, error) {
+	if !e.sessions[sid] || e.removed[uid] {
+		return "", false, nil
+	}
+	if _, ok := e.teams[tid]; !ok {
+		return "", false, nil
+	}
+	if r, ok := e.roles[uid]; ok {
+		return r, true, nil
+	}
+	return "owner", true, nil
+}
+
+// RequestedTeam mimics the binder: <slug>.lekalo.studio or X-Team names a team; both must agree.
+func (e *fakeEdge) RequestedTeam(_ context.Context, host, xteam string) (tenant.Team, bool, error) {
+	slug := strings.TrimSuffix(strings.ToLower(host), ".lekalo.studio")
+	if slug == strings.ToLower(host) || slug == "api" {
+		slug = ""
+	}
+	x := strings.ToLower(strings.TrimSpace(xteam))
+	if slug != "" && x != "" && slug != x {
+		return tenant.Team{}, false, status.Error(codes.PermissionDenied, msgTeamMismatch)
+	}
+	if slug == "" {
+		slug = x
+	}
+	if slug == "" {
+		return tenant.Team{}, false, nil
+	}
+	for _, t := range e.teams {
+		if t.Slug == slug {
+			return t, true, nil
+		}
+	}
+	return tenant.Team{}, false, status.Error(codes.PermissionDenied, msgTeamMismatch)
+}
+
 func (e *fakeEdge) Operator(_ context.Context, id int64) (bool, error) { return e.ops[id], nil }
 
 var (
@@ -79,6 +118,8 @@ func newEdge() *fakeEdge {
 		features: map[int64]map[feature.Key]bool{},
 		sessions: map[string]bool{"live": true},
 		ops:      map[int64]bool{42: true},
+		removed:  map[int64]bool{},
+		roles:    map[int64]string{},
 	}
 }
 
