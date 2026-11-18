@@ -120,10 +120,13 @@ func matchesGuardedPieceRenameResult(before, after *entity.TechCard, intent *ent
 	}
 	for _, row := range after.Patterns {
 		old, exists := patterns[row.LineKey]
-		if !exists || old.URL != row.URL || old.SizeBytes != row.SizeBytes ||
-			old.SHA256 != row.SHA256 || old.Version != row.Version || old.SizeId != row.SizeId ||
-			old.FabricPurpose != row.FabricPurpose || old.BomLineKey != row.BomLineKey ||
-			row.SavedRowRevision != old.SavedRowRevision+1 {
+		if !exists {
+			return false
+		}
+		// Every sheet round-trips through the ordinary DTO. The row revision is the
+		// only permitted difference, including on sheets outside the renamed scope.
+		old.SavedRowRevision++
+		if !reflect.DeepEqual(old, row) {
 			return false
 		}
 		delete(patterns, row.LineKey)
