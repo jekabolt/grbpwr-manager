@@ -93,13 +93,14 @@ type Service struct {
 	// turn into row updates per request. Object and card-viewer counters are SEPARATE
 	// maps flushed to separate tables — the id spaces overlap numerically, and one
 	// shared map would credit a card's views to whatever object shares the number.
-	statsMu        sync.Mutex
-	statsCount     map[int64]int64
-	statsLast      map[int64]time.Time
-	cardStatsCount map[int]int64
-	cardStatsLast  map[int]time.Time
-	stopCh         chan struct{}
-	stopOnce       sync.Once
+	//
+	// Pending counters are keyed by the team they were recorded under (teams.go): the flush
+	// writes each batch with its own team in ctx, never pinned to team #1.
+	statsMu   sync.Mutex
+	stats     teamStats[int64]
+	cardStats teamStats[int]
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 
 	// deniedSeq drives the 1-in-N sampling of denial log lines.
 	deniedSeq atomic.Int64
@@ -122,10 +123,8 @@ func New(objects dependency.PatternObjects, cards CardManifests, presign Presign
 		tokenLimiter:    ratelimit.NewLimiter(perTokenWindow, perTokenMax),
 		ipLimiter:       ratelimit.NewLimiter(perIPWindow, perIPMax),
 		viewerIPLimiter: ratelimit.NewLimiter(perViewerIPWindow, perViewerIPMax),
-		statsCount:      map[int64]int64{},
-		statsLast:       map[int64]time.Time{},
-		cardStatsCount:  map[int]int64{},
-		cardStatsLast:   map[int]time.Time{},
+		stats:           teamStats[int64]{},
+		cardStats:       teamStats[int]{},
 		stopCh:          make(chan struct{}),
 	}
 	go s.flushLoop()
@@ -158,46 +157,55 @@ func (s *Service) flushLoop() {
 
 func (s *Service) flushStats() {
 	s.statsMu.Lock()
-	counts := s.statsCount
-	last := s.statsLast
-	cardCounts := s.cardStatsCount
-	cardLast := s.cardStatsLast
-	s.statsCount = map[int64]int64{}
-	s.statsLast = map[int64]time.Time{}
-	s.cardStatsCount = map[int]int64{}
-	s.cardStatsLast = map[int]time.Time{}
+	batches := s.stats
+	cardBatches := s.cardStats
+	s.stats = teamStats[int64]{}
+	s.cardStats = teamStats[int]{}
 	s.statsMu.Unlock()
-	if len(counts) == 0 && len(cardCounts) == 0 {
-		return
+	for _, b := range batches {
+		s.flushBatch(b.ctx(context.Background()), func(ctx context.Context) error {
+			return s.objects.RecordAccess(ctx, b.count, b.last)
+		}, "pattern access stats flush failed")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	for _, b := range cardBatches {
+		s.flushBatch(b.ctx(context.Background()), func(ctx context.Context) error {
+			return s.objects.RecordCardViewerAccess(ctx, b.count, b.last)
+		}, "pattern viewer stats flush failed")
+	}
+}
+
+// flushBatch writes one team's batch under its own timeout; a failure is logged and the batch is
+// lost, as before.
+func (s *Service) flushBatch(parent context.Context, write func(context.Context) error, msg string) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	if len(counts) > 0 {
-		if err := s.objects.RecordAccess(ctx, counts, last); err != nil {
-			slog.Default().ErrorContext(ctx, "pattern access stats flush failed",
-				slog.String("err", err.Error()))
-		}
-	}
-	if len(cardCounts) > 0 {
-		if err := s.objects.RecordCardViewerAccess(ctx, cardCounts, cardLast); err != nil {
-			slog.Default().ErrorContext(ctx, "pattern viewer stats flush failed",
-				slog.String("err", err.Error()))
-		}
+	if err := write(ctx); err != nil {
+		slog.Default().ErrorContext(ctx, msg, slog.String("err", err.Error()))
 	}
 }
 
-func (s *Service) noteAccess(id int64) {
+func (s *Service) noteAccess(ctx context.Context, id int64) {
 	s.statsMu.Lock()
-	s.statsCount[id]++
-	s.statsLast[id] = time.Now().UTC()
+	s.stats.note(ctx, id, time.Now().UTC())
 	s.statsMu.Unlock()
 }
 
-func (s *Service) noteCardAccess(techCardID int) {
+func (s *Service) noteCardAccess(ctx context.Context, techCardID int) {
 	s.statsMu.Lock()
-	s.cardStatsCount[techCardID]++
-	s.cardStatsLast[techCardID] = time.Now().UTC()
+	s.cardStats.note(ctx, techCardID, time.Now().UTC())
 	s.statsMu.Unlock()
+}
+
+// refusePublicLinks reports (and logs) whether ctx may not mint public links. The fill/mint
+// methods are best-effort by contract — a missing url never fails the read — so a refused caller
+// gets the rows without links, the same shape as any other mint failure.
+func refusePublicLinks(ctx context.Context, what string) bool {
+	if err := PublicLinksAllowed(ctx); err != nil {
+		slog.Default().InfoContext(ctx, "public link mint refused",
+			slog.String("what", what), slog.String("err", err.Error()))
+		return true
+	}
+	return false
 }
 
 // FillTechCardPatternURLs populates the output-only view_url/download_url on tech-card
@@ -205,7 +213,7 @@ func (s *Service) noteCardAccess(techCardID int) {
 // best-effort: an unparseable url leaves the fields empty rather than failing the read
 // (design R8). NOT used for persisted snapshots — release blobs must stay token-free.
 func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, ps []*pb_common.TechCardSizePattern) {
-	if s == nil || len(ps) == 0 {
+	if s == nil || len(ps) == 0 || refusePublicLinks(ctx, "tech card pattern urls") {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(ps))
@@ -250,7 +258,7 @@ func (s *Service) FillFittingPatternURLs(ctx context.Context, baseURL string, ps
 // RPC returns up to a page of fittings, and a per-fitting ensure would put a query (and,
 // for a fresh object, a write) per fitting behind every list read.
 func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL string, groups [][]*pb_common.FittingPattern) {
-	if s == nil || len(groups) == 0 {
+	if s == nil || len(groups) == 0 || refusePublicLinks(ctx, "fitting pattern urls") {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(groups))
@@ -369,7 +377,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("object_key", row.ObjectKey), slog.Int64("token_id", id),
 		slog.String("scope", string(rune(scope))), slog.String("ip", ip),
 		slog.String("ua", r.UserAgent()), slog.Bool("dl", download))
-	s.noteAccess(id)
+	s.noteAccess(ctx, id)
 
 	// A tokenized url is stable; its RESOLUTION must not be cached by shared caches.
 	w.Header().Set("Cache-Control", "private, no-store")

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/shopspring/decimal"
 	pb_decimal "google.golang.org/genproto/googleapis/type/decimal"
@@ -57,6 +58,15 @@ type fakeRuns struct {
 	packError   error
 	recordErr   error
 	recordCalls int
+	// flushes — every RecordRunPackAccess call with the team its ctx carried.
+	flushes []recordedFlush
+}
+
+type recordedFlush struct {
+	hasTeam bool
+	teamID  int64
+	failed  bool
+	counts  map[int]int64
 }
 
 func (f *fakeRuns) EnsureRunPackAccess(_ context.Context, runID int) (*entity.ProductionRunPackAccess, error) {
@@ -76,8 +86,14 @@ func (f *fakeRuns) GetRunPackAccess(_ context.Context, runID int) (*entity.Produ
 	return nil, sql.ErrNoRows
 }
 
-func (f *fakeRuns) RecordRunPackAccess(_ context.Context, counts map[int]int64, _ map[int]time.Time) error {
+func (f *fakeRuns) RecordRunPackAccess(ctx context.Context, counts map[int]int64, _ map[int]time.Time) error {
 	f.recordCalls++
+	team, ok := tenant.From(ctx)
+	cp := map[int]int64{}
+	for id, n := range counts {
+		cp[id] = n
+	}
+	f.flushes = append(f.flushes, recordedFlush{hasTeam: ok, teamID: team.ID, failed: f.recordErr != nil, counts: cp})
 	if f.recordErr != nil {
 		return f.recordErr
 	}
@@ -619,9 +635,9 @@ func TestRateLimitedLooksExactlyLikeEverythingElse(t *testing.T) {
 func TestFailedFlushKeepsCounters(t *testing.T) {
 	svc, runs, _ := newTestService(t)
 
-	svc.noteAccess(41)
-	svc.noteAccess(41)
-	svc.noteAccess(7)
+	svc.noteAccess(context.Background(), 41)
+	svc.noteAccess(context.Background(), 41)
+	svc.noteAccess(context.Background(), 7)
 
 	runs.recordErr = errors.New("dial tcp: i/o timeout")
 	svc.flushStats()
@@ -631,7 +647,7 @@ func TestFailedFlushKeepsCounters(t *testing.T) {
 
 	// Сканирование, пришедшее «во время записи»: оно уже лежит в свежих картах, и возврат пачки
 	// обязан его пережить.
-	svc.noteAccess(41)
+	svc.noteAccess(context.Background(), 41)
 
 	runs.recordErr = nil
 	svc.flushStats()
@@ -648,7 +664,7 @@ func TestFailedFlushKeepsCounters(t *testing.T) {
 	// Последний доступ остаётся ПОСЛЕДНИМ: возвращаемая метка старше накопленной во время записи, и
 	// затирать ею свежую нельзя.
 	svc.statsMu.Lock()
-	pending := len(svc.statsCount)
+	pending := svc.stats.size()
 	svc.statsMu.Unlock()
 	if pending != 0 {
 		t.Fatalf("после успешного сброса в pending осталось %d прогонов", pending)
@@ -663,19 +679,20 @@ func TestFailedFlushKeepsLatestAccessTime(t *testing.T) {
 
 	old := time.Now().UTC().Add(-time.Hour)
 	svc.statsMu.Lock()
-	svc.statsCount[41] = 1
-	svc.statsLast[41] = old
+	plain := svc.stats.batch(statsKey{}, tenant.Team{})
+	plain.count[41] = 1
+	plain.last[41] = old
 	svc.statsMu.Unlock()
 
 	runs.recordErr = errors.New("write timeout")
 	svc.flushStats()
 
 	fresh := time.Now().UTC()
-	svc.noteAccess(41)
+	svc.noteAccess(context.Background(), 41)
 
 	svc.statsMu.Lock()
-	got := svc.statsLast[41]
-	count := svc.statsCount[41]
+	got := svc.stats[statsKey{}].last[41]
+	count := svc.stats[statsKey{}].count[41]
 	svc.statsMu.Unlock()
 	if count != 2 {
 		t.Fatalf("pending count = %d, want 2 (возвращённый + новый)", count)
@@ -693,12 +710,12 @@ func TestPendingStatsAreBounded(t *testing.T) {
 	runs.recordErr = errors.New("db down")
 
 	for i := 1; i <= maxPendingRuns+50; i++ {
-		svc.noteAccess(i)
+		svc.noteAccess(context.Background(), i)
 	}
 	svc.flushStats()
 
 	svc.statsMu.Lock()
-	pending := len(svc.statsCount)
+	pending := svc.stats.size()
 	svc.statsMu.Unlock()
 	if pending != maxPendingRuns {
 		t.Fatalf("pending runs = %d, want потолок %d", pending, maxPendingRuns)

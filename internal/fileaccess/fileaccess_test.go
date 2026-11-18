@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 const testPepper = "test-pepper-for-library-file-links"
@@ -36,6 +37,16 @@ type fakeFiles struct {
 	rows     map[int]*entity.LibraryFileLinkTarget
 	recorded map[int]int64
 	lookErr  error
+	// recordErr fails RecordPublicAccess; flushes logs every call with the team its ctx carried.
+	recordErr error
+	flushes   []recordedFlush
+}
+
+type recordedFlush struct {
+	hasTeam bool
+	teamID  int64
+	failed  bool
+	counts  map[int]int64
 }
 
 func (f *fakeFiles) GetFileByPublicLink(_ context.Context, fileID int) (*entity.LibraryFileLinkTarget, error) {
@@ -48,7 +59,16 @@ func (f *fakeFiles) GetFileByPublicLink(_ context.Context, fileID int) (*entity.
 	return nil, sql.ErrNoRows
 }
 
-func (f *fakeFiles) RecordPublicAccess(_ context.Context, counts map[int]int64, _ map[int]time.Time) error {
+func (f *fakeFiles) RecordPublicAccess(ctx context.Context, counts map[int]int64, _ map[int]time.Time) error {
+	team, ok := tenant.From(ctx)
+	cp := map[int]int64{}
+	for id, n := range counts {
+		cp[id] = n
+	}
+	f.flushes = append(f.flushes, recordedFlush{hasTeam: ok, teamID: team.ID, failed: f.recordErr != nil, counts: cp})
+	if f.recordErr != nil {
+		return f.recordErr
+	}
 	if f.recorded == nil {
 		f.recorded = map[int]int64{}
 	}
@@ -360,7 +380,6 @@ func TestEmptyPepperFailsClosed(t *testing.T) {
 		t.Fatal("an empty pepper must refuse to start")
 	}
 }
-
 
 // TestPublicLinkPreview — ССЫЛКА ПОКАЗЫВАЕТ ДОКУМЕНТ ЛИЦОМ.
 //

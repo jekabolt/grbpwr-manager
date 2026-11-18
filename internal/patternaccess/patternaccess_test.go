@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 )
 
@@ -23,6 +24,17 @@ type fakeObjects struct {
 	// mirroring the two tables. ensureCardErr forces the best-effort mint path.
 	cardRows      map[int]*entity.TechCardPatternViewerAccess
 	ensureCardErr error
+
+	// flushes records every RecordAccess / RecordCardViewerAccess call with the team its ctx
+	// carried, so the teams tests can prove each batch is written in its own team.
+	flushes []recordedFlush
+}
+
+type recordedFlush struct {
+	card    bool
+	hasTeam bool
+	teamID  int64
+	ids     map[int64]int64
 }
 
 func (f *fakeObjects) GetById(_ context.Context, id int64) (*entity.PatternObjectAccess, error) {
@@ -76,7 +88,13 @@ func (f *fakeObjects) Revoke(_ context.Context, id int64, at time.Time) error {
 	f.rows[id].RevokedAt = sql.NullTime{Time: at, Valid: true}
 	return nil
 }
-func (f *fakeObjects) RecordAccess(context.Context, map[int64]int64, map[int64]time.Time) error {
+func (f *fakeObjects) RecordAccess(ctx context.Context, counts map[int64]int64, _ map[int64]time.Time) error {
+	team, ok := tenant.From(ctx)
+	ids := map[int64]int64{}
+	for id, n := range counts {
+		ids[id] = n
+	}
+	f.flushes = append(f.flushes, recordedFlush{hasTeam: ok, teamID: team.ID, ids: ids})
 	return nil
 }
 func (f *fakeObjects) DeleteByKeys(context.Context, []string) error { return nil }
@@ -107,7 +125,13 @@ func (f *fakeObjects) GetCardViewer(_ context.Context, techCardID int) (*entity.
 	return &cp, nil
 }
 
-func (f *fakeObjects) RecordCardViewerAccess(context.Context, map[int]int64, map[int]time.Time) error {
+func (f *fakeObjects) RecordCardViewerAccess(ctx context.Context, counts map[int]int64, _ map[int]time.Time) error {
+	team, ok := tenant.From(ctx)
+	ids := map[int64]int64{}
+	for id, n := range counts {
+		ids[int64(id)] = n
+	}
+	f.flushes = append(f.flushes, recordedFlush{card: true, hasTeam: ok, teamID: team.ID, ids: ids})
 	return nil
 }
 

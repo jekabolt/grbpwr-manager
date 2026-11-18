@@ -380,7 +380,7 @@ func (s *Server) readTechCardForResponseWith(ctx context.Context, id int, vatCou
 	if tc != nil {
 		fusingops.DropDanglingFusingRefs(&tc.TechCardInsert)
 	}
-	s.fillGarmentLabelFileLinks(tc)
+	s.fillGarmentLabelFileLinks(ctx, tc)
 	pbTc := dto.ConvertEntityTechCardToPb(tc, s.costingFxForVatCountry(ctx, vatCountryCode))
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)

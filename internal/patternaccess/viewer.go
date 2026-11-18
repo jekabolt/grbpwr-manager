@@ -36,7 +36,7 @@ const unboundGroupKey = "_unbound"
 // FillTechCardPatternURLs: a viewer-token failure must never fail a GetTechCard read —
 // the response simply carries no token and the печать falls back to per-sheet QR codes.
 func (s *Service) MintCardViewerToken(ctx context.Context, techCardID int) string {
-	if s == nil || techCardID <= 0 {
+	if s == nil || techCardID <= 0 || refusePublicLinks(ctx, "card viewer token") {
 		return ""
 	}
 	row, err := s.objects.EnsureCardViewer(ctx, techCardID)
@@ -153,7 +153,7 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 	slog.Default().InfoContext(ctx, "pattern viewer access",
 		slog.Int("tech_card_id", techCardID), slog.String("ip", ip),
 		slog.String("ua", r.UserAgent()))
-	s.noteCardAccess(techCardID)
+	s.noteCardAccess(ctx, techCardID)
 
 	// The token url is stable; the manifest behind it must not be cached by shared
 	// caches (it embeds freshly minted per-file urls and reflects current revocation).
