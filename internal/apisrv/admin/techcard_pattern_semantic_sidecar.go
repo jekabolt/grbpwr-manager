@@ -44,6 +44,8 @@ func patternSemanticSidecarError(ctx context.Context, action string, techCardID 
 		return status.Error(codes.NotFound, "pattern semantic sidecar not found")
 	case errors.Is(err, entity.ErrTechCardReleased):
 		return status.Error(codes.FailedPrecondition, entity.ErrTechCardReleased.Error())
+	case errors.Is(err, entity.ErrNeutralPlacementModelMoved):
+		return neutralPlacementModelMovedStatus()
 	case errors.Is(err, entity.ErrTechCardPatternSidecarBindingMoved):
 		return apierr.FailedPrecondition(entity.NewFieldViolation(
 			"expected_card_lock_version", "pattern_binding_moved", "",
@@ -199,6 +201,8 @@ func savedAssemblySnapshotError(ctx context.Context, techCardID int, err error) 
 		return status.Error(codes.NotFound, "saved Assembly row not found")
 	case errors.Is(err, entity.ErrTechCardPatternSidecarCorrupt):
 		return status.Error(codes.DataLoss, entity.ErrTechCardPatternSidecarCorrupt.Error())
+	case errors.Is(err, entity.ErrNeutralPlacementModelMoved):
+		return neutralPlacementModelMovedStatus()
 	case errors.Is(err, entity.ErrTechCardSavedAssemblyMoved):
 		return status.Error(codes.FailedPrecondition, entity.ErrTechCardSavedAssemblyMoved.Error())
 	case errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported):
@@ -207,6 +211,12 @@ func savedAssemblySnapshotError(ctx context.Context, techCardID int, err error) 
 	slog.Default().ErrorContext(ctx, "can't read saved Assembly snapshot",
 		slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 	return status.Error(codes.Internal, "can't read saved Assembly snapshot")
+}
+
+func neutralPlacementModelMovedStatus() error {
+	return apierr.FailedPrecondition(entity.NewFieldViolation(
+		"sidecar_bytes", "placement_model_binding_moved", "",
+		"the saved mannequin or its neutral pose binding changed; reload the model and placement"))
 }
 
 // GetTechCardPatternSemanticSidecar reads and revalidates one current attachment.

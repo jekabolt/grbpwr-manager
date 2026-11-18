@@ -47,7 +47,7 @@ type PatternSemanticSidecarWrite struct {
 	ExpectedSavedRowRevision       *uint32
 	ExpectedPreviousSidecarSHA256  *string
 	ExpectedServerAssemblyRevision *string
-	ExpectedAssemblyTopologySHA256 *string // selected topology through V7, Complete Source seal for V8
+	ExpectedAssemblyTopologySHA256 *string // selected topology through V7, Complete Source seal for V8/V9
 	SelectedOperationNumber        int
 	ExpectedPostSaveReceiptSHA256  string
 	MediaType                      string
@@ -91,7 +91,8 @@ func ValidPatternSemanticSidecarMediaType(value string) bool {
 	return value == PatternSemanticSidecarMediaType || value == PatternProductSemanticSidecarMediaType ||
 		value == PatternProductCompositeSidecarMediaType || value == PatternProductCompositeSidecarV4MediaType ||
 		value == PatternProductCompositeSidecarV5MediaType || value == PatternProductCompositeSidecarV6MediaType ||
-		value == PatternProductCompositeSidecarV7MediaType || value == PatternProductCompositeSidecarV8MediaType
+		value == PatternProductCompositeSidecarV7MediaType || value == PatternProductCompositeSidecarV8MediaType ||
+		value == PatternProductCompositeSidecarV9MediaType
 }
 
 // ValidatePatternSemanticSidecarPayloadBinding checks the cross-binding duplicated inside G4F4's
@@ -145,6 +146,15 @@ func ValidatePatternSemanticSidecarPayloadBinding(
 			TechCardId: techCardID, PatternLineKey: patternLineKey, CardLockVersion: cardLockVersion,
 			DxfSHA256: dxfSHA256, PatternVersion: patternVersion, SavedRowRevision: savedRowRevision,
 			PostSaveReceiptSHA256: postSaveReceiptSHA256, MediaType: mediaType,
+		})
+		return err
+	}
+	if mediaType == PatternProductCompositeSidecarV9MediaType {
+		_, err := ReadPatternProductNativeCrossRowPlacementBindingV9(PatternSemanticSidecar{
+			TechCardId: techCardID, PatternLineKey: patternLineKey, CardLockVersion: cardLockVersion,
+			DxfSHA256: dxfSHA256, PatternVersion: patternVersion, SavedRowRevision: savedRowRevision,
+			PostSaveReceiptSHA256: postSaveReceiptSHA256, MediaType: mediaType,
+			Payload: payload, ByteLength: len(payload), SidecarSHA256: PatternSemanticSidecarPayloadSHA256(payload),
 		})
 		return err
 	}
@@ -255,7 +265,7 @@ func ValidatePatternSemanticSidecarWrite(in *PatternSemanticSidecarWrite) error 
 	if !ValidPatternSemanticSidecarMediaType(in.MediaType) {
 		return NewFieldViolation(
 			"media_type", "unsupported", in.MediaType,
-			PatternSemanticSidecarMediaType+", "+PatternProductSemanticSidecarMediaType+", "+PatternProductCompositeSidecarMediaType+", "+PatternProductCompositeSidecarV4MediaType+", "+PatternProductCompositeSidecarV5MediaType+", "+PatternProductCompositeSidecarV6MediaType+", "+PatternProductCompositeSidecarV7MediaType+" or "+PatternProductCompositeSidecarV8MediaType)
+			PatternSemanticSidecarMediaType+", "+PatternProductSemanticSidecarMediaType+", "+PatternProductCompositeSidecarMediaType+", "+PatternProductCompositeSidecarV4MediaType+", "+PatternProductCompositeSidecarV5MediaType+", "+PatternProductCompositeSidecarV6MediaType+", "+PatternProductCompositeSidecarV7MediaType+", "+PatternProductCompositeSidecarV8MediaType+" or "+PatternProductCompositeSidecarV9MediaType)
 	}
 	if in.MediaType == PatternProductCompositeSidecarMediaType || in.MediaType == PatternProductCompositeSidecarV4MediaType || in.MediaType == PatternProductCompositeSidecarV5MediaType || in.MediaType == PatternProductCompositeSidecarV6MediaType || in.MediaType == PatternProductCompositeSidecarV7MediaType {
 		if in.ExpectedSavedRowRevision == nil || in.ExpectedPreviousSidecarSHA256 == nil ||
@@ -277,7 +287,11 @@ func ValidatePatternSemanticSidecarWrite(in *PatternSemanticSidecarWrite) error 
 	if actual := PatternSemanticSidecarPayloadSHA256(in.Payload); actual != in.SidecarSHA256 {
 		return NewFieldViolation("sidecar_sha256", "digest_mismatch", in.SidecarSHA256, "hash the exact sidecar_bytes")
 	}
-	if in.MediaType == PatternProductCompositeSidecarV8MediaType {
+	if in.MediaType == PatternProductCompositeSidecarV9MediaType {
+		if _, err := ValidatePatternProductNativeCrossRowPlacementWriteV9(*in); err != nil {
+			return err
+		}
+	} else if in.MediaType == PatternProductCompositeSidecarV8MediaType {
 		if _, err := validateNativeCrossRowReviewWriteV8(*in); err != nil {
 			return err
 		}

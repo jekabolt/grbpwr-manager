@@ -12,49 +12,55 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
-func rejectNativeCrossRowReviewOverwriteV8(ctx context.Context, db dependency.DB, patternID int) error {
+func rejectProtectedNativeCrossRowOverwrite(ctx context.Context, db dependency.DB, patternID int) error {
 	_, err := storeutil.QueryNamedOne[struct {
 		MediaType string `db:"media_type"`
 	}](ctx, db, `
 		SELECT media_type
 		FROM tech_card_pattern_semantic_sidecar
-		WHERE pattern_row_id = :id AND media_type = :protected_media
-		FOR UPDATE`, map[string]any{"id": patternID, "protected_media": entity.PatternProductCompositeSidecarV8MediaType})
+		WHERE pattern_row_id = :id AND media_type IN (:review, :placement)
+		FOR UPDATE`, map[string]any{
+		"id": patternID, "review": entity.PatternProductCompositeSidecarV8MediaType,
+		"placement": entity.PatternProductCompositeSidecarV9MediaType,
+	})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
 	case err != nil:
-		return fmt.Errorf("check protected native cross-row review: %w", err)
+		return fmt.Errorf("check protected native cross-row carrier: %w", err)
 	default:
-		return fmt.Errorf("current native cross-row review cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		return fmt.Errorf("current native cross-row carrier cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 	}
 }
 
 // The caller holds the card, anchor row and prior-slot locks. Use the same facts as Complete GET
 // so all members, including those other than the storage anchor, are covered by the write CAS.
-func validateNativeCrossRowReviewWriteV8(ctx context.Context, rep dependency.Repository, in entity.PatternSemanticSidecarWrite, pattern savedPatternAuthorityRow, lock int) error {
+func loadCurrentNativeCrossRowWrite(
+	ctx context.Context, rep dependency.Repository, in entity.PatternSemanticSidecarWrite, pattern savedPatternAuthorityRow, lock int,
+) (entity.PatternProductNativeCrossRowCurrentV8, error) {
+	var empty entity.PatternProductNativeCrossRowCurrentV8
 	db := rep.DB()
 	clock, err := readTechCardAssemblyClock(ctx, db, in.TechCardId)
 	if err != nil {
-		return err
+		return empty, err
 	}
 	revision := clock.Token()
 	if revision != *in.ExpectedServerAssemblyRevision {
-		return fmt.Errorf("assembly changed before native cross-row review: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		return empty, fmt.Errorf("assembly changed before native cross-row review: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 	}
 	if err := validateCompleteSourcePieceInputOwnership(ctx, db, in.TechCardId); err != nil {
 		if errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
-			return fmt.Errorf("%v: %w", err, entity.ErrTechCardPatternSidecarBindingMoved)
+			return empty, fmt.Errorf("%v: %w", err, entity.ErrTechCardPatternSidecarBindingMoved)
 		}
-		return err
+		return empty, err
 	}
 	card, err := rep.TechCards().GetTechCardById(ctx, in.TechCardId)
 	if err != nil {
-		return err
+		return empty, err
 	}
 	lines, err := loadRollGoodsLines(ctx, db, in.TechCardId)
 	if err != nil {
-		return err
+		return empty, err
 	}
 	row := entity.SavedPatternRowIdentity{
 		TechCardID: in.TechCardId, CardLockVersion: lock, PatternLineKey: pattern.LineKey,
@@ -64,16 +70,12 @@ func validateNativeCrossRowReviewWriteV8(ctx context.Context, rep dependency.Rep
 	}
 	source, err := buildCheckedSavedAssemblyCompleteSourceV1(card, row, lines, revision, *in.ExpectedAssemblyTopologySHA256)
 	if errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) || errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
-		return fmt.Errorf("complete source moved before native cross-row review: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		return empty, fmt.Errorf("complete source moved before native cross-row review: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 	}
 	if err != nil {
-		return err
+		return empty, err
 	}
-	current, err := nativeCrossRowReviewCurrentV8(ctx, db, row, card, source, revision)
-	if err != nil {
-		return err
-	}
-	return entity.ValidateFirstPatternProductNativeCrossRowReviewV8(in, current)
+	return nativeCrossRowReviewCurrentV8(ctx, db, row, card, source, revision)
 }
 
 func nativeCrossRowReviewCurrentV8(

@@ -104,7 +104,7 @@ func nativePlacementStoredV9(v9 PatternSemanticSidecarWrite, prior PatternSemant
 	return stored
 }
 
-func TestNativeCrossRowPlacementV9StageFirstAndColdRead(t *testing.T) {
+func TestNativeCrossRowPlacementV9FirstAndColdRead(t *testing.T) {
 	document, world, v8, prior, current := nativePlacementFixtureV9(t)
 	document.Components[1] = nativePlacementWorldComponentV9(t, world)
 	in := nativePlacementWriteV9(t, document, v8)
@@ -112,9 +112,8 @@ func TestNativeCrossRowPlacementV9StageFirstAndColdRead(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, current.Model, binding)
 	require.NoError(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, prior, current))
-	// The existing media owner stays closed until its transaction is integrated.
-	require.False(t, ValidPatternSemanticSidecarMediaType(in.MediaType))
-	require.Error(t, ValidatePatternSemanticSidecarWrite(&in))
+	require.True(t, ValidPatternSemanticSidecarMediaType(in.MediaType))
+	require.NoError(t, ValidatePatternSemanticSidecarWrite(&in))
 
 	stored := nativePlacementStoredV9(in, prior)
 	binding, err = ReadPatternProductNativeCrossRowPlacementBindingV9(stored)

@@ -121,15 +121,20 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			if err != nil {
 				return err
 			}
-			if sidecar != nil && sidecar.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+			if sidecar != nil && isNativeCrossRowCarrier(sidecar.MediaType) {
 				current, err := nativeCrossRowReviewCurrentV8(ctx, rep.DB(), row, card, source, token)
 				if err != nil {
 					return err
 				}
-				if err := entity.ValidateStoredPatternProductNativeCrossRowReviewV8(*sidecar, current); err != nil {
-					if errors.Is(err, entity.ErrTechCardPatternSidecarBindingMoved) {
-						return fmt.Errorf("native cross-row review moved: %w: %v", entity.ErrTechCardSavedAssemblyMoved, err)
-					}
+				if sidecar.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+					err = entity.ValidateStoredPatternProductNativeCrossRowReviewV8(*sidecar, current)
+				} else {
+					err = validateStoredNativeCrossRowPlacementV9(ctx, rep.DB(), *sidecar, current)
+				}
+				if errors.Is(err, entity.ErrTechCardPatternSidecarBindingMoved) {
+					return fmt.Errorf("native cross-row carrier moved: %w: %w", entity.ErrTechCardSavedAssemblyMoved, err)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -155,8 +160,8 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		if err != nil {
 			return err
 		}
-		if sidecar != nil && sidecar.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
-			return fmt.Errorf("native cross-row review requires Complete Source: %w", entity.ErrTechCardSavedAssemblyUnsupported)
+		if sidecar != nil && isNativeCrossRowCarrier(sidecar.MediaType) {
+			return fmt.Errorf("native cross-row carrier requires Complete Source: %w", entity.ErrTechCardSavedAssemblyUnsupported)
 		}
 		out = entity.SavedAssemblySnapshot{
 			Row: row, SelectedOperationNumber: in.SelectedOperationNumber, Card: card,

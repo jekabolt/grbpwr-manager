@@ -109,24 +109,32 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if in.MediaType != entity.PatternProductCompositeSidecarV8MediaType {
-			if prior != nil && prior.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
-				return fmt.Errorf("current native cross-row review cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
-			}
-			if in.ExpectedPreviousSidecarSHA256 == nil {
-				// Older writers may omit their prior digest. Inspect only the protected V8 slot
-				// under the current pattern/card locks; older sidecars retain their old policy.
-				if err := rejectNativeCrossRowReviewOverwriteV8(ctx, db, pattern.Id); err != nil {
-					return err
-				}
+		if prior != nil && (prior.MediaType == entity.PatternProductCompositeSidecarV9MediaType ||
+			(prior.MediaType == entity.PatternProductCompositeSidecarV8MediaType && in.MediaType != entity.PatternProductCompositeSidecarV9MediaType)) {
+			return fmt.Errorf("current native cross-row carrier cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		}
+		if in.ExpectedPreviousSidecarSHA256 == nil {
+			// Legacy writers may omit their prior digest. Protect both native
+			// media under the card and row lock without changing legacy CAS.
+			if err := rejectProtectedNativeCrossRowOverwrite(ctx, db, pattern.Id); err != nil {
+				return err
 			}
 		}
-		if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
-			if err := validateNativeCrossRowReviewWriteV8(ctx, rep, in, savedPatternAuthorityRow{
+		if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType || in.MediaType == entity.PatternProductCompositeSidecarV9MediaType {
+			current, err := loadCurrentNativeCrossRowWrite(ctx, rep, in, savedPatternAuthorityRow{
 				LineKey: in.PatternLineKey, FabricPurpose: pattern.FabricPurpose, BomLineKey: pattern.BomLineKey,
 				URL: pattern.URL, SizeBytes: pattern.SizeBytes, SHA256: sql.NullString{String: pattern.SHA256, Valid: true},
 				PatternVersion: pattern.Version, SavedRowRevision: pattern.SavedRowRevision,
-			}, cardLockVersion); err != nil {
+			}, cardLockVersion)
+			if err != nil {
+				return err
+			}
+			if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+				err = entity.ValidateFirstPatternProductNativeCrossRowReviewV8(in, current)
+			} else {
+				err = validateNativeCrossRowPlacementWriteV9(ctx, db, in, prior, current)
+			}
+			if err != nil {
 				return err
 			}
 		} else if isPatternProductCompositeSidecarMediaType(in.MediaType) {
