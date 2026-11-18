@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,7 @@ func TestPatternSemanticSidecarV9TransitionAndColdReopen(t *testing.T) {
 	}
 	neutral := addModel("native v9 measurement race")
 
-	in := nativePlacementWriteFixtureV9(t, v8, neutral)
+	in := nativePlacementWriteFixtureV9(t, v8, neutral, v8.SidecarSHA256, 0)
 	_, err = cards.PutTechCardPatternSemanticSidecar(ctx, in)
 	require.ErrorIs(t, err, entity.ErrTechCardPatternSidecarBindingMoved)
 	_, err = cards.GetTechCardPatternSemanticSidecar(ctx, cardID, v8MainPattern)
@@ -140,7 +141,7 @@ func TestPatternSemanticSidecarV9TransitionAndColdReopen(t *testing.T) {
 	// Hold the existing first card lock while the ordinary model pose writer
 	// wins. V9 must load the newly present pose after the card barrier releases.
 	poseTarget := addModel("native v9 pose race")
-	withPose := nativePlacementWriteFixtureV9(t, v8, poseTarget)
+	withPose := nativePlacementWriteFixtureV9(t, v8, poseTarget, v8.SidecarSHA256, 0)
 	cardBarrier, err := repository.TxBegin(ctx)
 	require.NoError(t, err)
 	defer cardBarrier.TxRollback(ctx)
@@ -156,7 +157,7 @@ func TestPatternSemanticSidecarV9TransitionAndColdReopen(t *testing.T) {
 	require.ErrorIs(t, <-poseRace, entity.ErrNeutralPlacementModelMoved)
 	assertV8()
 
-	in = nativePlacementWriteFixtureV9(t, v8, freshModel)
+	in = nativePlacementWriteFixtureV9(t, v8, freshModel, v8.SidecarSHA256, 0)
 	ready := make(chan struct{})
 	type result struct {
 		stored entity.PatternSemanticSidecar
@@ -209,8 +210,64 @@ func TestPatternSemanticSidecarV9TransitionAndColdReopen(t *testing.T) {
 		require.ErrorIs(t, err, entity.ErrTechCardPatternSidecarBindingMoved)
 	}
 
+	forgedModel := nativePlacementWriteFixtureV9(t, v8, poseTarget, persisted.SidecarSHA256, 25)
+	_, err = cards.PutTechCardPatternSemanticSidecar(ctx, forgedModel)
+	require.ErrorContains(t, err, "exact saved V8 review and neutral body")
+	unchangedCenter := nativePlacementWriteFixtureV9(t, v8, freshModel, persisted.SidecarSHA256, 0)
+	_, err = cards.PutTechCardPatternSemanticSidecar(ctx, unchangedCenter)
+	require.ErrorContains(t, err, "changed center")
+	bare, err = reader.GetTechCardPatternSemanticSidecar(ctx, cardID, v8MainPattern)
+	require.NoError(t, err)
+	require.Equal(t, persisted, bare)
+
+	edits := []entity.PatternSemanticSidecarWrite{
+		nativePlacementWriteFixtureV9(t, v8, freshModel, persisted.SidecarSHA256, 25),
+		nativePlacementWriteFixtureV9(t, v8, freshModel, persisted.SidecarSHA256, 40),
+	}
+	setPocketRevision(1)
+	_, err = cards.PutTechCardPatternSemanticSidecar(ctx, edits[0])
+	require.ErrorIs(t, err, entity.ErrTechCardPatternSidecarBindingMoved)
+	setPocketRevision(-1)
+	bare, err = reader.GetTechCardPatternSemanticSidecar(ctx, cardID, v8MainPattern)
+	require.NoError(t, err)
+	require.Equal(t, persisted, bare)
+
+	startEdit := make(chan struct{})
+	for _, edit := range edits {
+		go func() {
+			<-startEdit
+			stored, err := cards.PutTechCardPatternSemanticSidecar(ctx, edit)
+			writes <- result{stored, err}
+		}()
+	}
+	close(startEdit)
+	var edited entity.PatternSemanticSidecar
+	for range edits {
+		r := <-writes
+		if r.err == nil {
+			require.Empty(t, edited.Payload)
+			edited = r.stored
+		} else {
+			require.ErrorIs(t, r.err, entity.ErrTechCardPatternSidecarBindingMoved)
+		}
+	}
+	require.Contains(t, []string{edits[0].SidecarSHA256, edits[1].SidecarSHA256}, edited.SidecarSHA256)
+	require.Equal(t, persisted.PatternRowId, edited.PatternRowId)
+	snapshot, err = reader.GetTechCardSavedAssemblySnapshot(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, edited, *snapshot.SemanticSidecar)
+	require.Equal(t, before.CompleteSourceV1.CanonicalJSON, snapshot.CompleteSourceV1.CanonicalJSON)
+	for _, edit := range edits {
+		_, err := cards.PutTechCardPatternSemanticSidecar(ctx, edit)
+		require.ErrorIs(t, err, entity.ErrTechCardPatternSidecarBindingMoved)
+	}
+	persisted = edited
+
 	_, err = models.PutModelMannequinPose(ctx, freshModel.ModelID, storeMannequinPoseFixture(), poseGuard, "v9-test-post-save-pose")
 	require.NoError(t, err)
+	afterPose := nativePlacementWriteFixtureV9(t, v8, freshModel, edited.SidecarSHA256, 60)
+	_, err = cards.PutTechCardPatternSemanticSidecar(ctx, afterPose)
+	require.ErrorIs(t, err, entity.ErrNeutralPlacementModelMoved)
 	_, err = reader.GetTechCardSavedAssemblySnapshot(ctx, request)
 	require.ErrorIs(t, err, entity.ErrNeutralPlacementModelMoved)
 	require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyMoved)
@@ -267,7 +324,7 @@ func readNativePlacementModelFixtureV9(t *testing.T, ctx context.Context, repo *
 	return current
 }
 
-func nativePlacementWriteFixtureV9(t *testing.T, v8 entity.PatternSemanticSidecarWrite, current entity.NeutralPlacementModelAuthorityV1) entity.PatternSemanticSidecarWrite {
+func nativePlacementWriteFixtureV9(t *testing.T, v8 entity.PatternSemanticSidecarWrite, current entity.NeutralPlacementModelAuthorityV1, previous string, centerX float64) entity.PatternSemanticSidecarWrite {
 	t.Helper()
 	var inner struct {
 		Bindings json.RawMessage `json:"bindings"`
@@ -281,8 +338,9 @@ func nativePlacementWriteFixtureV9(t *testing.T, v8 entity.PatternSemanticSideca
 			"sha256": entity.PatternSemanticSidecarPayloadSHA256(payload), "base64": base64.StdEncoding.EncodeToString(payload)}
 	}
 	fakeWitness := func(value string) string { return strings.Repeat(value, 64) }
+	positionsDigest := entity.PatternSemanticSidecarPayloadSHA256([]byte(strconv.FormatFloat(centerX, 'f', -1, 64)))
 	piece := func(id string, originX, z float64) map[string]any {
-		return map[string]any{"pieceId": id, "originMm": []float64{originX, 10}, "centerM": []float64{0, 1, z}, "cos": 1, "sin": 0}
+		return map[string]any{"pieceId": id, "originMm": []float64{originX, 10}, "centerM": []float64{centerX / 1000, 1, z}, "cos": 1, "sin": 0}
 	}
 	world, err := json.Marshal(map[string]any{
 		"schemaVersion": "tech-card-complete-source-native-world-placement/1", "reviewSha256": v8.SidecarSHA256,
@@ -292,10 +350,10 @@ func nativePlacementWriteFixtureV9(t *testing.T, v8 entity.PatternSemanticSideca
 			"observed": map[string]any{"bodyPositionsFloat32LeSha256": fakeWitness("1"), "bodyTrianglesUint32LeSha256": fakeWitness("2")},
 		},
 		"placement": map[string]any{
-			"centerMm": []float64{0, 1000, 0}, "depthOffsetsMm": []int{4, 0},
+			"centerMm": []float64{centerX, 1000, 0}, "depthOffsetsMm": []int{4, 0},
 			"directedCut": map[string]any{
 				"gridSha256": inner.Review.GridSHA256, "carrierMaterialPositionsFloat64LeSha256": fakeWitness("3"),
-				"carrierTrianglesUint32LeSha256": fakeWitness("4"), "positionsInvMassFloat32LeSha256": fakeWitness("5"),
+				"carrierTrianglesUint32LeSha256": fakeWitness("4"), "positionsInvMassFloat32LeSha256": positionsDigest,
 				"pieces": []any{piece(v8MainPiece, 5, 0.004), piece(v8PocketPiece, 6, 0)},
 			},
 		},
@@ -303,11 +361,11 @@ func nativePlacementWriteFixtureV9(t *testing.T, v8 entity.PatternSemanticSideca
 	require.NoError(t, err)
 	out := v8
 	out.MediaType = entity.PatternProductCompositeSidecarV9MediaType
-	out.ExpectedPreviousSidecarSHA256 = &v8.SidecarSHA256
+	out.ExpectedPreviousSidecarSHA256 = &previous
 	out.Payload, err = json.Marshal(map[string]any{
 		"schemaVersion": "pattern-import-dxf-product-composite-sidecar-document/9", "mediaType": out.MediaType,
 		"profile": "saved-full-assembly/native-cross-row-stitch-world-placement/1", "encoding": "canonical-json-utf8",
-		"bindings": inner.Bindings, "writeCas": map[string]any{"expectedPreviousSidecarSha256": v8.SidecarSHA256},
+		"bindings": inner.Bindings, "writeCas": map[string]any{"expectedPreviousSidecarSha256": previous},
 		"components": []any{
 			part("native-cross-row-review-v8", v8.MediaType, v8.Payload),
 			part("native-cross-row-world-placement-v1", "application/vnd.grbpwr.pattern-dxf-native-world-placement.v1+json", world),

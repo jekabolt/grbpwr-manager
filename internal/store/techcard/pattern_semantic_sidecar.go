@@ -109,8 +109,7 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if prior != nil && (prior.MediaType == entity.PatternProductCompositeSidecarV9MediaType ||
-			(prior.MediaType == entity.PatternProductCompositeSidecarV8MediaType && in.MediaType != entity.PatternProductCompositeSidecarV9MediaType)) {
+		if prior != nil && isNativeCrossRowCarrier(prior.MediaType) && in.MediaType != entity.PatternProductCompositeSidecarV9MediaType {
 			return fmt.Errorf("current native cross-row carrier cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 		}
 		if in.ExpectedPreviousSidecarSHA256 == nil {

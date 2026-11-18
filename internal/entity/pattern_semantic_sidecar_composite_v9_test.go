@@ -104,6 +104,13 @@ func nativePlacementStoredV9(v9 PatternSemanticSidecarWrite, prior PatternSemant
 	return stored
 }
 
+func checkNativePlacementWriteV9(in PatternSemanticSidecarWrite, prior PatternSemanticSidecar, current PatternProductNativeCrossRowPlacementCurrentV9) error {
+	if _, err := CheckPatternProductNativeCrossRowPlacementTransitionV9(in, prior); err != nil {
+		return err
+	}
+	return ValidatePatternProductNativeCrossRowPlacementWriteCurrentV9(in, current)
+}
+
 func TestNativeCrossRowPlacementV9FirstAndColdRead(t *testing.T) {
 	document, world, v8, prior, current := nativePlacementFixtureV9(t)
 	document.Components[1] = nativePlacementWorldComponentV9(t, world)
@@ -111,7 +118,7 @@ func TestNativeCrossRowPlacementV9FirstAndColdRead(t *testing.T) {
 	binding, err := ValidatePatternProductNativeCrossRowPlacementWriteV9(in)
 	require.NoError(t, err)
 	require.Equal(t, current.Model, binding)
-	require.NoError(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, prior, current))
+	require.NoError(t, checkNativePlacementWriteV9(in, prior, current))
 	require.True(t, ValidPatternSemanticSidecarMediaType(in.MediaType))
 	require.NoError(t, ValidatePatternSemanticSidecarWrite(&in))
 
@@ -123,7 +130,7 @@ func TestNativeCrossRowPlacementV9FirstAndColdRead(t *testing.T) {
 
 	current.Model.ModelPhysicalInputsSHA256 = strings.Repeat("6", 64)
 	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowPlacementV9(stored, current), ErrNeutralPlacementModelMoved)
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, prior, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(in, prior, current), ErrTechCardPatternSidecarBindingMoved)
 	_, err = ReadPatternProductNativeCrossRowPlacementBindingV9(stored)
 	require.NoError(t, err, "structural readback does not make the old model authority current")
 	stored.PostSaveReceiptSHA256 = prior.PostSaveReceiptSHA256
@@ -209,11 +216,11 @@ func TestNativeCrossRowPlacementV9RefusesSubstitutedPriorAndMovedSources(t *test
 	document, world, v8, prior, current := nativePlacementFixtureV9(t)
 	document.Components[1] = nativePlacementWorldComponentV9(t, world)
 	in := nativePlacementWriteV9(t, document, v8)
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, PatternSemanticSidecar{}, current), ErrTechCardPatternSidecarBindingMoved)
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, nativePlacementStoredV9(in, prior), current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(in, PatternSemanticSidecar{}, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(in, nativePlacementStoredV9(in, prior), current), ErrTechCardPatternSidecarBindingMoved)
 	stale := prior
 	stale.SavedRowRevision++
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, stale, current), ErrTechCardPatternSidecarCorrupt)
+	require.ErrorIs(t, checkNativePlacementWriteV9(in, stale, current), ErrTechCardPatternSidecarCorrupt)
 	inBad := in
 	inBad.ExpectedPreviousSidecarSHA256 = nil
 	_, err := ValidatePatternProductNativeCrossRowPlacementWriteV9(inBad)
@@ -236,13 +243,85 @@ func TestNativeCrossRowPlacementV9RefusesSubstitutedPriorAndMovedSources(t *test
 	forged := nativePlacementWriteV9(t, document, v8)
 	_, err = ValidatePatternProductNativeCrossRowPlacementWriteV9(forged)
 	require.NoError(t, err)
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(forged, prior, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(forged, prior, current), ErrTechCardPatternSidecarBindingMoved)
 
 	stored := nativePlacementStoredV9(in, prior)
 	current.Source.Source.Rows[1].SavedRowRevision++
-	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowPlacementV9(in, prior, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(in, prior, current), ErrTechCardPatternSidecarBindingMoved)
 	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowPlacementV9(stored, current), ErrTechCardPatternSidecarBindingMoved)
 	current.Source.Source.Rows[1].SavedRowRevision--
 	current.Source.Card.SizeIds = []int{83, 85}
 	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowPlacementV9(stored, current), ErrTechCardPatternSidecarBindingMoved)
+}
+
+func TestNativeCrossRowPlacementV9CenterEditPreservesReviewAndBody(t *testing.T) {
+	document, world, v8, priorV8, current := nativePlacementFixtureV9(t)
+	document.Components[1] = nativePlacementWorldComponentV9(t, world)
+	first := nativePlacementWriteV9(t, document, v8)
+	firstStored := nativePlacementStoredV9(first, priorV8)
+	document.WriteCAS.ExpectedPreviousSidecarSHA256 = first.SidecarSHA256
+	edit := func(doc nativeCrossRowPlacementDocumentV9, placement nativeCrossRowWorldPlacementV1) PatternSemanticSidecarWrite {
+		t.Helper()
+		doc.Components[1] = nativePlacementWorldComponentV9(t, placement)
+		return nativePlacementWriteV9(t, doc, v8)
+	}
+	changed := world
+	changed.Placement.CenterMm[0] = 25
+	changed.Placement.DirectedCut.PositionsInvMassFloat32LeSHA256 = strings.Repeat("6", 64)
+	for index := range changed.Placement.DirectedCut.Pieces {
+		changed.Placement.DirectedCut.Pieces[index].CenterM[0] = 0.025
+	}
+	next := edit(document, changed)
+	require.NoError(t, checkNativePlacementWriteV9(next, firstStored, current))
+	secondStored := nativePlacementStoredV9(next, priorV8)
+	require.NoError(t, ValidateStoredPatternProductNativeCrossRowPlacementV9(secondStored, current))
+	require.ErrorIs(t, checkNativePlacementWriteV9(next, secondStored, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, checkNativePlacementWriteV9(next, priorV8, current), ErrTechCardPatternSidecarBindingMoved)
+	corrupt := firstStored
+	corrupt.PostSaveReceiptSHA256 = priorV8.PostSaveReceiptSHA256
+	require.ErrorIs(t, checkNativePlacementWriteV9(next, corrupt, current), ErrTechCardPatternSidecarCorrupt)
+
+	for _, tc := range []struct {
+		name string
+		edit func(*nativeCrossRowWorldPlacementV1)
+		want string
+	}{
+		{"unchanged center", func(w *nativeCrossRowWorldPlacementV1) {
+			w.Placement.CenterMm = world.Placement.CenterMm
+			for i, piece := range world.Placement.DirectedCut.Pieces {
+				w.Placement.DirectedCut.Pieces[i].CenterM = piece.CenterM
+			}
+		}, "changed center"},
+		{"unchanged positions witness", func(w *nativeCrossRowWorldPlacementV1) {
+			w.Placement.DirectedCut.PositionsInvMassFloat32LeSHA256 = world.Placement.DirectedCut.PositionsInvMassFloat32LeSHA256
+		}, "new positions witness"},
+		{"different model", func(w *nativeCrossRowWorldPlacementV1) { w.Body.ModelID++ }, "exact saved V8 review and neutral body"},
+		{"different observed mesh", func(w *nativeCrossRowWorldPlacementV1) {
+			w.Body.Observed.BodyPositionsFloat32LeSHA256 = strings.Repeat("a", 64)
+		}, "exact saved V8 review and neutral body"},
+		{"different origin", func(w *nativeCrossRowWorldPlacementV1) { w.Placement.DirectedCut.Pieces[0].OriginMm[0]++ }, "exact directed cut"},
+		{"different rigid axis", func(w *nativeCrossRowWorldPlacementV1) {
+			for i := range w.Placement.DirectedCut.Pieces {
+				w.Placement.DirectedCut.Pieces[i].Cos = -0.6
+			}
+		}, "exact directed cut"},
+		{"different carrier tessellation", func(w *nativeCrossRowWorldPlacementV1) {
+			w.Placement.DirectedCut.CarrierTrianglesUint32LeSHA256 = strings.Repeat("b", 64)
+		}, "exact directed cut"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := changed
+			tc.edit(&w)
+			in := edit(document, w)
+			_, err := ValidatePatternProductNativeCrossRowPlacementWriteV9(in)
+			require.NoError(t, err, "the replacement is individually well formed")
+			require.ErrorContains(t, checkNativePlacementWriteV9(in, firstStored, current), tc.want)
+		})
+	}
+	otherReview, _ := nativeCrossRowReviewFixtureV8(t)
+	otherReview.Review.BoundSourceRequestSHA256 = strings.Repeat("a", 64)
+	replacement := nativeCrossRowWriteFixtureV8(t, otherReview)
+	document.Components[0] = nativePlacementComponentV9("native-cross-row-review-v8", replacement.MediaType, replacement.Payload)
+	changed.ReviewSHA256 = replacement.SidecarSHA256
+	require.ErrorContains(t, checkNativePlacementWriteV9(edit(document, changed), firstStored, current), "exact saved V8 review")
 }

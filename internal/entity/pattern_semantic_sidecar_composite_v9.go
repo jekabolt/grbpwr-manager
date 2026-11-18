@@ -118,12 +118,11 @@ func decodeNativeCrossRowPlacementV9(payload []byte) (*decodedNativeCrossRowPlac
 		document.Encoding != patternSemanticSidecarEncoding || document.Profile != nativeCrossRowPlacementProfileV9 {
 		return nil, nativeCrossRowPlacementViolationV9("unsupported placement carrier profile")
 	}
-	prior := document.WriteCAS.ExpectedPreviousSidecarSHA256
 	reviewComponent, worldComponent := document.Components[0], document.Components[1]
-	if !ValidPatternSemanticSidecarSHA256(prior) || reviewComponent.SHA256 != prior ||
+	if !ValidPatternSemanticSidecarSHA256(document.WriteCAS.ExpectedPreviousSidecarSHA256) ||
 		reviewComponent.ByteLength > maxNativeCrossRowNestedV8Bytes ||
 		worldComponent.ByteLength > maxNativeCrossRowWorldPlacementBytesV1 {
-		return nil, nativeCrossRowPlacementViolationV9("the prior V8 digest and bounded placement components are required")
+		return nil, nativeCrossRowPlacementViolationV9("the predecessor digest and bounded placement components are required")
 	}
 	var err error
 	parsed.reviewBytes, err = compositeComponentBytes(reviewComponent, "native-cross-row-review-v8", PatternProductCompositeSidecarV8MediaType)
@@ -141,16 +140,16 @@ func decodeNativeCrossRowPlacementV9(payload []byte) (*decodedNativeCrossRowPlac
 	if err := decodeCanonicalNativeCrossRowPlacementJSON(worldBytes, &parsed.world, maxNativeCrossRowWorldPlacementBytesV1); err != nil {
 		return nil, nativeCrossRowPlacementViolationV9("world placement is not canonical")
 	}
-	if err := validateNativeCrossRowWorldPlacementV1(parsed.world, parsed.review, prior); err != nil {
+	if err := validateNativeCrossRowWorldPlacementV1(parsed.world, parsed.review, reviewComponent.SHA256); err != nil {
 		return nil, err
 	}
 	return &parsed, nil
 }
 
-func validateNativeCrossRowWorldPlacementV1(world nativeCrossRowWorldPlacementV1, review *patternProductCompositeSidecarV8Review, prior string) error {
+func validateNativeCrossRowWorldPlacementV1(world nativeCrossRowWorldPlacementV1, review *patternProductCompositeSidecarV8Review, reviewSHA string) error {
 	body, placement := world.Body, world.Placement
 	directed := placement.DirectedCut
-	if world.SchemaVersion != nativeCrossRowWorldPlacementDocumentV1 || world.ReviewSHA256 != prior ||
+	if world.SchemaVersion != nativeCrossRowWorldPlacementDocumentV1 || world.ReviewSHA256 != reviewSHA ||
 		directed.GridSHA256 != review.Review.GridSHA256 {
 		return nativeCrossRowPlacementViolationV9("world placement must retain the exact V8 review and grid")
 	}
@@ -248,24 +247,70 @@ func (parsed *decodedNativeCrossRowPlacementV9) verifyCurrent(current PatternPro
 	return nil
 }
 
-// ValidateFirstPatternProductNativeCrossRowPlacementV9 checks the exact locked
-// V8 prior and current source/model. The retained ROOT and body mesh witnesses
-// still require a fresh replay by their producing owners.
-func ValidateFirstPatternProductNativeCrossRowPlacementV9(in PatternSemanticSidecarWrite, prior PatternSemanticSidecar, current PatternProductNativeCrossRowPlacementCurrentV9) error {
+// CheckPatternProductNativeCrossRowPlacementTransitionV9 verifies the locked
+// predecessor and returns the model authority to resolve in the same transaction.
+func CheckPatternProductNativeCrossRowPlacementTransitionV9(in PatternSemanticSidecarWrite, prior PatternSemanticSidecar) (NeutralPlacementModelAuthorityV1, error) {
+	parsed, err := validateNativeCrossRowPlacementWriteV9(in)
+	if err != nil {
+		return NeutralPlacementModelAuthorityV1{}, err
+	}
+	if prior.SidecarSHA256 != parsed.document.WriteCAS.ExpectedPreviousSidecarSHA256 {
+		return NeutralPlacementModelAuthorityV1{}, fmt.Errorf("exact previous carrier is required: %w", ErrTechCardPatternSidecarBindingMoved)
+	}
+	switch prior.MediaType {
+	case PatternProductCompositeSidecarV8MediaType:
+		if prior.ByteLength != len(prior.Payload) || prior.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(prior.Payload) {
+			return NeutralPlacementModelAuthorityV1{}, fmt.Errorf("previous V8 carrier bytes differ: %w", ErrTechCardPatternSidecarCorrupt)
+		}
+		if _, err := validateNativeCrossRowReviewStoredBindingV8(prior.Payload, prior); err != nil {
+			return NeutralPlacementModelAuthorityV1{}, fmt.Errorf("previous V8 row metadata differs: %w", ErrTechCardPatternSidecarCorrupt)
+		}
+		if !bytes.Equal(parsed.reviewBytes, prior.Payload) {
+			return NeutralPlacementModelAuthorityV1{}, nativeCrossRowPlacementViolationV9("first placement must wrap the exact saved V8 review")
+		}
+	case PatternProductCompositeSidecarV9MediaType:
+		previous, err := readNativeCrossRowPlacementBindingV9(prior)
+		if err != nil {
+			return NeutralPlacementModelAuthorityV1{}, err
+		}
+		if !bytes.Equal(parsed.reviewBytes, previous.reviewBytes) || parsed.world.Body != previous.world.Body {
+			return NeutralPlacementModelAuthorityV1{}, nativeCrossRowPlacementViolationV9("placement edits must retain the exact saved V8 review and neutral body")
+		}
+		if err := validateNativeCrossRowPlacementCenterEditV9(previous.world, parsed.world); err != nil {
+			return NeutralPlacementModelAuthorityV1{}, err
+		}
+	default:
+		return NeutralPlacementModelAuthorityV1{}, fmt.Errorf("previous V8 or V9 is required: %w", ErrTechCardPatternSidecarBindingMoved)
+	}
+	return parsed.world.Body.NeutralPlacementModelAuthorityV1, nil
+}
+
+func validateNativeCrossRowPlacementCenterEditV9(previous, next nativeCrossRowWorldPlacementV1) error {
+	before, after := previous.Placement, next.Placement
+	if before.CenterMm == after.CenterMm ||
+		before.DirectedCut.PositionsInvMassFloat32LeSHA256 == after.DirectedCut.PositionsInvMassFloat32LeSHA256 {
+		return nativeCrossRowPlacementViolationV9("placement edits require a changed center and its new positions witness")
+	}
+	// Both payloads already prove each piece center's exact conversion from
+	// centerMm. Compare every field outside that translation and its witness.
+	after.CenterMm = before.CenterMm
+	after.DirectedCut.PositionsInvMassFloat32LeSHA256 = before.DirectedCut.PositionsInvMassFloat32LeSHA256
+	for index := range after.DirectedCut.Pieces {
+		after.DirectedCut.Pieces[index].CenterM = before.DirectedCut.Pieces[index].CenterM
+	}
+	if after != before {
+		return nativeCrossRowPlacementViolationV9("placement edits must retain the exact directed cut outside its center")
+	}
+	return nil
+}
+
+// ValidatePatternProductNativeCrossRowPlacementWriteCurrentV9 verifies the
+// transition's source and neutral model after both have been independently
+// loaded under the locked card and model owners.
+func ValidatePatternProductNativeCrossRowPlacementWriteCurrentV9(in PatternSemanticSidecarWrite, current PatternProductNativeCrossRowPlacementCurrentV9) error {
 	parsed, err := validateNativeCrossRowPlacementWriteV9(in)
 	if err != nil {
 		return err
-	}
-	if prior.MediaType != PatternProductCompositeSidecarV8MediaType ||
-		prior.SidecarSHA256 != parsed.document.WriteCAS.ExpectedPreviousSidecarSHA256 {
-		return fmt.Errorf("exact previous V8 carrier is required: %w", ErrTechCardPatternSidecarBindingMoved)
-	}
-	if prior.ByteLength != len(prior.Payload) || prior.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(prior.Payload) ||
-		!bytes.Equal(parsed.reviewBytes, prior.Payload) {
-		return fmt.Errorf("previous V8 carrier bytes differ: %w", ErrTechCardPatternSidecarCorrupt)
-	}
-	if _, err := validateNativeCrossRowReviewStoredBindingV8(prior.Payload, prior); err != nil {
-		return fmt.Errorf("previous V8 row metadata differs: %w", ErrTechCardPatternSidecarCorrupt)
 	}
 	return parsed.verifyCurrent(current)
 }

@@ -18,10 +18,17 @@ func validateNativeCrossRowPlacementWriteV9(
 	ctx context.Context, db dependency.DB, in entity.PatternSemanticSidecarWrite, prior *priorPatternSemanticSidecar,
 	current entity.PatternProductNativeCrossRowCurrentV8,
 ) error {
-	if prior == nil || prior.MediaType != entity.PatternProductCompositeSidecarV8MediaType {
-		return fmt.Errorf("native cross-row placement requires current V8: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+	if prior == nil || !isNativeCrossRowCarrier(prior.MediaType) {
+		return fmt.Errorf("native cross-row placement requires current V8 or V9: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 	}
-	binding, err := entity.ValidatePatternProductNativeCrossRowPlacementWriteV9(in)
+	stored := entity.PatternSemanticSidecar{
+		TechCardId: in.TechCardId, PatternLineKey: in.PatternLineKey,
+		CardLockVersion: prior.CardLockVersion, SavedRowRevision: prior.SavedRowRevision,
+		DxfSHA256: prior.DxfSHA256, PatternVersion: prior.PatternVersion, SidecarSHA256: prior.SHA256,
+		MediaType: prior.MediaType, ByteLength: prior.ByteLength, Payload: prior.Payload,
+		PostSaveReceiptSHA256: prior.PostSaveReceiptSHA256,
+	}
+	binding, err := entity.CheckPatternProductNativeCrossRowPlacementTransitionV9(in, stored)
 	if err != nil {
 		return err
 	}
@@ -31,14 +38,7 @@ func validateNativeCrossRowPlacementWriteV9(
 	if err != nil {
 		return nativeCrossRowPlacementModelError(err)
 	}
-	stored := entity.PatternSemanticSidecar{
-		TechCardId: in.TechCardId, PatternLineKey: in.PatternLineKey,
-		CardLockVersion: prior.CardLockVersion, SavedRowRevision: prior.SavedRowRevision,
-		DxfSHA256: prior.DxfSHA256, PatternVersion: prior.PatternVersion, SidecarSHA256: prior.SHA256,
-		MediaType: prior.MediaType, ByteLength: prior.ByteLength, Payload: prior.Payload,
-		PostSaveReceiptSHA256: prior.PostSaveReceiptSHA256,
-	}
-	return entity.ValidateFirstPatternProductNativeCrossRowPlacementV9(in, stored,
+	return entity.ValidatePatternProductNativeCrossRowPlacementWriteCurrentV9(in,
 		entity.PatternProductNativeCrossRowPlacementCurrentV9{Source: current, Model: lockedModel})
 }
 
