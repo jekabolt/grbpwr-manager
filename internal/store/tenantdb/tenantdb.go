@@ -85,23 +85,28 @@ func NewConnector(dsn string, o Options) (*Connector, error) {
 	if cfg.DBName == "" {
 		return nil, errors.New("tenantdb: the dsn names no database (team #1's database is required)")
 	}
-	if o.Team1.ID != tenant.TeamOneID {
-		return nil, fmt.Errorf("tenantdb: Team1 must be team #1, got team %d", o.Team1.ID)
-	}
-	if o.Team1.DBName != cfg.DBName {
-		return nil, fmt.Errorf("tenantdb: team #1's database %q is not the dsn database %q", o.Team1.DBName, cfg.DBName)
-	}
-	allowed, err := AllowlistPattern(cfg.DBName, o.DBPrefix)
-	if err != nil {
-		return nil, err
-	}
 	inner, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("tenantdb: connector: %w", err)
 	}
+	return newConnector(inner, cfg.DBName, o)
+}
+
+// newConnector wraps inner, whose connections start on homeDB (team #1's database).
+func newConnector(inner driver.Connector, homeDB string, o Options) (*Connector, error) {
+	if o.Team1.ID != tenant.TeamOneID {
+		return nil, fmt.Errorf("tenantdb: Team1 must be team #1, got team %d", o.Team1.ID)
+	}
+	if o.Team1.DBName != homeDB {
+		return nil, fmt.Errorf("tenantdb: team #1's database %q is not the dsn database %q", o.Team1.DBName, homeDB)
+	}
+	allowed, err := AllowlistPattern(homeDB, o.DBPrefix)
+	if err != nil {
+		return nil, err
+	}
 	return &Connector{
 		inner:   inner,
-		homeDB:  cfg.DBName,
+		homeDB:  homeDB,
 		team1:   o.Team1,
 		strict:  o.Strict,
 		allowed: allowed,
@@ -200,6 +205,10 @@ type conn struct {
 	curDB string
 	// txDB is the database the open transaction is pinned to; "" = no transaction.
 	txDB string
+	// bad: the session state is unknown (a USE, COMMIT or ROLLBACK failed — the server may have
+	// switched, or kept a transaction open). Never reused: IsValid is false, ResetSession and every
+	// call return driver.ErrBadConn, so database/sql closes it instead of handing it to another team.
+	bad bool
 }
 
 var (
@@ -216,6 +225,9 @@ var (
 
 // route makes the session sit on the ctx team's database, honoring a transaction's pin.
 func (cn *conn) route(ctx context.Context) (string, error) {
+	if cn.bad {
+		return "", driver.ErrBadConn
+	}
 	db, err := cn.c.target(ctx)
 	if err != nil {
 		return "", err
@@ -235,6 +247,7 @@ func (cn *conn) route(ctx context.Context) (string, error) {
 	}
 	if _, err := ex.ExecContext(ctx, "USE `"+db+"`", nil); err != nil {
 		cn.curDB = ""
+		cn.bad = true
 		return "", fmt.Errorf("tenantdb: switch to %q: %w", db, err)
 	}
 	cn.curDB = db
@@ -323,7 +336,7 @@ func (cn *conn) Ping(ctx context.Context) error {
 }
 
 func (cn *conn) ResetSession(ctx context.Context) error {
-	if cn.txDB != "" {
+	if cn.bad || cn.txDB != "" {
 		// A connection back in the pool with an open transaction is broken; drop it.
 		return driver.ErrBadConn
 	}
@@ -334,6 +347,9 @@ func (cn *conn) ResetSession(ctx context.Context) error {
 }
 
 func (cn *conn) IsValid() bool {
+	if cn.bad {
+		return false
+	}
 	if v, ok := cn.inner.(driver.Validator); ok {
 		return v.IsValid()
 	}
@@ -348,7 +364,8 @@ func (cn *conn) CheckNamedValue(nv *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
-// tx clears the connection's pin when the transaction ends.
+// tx clears the connection's pin when the transaction ends. A failed COMMIT or ROLLBACK may leave
+// the transaction open on the server, so the connection is marked bad and never reused.
 type tx struct {
 	cn    *conn
 	inner driver.Tx
@@ -356,14 +373,21 @@ type tx struct {
 
 func (t *tx) Commit() error {
 	err := t.inner.Commit()
-	t.cn.txDB = ""
+	t.end(err)
 	return err
 }
 
 func (t *tx) Rollback() error {
 	err := t.inner.Rollback()
-	t.cn.txDB = ""
+	t.end(err)
 	return err
+}
+
+func (t *tx) end(err error) {
+	t.cn.txDB = ""
+	if err != nil {
+		t.cn.bad = true
+	}
 }
 
 // stmt is a prepared statement bound to the database it was prepared on.
