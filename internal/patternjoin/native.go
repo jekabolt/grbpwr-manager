@@ -419,7 +419,7 @@ func inventory(raw []byte, ids []string, s Selection) (map[string]*block, string
 	for _, id := range ids {
 		name := id + "_" + s.SizeToken
 		b := bs[name]
-		if inserts[name] != 1 || b == nil || len(b.Outer) == 0 || len(b.Seam) != 1 || len(b.Grain) != 1 || b.labels["PIECE NAME"] != id || b.labels["SIZE"] != s.SizeToken || b.labels["QUANTITY"] != "1" || b.labels["MATERIAL"] != s.FabricPurpose {
+		if inserts[name] != 1 || b == nil || len(b.Outer) == 0 || len(b.Seam) != 1 || len(b.Grain) != 1 || b.labels["PIECE NAME"] != id || b.labels["SIZE"] != s.SizeToken || b.labels["QUANTITY"] != "1" || b.labels["MATERIAL"] == "" || (version == "AC1009") != (b.labels["CATEGORY"] != "") {
 			return nil, "", invalid
 		}
 	}
@@ -442,11 +442,21 @@ func rectangle(b *block) ([]coord, bool) {
 	return p, true
 }
 func checkNativeJoin(before, after *nativeFile, s Selection, assetSHA string) error {
-	if before.dialect != after.dialect || before.sizeName != after.sizeName || before.sourceLabel != after.sourceLabel {
+	if before.dialect != after.dialect || before.sizeName != after.sizeName || before.sourceLabel != after.sourceLabel || before.fabricPurpose != after.fabricPurpose {
 		return invalid
 	}
 	old, newBlocks := before.blocks, after.blocks
 	a, b, c := old[s.Fixed+"_"+s.SizeToken], old[s.Moving+"_"+s.SizeToken], newBlocks[s.Result+"_"+s.SizeToken]
+	// The writer takes display labels from the current cloth. The manifest and
+	// locked BOM identify the cloth, while all three native labels must survive.
+	for _, k := range []string{"MATERIAL", "CATEGORY"} {
+		if a.labels[k] != b.labels[k] || b.labels[k] != c.labels[k] {
+			return invalid
+		}
+	}
+	if before.fabricPurpose == s.FabricPurpose && a.labels["MATERIAL"] != s.FabricPurpose {
+		return invalid
+	}
 	hash, err := hex.DecodeString(assetSHA)
 	if err != nil {
 		return invalid

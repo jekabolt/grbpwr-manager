@@ -8,7 +8,7 @@ import (
 
 // Compare writer-authored semantic markers with the actual entities, as the fresh
 // reader would. In this narrow profile every internal mark is a typed three-point dart.
-func verifyManifestGeometry(raw []byte, blocks map[string]*block, s Selection) error {
+func verifyManifestGeometry(raw []byte, blocks map[string]*block, s Selection, manifestPurpose string) error {
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(raw, &doc) != nil || !only(doc, "v", "generator", "createdAt", "techCardId", "scope", "units", "layers", "cutLayerIsFinal", "allowanceMm", "sizes", "pieces", "blocks", "source", "gate", "passport") {
 		return invalid
@@ -30,7 +30,11 @@ func verifyManifestGeometry(raw []byte, blocks map[string]*block, s Selection) e
 			return invalid
 		}
 		var fabrics []string
-		if json.Unmarshal(m["fabrics"], &fabrics) != nil || !slices.Equal(fabrics, []string{s.FabricPurpose, s.BOMLineKey}) ||
+		wanted := []string{s.FabricPurpose, s.BOMLineKey}
+		if manifestPurpose != s.FabricPurpose {
+			wanted = []string{s.FabricPurpose, manifestPurpose, s.BOMLineKey}
+		}
+		if json.Unmarshal(m["fabrics"], &fabrics) != nil || !slices.Equal(fabrics, wanted) ||
 			string(m["allowanceMm"]) != "0" || string(m["piecesPerGarment"]) != "1" || string(m["mods"]) != "[]" || string(m["pairHand"]) != "null" || string(m["pairOf"]) != "null" ||
 			string(m["fused"]) != "false" || string(m["ungraded"]) != "false" || string(m["unfoldedFold"]) != "false" ||
 			string(m["code"]) != string(m["identity"]) || string(m["displayName"]) != string(m["identity"]) {

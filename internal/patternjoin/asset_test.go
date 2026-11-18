@@ -127,3 +127,39 @@ func TestRefusedBindings(t *testing.T) {
 		}
 	}
 }
+
+// Original files came from the ordinary worker with a saved GetTechCard projection.
+// The child files came from the manual Chromium Wizard Apply and the production UploadPattern.
+func TestOperatorMaterialBinding(t *testing.T) {
+	for _, d := range []string{"r12-operator", "r2000-operator"} {
+		t.Run(d, func(t *testing.T) {
+			o, cfg, a, b, s := fixture(t, d)
+			if _, err := ReadBinding(t.Context(), o, cfg, a, b, s); err != nil {
+				t.Fatal(err)
+			}
+			key := "tech-card-patterns/child.dxf"
+			original := o[key]
+			for _, pair := range [][2]string{{"Material: Shell", "Material: Lining"}, {"MATERIAL: Shell", "MATERIAL: Lining"}, {"Category: Shell", "Category: Lining"}} {
+				bad := bytes.Replace(original, []byte(pair[0]), []byte(pair[1]), 1)
+				if bytes.Equal(original, bad) {
+					continue
+				}
+				o[key] = bad
+				changed := b
+				changed.Size = int64(len(bad))
+				changed.SHA256 = digest(bad)
+				if _, err := ReadBinding(t.Context(), o, cfg, a, changed, s); err == nil {
+					t.Fatalf("accepted altered child %s", pair[0])
+				}
+			}
+			o[key] = original
+			for _, wrong := range []string{"MAIN", "TECH_CARD_BOM_PURPOSE_MAIN", "lining", " main"} {
+				selected := s
+				selected.FabricPurpose = wrong
+				if _, err := ReadBinding(t.Context(), o, cfg, a, b, selected); err == nil {
+					t.Fatalf("accepted incorrect stored purpose %q", wrong)
+				}
+			}
+		})
+	}
+}

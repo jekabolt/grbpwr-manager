@@ -45,7 +45,7 @@ const maxAsset = 4 << 20 // narrow single-rank Join profile, before opening or a
 const maxManifest = 1 << 20
 
 func ReadBinding(ctx context.Context, store ObjectStore, cfg *bucket.Config, original, reviewed Asset, s Selection) (Binding, error) {
-	if s.CardID <= 0 || s.SizeID <= 0 || s.SizeToken == "" || s.FabricPurpose == "" || s.BOMLineKey == "" ||
+	if !entity.IsValidTechCardBomPurpose(entity.TechCardBomPurpose(s.FabricPurpose)) || s.CardID <= 0 || s.SizeID <= 0 || s.SizeToken == "" || s.FabricPurpose == "" || s.BOMLineKey == "" ||
 		!identity.MatchString(s.Fixed) || !identity.MatchString(s.Moving) || !identity.MatchString(s.Result) || s.Fixed == s.Moving || s.Fixed == s.Result || s.Moving == s.Result || original.SHA256 == reviewed.SHA256 {
 		return Binding{}, invalid
 	}
@@ -119,9 +119,9 @@ func readObject(ctx context.Context, store ObjectStore, cfg *bucket.Config, a As
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
 type nativeFile struct {
-	bodySHA, dialect      string
-	blocks                map[string]*block
-	sizeName, sourceLabel string
+	bodySHA, dialect                     string
+	blocks                               map[string]*block
+	sizeName, sourceLabel, fabricPurpose string
 }
 type manifest struct {
 	V, TechCardID    int
@@ -187,7 +187,7 @@ func readManifest(raw []byte, s Selection, ids []string) (*nativeFile, error) {
 	}
 	var m manifest
 	if err = json.Unmarshal(p, &m); err != nil || m.V != 1 || m.Generator != "grbpwr-admin pattern-import (worker)" || m.Units != "mm" || !m.CutLayerIsFinal || !m.Gate.Passed || m.TechCardID != s.CardID ||
-		m.Scope.FabricPurpose != s.FabricPurpose || m.Scope.BOMLineKey != s.BOMLineKey || len(m.Sizes) != 1 || m.Sizes[0].Token != s.SizeToken || m.Sizes[0].SizeID != s.SizeID || m.Sizes[0].Rank == nil || *m.Sizes[0].Rank != 0 || len(m.Pieces) != len(ids) || len(m.Blocks) != len(ids) {
+		(m.Scope.FabricPurpose != s.FabricPurpose && m.Scope.FabricPurpose != "TECH_CARD_BOM_PURPOSE_"+strings.ToUpper(s.FabricPurpose)) || m.Scope.BOMLineKey != s.BOMLineKey || len(m.Sizes) != 1 || m.Sizes[0].Token != s.SizeToken || m.Sizes[0].SizeID != s.SizeID || m.Sizes[0].Rank == nil || *m.Sizes[0].Rank != 0 || len(m.Pieces) != len(ids) || len(m.Blocks) != len(ids) {
 		return nil, invalid
 	}
 	for _, id := range ids {
@@ -210,10 +210,10 @@ func readManifest(raw []byte, s Selection, ids []string) (*nativeFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyManifestGeometry(p, blocks, s); err != nil {
+	if err := verifyManifestGeometry(p, blocks, s, m.Scope.FabricPurpose); err != nil {
 		return nil, err
 	}
-	return &nativeFile{digest(rest), dialect, blocks, m.Sizes[0].Name, m.Sizes[0].SourceLabel}, nil
+	return &nativeFile{digest(rest), dialect, blocks, m.Sizes[0].Name, m.Sizes[0].SourceLabel, m.Scope.FabricPurpose}, nil
 }
 
 // encoding/json accepts duplicate and case-folded struct keys. Decline both before decoding.
