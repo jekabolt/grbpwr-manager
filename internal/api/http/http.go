@@ -223,6 +223,16 @@ func (s *Server) tenantStream() grpc.StreamServerInterceptor {
 	return s.tenantBinder.Stream()
 }
 
+// stripForwardedHost drops a client X-Forwarded-Host. The grpc-gateway forwards that header (over
+// r.Host) as x-forwarded-host, which the admin chain reads as the Host the request came to; left
+// in, a client could present itself on another team's host. The upload routes read r.Host already.
+func stripForwardedHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del("X-Forwarded-Host")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) tenantMiddleware(next http.Handler) http.Handler {
 	if s.tenantBinder == nil {
 		return next
@@ -608,6 +618,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.Use(observability.HTTPMiddleware)
 	}
 	r.Use(middleware.Recover)
+	r.Use(stripForwardedHost)
 	// Team of the request (wave 1: team #1 on everything) before any handler touches the store.
 	r.Use(s.tenantMiddleware)
 

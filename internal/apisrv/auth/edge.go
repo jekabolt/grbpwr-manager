@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -458,19 +460,40 @@ func grpcOrigin(ctx context.Context) string {
 	return ""
 }
 
-// grpcHost is the host a gRPC call was addressed to: the public Host the grpc-gateway forwards as
-// x-forwarded-host, else the :authority of a direct gRPC call.
+// grpcHost is the host a gRPC call was addressed to. x-forwarded-host is the grpc-gateway's
+// annotation of the public Host, so it is trusted only on the gateway's loopback hop (peer
+// 127.0.0.1 / ::1); any other caller could forge it, so a direct gRPC call answers by :authority.
+// The HTTP side strips a client X-Forwarded-Host before the gateway (api/http), so the annotation
+// is r.Host.
 func grpcHost(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ""
 	}
-	for _, k := range []string{"x-forwarded-host", ":authority"} {
+	keys := []string{":authority"}
+	if fromLoopback(ctx) {
+		keys = []string{"x-forwarded-host", ":authority"}
+	}
+	for _, k := range keys {
 		if v := md.Get(k); len(v) > 0 && strings.TrimSpace(v[0]) != "" {
 			return strings.TrimSpace(v[0])
 		}
 	}
 	return ""
+}
+
+// fromLoopback reports whether the gRPC peer is this host (the grpc-gateway dials its own port).
+func fromLoopback(ctx context.Context) bool {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return false
+	}
+	host := p.Addr.String()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // accountKey is the account-state / admin-id cache key: (team, username). Team #1 (and a context

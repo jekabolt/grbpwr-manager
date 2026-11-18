@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,19 +11,32 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
-// callAdminAs is callAdmin with the Host the gateway forwards and an X-Team header.
+// callAdminAs is callAdmin as the grpc-gateway loopback hop sends it: x-forwarded-host and x-team
+// from the HTTP request, peer 127.0.0.1.
 func callAdminAs(srv *Server, method, token, origin, host, xteam string) (context.Context, error) {
+	return callAdminFrom(srv, method, token, origin, xteam, loopbackPeer, map[string]string{"x-forwarded-host": host})
+}
+
+var (
+	loopbackPeer = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 50000}
+	remotePeer   = &net.TCPAddr{IP: net.IPv4(10, 244, 0, 7), Port: 50000}
+)
+
+func callAdminFrom(srv *Server, method, token, origin, xteam string, from net.Addr, hosts map[string]string) (context.Context, error) {
 	md := metadata.New(map[string]string{AuthMetadataKey: "Bearer " + token, "grpcgateway-origin": origin})
-	if host != "" {
-		md.Set("x-forwarded-host", host)
+	for k, v := range hosts {
+		if v != "" {
+			md.Set(k, v)
+		}
 	}
 	if xteam != "" {
 		md.Set("x-team", xteam)
 	}
-	ctx := metadata.NewIncomingContext(context.Background(), md)
+	ctx := peer.NewContext(metadata.NewIncomingContext(context.Background(), md), &peer.Peer{Addr: from})
 	var got context.Context
 	_, err := srv.UnaryAdminAuthInterceptor()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method},
 		func(ctx context.Context, _ any) (any, error) { got = ctx; return nil, nil })
@@ -123,5 +137,30 @@ func TestEdgeRequestedTeamOnUploadRoutes(t *testing.T) {
 		if rec.Code != c.want {
 			t.Errorf("host %q x-team %q: %d, want %d (%s)", c.host, c.xteam, rec.Code, c.want, rec.Body.String())
 		}
+	}
+}
+
+// Fix-round item 2: x-forwarded-host is the gateway's annotation, trusted only on its loopback hop.
+// A direct gRPC call to team B's address cannot claim team A's host with it.
+func TestEdgeForwardedHostTrustedOnlyFromTheGateway(t *testing.T) {
+	srv := newEdgeServer(t, newEdge())
+	acme := teamToken(t, srv, authjwt.TeamClaims{TeamID: 7, Audience: authjwt.AudTeam, Super: true})
+	hosts := map[string]string{"x-forwarded-host": "acme.lekalo.studio", ":authority": "grbpwr.lekalo.studio"}
+
+	_, err := callAdminFrom(srv, readMethod, acme, "", "acme", remotePeer, hosts)
+	if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != msgTeamMismatch {
+		t.Fatalf("direct call with a forged x-forwarded-host: %v, want team_mismatch", err)
+	}
+	if _, err := callAdminFrom(srv, readMethod, acme, "", "acme", nil, hosts); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("no peer: %v, want team_mismatch", err)
+	}
+	// The gateway hop: its annotation is the public Host.
+	if _, err := callAdminFrom(srv, readMethod, acme, acmeOrigin, "acme", loopbackPeer, hosts); err != nil {
+		t.Fatalf("gateway hop on the own host: %v", err)
+	}
+	// A direct call on its own team's address is fine.
+	own := map[string]string{":authority": "acme.lekalo.studio:443"}
+	if _, err := callAdminFrom(srv, readMethod, acme, "", "", remotePeer, own); err != nil {
+		t.Fatalf("direct call on the own host: %v", err)
 	}
 }

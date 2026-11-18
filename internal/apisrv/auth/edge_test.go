@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,6 +83,9 @@ func (e *fakeEdge) TeamSession(_ context.Context, sid string, uid, tid int64) (s
 
 // RequestedTeam mimics the binder: <slug>.lekalo.studio or X-Team names a team; both must agree.
 func (e *fakeEdge) RequestedTeam(_ context.Context, host, xteam string) (tenant.Team, bool, error) {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
 	slug := strings.TrimSuffix(strings.ToLower(host), ".lekalo.studio")
 	if slug == strings.ToLower(host) || slug == "api" {
 		slug = ""
