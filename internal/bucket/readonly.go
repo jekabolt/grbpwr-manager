@@ -138,7 +138,7 @@ func readOnlyBuckets(raw string) ([]string, error) {
 			strings.ContainsAny(s, "@?#\\ \t") {
 			return nil, fmt.Errorf("BUCKET_S3_READONLY_BUCKETS entry %q must be endpoint/bucket", part)
 		}
-		out = append(out, endpoint+"/"+name)
+		out = append(out, canonicalHost("https", endpoint)+"/"+name)
 	}
 	return out, nil
 }
@@ -147,7 +147,7 @@ func (c *Config) isReadOnlyHost(host string) bool {
 	if c == nil || strings.TrimSpace(c.ReadOnlyHosts) == "" {
 		return false
 	}
-	host = strings.ToLower(host)
+	host = canonicalHost("https", host)
 	for _, h := range ReadOnlyHosts(c) {
 		if h == host {
 			return true
@@ -174,7 +174,7 @@ func (c *Config) readOnlyURL(raw string) (*url.URL, bool) {
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return nil, false
 	}
-	return u, c.isReadOnlyHost(u.Host)
+	return u, c.isReadOnlyHost(canonicalHost(u.Scheme, u.Host))
 }
 
 // URLChangeable answers «may this installation delete / overwrite / move the object behind raw»:
@@ -252,13 +252,17 @@ func (b *Bucket) PatternObjectSource(ctx context.Context, rawURL string) (string
 		return "", true
 	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || !b.Config.isReadOnlyHost(u.Host) {
+	if err != nil {
+		return "", true
+	}
+	host := canonicalHost(u.Scheme, u.Host)
+	if !b.Config.isReadOnlyHost(host) {
 		return "", true
 	}
 	if !b.Config.readOnlyHonoured(ctx) {
 		return "", false
 	}
-	return strings.ToLower(u.Host), true
+	return host, true
 }
 
 // ReadOnlyPatternURL is the link of a pattern object recorded as living on read-only host `host`:
@@ -266,7 +270,7 @@ func (b *Bucket) PatternObjectSource(ctx context.Context, rawURL string) (string
 // ownership comes from the recorded host, never from whether a key exists somewhere. Refused when
 // the host is no longer configured, the team may not read it, or the key is not a pattern key.
 func (b *Bucket) ReadOnlyPatternURL(ctx context.Context, host, objectKey string) (string, time.Time, error) {
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = canonicalHost("https", host)
 	if host == "" || !b.Config.isReadOnlyHost(host) {
 		return "", time.Time{}, fmt.Errorf("pattern object host %q is not a configured read-only host", host)
 	}

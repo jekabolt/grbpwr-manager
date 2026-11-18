@@ -2175,9 +2175,9 @@ type (
 		Revoke(ctx context.Context, id int64, at time.Time) error
 		// RecordAccess folds a debounced batch of access stats into the rows.
 		RecordAccess(ctx context.Context, counts map[int64]int64, last map[int64]time.Time) error
-		// DeleteByKeys drops rows whose objects were garbage-collected — our own bucket's rows
-		// only (source_host ''): an object on a read-only host is never deleted, so its row stays.
-		DeleteByKeys(ctx context.Context, keys []string) error
+		// DeleteByKeys drops the rows of objects that were garbage-collected, matched by key AND
+		// source host: the same key on another host is another object whose row stays.
+		DeleteByKeys(ctx context.Context, ids []entity.PatternObjectID) error
 
 		// Card-viewer rows (tech_card_pattern_viewer_access, 0288): the card-level twin of
 		// the object rows above, behind /api/pv/{token}. Keyed by TECH CARD id — a 'c'

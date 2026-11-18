@@ -79,7 +79,7 @@ func (f *fakeObjects) Revoke(_ context.Context, id int64, at time.Time) error {
 func (f *fakeObjects) RecordAccess(context.Context, map[int64]int64, map[int64]time.Time) error {
 	return nil
 }
-func (f *fakeObjects) DeleteByKeys(context.Context, []string) error { return nil }
+func (f *fakeObjects) DeleteByKeys(context.Context, []entity.PatternObjectID) error { return nil }
 
 func (f *fakeObjects) EnsureCardViewer(_ context.Context, techCardID int) (*entity.TechCardPatternViewerAccess, error) {
 	if f.ensureCardErr != nil {

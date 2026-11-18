@@ -314,3 +314,41 @@ func TestPatternObjectSourceEmptyListIsTodays(t *testing.T) {
 	require.Empty(t, host)
 	require.Empty(t, store.requestLog())
 }
+
+// One spelling of a host everywhere: a default port or a trailing dot does not make another host.
+func TestCanonicalHostSpellings(t *testing.T) {
+	for _, ro := range []string{"cdn.probe.test:443", "cdn.probe.test.", "https://CDN.probe.test.:443/"} {
+		c := &Config{SubdomainEndpoint: "cdn.probe.test", S3Endpoint: "s3.probe.test", S3BucketName: "probe", ReadOnlyHosts: ro}
+		require.Errorf(t, ValidateReadOnly(c), "%q overlaps our writable host", ro)
+	}
+	c := &Config{SubdomainEndpoint: "cdn.probe.test:443", S3Endpoint: "s3.probe.test", S3BucketName: "probe", ReadOnlyHosts: "cdn.probe.test"}
+	require.Error(t, ValidateReadOnly(c), "our host spelled with :443 overlaps too")
+	c = &Config{SubdomainEndpoint: "cdn.lekalo.test", S3Endpoint: "fra1.do.test", S3BucketName: "lekalo", ReadOnlyBuckets: "fra1.do.test:443/lekalo"}
+	require.Error(t, ValidateReadOnly(c))
+
+	b, store, _ := newProbeBucket(t)
+	b.Config.ReadOnlyHosts = legacyHost
+	key := "grbpwr-com/tech-card-patterns/2024/may/p.pdf"
+	want, ok := b.PatternObjectSource(context.Background(), "https://"+legacyHost+"/"+key)
+	require.True(t, ok)
+	require.Equal(t, legacyHost, want)
+	for _, spelled := range []string{"https://" + legacyHost + ":443/" + key, "https://FILES.grbpwr.com./" + key} {
+		got, ok := b.PatternObjectSource(context.Background(), spelled)
+		require.True(t, ok)
+		require.Equalf(t, want, got, "%q", spelled)
+	}
+	got, ok := b.PatternObjectSource(context.Background(), "https://"+legacyHost+":8443/"+key)
+	require.True(t, ok)
+	require.Empty(t, got, "another port is another host")
+	_, _, err := b.ReadOnlyPatternURL(context.Background(), legacyHost+":443", key)
+	require.NoError(t, err)
+
+	// A delete aimed at the read-only host spelled with :443 is still refused before the network.
+	captureWarn(t)
+	require.NoError(t, b.DeleteObjects(context.Background(), "https://"+legacyHost+":443/"+key))
+	require.Empty(t, store.requestLog())
+
+	require.Equal(t, "[::1]", canonicalHost("https", "[::1]:443"))
+	require.Equal(t, "h.test", canonicalHost("http", "H.test:80"))
+	require.Equal(t, "h.test:80", canonicalHost("https", "h.test:80"))
+}

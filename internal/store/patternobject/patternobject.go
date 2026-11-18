@@ -217,14 +217,28 @@ func (s *Store) RecordAccess(ctx context.Context, counts map[int64]int64, last m
 // DeleteByKeys removes access rows for objects that no longer exist (GC of orphaned
 // pattern objects deletes the binary; the row would otherwise 404 forever — correct but
 // dead weight, design R9).
-func (s *Store) DeleteByKeys(ctx context.Context, keys []string) error {
-	if len(keys) == 0 {
-		return nil
+//
+// Host-qualified: a row is removed only when both its key AND its source_host match one of ids.
+// The same key on another host is another object, and its row (revocation epoch, expiry policy)
+// is not touched.
+func (s *Store) DeleteByKeys(ctx context.Context, ids []entity.PatternObjectID) error {
+	byHost := map[string][]string{}
+	hosts := make([]string, 0, 1)
+	for _, id := range ids {
+		if id.Key == "" {
+			continue
+		}
+		if _, ok := byHost[id.SourceHost]; !ok {
+			hosts = append(hosts, id.SourceHost)
+		}
+		byHost[id.SourceHost] = append(byHost[id.SourceHost], id.Key)
 	}
-	if err := storeutil.ExecNamed(ctx, s.DB,
-		`DELETE FROM pattern_object_access WHERE object_key IN (:keys) AND source_host = ''`,
-		map[string]any{"keys": keys}); err != nil {
-		return fmt.Errorf("delete pattern object access rows: %w", err)
+	for _, host := range hosts {
+		if err := storeutil.ExecNamed(ctx, s.DB,
+			`DELETE FROM pattern_object_access WHERE source_host = :host AND object_key IN (:keys)`,
+			map[string]any{"host": host, "keys": byHost[host]}); err != nil {
+			return fmt.Errorf("delete pattern object access rows: %w", err)
+		}
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -172,7 +173,7 @@ func ManagedObjectKeyFromURL(c *Config, rawURL string) (string, error) {
 	if c.S3BucketName != "" && endpointHost != "" {
 		originHost = strings.ToLower(c.S3BucketName + "." + endpointHost)
 	}
-	requestHost := strings.ToLower(u.Host)
+	requestHost := canonicalHost(u.Scheme, u.Host)
 	// A read-only host is never ours to change, even when it is also configured as our own host.
 	if c.isReadOnlyHost(requestHost) {
 		return "", fmt.Errorf("%w: %q", ErrReadOnlyHost, u.Host)
@@ -213,7 +214,35 @@ func configuredURLHost(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.ToLower(u.Host)
+	return canonicalHost(u.Scheme, u.Host)
+}
+
+// canonicalHost is the one spelling of a host for every comparison and every stored host: lower
+// case, no trailing dot, no default port (443 for https or no scheme, 80 for http). Without it
+// `files.example.com:443` and `files.example.com.` would be three different hosts to the overlap
+// check, to the read-only classification and to source_host.
+func canonicalHost(scheme, host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return ""
+	}
+	name, port := host, ""
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		name, port = h, p
+	}
+	switch {
+	case port == "443" && (scheme == "" || strings.EqualFold(scheme, "https")),
+		port == "80" && strings.EqualFold(scheme, "http"):
+		port = ""
+	}
+	name = strings.TrimSuffix(name, ".")
+	if port == "" {
+		if strings.Contains(name, ":") { // IPv6 literal
+			return "[" + name + "]"
+		}
+		return name
+	}
+	return net.JoinHostPort(name, port)
 }
 
 // DeleteObjects best-effort removes the S3 objects behind the given media URLs. Only URLs on the
