@@ -153,7 +153,7 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 		}
 		return nil, status.Error(codes.Internal, "failed to create account")
 	}
-	s.invalidateAccountAuth(username)
+	s.invalidateAccountAuth(ctx, username)
 	account, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to reload created account", slog.String("err", err.Error()))
@@ -231,7 +231,7 @@ func (s *Server) SetAccountDisabled(ctx context.Context, req *pb_admin.SetAccoun
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to update account")
 	}
-	s.invalidateAccountAuth(username)
+	s.invalidateAccountAuth(ctx, username)
 	return &pb_admin.SetAccountDisabledResponse{}, nil
 }
 
@@ -262,7 +262,7 @@ func (s *Server) ResetAccountPassword(ctx context.Context, req *pb_admin.ResetAc
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
 	}
-	s.invalidateAccountAuth(username)
+	s.invalidateAccountAuth(ctx, username)
 	return &pb_admin.ResetAccountPasswordResponse{}, nil
 }
 
@@ -295,7 +295,7 @@ func (s *Server) DeleteAccount(ctx context.Context, req *pb_admin.DeleteAccountR
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to delete account")
 	}
-	s.invalidateAccountAuth(username)
+	s.invalidateAccountAuth(ctx, username)
 	return &pb_admin.DeleteAccountResponse{}, nil
 }
 

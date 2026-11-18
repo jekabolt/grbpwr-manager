@@ -164,7 +164,7 @@ func TestG9AIMoneyStaysInTheSpendingTeam(t *testing.T) {
 	})
 	require.NoError(t, err)
 	claim := func(ctx context.Context) (claimed []entity.DesignRun) {
-		require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{one, twoAs(two, tenant.StatusSuspended)}}, nil)(ctx,
+		require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{one, twoAs(two, tenant.StatusSuspended)}}, nil, 1)(ctx,
 			func(ctx context.Context) error {
 				tm, _ := tenant.From(ctx)
 				if tm.ID == 1 {
@@ -182,7 +182,7 @@ func TestG9AIMoneyStaysInTheSpendingTeam(t *testing.T) {
 	require.Equal(t, entity.DesignRunPending, status)
 
 	var claimed []entity.DesignRun
-	require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{two}}, nil)(ctx, func(ctx context.Context) error {
+	require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{two}}, nil, 1)(ctx, func(ctx context.Context) error {
 		c, err := st.Design().ClaimRuns(ctx, 5, time.Minute, uuid.NewString())
 		claimed = append(claimed, c...)
 		return err

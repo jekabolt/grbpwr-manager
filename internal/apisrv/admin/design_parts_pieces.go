@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -272,7 +274,7 @@ func (s *Server) designPartsPiecesFor(ctx context.Context, cardID int, flats map
 	}
 	budget := s.ai.ChainBudget(purpose, designPiecesMaxTokens)
 	key := fmt.Sprintf("%d|%d|%d|%d", cardID, front, back, seen)
-	ch := s.partsPiecesFlight.DoChan(key, func() (any, error) {
+	ch := s.partsPiecesFlight.DoChan(tenant.Key(ctx, key), func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), designPartsCardAttempts*budget+designPartsFlightMargin)
 		defer cancel()
 		return s.designPartsPiecesRead(fctx, cardID, front, back, seen, budget)
@@ -351,7 +353,7 @@ func (s *Server) designPartsPiecesRead(ctx context.Context, cardID, front, back,
 	default:
 		return designPiecesFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return designPiecesFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz and the parts share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/shopspring/decimal"
@@ -34,19 +35,34 @@ func (a *App) aiConfigPin() func(context.Context) (context.Context, error) {
 	}
 }
 
+// envAITeamParallel — optional: how many teams the AI loops serve at once (default 2, at most 8).
+// Small because every team in flight holds database connections.
+const envAITeamParallel = "AI_TEAM_PARALLEL"
+
+func aiTeamParallel() int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(envAITeamParallel)))
+	if err != nil {
+		n = 0
+	}
+	return airollup.ClampParallel(n)
+}
+
 // wireDesignTeams makes the design worker (or, with generation off, the reserve sweeper) run per
-// team: the worker for active teams with `ai` on, the sweeper for every listed team. Teams mode off:
+// team. Cleanup — revive, overdue, ledger sweep, reserve release — runs for every listed team,
+// suspended and `ai`-off included; only active teams with `ai` on claim and spend. Teams mode off:
 // nothing is set and both keep their one-tick-on-the-root-ctx behaviour.
 func (a *App) wireDesignTeams() {
 	if a.platform == nil {
 		return
 	}
 	dir := a.platform.Directory()
+	par := aiTeamParallel()
 	if a.dgw != nil {
-		a.dgw.SetTeamLoop(designgen.TeamLoop(airollup.WorkLoop(dir, a.platform.FeatureOverrides)))
+		a.dgw.SetTeamLoops(designgen.TeamLoop(airollup.CleanupLoop(dir, par)),
+			designgen.TeamLoop(airollup.WorkLoop(dir, a.platform.FeatureOverrides, par)), par)
 	}
 	if a.dgs != nil {
-		a.dgs.SetTeamLoop(designgen.TeamLoop(airollup.SweepLoop(dir)))
+		a.dgs.SetTeamLoop(designgen.TeamLoop(airollup.CleanupLoop(dir, par)))
 	}
 }
 

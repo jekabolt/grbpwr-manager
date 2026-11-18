@@ -274,7 +274,7 @@ func TestOnlyFullAccessMayManageSuperAccount(t *testing.T) {
 			repo.EXPECT().Admin().Return(admin)
 			s := &Server{repo: repo, pwhash: ph}
 			var invalidated []string
-			s.SetAdminAuthInvalidator(func(username string) { invalidated = append(invalidated, username) })
+			s.SetAdminAuthInvalidator(func(_ context.Context, username string) { invalidated = append(invalidated, username) })
 
 			err := op.call(s, ctxAs("owner", true, nil))
 			require.NoError(t, err)

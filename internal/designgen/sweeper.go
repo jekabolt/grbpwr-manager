@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"go.uber.org/atomic"
 )
 
 // ПОДМЕТАЛЬЩИК РЕЗЕРВОВ — ОРГАН, РАБОТАЮЩИЙ ИМЕННО ТОГДА, КОГДА ГЕНЕРАЦИЯ ВЫКЛЮЧЕНА.
@@ -49,6 +50,10 @@ type Sweeper struct {
 
 	// teams walks the teams one sweep serves (SetTeamLoop); nil = one sweepOnce on the ctx as given.
 	teams TeamLoop
+	// gate keeps the per-team backoff of the teams-mode sweep (teams.go).
+	gate teamGate
+	// teamTimeout bounds one team's sweep in teams mode; 0 = teamQueueTimeout. Tests shorten it.
+	teamTimeout time.Duration
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -154,23 +159,37 @@ func (s *Sweeper) run(ctx context.Context) {
 // is swept anyway.
 func (s *Sweeper) tick(ctx context.Context) {
 	if s.teams == nil {
-		s.sweepOnce(ctx)
+		_ = s.sweepOnce(ctx)
 		return
 	}
-	var served int
+	// Each team under teamQueueTimeout, and a failing team backs off alone (teamGate): one locked
+	// team database neither stalls the sweep of the others nor is hammered every minute.
+	var served atomic.Int32
+	now := time.Now()
 	err := s.teams(ctx, func(tctx context.Context) error {
-		served++
-		s.sweepOnce(tctx)
+		served.Add(1)
+		id, _ := teamIDOf(tctx)
+		if !s.gate.due(id, now) {
+			return nil
+		}
+		limit := s.teamTimeout
+		if limit <= 0 {
+			limit = teamQueueTimeout
+		}
+		sctx, cancel := context.WithTimeout(tctx, limit)
+		defer cancel()
+		s.gate.record(id, s.sweepOnce(sctx), now)
 		return nil
 	})
-	if err != nil && served == 0 && ctx.Err() == nil {
+	if err != nil && served.Load() == 0 && ctx.Err() == nil {
 		s.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "design reserve sweeper: the team list could not be read",
 			slog.String("err", err.Error()))
 	}
 }
 
-func (s *Sweeper) sweepOnce(ctx context.Context) {
+// sweepOnce sweeps the team ctx carries; false = the reserve sweep failed (logged here).
+func (s *Sweeper) sweepOnce(ctx context.Context) bool {
 	// The ledger half first and on its own: its failure is logged inside and must neither skip the
 	// reserve sweep below nor mark this organ unhealthy — the reserve is what it is responsible for.
 	sweepLedger(ctx, s.ledger, s.ledgerAge, sweeperName)
@@ -182,11 +201,12 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 		s.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "design reserve sweeper: the sweep failed",
 			slog.String("err", err.Error()))
-		return
+		return false
 	}
 	s.tracker.MarkSuccess()
 	if n > 0 {
 		slog.Default().InfoContext(ctx, "design reserve sweeper: stranded runs released their reservation",
 			slog.Int("runs", n))
 	}
+	return true
 }

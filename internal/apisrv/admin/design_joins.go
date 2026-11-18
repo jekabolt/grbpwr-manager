@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/designgen"
@@ -255,7 +257,7 @@ func (s *Server) GenerateDesignJoins(ctx context.Context, req *pb_admin.Generate
 
 	// ⚠ ONE FLIGHT PER (card, source): a double press pays once. Detached from the leader's
 	// cancellation under its own budget, like the parts call.
-	ch := s.joinsFlight.DoChan(designJoinsFlightKey(cardID, fp, force, photos), func() (any, error) {
+	ch := s.joinsFlight.DoChan(tenant.Key(ctx, designJoinsFlightKey(cardID, fp, force, photos)), func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			s.ai.ChainBudget(purpose, designJoinsMaxTokens)+designPartsFlightMargin)
 		defer cancel()
@@ -379,7 +381,7 @@ func (s *Server) designJoinsCall(ctx context.Context, cardID int, photos []desig
 	default:
 		return designJoinsFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return designJoinsFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the joins share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

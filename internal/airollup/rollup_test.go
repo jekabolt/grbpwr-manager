@@ -182,21 +182,33 @@ func TestRollupPerTeamFailureAndSpike(t *testing.T) {
 	require.Equal(t, 1, strings.Count(out, "msg="+EventSpike), "team 2 spent $25.50 > $20")
 	require.Contains(t, out, "slug=ostra")
 
-	// First sight = the whole month; afterwards the 7-day history only.
+	// Every run re-reads from min(month start, today − 7): the 1st here, the 11st being later.
 	require.Equal(t, []string{"2026-11-01"}, l.since[2])
 	w.RunOnce(context.Background())
-	require.Equal(t, []string{"2026-11-01", "2026-11-11"}, l.since[2])
+	require.Equal(t, []string{"2026-11-01", "2026-11-01"}, l.since[2], "no marker: the second run re-reads the month too")
 	require.Equal(t, 1, strings.Count(logs.String(), "msg="+EventSpike), "once per team per day")
 }
 
-func TestRollupSkipsTheMonthForATeamTheControlPlaneKnows(t *testing.T) {
-	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
-	s := &fakeSink{rows: map[sinkKey]platformstore.AISpend{{2, "2026-11-03"}: {Calls: 1}}}
-	l := &ledgers{}
+// A first pass cut off half way (the control plane already holds one day of the month) must not be
+// taken for a complete month: the next run copies the older days it missed.
+func TestRollupRecoversAPartialFirstPass(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	s := &fakeSink{rows: map[sinkKey]platformstore.AISpend{{2, "2026-11-01"}: {CostUSD: d("1"), Calls: 1}}}
+	l := &ledgers{rows: map[int64][]dayUsage{2: {
+		{Day: "2026-11-01", CostUSD: d("1"), Calls: 1},
+		{Day: "2026-11-02", CostUSD: d("2"), Calls: 2},
+		{Day: "2026-11-12", CostUSD: d("3"), Calls: 3},
+	}}}
 	w, _ := newTestWorker(t, l, s, now)
 	w.RunOnce(context.Background())
-	require.Equal(t, []string{"2026-11-11"}, l.since[2], "known this month: no backfill after a restart")
-	require.Equal(t, []string{"2026-11-01"}, l.since[3])
+	require.Equal(t, []string{"2026-11-01"}, l.since[2], "partial plane data: still the whole month")
+	require.Equal(t, int64(2), s.rows[sinkKey{2, "2026-11-02"}].Calls, "the 2nd, older than 7 days, is copied")
+
+	// Early in a month the 7-day history reaches into the previous month.
+	l2 := &ledgers{}
+	w2, _ := newTestWorker(t, l2, &fakeSink{}, time.Date(2026, 12, 3, 12, 0, 0, 0, time.UTC))
+	w2.RunOnce(context.Background())
+	require.Equal(t, []string{"2026-11-26"}, l2.since[2])
 }
 
 // ───────────────────────── team loops ─────────────────────────
@@ -214,7 +226,7 @@ func TestWorkLoopServesActiveTeamsWithAIOn(t *testing.T) {
 			return nil, errors.New("control plane hiccup")
 		}
 		return nil, nil
-	})
+	}, 1)
 	var got []string
 	require.NoError(t, loop(context.Background(), func(ctx context.Context) error {
 		tm, ok := tenant.From(ctx)
@@ -229,7 +241,7 @@ func TestWorkLoopTeamsModeOff(t *testing.T) {
 	dir, err := tenant.NewStaticDirectory(teamOne)
 	require.NoError(t, err)
 	var got []int64
-	require.NoError(t, WorkLoop(dir, nil)(context.Background(), func(ctx context.Context) error {
+	require.NoError(t, WorkLoop(dir, nil, 0)(context.Background(), func(ctx context.Context) error {
 		tm, _ := tenant.From(ctx)
 		got = append(got, tm.ID)
 		return nil
@@ -237,12 +249,61 @@ func TestWorkLoopTeamsModeOff(t *testing.T) {
 	require.Equal(t, []int64{1}, got)
 }
 
-func TestSweepLoopServesSuspendedTeams(t *testing.T) {
+// Cleanup serves every listed team — suspended and `ai`-off included — whatever the work loop says.
+func TestCleanupLoopServesSuspendedAndAIOffTeams(t *testing.T) {
+	off := tenant.Team{ID: 4, Slug: "noai", Profile: tenant.ProfileStandard, Status: tenant.StatusActive}
+	var mu sync.Mutex
 	var got []string
-	require.NoError(t, SweepLoop(fakeDir{teams: []tenant.Team{teamOne, teamSusp}})(context.Background(), func(ctx context.Context) error {
+	require.NoError(t, CleanupLoop(fakeDir{teams: []tenant.Team{teamOne, teamSusp, off}}, 1)(context.Background(), func(ctx context.Context) error {
 		tm, _ := tenant.From(ctx)
+		mu.Lock()
 		got = append(got, tm.Slug)
+		mu.Unlock()
 		return nil
 	}))
-	require.Equal(t, []string{"grbpwr", "sleepy"}, got)
+	require.Equal(t, []string{"grbpwr", "sleepy", "noai"}, got)
+}
+
+// A slow team holds one slot only: with parallel 2, the teams after it are served while it hangs,
+// and never more than two run at once.
+func TestLoopSlowTeamDoesNotBlockTheOthers(t *testing.T) {
+	teams := []tenant.Team{teamOne, teamOstra, teamSusp, {ID: 4, Slug: "four", Status: tenant.StatusActive}}
+	release := make(chan struct{})
+	var (
+		mu        sync.Mutex
+		inFlight  int
+		maxFlight int
+		others    = make(chan string, 4)
+	)
+	done := make(chan error, 1)
+	go func() {
+		done <- CleanupLoop(fakeDir{teams: teams}, 2)(context.Background(), func(ctx context.Context) error {
+			tm, _ := tenant.From(ctx)
+			mu.Lock()
+			inFlight++
+			if inFlight > maxFlight {
+				maxFlight = inFlight
+			}
+			mu.Unlock()
+			defer func() { mu.Lock(); inFlight--; mu.Unlock() }()
+			if tm.ID == 1 {
+				<-release // team #1 hangs
+				return nil
+			}
+			others <- tm.Slug
+			return nil
+		})
+	}()
+	for range 3 {
+		select {
+		case <-others:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a later team waited for the slow team #1")
+		}
+	}
+	close(release)
+	require.NoError(t, <-done)
+	require.LessOrEqual(t, maxFlight, 2)
+	require.Equal(t, 2, ClampParallel(0))
+	require.Equal(t, MaxParallel, ClampParallel(100))
 }

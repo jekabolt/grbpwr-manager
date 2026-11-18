@@ -104,8 +104,6 @@ type Worker struct {
 	c Config
 
 	mu sync.Mutex
-	// seen — teams already rolled up over the whole month once by this process.
-	seen map[int64]bool
 	// alerted — team id → the day key its spike was last reported for (once per team per day).
 	alerted map[int64]string
 
@@ -138,7 +136,7 @@ func New(c Config) (*Worker, error) {
 	if c.Log == nil {
 		c.Log = slog.Default()
 	}
-	return &Worker{c: c, seen: map[int64]bool{}, alerted: map[int64]string{}}, nil
+	return &Worker{c: c, alerted: map[int64]string{}}, nil
 }
 
 // Name implements health.Reporter.
@@ -214,18 +212,17 @@ func (w *Worker) RunOnce(ctx context.Context) {
 		return
 	}
 	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
-	history := today.AddDate(0, 0, -historyDays)
-
-	// Teams already in the control plane this month need no month backfill (also after a restart).
-	known, err := w.c.Sink.AISpendSince(ctx, monthStart)
-	if err != nil {
-		w.tracker.MarkError(err)
-		w.c.Log.ErrorContext(ctx, "ai spend rollup: the control plane could not be read", slog.String("err", err.Error()))
-		return
+	// EVERY RUN RECOMPUTES FROM min(month start, today − 7 days), with no "backfilled" marker: a
+	// first pass cut off half way (a failed upsert, a crash, another instance's partial pass) must
+	// never be mistaken for a complete month. At most ~38 daily rows per team; the upsert replaces
+	// a day, so re-reading is idempotent.
+	since := today.AddDate(0, 0, -historyDays)
+	if monthStart.Before(since) {
+		since = monthStart
 	}
 
 	err = tenant.Each(ctx, w.c.Dir, func(tctx context.Context, t tenant.Team) error {
-		if err := w.rollTeam(tctx, t, today, monthStart, history, known); err != nil {
+		if err := w.rollTeam(tctx, t, today, since); err != nil {
 			w.c.Log.WarnContext(ctx, EventFailed,
 				slog.String("event", EventFailed),
 				slog.Int64("tid", t.ID),
@@ -242,18 +239,9 @@ func (w *Worker) RunOnce(ctx context.Context) {
 	w.tracker.MarkSuccess()
 }
 
-func (w *Worker) rollTeam(ctx context.Context, t tenant.Team, today, monthStart, history time.Time, known map[int64]platformstore.AISpend) error {
+func (w *Worker) rollTeam(ctx context.Context, t tenant.Team, today, since time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, teamTimeout)
 	defer cancel()
-
-	w.mu.Lock()
-	_, inPlane := known[t.ID]
-	full := !w.seen[t.ID] && !inPlane
-	w.mu.Unlock()
-	since := history
-	if full && monthStart.Before(since) {
-		since = monthStart
-	}
 
 	var rows []dayUsage
 	if err := w.c.Teams.SelectContext(ctx, &rows, usageQuery, since.Format(time.DateOnly)); err != nil {
@@ -272,10 +260,6 @@ func (w *Worker) rollTeam(ctx context.Context, t tenant.Team, today, monthStart,
 		}
 		byDay[r.Day] = r.CostUSD
 	}
-	w.mu.Lock()
-	w.seen[t.ID] = true
-	w.mu.Unlock()
-
 	w.checkSpike(ctx, t, today, byDay)
 	return nil
 }

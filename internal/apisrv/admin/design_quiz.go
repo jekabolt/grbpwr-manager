@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -628,7 +630,7 @@ func (s *Server) GenerateDesignQuiz(ctx context.Context, req *pb_admin.GenerateD
 	// presses get the same questions. The flight is detached from the leader's cancellation (the
 	// admin name the hourly window reads stays on the context) under its own budget — a closed tab
 	// must not abort the call the follower waits on.
-	ch := s.quizFlight.DoChan(strconv.Itoa(cardID), func() (any, error) {
+	ch := s.quizFlight.DoChan(tenant.Key(ctx, strconv.Itoa(cardID)), func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
 			s.ai.ChainBudget(purpose, designQuizMaxTokens)+designQuizFlightMargin)
 		defer cancel()
@@ -721,7 +723,7 @@ func (s *Server) designQuizCall(ctx context.Context, cardID int) (designQuizFlig
 	default:
 		return designQuizFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return designQuizFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements and the quiz share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

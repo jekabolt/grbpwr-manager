@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -410,7 +412,7 @@ func (s *Server) SuggestTechCardSeamHints(ctx context.Context, req *pb_admin.Sug
 	}
 	admin := authsrv.GetAdminUsername(ctx)
 	force := req.GetForce()
-	if force && !s.seamHintsForced.allow(admin+"\x00"+strconv.Itoa(cardID)+"\x00"+p.dg.Full, time.Now()) {
+	if force && !s.seamHintsForced.allow(tenant.Key(ctx, admin)+"\x00"+strconv.Itoa(cardID)+"\x00"+p.dg.Full, time.Now()) {
 		force = false // a second «rerun» within the cooldown reads the store
 	}
 	st, err := s.seamHintsLoad(ctx, cardID, p.dg.Roles)
@@ -435,7 +437,7 @@ func (s *Server) SuggestTechCardSeamHints(ctx context.Context, req *pb_admin.Sug
 	}
 
 	job := seamHintsJob{cardID: cardID, admin: admin, prep: p, force: force}
-	key := admin + "\x00" + p.dg.Full + "\x00" + strconv.FormatBool(force)
+	key := tenant.Key(ctx, admin) + "\x00" + p.dg.Full + "\x00" + strconv.FormatBool(force)
 	ch := s.seamHintsFlight.DoChan(key, func() (any, error) {
 		budget := s.ai.ChainBudget(purpose, seamHintsMaxTokens)
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), seamHintsAttempts*budget+designPartsFlightMargin)
@@ -576,7 +578,7 @@ func (s *Server) seamHintsCall(ctx context.Context, job seamHintsJob, budget tim
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(job.admin) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, job.admin)) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (the AI buttons share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

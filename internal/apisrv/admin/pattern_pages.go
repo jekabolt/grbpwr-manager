@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -118,7 +120,7 @@ func (s *Server) ClassifyPatternPages(ctx context.Context, req *pb_admin.Classif
 		return nil, s.aiOffRefusal(purpose, patternPagesNotConfiguredMsg)
 	}
 
-	key := patternPagesDigest(req)
+	key := tenant.KeyHash(ctx, patternPagesDigest(req))
 	force := req.GetForce()
 	if !force {
 		if hit, ok := s.patternPagesCache.get(key, time.Now()); ok {
@@ -235,7 +237,7 @@ func (s *Server) patternPagesCall(ctx context.Context, job patternPagesJob, budg
 	// EVERY PAID ATTEMPT SPENDS A SLOT: the first here, a retry before it is sent (no slot left = no
 	// retry), and after the flight every physical call the router made beyond them (a fallback inside
 	// one attempt) is booked too. A refusal after a paid call carries the spend as an ErrorInfo detail.
-	if !s.enhanceRuns.allow(job.admin) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, job.admin)) {
 		return nil, patternImportSlotRefusal()
 	}
 	slots := 1
@@ -251,7 +253,7 @@ func (s *Server) patternPagesCall(ctx context.Context, job patternPagesJob, budg
 	)
 	err = designPartsRetryUnusable(ctx, budget, func(actx context.Context, attempt int) error {
 		if attempt > 1 {
-			if !s.enhanceRuns.allow(job.admin) {
+			if !s.enhanceRuns.allow(tenant.Key(ctx, job.admin)) {
 				return patternImportSlotRefusal()
 			}
 			slots++
@@ -298,7 +300,7 @@ func (s *Server) patternPagesCall(ctx context.Context, job patternPagesJob, budg
 		return nil
 	})
 	spend := skeletonAISpendOf(tally.Calls())
-	s.patternImportSpendExtraSlots(job.admin, spend.calls, slots)
+	s.patternImportSpendExtraSlots(ctx, job.admin, spend.calls, slots)
 	if err != nil && fallback != nil {
 		out, complete, err = fallback, false, nil
 		out.Warnings = append(out.Warnings, "the pages with a role outside the list were asked once more without a better answer; they are left out")

@@ -28,11 +28,31 @@ type Overrides func(ctx context.Context, teamID int64) (map[string]bool, error)
 // AI work within it.
 const workCacheTTL = 15 * time.Second
 
-// WorkLoop serves the teams AI may WORK for: listed (active or suspended), not suspended, `ai` on
+// DefaultParallel — how many teams one loop serves at once. Small on purpose: every team in flight
+// holds database connections, and beta lekalo allows ten in all. AI_TEAM_PARALLEL overrides it
+// (app/teams_ai.go), clamped to [1, MaxParallel].
+const (
+	DefaultParallel = 2
+	MaxParallel     = 8
+)
+
+// ClampParallel keeps a configured parallelism inside [1, MaxParallel]; 0 or less = DefaultParallel.
+func ClampParallel(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultParallel
+	case n > MaxParallel:
+		return MaxParallel
+	}
+	return n
+}
+
+// WorkLoop serves the teams AI may WORK for — claim and spend: listed, not suspended, `ai` on
 // (feature.Effective). A team whose switches cannot be read is skipped this round with a WARN —
 // fail closed: no work for a team whose `ai` switch is unknown. Teams mode off: the static directory
-// lists team #1 (profile all), so the loop is team #1 alone.
-func WorkLoop(dir tenant.Directory, overrides Overrides) Loop {
+// lists team #1 (profile all), so the loop is team #1 alone. Up to parallel teams run at once.
+// Cleanup of work a team already started never goes through here: that is CleanupLoop.
+func WorkLoop(dir tenant.Directory, overrides Overrides, parallel int) Loop {
 	var (
 		mu      sync.Mutex
 		cached  []tenant.Team
@@ -74,29 +94,57 @@ func WorkLoop(dir tenant.Directory, overrides Overrides) Loop {
 		if err != nil {
 			return err
 		}
-		return each(ctx, teams, fn)
+		return each(ctx, teams, parallel, fn)
 	}
 }
 
-// SweepLoop serves EVERY listed team, suspended and `ai`-off ones included: closing dead ledger rows
-// and releasing stranded reserves is cleanup of work already done, never new work.
-func SweepLoop(dir tenant.Directory) Loop {
+// CleanupLoop serves EVERY listed team — active and suspended, `ai` on or off: reviving dead
+// leases, closing dead ledger rows and releasing stranded reserves is cleanup of work already
+// started, never new work, so neither a pause nor the `ai` switch may stop it. Up to parallel teams
+// run at once.
+func CleanupLoop(dir tenant.Directory, parallel int) Loop {
 	return func(ctx context.Context, fn func(ctx context.Context) error) error {
-		return tenant.Each(ctx, dir, func(tctx context.Context, _ tenant.Team) error { return fn(tctx) })
+		teams, err := dir.ListActive(ctx)
+		if err != nil {
+			return fmt.Errorf("airollup: list teams: %w", err)
+		}
+		return each(ctx, teams, parallel, fn)
 	}
 }
 
-// each runs fn per team in order, bound with tenant.With; errors are joined like tenant.Each's, and
-// logged by the caller.
-func each(ctx context.Context, teams []tenant.Team, fn func(ctx context.Context) error) error {
-	var first error
+// each runs fn per team, bound with tenant.With, at most parallel at once (ClampParallel), and
+// returns when every started fn has returned. One slow team holds one slot, never the others: the
+// next team starts as soon as any slot is free. The first error is returned (logged by the caller).
+func each(ctx context.Context, teams []tenant.Team, parallel int, fn func(ctx context.Context) error) error {
+	sem := make(chan struct{}, ClampParallel(parallel))
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+loop:
 	for _, t := range teams {
-		if err := ctx.Err(); err != nil {
-			return err
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break loop
 		}
-		if err := fn(tenant.With(ctx, t)); err != nil && first == nil {
-			first = fmt.Errorf("team %s: %w", t.Slug, err)
-		}
+		wg.Add(1)
+		go func(t tenant.Team) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := fn(tenant.With(ctx, t)); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = fmt.Errorf("team %s: %w", t.Slug, err)
+				}
+				mu.Unlock()
+			}
+		}(t)
+	}
+	wg.Wait()
+	if first == nil {
+		return ctx.Err()
 	}
 	return first
 }

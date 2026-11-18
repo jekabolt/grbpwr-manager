@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -244,7 +246,7 @@ func (s *Server) SuggestCallouts(ctx context.Context, req *pb_admin.SuggestCallo
 			continue // no picture to look at: the view gets nothing
 		}
 		user := calloutUserPrompt(card, f, cands)
-		jobs = append(jobs, calloutViewJob{flat: f, user: user, key: calloutCacheKey(in.cardID, card, f, user)})
+		jobs = append(jobs, calloutViewJob{flat: f, user: user, key: tenant.KeyHash(ctx, calloutCacheKey(in.cardID, card, f, user))})
 	}
 
 	results := make([]*calloutViewResult, len(jobs))
@@ -325,7 +327,7 @@ func (s *Server) calloutCalls(ctx context.Context, admin string, in calloutInput
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(admin) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, admin)) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (suggestions, ideas and text improvements share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

@@ -363,7 +363,7 @@ func TestAdminAccountStateDatabaseErrorPolicy(t *testing.T) {
 
 	// An explicit mutation evicts that fallback. A DB error then fails closed as Unavailable,
 	// preserving the session token while refusing the request until account state can be read.
-	authsrv.InvalidateAdminAccount("worker")
+	authsrv.InvalidateAdminAccount(context.Background(), "worker")
 	called, err = call()
 	assert.False(t, called)
 	assert.Equal(t, codes.Unavailable, status.Code(err))

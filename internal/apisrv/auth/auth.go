@@ -23,6 +23,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
@@ -380,7 +381,7 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
-	s.InvalidateAdminAccount(username)
+	s.InvalidateAdminAccount(ctx, username)
 	return &auth.CreateResponse{
 		AuthToken: token,
 	}, nil
@@ -415,7 +416,7 @@ func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.Del
 		)
 		return nil, status.Errorf(codes.Internal, "failed to delete admin")
 	}
-	s.InvalidateAdminAccount(username)
+	s.InvalidateAdminAccount(ctx, username)
 	return &auth.DeleteResponse{}, nil
 }
 
@@ -485,7 +486,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
-	s.InvalidateAdminAccount(username)
+	s.InvalidateAdminAccount(ctx, username)
 	return &auth.ChangePasswordResponse{
 		AuthToken: token,
 	}, nil
@@ -602,11 +603,15 @@ const adminServicePrefix = rbac.MethodPrefix
 // InvalidateAdminAccount evicts one account from the authentication caches. Admin account
 // mutations call this after the database write succeeds, so the next request must read the new
 // existence/disabled state instead of waiting for the normal cache window.
-func (s *Server) InvalidateAdminAccount(username string) {
+//
+// Usernames are per team (two teams may both have "anna"), so every cache below is keyed by
+// tenant.Key(ctx, username): ctx names the team whose account changed.
+func (s *Server) InvalidateAdminAccount(ctx context.Context, username string) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if username == "" {
 		return
 	}
+	username = tenant.Key(ctx, username)
 	s.adminStateMu.Lock()
 	if s.adminStates == nil {
 		s.adminStates = make(map[string]adminAccountStateEntry)
@@ -630,12 +635,13 @@ func (s *Server) checkAdminAccountState(ctx context.Context, username string) er
 	if username == "" {
 		return nil
 	}
-	if state, ok := s.cachedAdminAccountState(username); ok {
+	ck := tenant.Key(ctx, username) // per team: two teams may both have this username
+	if state, ok := s.cachedAdminAccountState(ck); ok {
 		return adminAccountStateError(state)
 	}
 
-	v, err, _ := s.adminStateFlight.Do(username, func() (any, error) {
-		if state, ok := s.cachedAdminAccountState(username); ok {
+	v, err, _ := s.adminStateFlight.Do(ck, func() (any, error) {
+		if state, ok := s.cachedAdminAccountState(ck); ok {
 			return state, nil
 		}
 		return s.lookupAdminAccountState(ctx, username)
@@ -675,7 +681,8 @@ func (s *Server) storeAdminAccountState(username string, generation uint64, stat
 }
 
 func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (adminAccountStateEntry, error) {
-	previous, hadPrevious, generation := s.adminAccountStateSnapshot(username)
+	ck := tenant.Key(ctx, username)
+	previous, hadPrevious, generation := s.adminAccountStateSnapshot(ck)
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminAccountLookupTimeout)
 	defer cancel()
 
@@ -687,7 +694,7 @@ func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (
 			if previous.expires.After(previous.staleUntil) {
 				previous.expires = previous.staleUntil
 			}
-			s.storeAdminAccountState(username, generation, previous)
+			s.storeAdminAccountState(ck, generation, previous)
 			if previous.exists && !previous.disabled {
 				slog.Default().WarnContext(ctx, "admin account state lookup failed; using recently verified state",
 					slog.String("username", username),
@@ -714,10 +721,10 @@ func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (
 		expires:    now.Add(s.adminAccountStateTTL()),
 		staleUntil: now.Add(s.adminAccountStateStaleWindow()),
 	}
-	stored := s.storeAdminAccountState(username, generation, state)
+	stored := s.storeAdminAccountState(ck, generation, state)
 	if state.exists && stored {
 		id := account.Id
-		s.adminIDs.Store(username, adminIDEntry{id: &id, expires: now.Add(s.adminIDTTL)})
+		s.adminIDs.Store(ck, adminIDEntry{id: &id, expires: now.Add(s.adminIDTTL)})
 	}
 	if !state.exists {
 		slog.Default().WarnContext(ctx, "admin token subject no longer exists",
@@ -814,13 +821,14 @@ func (s *Server) adminIDFor(ctx context.Context, username string) *int {
 	if s.adminRepository == nil {
 		return nil
 	}
-	if id, ok := s.cachedAdminID(username); ok {
+	ck := tenant.Key(ctx, username) // (team, username): two teams may both have this username
+	if id, ok := s.cachedAdminID(ck); ok {
 		return id
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	v, _, _ := s.adminIDFlight.Do(username, func() (any, error) {
+	v, _, _ := s.adminIDFlight.Do(ck, func() (any, error) {
 		return s.lookupAdminID(ctx, username), nil
 	})
 	return copyIntPtr(v.(*int))
@@ -850,7 +858,8 @@ func (s *Server) cachedAdminID(username string) (*int, bool) {
 // depend on the one request that happened to start it: a cancelled starter would otherwise hand all
 // the others a nil id and cache that failure for five minutes.
 func (s *Server) lookupAdminID(ctx context.Context, username string) *int {
-	if id, ok := s.cachedAdminID(username); ok {
+	ck := tenant.Key(ctx, username)
+	if id, ok := s.cachedAdminID(ck); ok {
 		return id
 	}
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminIDLookupTimeout)
@@ -873,7 +882,7 @@ func (s *Server) lookupAdminID(ctx context.Context, username string) *int {
 		v := admin.Id
 		id = &v
 	}
-	s.adminIDs.Store(username, adminIDEntry{id: id, expires: s.clockNow().Add(s.adminIDTTL)})
+	s.adminIDs.Store(ck, adminIDEntry{id: id, expires: s.clockNow().Add(s.adminIDTTL)})
 	return copyIntPtr(id)
 }
 
