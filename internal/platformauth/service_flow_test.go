@@ -48,8 +48,12 @@ type fakeTeams struct {
 	mu      sync.Mutex
 	ensured map[string][]entity.AdminPermission // handle → perms written into a team
 	pwSet   map[string]string
-	// onEnsure, when set, runs before the admins row is written; an error fails the write.
+	// disabled: handle → its admins row is disabled (staged by a join, not yet enabled).
+	disabled map[string]bool
+	// onEnsure, when set, runs before the admins row is staged; an error fails the write.
 	onEnsure func(handle string) error
+	// onEnable, when set, runs before the admins row is enabled; an error fails the enable.
+	onEnable func(handle string) error
 }
 
 type flow struct {
@@ -94,7 +98,7 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}},
+	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}},
 		clock: time.Now().UTC().Truncate(time.Second)}
 	svc, err := New(Deps{
 		Store:   st,
@@ -108,9 +112,9 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 				f.teams.mu.Lock()
 				defer f.teams.mu.Unlock()
 				perms, ok := f.teams.ensured[handle]
-				return TeamAccount{Super: perms == nil, Perms: perms}, ok, nil
+				return TeamAccount{Super: perms == nil, Perms: perms, Disabled: f.teams.disabled[handle]}, ok, nil
 			},
-			EnsureMember: func(_ context.Context, _ tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
+			StageMember: func(_ context.Context, _ tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
 				f.teams.mu.Lock()
 				defer f.teams.mu.Unlock()
 				if f.teams.onEnsure != nil {
@@ -124,6 +128,18 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 					perms = []entity.AdminPermission{}
 				}
 				f.teams.ensured[handle] = perms
+				f.teams.disabled[handle] = true
+				return nil
+			},
+			EnableMember: func(_ context.Context, _ tenant.Team, handle string) error {
+				f.teams.mu.Lock()
+				defer f.teams.mu.Unlock()
+				if f.teams.onEnable != nil {
+					if err := f.teams.onEnable(handle); err != nil {
+						return err
+					}
+				}
+				f.teams.disabled[handle] = false
 				return nil
 			},
 			TeamOnePassword: func(_ context.Context, handle, hash string) error {
@@ -402,8 +418,8 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 	if err != nil || ai.GetTeamSlug() != "atelier-anna" || ai.GetHandoffCode() == "" {
 		t.Fatalf("accept = %v, %v", ai, err)
 	}
-	if p := f.teams.ensured["bob.k"]; len(p) != 1 || p[0].Section != "products" || p[0].Access != entity.AccessWrite {
-		t.Fatalf("team admins row of bob = %v", p)
+	if p := f.teams.ensured["bob.k"]; len(p) != 1 || p[0].Section != "products" || p[0].Access != entity.AccessWrite || f.teams.disabled["bob.k"] {
+		t.Fatalf("team admins row of bob = %v, disabled %v", p, f.teams.disabled["bob.k"])
 	}
 	if err := f.st.DB().Get(&terms, `SELECT terms_version, terms_accepted_at FROM platform_user WHERE email = ?`, bob); err != nil ||
 		terms.Version.String != DefaultTermsVersion || !terms.At.Valid {

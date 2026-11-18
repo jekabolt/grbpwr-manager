@@ -49,5 +49,43 @@ func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	return w.Start(context.WithoutCancel(ctx)), nil
+	stopMail := w.Start(context.WithoutCancel(ctx))
+	stopSweep := startJoiningSweep(context.WithoutCancel(ctx), a.platform)
+	return func() { stopSweep(); stopMail() }, nil
+}
+
+// joiningSweepEvery is how often reserved memberships whose invite died are removed.
+const joiningSweepEvery = time.Hour
+
+// startJoiningSweep removes, now and then hourly, invite reservations that can never finish (their
+// invite expired or was revoked); the staged admins row they left stays disabled.
+func startJoiningSweep(ctx context.Context, st interface {
+	SweepJoining(context.Context, time.Time) (int64, error)
+}) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	sweep := func() {
+		n, err := st.SweepJoining(ctx, time.Now().UTC())
+		switch {
+		case err != nil && ctx.Err() == nil:
+			slog.Default().ErrorContext(ctx, "teams: sweep stale invite reservations", slog.String("err", err.Error()))
+		case n > 0:
+			slog.Default().InfoContext(ctx, "teams: stale invite reservations removed", slog.Int64("count", n))
+		}
+	}
+	go func() {
+		defer close(done)
+		sweep()
+		t := time.NewTicker(joiningSweepEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				sweep()
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
 }

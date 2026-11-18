@@ -27,8 +27,12 @@ import (
 type Hooks struct {
 	// TeamAccount reads the member's admins row in the team's database. found=false when there is none.
 	TeamAccount func(ctx context.Context, team tenant.Team, handle string) (acc TeamAccount, found bool, err error)
-	// EnsureMember creates or updates the member's admins row in the team's database.
-	EnsureMember func(ctx context.Context, team tenant.Team, handle string, super bool, perms []entity.AdminPermission) error
+	// StageMember creates or updates the member's admins row in the team's database DISABLED, with
+	// this super flag and these permissions (an invite's step 2: unusable until the control plane
+	// makes the member active).
+	StageMember func(ctx context.Context, team tenant.Team, handle string, super bool, perms []entity.AdminPermission) error
+	// EnableMember enables the member's admins row (an invite's last step, or the heal on sign-in).
+	EnableMember func(ctx context.Context, team tenant.Team, handle string) error
 	// TeamOnePassword writes a new password hash onto team #1's admins row of the handle.
 	TeamOnePassword func(ctx context.Context, handle, hash string) error
 }
@@ -540,7 +544,7 @@ func (s *Service) teamToken(ctx context.Context, u platformstore.User, team tena
 			return "", errNotReady()
 		}
 	}
-	acc, found, err := s.d.Hooks.TeamAccount(ctx, team, u.Handle)
+	acc, found, err := s.teamAccount(ctx, team, u, m)
 	if err != nil {
 		s.log(ctx, "team account", err)
 		return "", errInternal()
@@ -549,6 +553,30 @@ func (s *Service) teamToken(ctx context.Context, u platformstore.User, team tena
 		return "", errAuth()
 	}
 	return s.session(ctx, u, team.ID, jwt.AudTeam, s.d.TeamTTL, acc.Super, rbac.EncodePermissions(acc.Perms), now)
+}
+
+// teamAccount reads the member's admins row. When the member's join stopped after the control
+// plane made them active (enable_pending), the staged row is enabled first and the flag cleared;
+// a disabled row without the flag stays disabled.
+func (s *Service) teamAccount(ctx context.Context, team tenant.Team, u platformstore.User, m platformstore.MemberTeam) (TeamAccount, bool, error) {
+	acc, found, err := s.d.Hooks.TeamAccount(ctx, team, u.Handle)
+	if err != nil || !found || !m.EnablePending {
+		return acc, found, err
+	}
+	if acc.Disabled {
+		if s.d.Hooks.EnableMember == nil {
+			return acc, found, nil
+		}
+		if err := s.d.Hooks.EnableMember(ctx, team, u.Handle); err != nil {
+			return acc, found, err
+		}
+		acc.Disabled = false
+		s.audit(ctx, u.ID, team.ID, "member_enabled", map[string]string{"by": "signin"})
+	}
+	if err := s.d.Store.ClearEnablePending(ctx, team.ID, u.ID); err != nil {
+		s.log(ctx, "clear enable pending", err)
+	}
+	return acc, found, nil
 }
 
 // session opens a user_session row and mints its token.
@@ -689,7 +717,7 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 	var acc TeamAccount
 	found := false
 	if err == nil && team.DBName != "" {
-		acc, found, err = s.d.Hooks.TeamAccount(ctx, team, res.User.Handle)
+		acc, found, err = s.teamAccount(ctx, team, res.User, res.Member)
 	}
 	if err != nil || !found || acc.Disabled {
 		// The code is spent; close the session it opened. The page sends the person to sign in.
@@ -943,7 +971,7 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		HandleBase:      HandleBase(inv.Email),
 		Handoff:         nt,
 		TermsVersion:    terms,
-		Ensure: func(ctx context.Context, inv platformstore.Invite, handle string) error {
+		Stage: func(ctx context.Context, inv platformstore.Invite, handle string) error {
 			super, perms, err := InvitePermissions(inv.Permissions, inv.Role)
 			if err != nil {
 				return err
@@ -952,7 +980,14 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 			if err != nil {
 				return err
 			}
-			return s.d.Hooks.EnsureMember(ctx, team, handle, super, perms)
+			return s.d.Hooks.StageMember(ctx, team, handle, super, perms)
+		},
+		Enable: func(ctx context.Context, inv platformstore.Invite, handle string) error {
+			team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID)
+			if err != nil {
+				return err
+			}
+			return s.d.Hooks.EnableMember(ctx, team, handle)
 		},
 	})
 	switch {
@@ -969,6 +1004,10 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 	case err != nil:
 		s.log(ctx, "accept invite", err)
 		return nil, errInternal()
+	}
+	if res.EnablePending {
+		// Joined in the control plane; the team row is enabled on the member's next sign-in.
+		slog.Default().WarnContext(ctx, "platformauth: invite accepted, team row left for the next sign-in to enable")
 	}
 	s.audit(ctx, res.UserID, res.TeamID, "invite_accept", map[string]string{"new_account": fmt.Sprint(res.Created)})
 	return &auth.AcceptInviteResponse{TeamSlug: res.TeamSlug, HandoffCode: code}, nil

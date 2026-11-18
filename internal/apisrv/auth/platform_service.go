@@ -10,7 +10,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
-	"github.com/jekabolt/grbpwr-manager/internal/teamsync"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
@@ -80,8 +79,11 @@ func (s *Server) platformHooks() platformauth.Hooks {
 			}
 			return platformauth.TeamAccount{Super: acc.IsSuper, Perms: acc.Permissions, Disabled: acc.Disabled}, true, nil
 		},
-		EnsureMember: func(ctx context.Context, team tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
-			return teamsync.EnsureAdmin(tenant.With(ctx, team), s.adminRepository, handle, super, perms)
+		StageMember: func(ctx context.Context, team tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
+			return s.stageTeamAdmin(tenant.With(ctx, team), handle, super, perms)
+		},
+		EnableMember: func(ctx context.Context, team tenant.Team, handle string) error {
+			return s.enableTeamAdmin(tenant.With(ctx, team), handle)
 		},
 		TeamOnePassword: func(ctx context.Context, handle, hash string) error {
 			pctx, err := tenant.Pinned(ctx, s.platform.store.Directory(), 1)
@@ -95,4 +97,55 @@ func (s *Server) platformHooks() platformauth.Hooks {
 			return nil
 		},
 	}
+}
+
+// stageTeamAdmin writes an invited member's admins row in the pinned team DISABLED with these rights:
+// an existing row is disabled before its rights change, a new one gets a hash nobody can match. The
+// row stays unusable (legacy Login refuses it) until enableTeamAdmin, which the join runs only after
+// the control plane made the member active.
+func (s *Server) stageTeamAdmin(ctx context.Context, handle string, super bool, perms []entity.AdminPermission) error {
+	defer s.InvalidateAdminAccount(handle)
+	cur, err := s.adminRepository.GetAdminByUsername(ctx, handle)
+	switch {
+	case err == nil:
+		if !cur.Disabled {
+			if err := s.adminRepository.SetAccountDisabled(ctx, handle, true); err != nil {
+				return fmt.Errorf("stage team admin: disable: %w", err)
+			}
+		}
+		if err := s.adminRepository.SetAccountPermissions(ctx, handle, super, perms); err != nil {
+			return fmt.Errorf("stage team admin: permissions: %w", err)
+		}
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		hash, err := platformauth.UnusableHash(s.pwhash)()
+		if err != nil {
+			return fmt.Errorf("stage team admin: hash: %w", err)
+		}
+		if err := s.adminRepository.AddAccount(ctx, handle, hash, super, perms); err != nil {
+			return fmt.Errorf("stage team admin: add: %w", err)
+		}
+		if err := s.adminRepository.SetAccountDisabled(ctx, handle, true); err != nil {
+			return fmt.Errorf("stage team admin: disable: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("stage team admin: read: %w", err)
+	}
+}
+
+// enableTeamAdmin enables a staged admins row in the pinned team (idempotent).
+func (s *Server) enableTeamAdmin(ctx context.Context, handle string) error {
+	defer s.InvalidateAdminAccount(handle)
+	cur, err := s.adminRepository.GetAdminByUsername(ctx, handle)
+	if err != nil {
+		return fmt.Errorf("enable team admin: read: %w", err)
+	}
+	if !cur.Disabled {
+		return nil
+	}
+	if err := s.adminRepository.SetAccountDisabled(ctx, handle, false); err != nil {
+		return fmt.Errorf("enable team admin: %w", err)
+	}
+	return nil
 }
