@@ -4,7 +4,13 @@
 //
 // A row is written by the identity code inside the transaction that creates its token; this worker
 // only reads it. With PLATFORM_MAILER_ENABLED=false a row is marked skipped and its payload stays
-// (tests and the golden case read the code from it while it is valid).
+// (tests and the golden case read the code from it while it is valid). With the mailer on but its
+// key or from-address missing, rows stay pending until the settings are fixed.
+//
+// A send never runs inside a transaction: the row is leased (lease_until) and its attempt counted in
+// a short commit, Resend is called, then the outcome is written only if the lease is still ours. A
+// crash mid-send leaves the lease to expire and the row is sent again under the same idempotency
+// key. The retry time lives in the row (next_attempt_at), so restarts and replicas share it.
 package platformmail
 
 import (
@@ -39,6 +45,7 @@ const (
 	retryMax        = 10 * time.Minute
 	sweepEvery      = time.Hour
 	sendTimeout     = 20 * time.Second
+	leaseFor        = time.Minute // > sendTimeout: a live send never loses its lease
 	resendBaseURL   = "https://api.resend.com/"
 	maxErrorLen     = 500
 )
@@ -66,15 +73,17 @@ type Config struct {
 	BaseDomain string // PLATFORM_BASE_DOMAIN: the letters' footer and address line
 }
 
+// ErrNotConfigured: the mailer is on but has no sender or from-address; rows stay pending.
+var ErrNotConfigured = errors.New("platformmail: PLATFORM_MAILER_ENABLED is on but PLATFORM_MAIL_FROM or the Resend key is missing; letters wait")
+
 // Worker drains platform_email.
 type Worker struct {
 	db       *sqlx.DB
-	sender   Sender // nil: sending impossible (no API key), rows are skipped
+	sender   Sender // nil with the mailer on: rows wait (ErrNotConfigured)
 	cfg      Config
 	tpl      *templates
 	now      func() time.Time
 	interval time.Duration
-	nextTry  map[int64]time.Time // in-memory backoff per row id
 }
 
 // New builds a worker. sender may be nil when no Resend key is configured.
@@ -88,8 +97,7 @@ func New(db *sqlx.DB, sender Sender, cfg Config) (*Worker, error) {
 	}
 	cfg.BaseDomain = strings.ToLower(strings.Trim(strings.TrimSpace(cfg.BaseDomain), "./"))
 	cfg.From = strings.TrimSpace(cfg.From)
-	return &Worker{db: db, sender: sender, cfg: cfg, tpl: tpl, now: time.Now, interval: defaultInterval,
-		nextTry: map[int64]time.Time{}}, nil
+	return &Worker{db: db, sender: sender, cfg: cfg, tpl: tpl, now: time.Now, interval: defaultInterval}, nil
 }
 
 // SetClock replaces the clock (tests).
@@ -112,9 +120,6 @@ func (w *Worker) Start(ctx context.Context) (stop func()) {
 }
 
 func (w *Worker) loop(ctx context.Context) {
-	if !w.canSend() && w.cfg.Enabled {
-		slog.Default().ErrorContext(ctx, "platformmail: PLATFORM_MAILER_ENABLED is on but PLATFORM_MAIL_FROM or the Resend key is missing; letters are marked skipped")
-	}
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	lastSweep := time.Time{}
@@ -162,9 +167,13 @@ type Payload struct {
 	Email    string `json:"email"` // team_request: who asked for the team
 }
 
-// Tick handles up to one batch of pending rows, each in its own transaction (FOR UPDATE SKIP
-// LOCKED: two instances never send the same row). It returns how many rows changed status.
+// Tick handles up to one batch of due pending rows (FOR UPDATE SKIP LOCKED plus the lease: two
+// instances never send the same row at once). It returns how many rows changed status. With the
+// mailer on but unconfigured it touches nothing and answers ErrNotConfigured (the loop logs it).
 func (w *Worker) Tick(ctx context.Context) (int, error) {
+	if w.cfg.Enabled && !w.canSend() {
+		return 0, ErrNotConfigured
+	}
 	var lastID int64
 	done := 0
 	for range batchSize {
@@ -186,24 +195,49 @@ func (w *Worker) Tick(ctx context.Context) (int, error) {
 	return done, nil
 }
 
-// one claims the next pending row after afterID and acts on it. id 0 = nothing left.
+// one claims the next due pending row after afterID and acts on it. id 0 = nothing left.
 func (w *Worker) one(ctx context.Context, afterID int64) (id int64, changed bool, err error) {
+	now := w.clock()
+	r, m, lease, changed, err := w.claim(ctx, afterID, now)
+	if err != nil || r.ID == 0 || changed {
+		return r.ID, changed, err
+	}
+	// The row is leased and committed: no transaction or row lock is held during the call.
+	sctx, cancel := context.WithTimeout(ctx, sendTimeout)
+	serr := w.sender.Send(sctx, m, fmt.Sprintf("platform-email-%d", r.ID))
+	cancel()
+	attempts := r.Attempts + 1
+	done := w.clock()
+	var perm *PermanentError
+	switch {
+	case serr == nil:
+		return r.ID, true, w.finish(ctx, r.ID, lease, `status = 'sent', sent_at = ?, last_error = NULL`, done)
+	case errors.As(serr, &perm) || attempts >= maxAttempts:
+		slog.Default().ErrorContext(ctx, "platformmail: letter failed", slog.Int64("id", r.ID), slog.String("template", r.Template),
+			slog.String("err", truncate(serr.Error())))
+		return r.ID, true, w.finish(ctx, r.ID, lease, `status = 'failed', last_error = ?`, truncate(serr.Error()))
+	default:
+		next := done.Add(mail.RetryDelayAfterAttempt(retryBase, retryMax, attempts))
+		return r.ID, false, w.finish(ctx, r.ID, lease, `next_attempt_at = ?, last_error = ?`, next, truncate(serr.Error()))
+	}
+}
+
+// claim locks the next due row in a short transaction. A disabled mailer marks it skipped; a
+// payload that cannot be sent marks it failed (changed=true). Otherwise it counts the attempt,
+// leases the row until lease and commits, returning the rendered message.
+func (w *Worker) claim(ctx context.Context, afterID int64, now time.Time) (r outboxRow, m Message, lease time.Time, changed bool, err error) {
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return 0, false, fmt.Errorf("platformmail: begin: %w", err)
+		return r, m, lease, false, fmt.Errorf("platformmail: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var r outboxRow
 	if err := tx.GetContext(ctx, &r, `SELECT id, to_email, template, payload, attempts FROM platform_email
-WHERE status = 'pending' AND id > ? ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`, afterID); err != nil {
+WHERE status = 'pending' AND id > ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND (lease_until IS NULL OR lease_until <= ?)
+ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`, afterID, now, now); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, false, nil
+			return outboxRow{}, m, lease, false, nil
 		}
-		return 0, false, fmt.Errorf("platformmail: claim: %w", err)
-	}
-	now := w.clock()
-	if t, ok := w.nextTry[r.ID]; ok && now.Before(t) {
-		return r.ID, false, nil
+		return outboxRow{}, m, lease, false, fmt.Errorf("platformmail: claim: %w", err)
 	}
 	set := func(q string, args ...any) error {
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
@@ -214,42 +248,36 @@ WHERE status = 'pending' AND id > ? ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
 		}
 		return nil
 	}
-	if !w.canSend() {
-		return r.ID, true, set(`UPDATE platform_email SET status = 'skipped' WHERE id = ?`, r.ID)
+	if !w.cfg.Enabled {
+		return r, m, lease, true, set(`UPDATE platform_email SET status = 'skipped' WHERE id = ?`, r.ID)
 	}
 	var p Payload
 	if err := json.Unmarshal(r.Payload, &p); err != nil || p.Link == "" {
-		delete(w.nextTry, r.ID)
-		return r.ID, true, set(`UPDATE platform_email SET status = 'failed', last_error = ? WHERE id = ?`,
+		return r, m, lease, true, set(`UPDATE platform_email SET status = 'failed', last_error = ?, lease_until = NULL WHERE id = ?`,
 			"expired before send", r.ID)
 	}
-	m, err := w.tpl.render(r.Template, p, w.cfg.BaseDomain)
+	m, err = w.tpl.render(r.Template, p, w.cfg.BaseDomain)
 	if err != nil {
-		delete(w.nextTry, r.ID)
-		return r.ID, true, set(`UPDATE platform_email SET status = 'failed', last_error = ? WHERE id = ?`,
+		return r, m, lease, true, set(`UPDATE platform_email SET status = 'failed', last_error = ?, lease_until = NULL WHERE id = ?`,
 			truncate(err.Error()), r.ID)
 	}
 	m.From, m.To = w.cfg.From, r.To
-	sctx, cancel := context.WithTimeout(ctx, sendTimeout)
-	serr := w.sender.Send(sctx, m, fmt.Sprintf("platform-email-%d", r.ID))
-	cancel()
-	attempts := r.Attempts + 1
-	if serr == nil {
-		delete(w.nextTry, r.ID)
-		return r.ID, true, set(`UPDATE platform_email SET status = 'sent', attempts = ?, sent_at = ?, last_error = NULL WHERE id = ?`,
-			attempts, now, r.ID)
+	lease = now.Add(leaseFor)
+	return r, m, lease, false, set(`UPDATE platform_email SET attempts = attempts + 1, lease_until = ? WHERE id = ?`, lease, r.ID)
+}
+
+// finish writes a send's outcome and drops the lease, only while the lease is still ours.
+func (w *Worker) finish(ctx context.Context, id int64, lease time.Time, assign string, args ...any) error {
+	args = append(args, id, lease)
+	r, err := w.db.ExecContext(ctx, `UPDATE platform_email SET `+assign+`, lease_until = NULL
+WHERE id = ? AND status = 'pending' AND lease_until = ?`, args...)
+	if err != nil {
+		return fmt.Errorf("platformmail: finish row: %w", err)
 	}
-	var perm *PermanentError
-	if errors.As(serr, &perm) || attempts >= maxAttempts {
-		delete(w.nextTry, r.ID)
-		slog.Default().ErrorContext(ctx, "platformmail: letter failed", slog.Int64("id", r.ID), slog.String("template", r.Template),
-			slog.String("err", truncate(serr.Error())))
-		return r.ID, true, set(`UPDATE platform_email SET status = 'failed', attempts = ?, last_error = ? WHERE id = ?`,
-			attempts, truncate(serr.Error()), r.ID)
+	if n, _ := r.RowsAffected(); n == 0 {
+		slog.Default().WarnContext(ctx, "platformmail: lease lost before the outcome was written", slog.Int64("id", id))
 	}
-	w.nextTry[r.ID] = now.Add(mail.RetryDelayAfterAttempt(retryBase, retryMax, attempts))
-	return r.ID, false, set(`UPDATE platform_email SET attempts = ?, last_error = ? WHERE id = ?`,
-		attempts, truncate(serr.Error()), r.ID)
+	return nil
 }
 
 // Sweep blanks code and link in payloads whose letter has expired: verify after 24 h, reset after

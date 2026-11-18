@@ -5,13 +5,15 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
 	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
 )
 
 // startTeamsMail syncs the platform operators from PLATFORM_OPERATOR_EMAILS and starts the platform
-// mail worker (verify / invite / reset letters from platform_email). Missing optional settings never
-// fail boot: the worker marks letters skipped and logs why.
+// mail worker (verify / invite / reset letters from platform_email). Missing settings never fail
+// boot: a disabled mailer marks letters skipped; an enabled one without its key or from-address
+// leaves them pending and logs an error every tick until fixed.
 func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 	if a.platform == nil {
 		return func() {}, nil
@@ -20,8 +22,13 @@ func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 	if len(invalid) > 0 {
 		slog.Default().WarnContext(ctx, "teams: PLATFORM_OPERATOR_EMAILS has entries that are not emails; skipped", slog.Int("count", len(invalid)))
 	}
+	// Same parameters as the admin hasher: a seeded operator's hash costs what any account's costs.
+	ph, err := pwhash.New(a.c.Auth.PasswordHasherSaltSize, a.c.Auth.PasswordHasherIterations)
+	if err != nil {
+		return nil, err
+	}
 	created, err := a.platform.SyncOperators(ctx, emails, time.Now().UTC().Truncate(time.Millisecond),
-		platformauth.UnusableHash, platformauth.HandleBase)
+		platformauth.UnusableHash(ph), platformauth.HandleBase)
 	if err != nil {
 		return nil, err
 	}

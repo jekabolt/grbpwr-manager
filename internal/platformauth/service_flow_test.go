@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -47,6 +48,8 @@ type fakeTeams struct {
 	mu      sync.Mutex
 	ensured map[string][]entity.AdminPermission // handle → perms written into a team
 	pwSet   map[string]string
+	// onEnsure, when set, runs before the admins row is written; an error fails the write.
+	onEnsure func(handle string) error
 }
 
 type flow struct {
@@ -110,6 +113,11 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 			EnsureMember: func(_ context.Context, _ tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
 				f.teams.mu.Lock()
 				defer f.teams.mu.Unlock()
+				if f.teams.onEnsure != nil {
+					if err := f.teams.onEnsure(handle); err != nil {
+						return err
+					}
+				}
 				if super {
 					perms = nil
 				} else if perms == nil {
@@ -346,6 +354,14 @@ func TestIdentityFlow(t *testing.T) {
 	_, rcode, rlink := f.lastLetter(anna)
 	_, err = f.svc.ResetPassword(rctx, &auth.ResetPasswordRequest{Email: anna, Code: rcode, NewPassword: "new-password-1"})
 	wantCode(t, err, codes.InvalidArgument, "right code while locked")
+	// A wrong link is refused before any hashing, and the link bucket closes a flood from one IP.
+	lctx := ctxFrom("10.0.0.40", "")
+	for i := range 10 {
+		_, err := f.svc.ResetPassword(lctx, &auth.ResetPasswordRequest{Token: fmt.Sprintf("not-a-link-%d", i), NewPassword: "new-password-1"})
+		wantCode(t, err, codes.InvalidArgument, "wrong reset link")
+	}
+	_, err = f.svc.ResetPassword(lctx, &auth.ResetPasswordRequest{Token: rlink, NewPassword: "new-password-1"})
+	wantCode(t, err, codes.ResourceExhausted, "reset link flood")
 	if _, err := f.svc.ResetPassword(rctx, &auth.ResetPasswordRequest{Token: rlink, NewPassword: "new-password-1"}); err != nil {
 		t.Fatalf("reset by link: %v", err)
 	}
@@ -399,6 +415,82 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 	if _, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: invite(bob), Password: "bob-password-1"}); err != nil {
 		t.Fatalf("invite for an existing account without terms: %v", err)
 	}
+	// Password guesses through an invite share the address's sign-in bucket, whatever the IP.
+	gtok := invite(bob)
+	_, err = f.svc.AcceptInvite(ctxFrom("10.2.0.1", ""), &auth.AcceptInviteRequest{Token: gtok, Password: "not-bobs-password"})
+	wantCode(t, err, codes.Unauthenticated, "invite with a wrong password")
+	for i := 2; i <= 6; i++ {
+		_, err = f.svc.AcceptInvite(ctxFrom(fmt.Sprintf("10.2.0.%d", i), ""), &auth.AcceptInviteRequest{Token: gtok, Password: "not-bobs-password"})
+	}
+	wantCode(t, err, codes.ResourceExhausted, "invite guesses from rotating IPs")
+	// Two steps around the team write: a failed write leaves a reserved, inactive membership and a
+	// live invite; nothing signs into the team; the same link then finishes the join.
+	const dan = "delivered+b3dan@resend.dev"
+	dtok := invite(dan)
+	f.teams.onEnsure = func(string) error { return errors.New("team database down") }
+	_, err = f.svc.AcceptInvite(ctxFrom("10.4.0.1", ""), &auth.AcceptInviteRequest{Token: dtok, Password: "dan-password-1", Handle: "dan", TermsAccepted: true})
+	wantCode(t, err, codes.Internal, "invite while the team write fails")
+	memberStatus := func(email string) string {
+		var st string
+		if err := f.st.DB().Get(&st, `SELECT m.status FROM team_member m JOIN platform_user u ON u.id = m.user_id
+WHERE m.team_id = ? AND u.email = ?`, teamID, email); err != nil {
+			t.Fatalf("membership of %s: %v", email, err)
+		}
+		return st
+	}
+	var accepted, handoffs int
+	if err := f.st.DB().Get(&accepted, `SELECT COUNT(*) FROM team_invite WHERE email = ? AND accepted_at IS NOT NULL`, dan); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.DB().Get(&handoffs, `SELECT COUNT(*) FROM email_token e JOIN platform_user u ON u.id = e.user_id
+WHERE u.email = ? AND e.purpose = 'handoff'`, dan); err != nil {
+		t.Fatal(err)
+	}
+	if st := memberStatus(dan); st != "joining" || accepted != 0 || handoffs != 0 {
+		t.Fatalf("after a failed team write: membership %s, accepted %d, hand-offs %d", st, accepted, handoffs)
+	}
+	dctx := ctxFrom("10.4.0.2", "")
+	dsi, err := f.svc.SignIn(dctx, &auth.SignInRequest{Login: dan, Password: "dan-password-1", Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT})
+	if err != nil || len(dsi.GetTeams()) != 0 {
+		t.Fatalf("root sign-in of a reserved member = %v, %v", dsi, err)
+	}
+	// (The test clock runs ahead of the JWT clock here, so the hand-off is checked on the store.)
+	var danID int64
+	if err := f.st.DB().Get(&danID, `SELECT id FROM platform_user WHERE email = ?`, dan); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := f.st.Membership(ctx, danID, teamID); err != nil || ok {
+		t.Fatalf("membership of a reserved member = %v, %v", ok, err)
+	}
+	_, err = f.svc.SignIn(ctxFrom("10.4.0.3", "atelier-anna"), &auth.SignInRequest{Login: dan, Password: "dan-password-1", Target: auth.SignInTarget_SIGN_IN_TARGET_TEAM})
+	wantCode(t, err, codes.Unauthenticated, "team sign-in of a reserved member")
+	f.teams.onEnsure = nil
+	if gi, err := f.svc.GetInvite(ctx, &auth.GetInviteRequest{Token: dtok}); err != nil || !gi.GetAccountExists() {
+		t.Fatalf("invite after the failed write = %v, %v", gi, err)
+	}
+	if _, err := f.svc.AcceptInvite(ctxFrom("10.4.0.4", ""), &auth.AcceptInviteRequest{Token: dtok, Password: "dan-password-1"}); err != nil {
+		t.Fatalf("retry of the invite: %v", err)
+	}
+	if st := memberStatus(dan); st != "active" {
+		t.Fatalf("membership after the retry = %s", st)
+	}
+	// A member removed while the team write runs stays removed; the invite is not consumed.
+	etok := invite(dan)
+	if _, err := f.st.DB().Exec(`UPDATE team_member m JOIN platform_user u ON u.id = m.user_id SET m.status = 'removed'
+WHERE m.team_id = ? AND u.email = ?`, teamID, dan); err != nil {
+		t.Fatal(err)
+	}
+	f.teams.onEnsure = func(string) error {
+		_, err := f.st.DB().Exec(`UPDATE team_member m JOIN platform_user u ON u.id = m.user_id SET m.status = 'removed'
+WHERE m.team_id = ? AND u.email = ?`, teamID, dan)
+		return err
+	}
+	_, err = f.svc.AcceptInvite(ctxFrom("10.4.0.5", ""), &auth.AcceptInviteRequest{Token: etok, Password: "dan-password-1"})
+	wantCode(t, err, codes.InvalidArgument, "member removed during the join")
+	f.teams.onEnsure = nil
+	if st := memberStatus(dan); st != "removed" {
+		t.Fatalf("membership of a member removed during the join = %s", st)
+	}
 	// A suspended team refuses new members.
 	ctok := invite("delivered+b3cara@resend.dev")
 	if _, err := f.st.DB().Exec(`UPDATE team SET status = 'suspended' WHERE id = ?`, teamID); err != nil {
@@ -417,9 +509,12 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 		Terms sql.NullString `db:"terms_version"`
 	}
 	if err := f.st.DB().Get(&op, `SELECT is_operator, password_hash, terms_version FROM platform_user WHERE email = 'delivered+b3op@resend.dev'`); err != nil ||
-		!op.Op || !strings.HasPrefix(op.Hash, "!unusable$") || op.Terms.Valid {
+		!op.Op || !wellFormedHash(op.Hash) || op.Terms.Valid {
 		t.Fatalf("operator = %+v, %v", op, err)
 	}
+	_, err = f.svc.SignIn(ctxFrom("10.3.0.1", ""), &auth.SignInRequest{Login: "delivered+b3op@resend.dev", Password: "anything-at-all",
+		Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT})
+	wantCode(t, err, codes.Unauthenticated, "operator before a reset")
 
 	// Every letter went to the test inbox only.
 	var stray int

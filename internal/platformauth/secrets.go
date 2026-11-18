@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 )
 
 // Purposes of an email_token row.
@@ -129,13 +131,22 @@ func NewSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// UnusableHash returns a password hash nothing can match: pwhash.Validate needs five '$' fields.
-func UnusableHash() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("platformauth: random hash: %w", err)
+// UnusableHash returns a maker of password hashes nobody can match: a real PBKDF2 hash (the same
+// work as any account's) of 32 random bytes that are thrown away. A seeded operator sets a password
+// through reset.
+func UnusableHash(h *pwhash.PasswordHasher) func() (string, error) {
+	return func() (string, error) {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			return "", fmt.Errorf("platformauth: random hash: %w", err)
+		}
+		return h.HashPassword(hex.EncodeToString(b))
 	}
-	return "!unusable$" + hex.EncodeToString(b), nil
+}
+
+// wellFormedHash reports whether stored has the shape pwhash writes: PBKDF2$sha512$<n>$<salt>$<key>.
+func wellFormedHash(stored string) bool {
+	return strings.HasPrefix(stored, "PBKDF2$") && strings.Count(stored, "$") == 4
 }
 
 // CheckPepper refuses an empty or short pepper.

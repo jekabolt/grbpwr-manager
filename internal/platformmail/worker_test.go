@@ -122,6 +122,17 @@ func TestWorkerSendsRetriesAndSweeps(t *testing.T) {
 		"delivered+b3bad@resend.dev":   &PermanentError{Err: errors.New("422 invalid")},
 	}
 	w.sender = senderFunc(func(c context.Context, m Message, key string) error {
+		// The send runs with no transaction open: another connection can lock the row at once.
+		tx, err := st.DB().Beginx()
+		if err != nil {
+			return err
+		}
+		var id int64
+		lerr := tx.Get(&id, `SELECT id FROM platform_email WHERE to_email = ? FOR UPDATE NOWAIT`, m.To)
+		_ = tx.Rollback()
+		if lerr != nil {
+			t.Errorf("row of %s locked during the send: %v", m.To, lerr)
+		}
 		if err := failFor[m.To]; err != nil {
 			return err
 		}
@@ -150,6 +161,18 @@ func TestWorkerSendsRetriesAndSweeps(t *testing.T) {
 	}
 	if r := rowOf(t, st, "delivered+b3retry@resend.dev"); r.Attempts != 1 {
 		t.Fatalf("retried inside the backoff: %+v", r)
+	}
+	// The backoff lives in the row: a fresh worker (a restart, another replica) waits too.
+	w2, err := New(st.DB(), w.sender, Config{Enabled: true, From: "lekalo <no-reply@lekalo.studio>", BaseDomain: "beta.lekalo.studio"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.SetClock(func() time.Time { return now })
+	if _, err := w2.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r := rowOf(t, st, "delivered+b3retry@resend.dev"); r.Attempts != 1 {
+		t.Fatalf("a fresh worker retried inside the backoff: %+v", r)
 	}
 	// Five attempts in all, then failed.
 	for range 6 {
@@ -200,3 +223,61 @@ func TestWorkerSendsRetriesAndSweeps(t *testing.T) {
 type senderFunc func(context.Context, Message, string) error
 
 func (f senderFunc) Send(ctx context.Context, m Message, key string) error { return f(ctx, m, key) }
+
+// TestWorkerUnconfiguredAndLease: an enabled mailer without a key leaves letters pending; a send
+// whose worker died after the claim is sent again once the lease runs out, under the same key.
+func TestWorkerUnconfiguredAndLease(t *testing.T) {
+	st := openOutbox(t)
+	ctx := context.Background()
+	if err := st.EnqueueLetter(ctx, platformstore.Letter{To: "delivered+b3wait@resend.dev", Template: "verify", Code: "482913",
+		Link: "https://beta.lekalo.studio/confirm#token=SECRET1", Slug: "atelier", TeamName: "Atelier"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Enabled: true, From: "lekalo <no-reply@lekalo.studio>", BaseDomain: "beta.lekalo.studio"}
+	for _, c := range []struct {
+		sender Sender
+		from   string
+	}{{nil, cfg.From}, {&fakeSender{}, ""}} {
+		bad := cfg
+		bad.From = c.from
+		w, err := New(st.DB(), c.sender, bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Tick(ctx); !errors.Is(err, ErrNotConfigured) {
+			t.Fatalf("unconfigured tick = %v", err)
+		}
+	}
+	if r := rowOf(t, st, "delivered+b3wait@resend.dev"); r.Status != "pending" || r.Attempts != 0 {
+		t.Fatalf("unconfigured mailer touched the row: %+v", r)
+	}
+
+	fs := &fakeSender{}
+	w, err := New(st.DB(), fs, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	w.SetClock(func() time.Time { return now })
+	// A worker claims the row and dies before sending.
+	r, _, _, changed, err := w.claim(ctx, 0, now)
+	if err != nil || r.ID == 0 || changed {
+		t.Fatalf("claim = %+v %v %v", r, changed, err)
+	}
+	if _, err := w.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fs.sent) != 0 {
+		t.Fatal("a leased row was sent")
+	}
+	now = now.Add(leaseFor + time.Second)
+	if _, err := w.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowOf(t, st, "delivered+b3wait@resend.dev"); got.Status != "sent" || got.Attempts != 2 {
+		t.Fatalf("after the lease = %+v", got)
+	}
+	if len(fs.keys) != 1 || fs.keys[0] != fmt.Sprintf("platform-email-%d", r.ID) {
+		t.Fatalf("keys = %v", fs.keys)
+	}
+}

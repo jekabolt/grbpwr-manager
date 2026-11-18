@@ -309,7 +309,8 @@ type ResetResult struct {
 }
 
 func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.Time) (ResetResult, error) {
-	if u.Status == UserDisabled {
+	// No hash: the caller only counts a miss its preflight saw; a code that matches now is not consumed.
+	if u.Status == UserDisabled || newHash == "" {
 		return ResetResult{}, ErrTokenInvalid
 	}
 	// A reset proves the inbox: a pending account (an operator seeded at boot is active) stays as is.
@@ -327,6 +328,52 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, newHash, now, 
 		return ResetResult{}, fmt.Errorf("platformstore: team one membership: %w", err)
 	}
 	return ResetResult{UserID: u.ID, Handle: u.Handle, TeamOneMem: n > 0, Revoked: revoked}, nil
+}
+
+// ResetLinkLive is a read-only check that tokenHash is a live reset link of an account that is not
+// disabled. It runs before the password is hashed; ResetByLink re-checks under locks.
+func (s *Store) ResetLinkLive(ctx context.Context, tokenHash string, now time.Time) (bool, error) {
+	var n int
+	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM email_token t JOIN platform_user u ON u.id = t.user_id
+WHERE t.token_hash = ? AND t.purpose = 'reset' AND t.used_at IS NULL AND t.expires_at > ? AND u.status <> ?`,
+		tokenHash, now, UserDisabled); err != nil {
+		return false, fmt.Errorf("platformstore: reset link: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ResetCodeMatches is a read-only check that (email, code) matches the newest live reset letter of
+// an unlocked account. It counts nothing: on false the caller runs ResetByCode with no hash, which
+// counts the miss; on true it hashes and ResetByCode re-checks under locks.
+func (s *Store) ResetCodeMatches(ctx context.Context, a CodeAttempt) (bool, error) {
+	u, err := s.UserByEmail(ctx, a.Email)
+	if errors.Is(err, ErrUserNotFound) {
+		a.Match(0, "")
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if u.Status == UserDisabled || a.Locked(u.Counters()) {
+		a.Match(0, "")
+		return false, nil
+	}
+	var t tokenRow
+	err = s.db.GetContext(ctx, &t, `SELECT `+tokenColumns+` FROM email_token
+WHERE user_id = ? AND purpose = 'reset' AND used_at IS NULL AND expires_at > ? AND code_hash IS NOT NULL
+ORDER BY id DESC LIMIT 1`, u.ID, a.Now)
+	if isNoRows(err) {
+		a.Match(0, "")
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("platformstore: reset code: %w", err)
+	}
+	if t.CodeAttempts >= a.MaxRowAttempts {
+		a.Match(0, "")
+		return false, nil
+	}
+	return a.Match(u.ID, t.CodeHash.String), nil
 }
 
 // ResetByLink sets a new password by a reset link and revokes every session of the account.

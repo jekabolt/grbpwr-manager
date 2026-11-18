@@ -59,7 +59,8 @@ type AcceptParams struct {
 	Handle, HandleBase string
 	Handoff            NewToken
 	// Ensure creates the member's admins row in the team's database (teamsync.EnsureAdmin under the
-	// team pin). It runs before the control-plane commit: a failure rolls the acceptance back.
+	// team pin). It runs between the two control-plane commits, outside any transaction: a failure
+	// leaves the membership reserved ('joining') and the invite live, so the same link retries.
 	Ensure func(ctx context.Context, inv Invite, handle string) error
 	// TermsVersion is the terms version accepted on the join page ("" = not accepted). Required
 	// only when the invite creates a new account; an existing one is never asked again.
@@ -75,27 +76,68 @@ type AcceptResult struct {
 	Created  bool
 }
 
-// AcceptInvite consumes an invite: the account (existing → its password must match; pending →
-// activated with the new password; none → created with the chosen handle, email counted verified),
-// the membership with the invite's role, the admins row in the team, and a hand-off — one transaction.
-// ErrTeamReadOnly for a suspended team, ErrWrongPassword, ErrHandleTaken, else ErrTokenInvalid.
+// AcceptInvite consumes an invite in three steps, so no tenant write ever hangs on an open
+// control-plane transaction:
+//
+//  1. reserve (one commit): the account (existing → its password must match; pending → activated
+//     with the new password; none → created with the chosen handle, email counted verified) and a
+//     'joining' membership, which every sign-in and hand-off refuses (they read status 'active');
+//     an already active membership stays active;
+//  2. Ensure writes the member's admins row in the team's database;
+//  3. activate (one commit): the membership becomes active with the invite's role, the invite is
+//     consumed and the hand-off inserted.
+//
+// A failure or crash after step 1 leaves the invite live and the membership reserved: the same link
+// runs again (the account then exists, so the password typed the first time is checked).
+// ErrTeamReadOnly for a suspended team, ErrWrongPassword, ErrHandleTaken, ErrTermsRequired, else
+// ErrTokenInvalid.
 func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult, error) {
-	var res AcceptResult
+	res, inv, err := s.reserveInvite(ctx, p)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if p.Ensure != nil {
+		if err := p.Ensure(ctx, inv, res.Handle); err != nil {
+			return AcceptResult{}, fmt.Errorf("platformstore: team admins row: %w", err)
+		}
+	}
+	if err := s.activateInvite(ctx, p, inv, res.UserID); err != nil {
+		return AcceptResult{}, err
+	}
+	res.TeamID, res.TeamSlug = inv.TeamID, inv.TeamSlug
+	return res, nil
+}
+
+// lockLiveInviteTx locks the live invite of tokenHash and checks its team takes members.
+func lockLiveInviteTx(ctx context.Context, tx *sqlx.Tx, tokenHash string, now time.Time) (Invite, error) {
+	var inv Invite
+	if err := tx.GetContext(ctx, &inv, inviteSelect+` FOR UPDATE`, tokenHash, now); err != nil {
+		if isNoRows(err) {
+			return Invite{}, ErrTokenInvalid
+		}
+		return Invite{}, fmt.Errorf("platformstore: lock invite: %w", err)
+	}
+	switch inv.TeamStatus {
+	case "active":
+		return inv, nil
+	case "suspended":
+		return Invite{}, ErrTeamReadOnly
+	default:
+		return Invite{}, ErrTokenInvalid
+	}
+}
+
+// reserveInvite is step 1 of AcceptInvite.
+func (s *Store) reserveInvite(ctx context.Context, p AcceptParams) (AcceptResult, Invite, error) {
+	var (
+		res AcceptResult
+		inv Invite
+	)
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
 		res = AcceptResult{}
-		var inv Invite
-		if err := tx.GetContext(ctx, &inv, inviteSelect+` FOR UPDATE`, p.TokenHash, p.Now); err != nil {
-			if isNoRows(err) {
-				return ErrTokenInvalid
-			}
-			return fmt.Errorf("platformstore: lock invite: %w", err)
-		}
-		switch inv.TeamStatus {
-		case "active":
-		case "suspended":
-			return ErrTeamReadOnly
-		default:
-			return ErrTokenInvalid
+		var err error
+		if inv, err = lockLiveInviteTx(ctx, tx, p.TokenHash, p.Now); err != nil {
+			return err
 		}
 		u, err := lockUserByEmail(ctx, tx, inv.Email)
 		switch {
@@ -131,11 +173,39 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, p.NewPasswordH
 			return ErrTokenInvalid
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
-VALUES (?, ?, ?, 'active', ?) ON DUPLICATE KEY UPDATE role = VALUES(role), status = 'active'`,
+VALUES (?, ?, ?, 'joining', ?) ON DUPLICATE KEY UPDATE status = IF(status = 'active', 'active', 'joining')`,
 			inv.TeamID, res.UserID, inv.Role, p.Now); err != nil {
-			return fmt.Errorf("platformstore: invite membership: %w", err)
+			return fmt.Errorf("platformstore: reserve membership: %w", err)
 		}
-		r, err := tx.ExecContext(ctx, `UPDATE team_invite SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`, p.Now, inv.ID)
+		return nil
+	})
+	return res, inv, err
+}
+
+// activateInvite is step 3 of AcceptInvite: the invite and its team are re-checked under lock.
+func (s *Store) activateInvite(ctx context.Context, p AcceptParams, reserved Invite, userID int64) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		inv, err := lockLiveInviteTx(ctx, tx, p.TokenHash, p.Now)
+		if err != nil {
+			return err
+		}
+		if inv.ID != reserved.ID {
+			return ErrTokenInvalid
+		}
+		// Only the reservation (or a membership that was already active) turns active: a member removed
+		// between the steps stays removed.
+		r, err := tx.ExecContext(ctx, `UPDATE team_member SET role = ?, status = 'active'
+WHERE team_id = ? AND user_id = ? AND status IN ('joining', 'active')`, inv.Role, inv.TeamID, userID)
+		if err != nil {
+			return fmt.Errorf("platformstore: activate membership: %w", err)
+		}
+		if n, _ := r.RowsAffected(); n == 0 {
+			var st string
+			if err := tx.GetContext(ctx, &st, `SELECT status FROM team_member WHERE team_id = ? AND user_id = ?`, inv.TeamID, userID); err != nil || st != "active" {
+				return ErrTokenInvalid
+			}
+		}
+		r, err = tx.ExecContext(ctx, `UPDATE team_invite SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`, p.Now, inv.ID)
 		if err != nil {
 			return fmt.Errorf("platformstore: accept invite: %w", err)
 		}
@@ -144,16 +214,6 @@ VALUES (?, ?, ?, 'active', ?) ON DUPLICATE KEY UPDATE role = VALUES(role), statu
 		}
 		h := p.Handoff
 		h.Purpose, h.CodeHash, h.TeamID = "handoff", "", inv.TeamID
-		if err := insertTokenTx(ctx, tx, res.UserID, h, p.Now); err != nil {
-			return err
-		}
-		if p.Ensure != nil {
-			if err := p.Ensure(ctx, inv, res.Handle); err != nil {
-				return fmt.Errorf("platformstore: team admins row: %w", err)
-			}
-		}
-		res.TeamID, res.TeamSlug = inv.TeamID, inv.TeamSlug
-		return nil
+		return insertTokenTx(ctx, tx, userID, h, p.Now)
 	})
-	return res, err
 }

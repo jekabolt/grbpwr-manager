@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
@@ -98,9 +99,21 @@ func TestTokens(t *testing.T) {
 	if tok2 == tok {
 		t.Fatal("tokens repeat")
 	}
-	u, err := UnusableHash()
-	if err != nil || !strings.HasPrefix(u, "!unusable$") {
+	ph, err := pwhash.New(16, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := UnusableHash(ph)()
+	if err != nil || !wellFormedHash(u) || ph.Validate("", u) == nil {
 		t.Fatalf("UnusableHash = %q %v", u, err)
+	}
+	if u2, _ := UnusableHash(ph)(); u2 == u {
+		t.Fatal("unusable hashes repeat")
+	}
+	for _, bad := range []string{"", "!unusable$00ff", "PBKDF2$sha512$1000$salt", "x$y$z$w$v"} {
+		if wellFormedHash(bad) {
+			t.Fatalf("wellFormedHash(%q) = true", bad)
+		}
 	}
 	if CheckPepper("short") == nil || CheckPepper(testPepper) != nil {
 		t.Fatal("CheckPepper")

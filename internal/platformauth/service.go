@@ -64,7 +64,7 @@ type Service struct {
 	ready     error // non-nil: the platform config is unusable, every RPC answers UNAVAILABLE
 	dummyHash string
 
-	codeIP, signUpIP, signInIP, signInLogin, slugIP *ratelimit.Limiter
+	codeIP, signUpIP, signInIP, signInLogin, slugIP, resetIP *ratelimit.Limiter
 }
 
 // Error answers. Built per call: the gate counts package-level values.
@@ -106,6 +106,7 @@ func New(d Deps) (*Service, error) {
 		signInIP:    ratelimit.NewLimiter(time.Minute, 10),
 		signInLogin: ratelimit.NewLimiter(time.Minute, 5),
 		slugIP:      ratelimit.NewLimiter(time.Minute, 60),
+		resetIP:     ratelimit.NewLimiter(time.Minute, 10),
 	}
 	if err := CheckPepper(s.pepper); err != nil {
 		s.ready = err
@@ -126,7 +127,7 @@ func (s *Service) Ready() error { return s.ready }
 
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
-	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP} {
+	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP} {
 		l.Stop()
 	}
 }
@@ -328,16 +329,20 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	return &auth.SignUpResponse{}, nil
 }
 
-// passwordMatcher checks password against a stored hash; "" (no account) runs the same check
-// against the dummy hash and answers false, so a miss costs what a hit costs.
+// passwordMatcher checks password against a stored hash (see passwordOK).
 func (s *Service) passwordMatcher(password string) func(stored string) bool {
-	return func(stored string) bool {
-		if stored == "" {
-			_ = s.d.Hasher.Validate(password, s.dummyHash)
-			return false
-		}
-		return s.d.Hasher.Validate(password, stored) == nil
+	return func(stored string) bool { return s.passwordOK(password, stored) }
+}
+
+// passwordOK checks password against a stored hash. A missing ("") or malformed hash (a row
+// seeded before UnusableHash became a real PBKDF2 hash) runs the same check against the dummy hash
+// and answers false, so neither a miss nor the account kind shows in the timing.
+func (s *Service) passwordOK(password, stored string) bool {
+	if !wellFormedHash(stored) {
+		_ = s.d.Hasher.Validate(password, s.dummyHash)
+		return false
 	}
+	return s.d.Hasher.Validate(password, stored) == nil
 }
 
 // ResendVerification queues a fresh letter for a pending sign-up. Always {}.
@@ -430,14 +435,14 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 		u, err = s.d.Store.UserByHandle(ctx, login)
 	}
 	if errors.Is(err, platformstore.ErrUserNotFound) {
-		_ = s.d.Hasher.Validate(req.GetPassword(), s.dummyHash)
+		_ = s.passwordOK(req.GetPassword(), "")
 		return nil, errAuth()
 	}
 	if err != nil {
 		s.log(ctx, "sign-in lookup", err)
 		return nil, errInternal()
 	}
-	if s.d.Hasher.Validate(req.GetPassword(), u.PasswordHash) != nil || u.Status != platformstore.UserActive {
+	if !s.passwordOK(req.GetPassword(), u.PasswordHash) || u.Status != platformstore.UserActive {
 		return nil, errAuth()
 	}
 	now := s.now()
@@ -756,21 +761,54 @@ func (s *Service) ResetPassword(ctx context.Context, req *auth.ResetPasswordRequ
 	if err := CheckPassword(req.GetNewPassword()); err != nil {
 		return nil, errBad(err.Error())
 	}
-	hash, err := s.d.Hasher.HashPassword(req.GetNewPassword())
-	if err != nil {
-		s.log(ctx, "hash password", err)
-		return nil, errInternal()
-	}
+	// PBKDF2 is the expensive step: an IP bucket (resetIP for links, codeIP for codes) and a
+	// read-only check of the link or code come first, so a stranger cannot burn CPU; the consuming
+	// transaction re-checks under locks.
 	now := s.now()
-	var res platformstore.ResetResult
-	if tok := strings.TrimSpace(req.GetToken()); tok != "" {
-		res, err = s.d.Store.ResetByLink(ctx, HashToken(tok), hash, now)
+	tok := strings.TrimSpace(req.GetToken())
+	var (
+		tokHash string
+		a       platformstore.CodeAttempt
+		live    bool
+		err     error
+	)
+	if tok != "" {
+		if !s.resetIP.Allow(middleware.GetClientIP(ctx)) {
+			return nil, errBusy()
+		}
+		tokHash = HashToken(tok)
+		live, err = s.d.Store.ResetLinkLive(ctx, tokHash, now)
 	} else {
 		email, c, ierr := s.codeInput(ctx, req.GetEmail(), req.GetCode())
 		if ierr != nil {
 			return nil, ierr
 		}
-		res, err = s.d.Store.ResetByCode(ctx, s.attempt(PurposeReset, email, c, now), hash)
+		a = s.attempt(PurposeReset, email, c, now)
+		live, err = s.d.Store.ResetCodeMatches(ctx, a)
+	}
+	if err != nil {
+		s.log(ctx, "reset preflight", err)
+		return nil, errInternal()
+	}
+	if !live {
+		if tok == "" {
+			// A wrong code still counts against the letter and the account.
+			if _, err := s.d.Store.ResetByCode(ctx, a, ""); err != nil && !errors.Is(err, platformstore.ErrTokenInvalid) {
+				s.log(ctx, "reset count", err)
+			}
+		}
+		return nil, errCode()
+	}
+	hash, err := s.d.Hasher.HashPassword(req.GetNewPassword())
+	if err != nil {
+		s.log(ctx, "hash password", err)
+		return nil, errInternal()
+	}
+	var res platformstore.ResetResult
+	if tok != "" {
+		res, err = s.d.Store.ResetByLink(ctx, tokHash, hash, now)
+	} else {
+		res, err = s.d.Store.ResetByCode(ctx, a, hash)
 	}
 	if errors.Is(err, platformstore.ErrTokenInvalid) {
 		return nil, errCode()
@@ -861,6 +899,10 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		s.log(ctx, "read invite", err)
 		return nil, errInternal()
 	}
+	// The invited address shares the sign-in bucket: rotating IPs cannot guess its password here.
+	if !s.signInLogin.Allow(strings.ToLower(strings.TrimSpace(inv.Email))) {
+		return nil, errBusy()
+	}
 	pw := req.GetPassword()
 	if len(pw) > MaxPasswordLen {
 		return nil, errBad(errLongPassword.Error())
@@ -895,7 +937,7 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 	res, err := s.d.Store.AcceptInvite(ctx, platformstore.AcceptParams{
 		TokenHash:       tokHash,
 		Now:             now,
-		PasswordMatches: func(stored string) bool { return s.d.Hasher.Validate(pw, stored) == nil },
+		PasswordMatches: s.passwordMatcher(pw),
 		NewPasswordHash: hash,
 		Handle:          handle,
 		HandleBase:      HandleBase(inv.Email),
@@ -940,7 +982,7 @@ func (s *Service) SyncOperators(ctx context.Context) error {
 	for range invalid {
 		slog.Default().WarnContext(ctx, "platformauth: PLATFORM_OPERATOR_EMAILS has an entry that is not an email; skipped")
 	}
-	created, err := s.d.Store.SyncOperators(ctx, emails, s.now(), UnusableHash, HandleBase)
+	created, err := s.d.Store.SyncOperators(ctx, emails, s.now(), UnusableHash(s.d.Hasher), HandleBase)
 	if err != nil {
 		return err
 	}
