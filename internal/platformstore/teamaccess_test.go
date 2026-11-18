@@ -54,7 +54,7 @@ func TestTeamSessionRevokeAndPassword(t *testing.T) {
 		t.Fatalf("RevokeTeamSessions: %v %v", sids, err)
 	}
 
-	sids, err := st.SetPasswordAndRevokeSessions(ctx, "boss", "h-boss-2", time.Now())
+	sids, err := st.SetPasswordAndRevokeSessions(ctx, "boss", "h-boss-2", sameHash("h-boss"), time.Now())
 	if err != nil || len(sids) != 2 {
 		t.Fatalf("SetPasswordAndRevokeSessions: %v %v", sids, err)
 	}
@@ -66,7 +66,24 @@ func TestTeamSessionRevokeAndPassword(t *testing.T) {
 	if err := st.DB().Get(&live, `SELECT COUNT(*) FROM user_session WHERE user_id = ? AND revoked_at IS NULL`, boss); err != nil || live != 0 {
 		t.Fatalf("%d live sessions after a password change (%v)", live, err)
 	}
-	if _, err := st.SetPasswordAndRevokeSessions(ctx, "nobody", "h", time.Now()); !errors.Is(err, platformstore.ErrUserNotFound) {
+	if _, err := st.SetPasswordAndRevokeSessions(ctx, "nobody", "h", sameHash("h"), time.Now()); !errors.Is(err, platformstore.ErrUserNotFound) {
 		t.Fatalf("unknown handle: %v", err)
+	}
+	// verify runs against the locked row's hash: the old one is refused and nothing changes.
+	if _, err := st.SetPasswordAndRevokeSessions(ctx, "boss", "h-boss-3", sameHash("h-boss"), time.Now()); !errors.Is(err, platformstore.ErrPasswordMismatch) {
+		t.Fatalf("stale current hash: %v", err)
+	}
+	if err := st.DB().Get(&hash, `SELECT password_hash FROM platform_user WHERE id = ?`, boss); err != nil || hash != "h-boss-2" {
+		t.Fatalf("hash after a refused change %q %v", hash, err)
+	}
+}
+
+// sameHash is a verify that accepts only the given stored hash.
+func sameHash(want string) func(string) error {
+	return func(cur string) error {
+		if cur != want {
+			return errors.New("mismatch")
+		}
+		return nil
 	}
 }

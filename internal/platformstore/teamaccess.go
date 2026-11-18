@@ -51,10 +51,16 @@ func (s *Store) RevokeTeamSessions(ctx context.Context, uid, tid int64, now time
 }
 
 // SetPasswordAndRevokeSessions is the authoritative password write in teams mode: the platform
-// user's hash changes and every live session of that user is revoked in ONE transaction, so no
-// session minted under the old password outlives the change. ErrUserNotFound when no platform user
-// has the handle. Returns the revoked sids so the caller drops them from its session cache.
-func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, now time.Time) ([]string, error) {
+// user's row is locked, verify checks the current password against ITS hash (the tenant admins hash
+// is only a mirror and may lag), then the hash changes and every live session of that user is
+// revoked, all in ONE transaction, so no session minted under the old password outlives the change.
+// ErrUserNotFound when no platform user has the handle; ErrPasswordMismatch (wrapping verify's
+// error) when verify refuses, and nothing changes. Returns the revoked sids so the caller drops them
+// from its session cache.
+func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, verify func(current string) error, now time.Time) ([]string, error) {
+	if verify == nil {
+		return nil, fmt.Errorf("platformstore: password change without a current-password check")
+	}
 	if hash == "" {
 		return nil, fmt.Errorf("platformstore: empty password hash")
 	}
@@ -63,13 +69,20 @@ func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash s
 		return nil, fmt.Errorf("platformstore: begin password tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id int64
-	if err := tx.GetContext(ctx, &id, `SELECT id FROM platform_user WHERE handle = ? FOR UPDATE`, handle); err != nil {
+	var u struct {
+		ID   int64  `db:"id"`
+		Hash string `db:"password_hash"`
+	}
+	if err := tx.GetContext(ctx, &u, `SELECT id, password_hash FROM platform_user WHERE handle = ? FOR UPDATE`, handle); err != nil {
 		if isNoRows(err) {
 			return nil, ErrUserNotFound
 		}
 		return nil, fmt.Errorf("platformstore: find user: %w", err)
 	}
+	if err := verify(u.Hash); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPasswordMismatch, err)
+	}
+	id := u.ID
 	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, hash, id); err != nil {
 		return nil, fmt.Errorf("platformstore: set password: %w", err)
 	}

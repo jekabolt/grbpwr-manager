@@ -422,6 +422,20 @@ func (s *Server) Delete(ctx context.Context, req *auth.DeleteRequest) (*auth.Del
 }
 
 // ChangePassword changes the password of the user. It requires the old password or admin password provided.
+// validateCurrentPassword accepts the master password or the given stored hash.
+func (s *Server) validateCurrentPassword(ctx context.Context, current, stored string) error {
+	if s.pwhash.Validate(current, s.masterHash) == nil {
+		return nil
+	}
+	if err := s.pwhash.Validate(current, stored); err != nil {
+		slog.Default().ErrorContext(ctx, "failed to validate current password",
+			slog.String("err", err.Error()),
+		)
+		return status.Errorf(codes.Unauthenticated, "not authenticated")
+	}
+	return nil
+}
+
 func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordRequest) (*auth.ChangePasswordResponse, error) {
 	username := strings.ToLower(req.Username)
 
@@ -450,14 +464,12 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	err = s.pwhash.Validate(req.CurrentPassword, s.masterHash)
-	if err != nil {
-		err = s.pwhash.Validate(req.CurrentPassword, account.PasswordHash)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "failed to validate current password",
-				slog.String("err", err.Error()),
-			)
-			return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+	// Teams mode: the current password is checked against the control plane's hash inside its
+	// locked write (changePasswordTeams); the tenant hash is only a mirror and may lag.
+	teams := s.creds != nil
+	if !teams {
+		if err := s.validateCurrentPassword(ctx, req.CurrentPassword, account.PasswordHash); err != nil {
+			return nil, err
 		}
 	}
 
@@ -481,13 +493,17 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 	}
 
 	// Teams mode: the control plane is authoritative (changePasswordTeams, platform.go).
-	if s.creds != nil {
-		handled, err := s.changePasswordTeams(ctx, username, pwHashNew)
+	if teams {
+		handled, err := s.changePasswordTeams(ctx, username, req.CurrentPassword, pwHashNew)
 		if err != nil {
 			return nil, err
 		}
 		if handled {
 			return &auth.ChangePasswordResponse{AuthToken: token}, nil
+		}
+		// No platform user: the tenant row is the only hash, validated as in mode OFF.
+		if err := s.validateCurrentPassword(ctx, req.CurrentPassword, account.PasswordHash); err != nil {
+			return nil, err
 		}
 	}
 	err = s.adminRepository.ChangePassword(ctx, username, pwHashNew)

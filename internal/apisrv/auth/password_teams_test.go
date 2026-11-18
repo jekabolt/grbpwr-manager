@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,16 +18,23 @@ import (
 
 // fakeCreds is the control plane's password write: hash + session revocation in one tx.
 type fakeCreds struct {
+	current string // control-plane hash; "" = not checked
 	err     error
 	calls   int
 	hash    string
 	revoked []string
 }
 
-func (f *fakeCreds) SetPasswordAndRevokeSessions(_ context.Context, handle, hash string, _ time.Time) ([]string, error) {
+func (f *fakeCreds) SetPasswordAndRevokeSessions(_ context.Context, handle, hash string, verify func(string) error, _ time.Time) ([]string, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.current != "" {
+		if err := verify(f.current); err != nil {
+			return nil, fmt.Errorf("%w: %w", platformstore.ErrPasswordMismatch, err)
+		}
+		f.current = hash
 	}
 	f.hash = hash
 	return f.revoked, nil
@@ -95,6 +103,41 @@ func TestChangePasswordTeamsMode(t *testing.T) {
 		srv, as, _ := passwordServer(t, &fakeCreds{})
 		as.EXPECT().ChangePassword(mock.Anything, "u", mock.Anything).Return(errors.New("down")).Times(passwordMirrorAttempts)
 		require.Equal(t, codes.Unavailable, status.Code(changePassword(srv)))
+	})
+
+	t.Run("mirror lagging: the old password no longer changes the master hash", func(t *testing.T) {
+		creds := &fakeCreds{}
+		srv, as, _ := passwordServer(t, creds)
+		// A change landed on the control plane but its mirror never did: admins still holds the
+		// old hash (passwordServer), the control plane the new one.
+		cur, err := srv.pwhash.HashPassword(newPassword)
+		require.NoError(t, err)
+		creds.current = cur
+
+		require.Equal(t, codes.Unauthenticated, status.Code(changePassword(srv)))
+		require.Empty(t, creds.hash, "old password overwrote the control-plane hash")
+		as.AssertNotCalled(t, "ChangePassword", mock.Anything, mock.Anything, mock.Anything)
+
+		// The current password is the control plane's: it finishes the change and the mirror.
+		as.EXPECT().ChangePassword(mock.Anything, "u", mock.Anything).Return(nil).Once()
+		_, err = srv.ChangePassword(context.Background(), &pb_auth.ChangePasswordRequest{
+			Username: "u", CurrentPassword: newPassword, NewPassword: "third-password-1",
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, creds.hash)
+	})
+
+	t.Run("master password still accepted in teams mode", func(t *testing.T) {
+		creds := &fakeCreds{}
+		srv, as, _ := passwordServer(t, creds)
+		cur, err := srv.pwhash.HashPassword(newPassword)
+		require.NoError(t, err)
+		creds.current = cur
+		as.EXPECT().ChangePassword(mock.Anything, "u", mock.Anything).Return(nil).Once()
+		_, err = srv.ChangePassword(context.Background(), &pb_auth.ChangePasswordRequest{
+			Username: "u", CurrentPassword: masterPassword, NewPassword: "third-password-1",
+		})
+		require.NoError(t, err)
 	})
 
 	t.Run("no platform user: tenant only, as before", func(t *testing.T) {

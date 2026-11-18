@@ -30,21 +30,35 @@ func (s *Server) SetPlatform(st *platformstore.Store, cfg platformstore.Config) 
 // credentialPlane is the control plane's password write (platformstore.Store in teams mode): the
 // authoritative store for a team-1 admin who has a platform user. nil = teams mode off.
 type credentialPlane interface {
-	SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, now time.Time) ([]string, error)
+	SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, verify func(current string) error, now time.Time) ([]string, error)
 }
 
 // passwordMirrorAttempts bounds the retry of the tenant admins mirror after the control plane took
 // the new hash.
 const passwordMirrorAttempts = 3
 
-// changePasswordTeams writes a new hash in teams mode. Control plane first (hash + revoke every
-// session, one tx); then the tenant admins row (the legacy Login reads it) with a retry. It never
-// returns nil while a sign-in path still accepts the old hash. ok=false: the user has no platform
-// user, so the caller keeps the tenant-only path of mode OFF.
-func (s *Server) changePasswordTeams(ctx context.Context, username, hash string) (ok bool, err error) {
-	revoked, err := s.creds.SetPasswordAndRevokeSessions(ctx, username, hash, time.Now().UTC())
+// changePasswordTeams writes a new hash in teams mode. The control plane is the only judge of the
+// current password: its row is locked, the current password (or the master password) is checked
+// against its hash, then hash + revoke every session, one tx. The tenant admins hash is a mirror
+// that may lag after a failed retry, so it never validates here. Then the tenant admins row (the
+// legacy Login reads it) with a retry. It never returns nil while a sign-in path still accepts the
+// old hash. ok=false: the user has no platform user, so the caller keeps the tenant-only path of
+// mode OFF.
+func (s *Server) changePasswordTeams(ctx context.Context, username, current, hash string) (ok bool, err error) {
+	verify := func(stored string) error {
+		if s.pwhash.Validate(current, s.masterHash) == nil {
+			return nil
+		}
+		return s.pwhash.Validate(current, stored)
+	}
+	revoked, err := s.creds.SetPasswordAndRevokeSessions(ctx, username, hash, verify, time.Now().UTC())
 	if errors.Is(err, platformstore.ErrUserNotFound) {
 		return false, nil
+	}
+	if errors.Is(err, platformstore.ErrPasswordMismatch) {
+		slog.Default().ErrorContext(ctx, "failed to validate current password",
+			slog.String("err", err.Error()))
+		return true, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "change password: control plane write failed, nothing changed",
@@ -70,10 +84,10 @@ func (s *Server) changePasswordTeams(ctx context.Context, username, hash string)
 		}
 	}
 	// The control plane has the new hash; the legacy Login still takes the old one. Not success:
-	// a retry of ChangePassword with the old password passes validation and finishes the mirror.
+	// a retry of ChangePassword with the NEW password (the control plane's) finishes the mirror.
 	slog.Default().ErrorContext(ctx, "change password: tenant mirror failed after retries",
 		slog.String("username", username), slog.String("err", err.Error()))
-	return true, status.Error(codes.Unavailable, "password change incomplete, try again")
+	return true, status.Error(codes.Unavailable, "password change incomplete, retry with the new password")
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
