@@ -1,0 +1,11 @@
+{{define "layout"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>{{.Subject}}</title></head>
+<body style="margin:0;padding:0;background:#ffffff;color:#000000;font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;"><tr><td align="center" style="padding:40px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:440px;">
+<tr><td style="padding:0 0 32px 0;font-size:13px;letter-spacing:0.04em;">lekalo</td></tr>
+{{template "body" .}}
+<tr><td style="padding:40px 0 0 0;font-size:12px;color:#777777;">{{.Base}}</td></tr>
+</table></td></tr></table>
+</body></html>{{end}}
+{{define "button"}}<tr><td style="padding:24px 0 8px 0;"><a href="{{.Link}}" style="display:inline-block;background:#000000;color:#ffffff;text-decoration:none;font-size:15px;padding:14px 22px;">{{.Label}}</a></td></tr>{{end}}
