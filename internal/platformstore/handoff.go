@@ -50,12 +50,13 @@ func (s *Store) RevokeSession(ctx context.Context, sid string, now time.Time) er
 	return nil
 }
 
-// MemberTeams lists the user's active memberships in teams that are past sign-up and not deleted.
+// MemberTeams lists the user's active memberships in teams that are past sign-up and not deleted,
+// a team waiting for approval (review) included — the root list shows it marked.
 func (s *Store) MemberTeams(ctx context.Context, userID int64) ([]MemberTeam, error) {
 	var out []MemberTeam
 	if err := s.db.SelectContext(ctx, &out, `SELECT m.team_id, t.slug, t.name, m.role, t.status
 FROM team_member m JOIN team t ON t.id = m.team_id
-WHERE m.user_id = ? AND m.status = 'active' AND t.status IN ('provisioning', 'active', 'suspended')
+WHERE m.user_id = ? AND m.status = 'active' AND t.status IN ('review', 'provisioning', 'active', 'suspended')
 ORDER BY t.name, t.id`, userID); err != nil {
 		return nil, fmt.Errorf("platformstore: member teams: %w", err)
 	}
@@ -63,7 +64,8 @@ ORDER BY t.name, t.id`, userID); err != nil {
 }
 
 // Membership returns the user's active membership in a team that is past sign-up and not deleted
-// (status read fresh, not from the directory cache). ok=false when there is none.
+// (status read fresh, not from the directory cache). ok=false when there is none — also for a team
+// in review, which has no workspace yet and is never entered.
 func (s *Store) Membership(ctx context.Context, userID, teamID int64) (MemberTeam, bool, error) {
 	var m MemberTeam
 	err := s.db.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status

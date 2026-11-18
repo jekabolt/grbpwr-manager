@@ -42,6 +42,9 @@ func (s *Server) platformService() (*platformauth.Service, error) {
 			TeamTTL: s.jwtTTL,
 			Now:     s.clockNow,
 			Hooks:   s.platformHooks(),
+			// Read here only in teams mode; the coordinator may move both into config/cfg.go.
+			SignupApproval: platformauth.SignupApprovalFromEnv(),
+			TermsVersion:   platformauth.TermsVersionFromEnv(),
 		})
 		if e.err == nil {
 			if err := e.svc.Ready(); err != nil {

@@ -61,6 +61,9 @@ type AcceptParams struct {
 	// Ensure creates the member's admins row in the team's database (teamsync.EnsureAdmin under the
 	// team pin). It runs before the control-plane commit: a failure rolls the acceptance back.
 	Ensure func(ctx context.Context, inv Invite, handle string) error
+	// TermsVersion is the terms version accepted on the join page ("" = not accepted). Required
+	// only when the invite creates a new account; an existing one is never asked again.
+	TermsVersion string
 }
 
 // AcceptResult is an accepted invite: who joined which team, and whether the account is new.
@@ -97,12 +100,15 @@ func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult,
 		u, err := lockUserByEmail(ctx, tx, inv.Email)
 		switch {
 		case errors.Is(err, ErrUserNotFound):
+			if p.TermsVersion == "" {
+				return ErrTermsRequired
+			}
 			verified := p.Now
 			handle, fixed := p.Handle, true
 			if handle == "" {
 				handle, fixed = p.HandleBase, false
 			}
-			id, h, err := insertUserTx(ctx, tx, inv.Email, p.NewPasswordHash, UserActive, &verified, false, handle, fixed, p.Now)
+			id, h, err := insertUserTx(ctx, tx, inv.Email, p.NewPasswordHash, UserActive, &verified, false, handle, fixed, p.TermsVersion, p.Now)
 			if err != nil {
 				return err
 			}

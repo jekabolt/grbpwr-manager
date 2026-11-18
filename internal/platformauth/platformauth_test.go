@@ -188,3 +188,11 @@ func TestInvitePermissions(t *testing.T) {
 		t.Fatal("bad json accepted")
 	}
 }
+
+func TestSignupApprovalEnv(t *testing.T) {
+	for v, want := range map[string]bool{"": true, "true": true, "1": true, "junk": true, "false": false, "0": false, " OFF ": false, "no": false} {
+		if got := signupApproval(v); got != want {
+			t.Fatalf("signupApproval(%q) = %v, want %v", v, got, want)
+		}
+	}
+}

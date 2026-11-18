@@ -26,6 +26,10 @@ func TestRenderLetters(t *testing.T) {
 			"731 054 · reset password", []string{"731 054", "reset#token=def"}},
 		{KindInvite, Payload{TeamName: "Atelier & Co", From: "anna", Link: "https://beta.lekalo.studio/join#token=ghi"},
 			"join Atelier & Co", []string{"join#token=ghi", "anna"}},
+		{KindTeamRequest, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Email: "anna@example.com", Link: "https://console.beta.lekalo.studio/"},
+			"new team · Atelier Anna", []string{"Atelier Anna", "atelier-anna.beta.lekalo.studio", "anna@example.com", "console.beta.lekalo.studio"}},
+		{KindTeamApproved, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Link: "https://atelier-anna.beta.lekalo.studio/"},
+			"Atelier Anna · approved", []string{"open workspace", "https://atelier-anna.beta.lekalo.studio/"}},
 	}
 	for _, c := range cases {
 		m, err := tpl.render(c.kind, c.p, "beta.lekalo.studio")
@@ -59,7 +63,8 @@ func TestRenderRefusesIncompletePayload(t *testing.T) {
 	for _, c := range []struct {
 		kind string
 		p    Payload
-	}{{KindVerify, Payload{Link: "l"}}, {KindReset, Payload{Link: "l"}}, {KindInvite, Payload{Link: "l"}}, {"nope", Payload{Link: "l", Code: "123456"}}} {
+	}{{KindVerify, Payload{Link: "l"}}, {KindReset, Payload{Link: "l"}}, {KindInvite, Payload{Link: "l"}},
+		{KindTeamRequest, Payload{Link: "l", TeamName: "x"}}, {KindTeamApproved, Payload{Link: "l"}}, {"nope", Payload{Link: "l", Code: "123456"}}} {
 		if _, err := tpl.render(c.kind, c.p, "b"); err == nil {
 			t.Fatalf("%s: want an error", c.kind)
 		}

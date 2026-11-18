@@ -159,6 +159,7 @@ type Payload struct {
 	TeamName string `json:"team_name"`
 	Slug     string `json:"slug"`
 	From     string `json:"from"`
+	Email    string `json:"email"` // team_request: who asked for the team
 }
 
 // Tick handles up to one batch of pending rows, each in its own transaction (FOR UPDATE SKIP
@@ -284,18 +285,22 @@ const (
 	KindVerify = "verify"
 	KindReset  = "reset"
 	KindInvite = "invite"
+	// KindTeamRequest goes to each operator when a confirmed sign-up waits for approval.
+	KindTeamRequest = "team_request"
+	// KindTeamApproved goes to the team's owner when an operator approves it.
+	KindTeamApproved = "team_approved"
 )
 
 type buttonData struct{ Link, Label string }
 
 type letterData struct {
-	Subject, Address, Code, Link, Team, From, Base string
+	Subject, Address, Code, Link, Team, From, Base, Email string
 }
 
 func parseTemplates() (*templates, error) {
 	t := &templates{html: map[string]*htmltemplate.Template{}, text: map[string]*texttemplate.Template{}}
 	funcs := htmltemplate.FuncMap{"button": func(link, label string) buttonData { return buttonData{link, label} }}
-	for _, k := range []string{KindVerify, KindReset, KindInvite} {
+	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved} {
 		h, err := htmltemplate.New("layout").Funcs(funcs).ParseFS(templateFS, "templates/layout.html.gohtml", "templates/"+k+".html.gohtml")
 		if err != nil {
 			return nil, fmt.Errorf("platformmail: parse %s html: %w", k, err)
@@ -322,7 +327,7 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 	if !ok {
 		return Message{}, fmt.Errorf("platformmail: unknown template %q", kind)
 	}
-	d := letterData{Code: spaced(p.Code), Link: p.Link, Team: p.TeamName, From: p.From, Base: base}
+	d := letterData{Code: spaced(p.Code), Link: p.Link, Team: p.TeamName, From: p.From, Base: base, Email: p.Email}
 	if p.Slug != "" && base != "" {
 		d.Address = p.Slug + "." + base
 	}
@@ -342,6 +347,16 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 			return Message{}, errors.New("platformmail: invite letter without a team")
 		}
 		d.Subject = "join " + p.TeamName
+	case KindTeamRequest:
+		if p.TeamName == "" || p.Slug == "" {
+			return Message{}, errors.New("platformmail: team request letter without a team")
+		}
+		d.Subject = "new team · " + p.TeamName
+	case KindTeamApproved:
+		if p.TeamName == "" {
+			return Message{}, errors.New("platformmail: team approved letter without a team")
+		}
+		d.Subject = p.TeamName + " · approved"
 	}
 	var hb, tb bytes.Buffer
 	if err := h.ExecuteTemplate(&hb, "layout", d); err != nil {

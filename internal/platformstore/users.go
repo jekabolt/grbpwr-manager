@@ -29,6 +29,10 @@ var (
 	ErrTeamNotReady = errors.New("platformstore: team not ready")
 	// ErrTeamReadOnly: the team is suspended.
 	ErrTeamReadOnly = errors.New("platformstore: team read-only")
+	// ErrTeamAwaitingApproval: the team is confirmed and waits for an operator's approval.
+	ErrTeamAwaitingApproval = errors.New("platformstore: team awaiting approval")
+	// ErrTermsRequired: an invite would create an account and the terms were not accepted.
+	ErrTermsRequired = errors.New("platformstore: terms not accepted")
 )
 
 // User statuses (platform_user.status).
@@ -172,8 +176,11 @@ func dupKey(err error, key string) bool {
 
 // insertUserTx creates a user. With fixed, handle is used as is (ErrHandleTaken when held);
 // otherwise handle is a base tried as base, base-2, base-3 …
+// insertUserTx creates an account. terms is the terms version the person accepted now ("" = none:
+// operators and team #1 accounts carry NULLs).
 func insertUserTx(ctx context.Context, tx *sqlx.Tx, email, hash, status string, verifiedAt *time.Time, operator bool,
-	handle string, fixed bool, now time.Time) (int64, string, error) {
+	handle string, fixed bool, terms string, now time.Time) (int64, string, error) {
+	termsVersion, termsAt := termsColumns(terms, now)
 	tries := maxHandleTries
 	if fixed {
 		tries = 1
@@ -184,8 +191,9 @@ func insertUserTx(ctx context.Context, tx *sqlx.Tx, email, hash, status string, 
 			cand = handle + "-" + strconv.Itoa(n)
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO platform_user
-(email, handle, password_hash, email_verified_at, is_operator, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			email, cand, hash, verifiedAt, operator, status, now)
+(email, handle, password_hash, email_verified_at, is_operator, status, terms_version, terms_accepted_at, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			email, cand, hash, verifiedAt, operator, status, termsVersion, termsAt, now)
 		if err == nil {
 			id, err := res.LastInsertId()
 			if err != nil {
@@ -233,6 +241,57 @@ WHERE user_id = ? AND purpose = ? AND used_at IS NULL`, now, userID, t.Purpose);
 
 // insertLetterTx writes the outbox row inside the caller's transaction: the letter exists exactly
 // when its token does.
+// termsColumns is the (terms_version, terms_accepted_at) pair for an acceptance of terms at now.
+func termsColumns(terms string, now time.Time) (any, any) {
+	if terms == "" {
+		return nil, nil
+	}
+	return terms, now.UTC().Truncate(time.Second)
+}
+
+// teamLetterPayload is a team_request / team_approved letter: no code, a link that needs none.
+type teamLetterPayload struct {
+	Link     string `json:"link"`
+	TeamName string `json:"team_name"`
+	Slug     string `json:"slug"`
+	Email    string `json:"email,omitempty"`
+}
+
+func insertTeamLetterTx(ctx context.Context, tx *sqlx.Tx, to, template string, p teamLetterPayload, now time.Time) error {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("platformstore: letter payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO platform_email (to_email, template, payload, status, created_at)
+VALUES (?, ?, ?, 'pending', ?)`, to, template, string(payload), now); err != nil {
+		return fmt.Errorf("platformstore: enqueue %s letter: %w", template, err)
+	}
+	return nil
+}
+
+// TeamApprovedLetterTx queues the team_approved letter to the team's owner (its creator) inside the
+// caller's transaction — the console's approval writes it together with review → provisioning.
+// link is the team's own address, https://<slug>.<base>/.
+func TeamApprovedLetterTx(ctx context.Context, tx *sqlx.Tx, teamID int64, link string, now time.Time) error {
+	var row struct {
+		Slug  string         `db:"slug"`
+		Name  string         `db:"name"`
+		Email sql.NullString `db:"email"`
+	}
+	if err := tx.GetContext(ctx, &row, `SELECT t.slug, t.name, u.email FROM team t
+JOIN platform_user u ON u.id = t.created_by WHERE t.id = ?`, teamID); err != nil {
+		if isNoRows(err) {
+			return ErrTokenInvalid
+		}
+		return fmt.Errorf("platformstore: team owner: %w", err)
+	}
+	if !row.Email.Valid || row.Email.String == "" {
+		return nil // an owner without an email (team #1 handles) gets no letter
+	}
+	return insertTeamLetterTx(ctx, tx, row.Email.String, "team_approved",
+		teamLetterPayload{Link: link, TeamName: row.Name, Slug: row.Slug}, now)
+}
+
 func insertLetterTx(ctx context.Context, tx *sqlx.Tx, l Letter, now time.Time) error {
 	payload, err := json.Marshal(letterPayload{Link: l.Link, Code: l.Code, TeamName: l.TeamName, Slug: l.Slug, From: l.From})
 	if err != nil {
@@ -247,7 +306,8 @@ VALUES (?, ?, ?, 'pending', ?)`, l.To, l.Template, string(payload), now); err !=
 
 func lettersSinceTx(ctx context.Context, tx *sqlx.Tx, email string, since time.Time) (int, error) {
 	var n int
-	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM platform_email WHERE to_email = ? AND created_at > ?`,
+	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM platform_email
+WHERE to_email = ? AND template IN ('verify','invite','reset') AND created_at > ?`,
 		email, since); err != nil {
 		return 0, fmt.Errorf("platformstore: count letters: %w", err)
 	}
@@ -287,6 +347,9 @@ type SignUpParams struct {
 	// same as a real check and answer false (the caller compares against a dummy hash).
 	PasswordMatches func(hash string) bool
 	Letter          MakeLetter
+	// TermsVersion is the terms version the person accepted on this sheet; stored on a new or
+	// re-keyed pending account.
+	TermsVersion string
 }
 
 // SignUpResult says what happened; the client sees the same empty answer either way.
@@ -346,7 +409,7 @@ WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pendin
 		var uid int64
 		switch {
 		case errors.Is(err, ErrUserNotFound):
-			uid, _, err = insertUserTx(ctx, tx, p.Email, p.PasswordHash, UserPending, nil, false, p.HandleBase, false, p.Now)
+			uid, _, err = insertUserTx(ctx, tx, p.Email, p.PasswordHash, UserPending, nil, false, p.HandleBase, false, p.TermsVersion, p.Now)
 			if errors.Is(err, ErrTokenInvalid) {
 				res.Reason = "race"
 				return nil
@@ -369,7 +432,10 @@ WHERE user_id = ? AND purpose = 'verify' AND used_at IS NULL AND expires_at > ?`
 					return nil
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, p.PasswordHash, uid); err != nil {
+			termsVersion, termsAt := termsColumns(p.TermsVersion, p.Now)
+			if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?,
+terms_version = COALESCE(?, terms_version), terms_accepted_at = COALESCE(?, terms_accepted_at) WHERE id = ?`,
+				p.PasswordHash, termsVersion, termsAt, uid); err != nil {
 				return fmt.Errorf("platformstore: replace pending password: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM team WHERE created_by = ? AND status = 'pending'`, uid); err != nil {
@@ -511,7 +577,7 @@ func (s *Store) SyncOperators(ctx context.Context, emails []string, now time.Tim
 			if err != nil {
 				return err
 			}
-			if _, _, err := insertUserTx(ctx, tx, e, h, UserActive, nil, true, handleBase(e), false, now); err != nil {
+			if _, _, err := insertUserTx(ctx, tx, e, h, UserActive, nil, true, handleBase(e), false, "", now); err != nil {
 				return fmt.Errorf("platformstore: operator account: %w", err)
 			}
 			created++

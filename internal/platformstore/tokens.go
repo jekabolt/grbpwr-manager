@@ -168,11 +168,22 @@ type VerifyResult struct {
 	Handle   string
 	TeamID   int64
 	TeamSlug string
+	// AwaitingApproval: the team went to review; no hand-off was inserted.
+	AwaitingApproval bool
 }
 
-// verifyTx activates the user, moves the letter's team to provisioning (B4 claims it from there),
-// adds the owner membership and inserts the hand-off.
-func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, now time.Time) (VerifyResult, error) {
+// Review is the sign-up approval switch (PLATFORM_SIGNUP_APPROVAL). On: a confirmed team waits in
+// review and every active operator gets a team_request letter whose link is ConsoleLink.
+type Review struct {
+	On          bool
+	ConsoleLink string
+}
+
+// verifyTx activates the user and adds the owner membership. Without review it moves the letter's
+// team to provisioning (B4 claims it from there) and inserts the hand-off; with review the team
+// goes to review instead, the operators get a team_request letter each, and no hand-off is made.
+func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, review Review,
+	now time.Time) (VerifyResult, error) {
 	if u.Status == UserDisabled || !t.TeamID.Valid {
 		return VerifyResult{}, ErrTokenInvalid
 	}
@@ -191,12 +202,31 @@ FROM team WHERE id = ? FOR UPDATE`, t.TeamID.Int64); err != nil {
 	if team.Status != "pending" || team.CreatedBy != u.ID {
 		return VerifyResult{}, ErrTokenInvalid
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE team SET status = 'provisioning', pending_expires_at = NULL WHERE id = ?`, team.ID); err != nil {
-		return VerifyResult{}, fmt.Errorf("platformstore: team to provisioning: %w", err)
+	next := "provisioning"
+	if review.On {
+		next = "review"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE team SET status = ?, pending_expires_at = NULL WHERE id = ?`, next, team.ID); err != nil {
+		return VerifyResult{}, fmt.Errorf("platformstore: team to %s: %w", next, err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
 VALUES (?, ?, 'owner', 'active', ?) ON DUPLICATE KEY UPDATE role = 'owner', status = 'active'`, team.ID, u.ID, now); err != nil {
 		return VerifyResult{}, fmt.Errorf("platformstore: owner membership: %w", err)
+	}
+	if review.On {
+		var operators []string
+		if err := tx.SelectContext(ctx, &operators, `SELECT email FROM platform_user
+WHERE is_operator = 1 AND status = 'active' AND email IS NOT NULL ORDER BY id`); err != nil {
+			return VerifyResult{}, fmt.Errorf("platformstore: operators: %w", err)
+		}
+		for _, to := range operators {
+			if err := insertTeamLetterTx(ctx, tx, to, "team_request", teamLetterPayload{
+				Link: review.ConsoleLink, TeamName: team.Name, Slug: team.Slug, Email: u.Email.String,
+			}, now); err != nil {
+				return VerifyResult{}, err
+			}
+		}
+		return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug, AwaitingApproval: true}, nil
 	}
 	handoff.TeamID = team.ID
 	if err := insertTokenTx(ctx, tx, u.ID, handoff, now); err != nil {
@@ -205,29 +235,61 @@ VALUES (?, ?, 'owner', 'active', ?) ON DUPLICATE KEY UPDATE role = 'owner', stat
 	return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug}, nil
 }
 
-// VerifyByLink confirms a sign-up by its link token hash and inserts the hand-off row.
-func (s *Store) VerifyByLink(ctx context.Context, tokenHash string, now time.Time, handoff NewToken) (VerifyResult, error) {
+// VerifyByLink confirms a sign-up by its link token hash and inserts the hand-off row (or, under
+// review, queues the operators' letters). With review on, a second click on a used, unexpired link
+// whose team still waits in review answers the same result again and writes nothing.
+func (s *Store) VerifyByLink(ctx context.Context, tokenHash string, now time.Time, handoff NewToken, review Review) (VerifyResult, error) {
 	var res VerifyResult
 	err := s.withLink(ctx, "verify", tokenHash, now, func(tx *sqlx.Tx, t tokenRow, u User) error {
 		if err := clearCodeFailuresTx(ctx, tx, u.ID); err != nil {
 			return err
 		}
-		r, err := verifyTx(ctx, tx, t, u, handoff, now)
+		r, err := verifyTx(ctx, tx, t, u, handoff, review, now)
 		res = r
 		return err
 	})
+	if errors.Is(err, ErrTokenInvalid) && review.On {
+		if again, ok, aerr := s.verifiedAwaiting(ctx, tokenHash, now); aerr != nil {
+			return VerifyResult{}, aerr
+		} else if ok {
+			return again, nil
+		}
+	}
 	if err == nil {
 		s.dir.Invalidate(res.TeamID)
 	}
 	return res, err
 }
 
-// VerifyByCode confirms a sign-up by (email, code) and inserts the hand-off row.
-func (s *Store) VerifyByCode(ctx context.Context, a CodeAttempt, handoff NewToken) (VerifyResult, error) {
+// verifiedAwaiting is the repeat of an already used verify link: its team, while it still waits in
+// review for the account that confirmed it and the link has not expired.
+func (s *Store) verifiedAwaiting(ctx context.Context, tokenHash string, now time.Time) (VerifyResult, bool, error) {
+	var row struct {
+		UserID int64  `db:"user_id"`
+		Handle string `db:"handle"`
+		TeamID int64  `db:"team_id"`
+		Slug   string `db:"slug"`
+	}
+	err := s.db.GetContext(ctx, &row, `SELECT e.user_id, u.handle, t.id AS team_id, t.slug
+FROM email_token e JOIN team t ON t.id = e.team_id JOIN platform_user u ON u.id = e.user_id
+WHERE e.token_hash = ? AND e.purpose = 'verify' AND e.used_at IS NOT NULL AND e.expires_at > ?
+  AND t.status = 'review' AND t.created_by = e.user_id AND u.status = 'active'`, tokenHash, now)
+	if isNoRows(err) {
+		return VerifyResult{}, false, nil
+	}
+	if err != nil {
+		return VerifyResult{}, false, fmt.Errorf("platformstore: repeated verify: %w", err)
+	}
+	return VerifyResult{UserID: row.UserID, Handle: row.Handle, TeamID: row.TeamID, TeamSlug: row.Slug, AwaitingApproval: true}, true, nil
+}
+
+// VerifyByCode confirms a sign-up by (email, code) and inserts the hand-off row (or, under review,
+// queues the operators' letters).
+func (s *Store) VerifyByCode(ctx context.Context, a CodeAttempt, handoff NewToken, review Review) (VerifyResult, error) {
 	var res VerifyResult
 	a.Purpose = "verify"
 	err := s.withCode(ctx, a, func(tx *sqlx.Tx, t tokenRow, u User) error {
-		r, err := verifyTx(ctx, tx, t, u, handoff, a.Now)
+		r, err := verifyTx(ctx, tx, t, u, handoff, review, a.Now)
 		res = r
 		return err
 	})

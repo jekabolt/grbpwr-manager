@@ -49,6 +49,11 @@ type Deps struct {
 	TeamTTL time.Duration // lifetime of team and console tokens (the admin token TTL)
 	Now     func() time.Time
 	Hooks   Hooks
+	// SignupApproval (PLATFORM_SIGNUP_APPROVAL): a confirmed sign-up waits in review for an
+	// operator instead of going straight to provisioning.
+	SignupApproval bool
+	// TermsVersion (PLATFORM_TERMS_VERSION) is stored on every account created by sign-up or invite.
+	TermsVersion string
 }
 
 // Service is the identity logic behind the AuthService platform RPCs.
@@ -72,6 +77,10 @@ func errBusy() error {
 }
 func errBad(msg string) error { return status.Error(codes.InvalidArgument, msg) }
 func errNoAccess() error      { return status.Error(codes.PermissionDenied, "no access") }
+func errTerms() error         { return status.Error(codes.InvalidArgument, "terms_required") }
+func errAwaiting() error {
+	return status.Error(codes.FailedPrecondition, "team_awaiting_approval")
+}
 
 // New builds the service. A missing pepper or base domain does not fail: the service answers
 // UNAVAILABLE and Ready reports why (boot logs it).
@@ -84,6 +93,9 @@ func New(d Deps) (*Service, error) {
 	}
 	if d.TeamTTL <= 0 {
 		d.TeamTTL = time.Hour
+	}
+	if d.TermsVersion = strings.TrimSpace(d.TermsVersion); d.TermsVersion == "" {
+		d.TermsVersion = DefaultTermsVersion
 	}
 	s := &Service{
 		d:           d,
@@ -282,6 +294,9 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	if err := tenant.ValidSlug(slug); err != nil {
 		return nil, errBad(err.Error())
 	}
+	if !req.GetTermsAccepted() {
+		return nil, errTerms()
+	}
 	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
 		return &auth.SignUpResponse{}, nil
 	}
@@ -296,6 +311,7 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 		Now: now, PendingTTL: PendingTeamTTL, MaxOwnedTeams: MaxOwnedTeams, MaxLettersPerHour: MaxLettersPerEmailHr,
 		PasswordMatches: s.passwordMatcher(req.GetPassword()),
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
+		TermsVersion:    s.d.TermsVersion,
 	})
 	if errors.Is(err, platformstore.ErrSlugTaken) {
 		return nil, status.Error(codes.AlreadyExists, "address taken")
@@ -341,7 +357,10 @@ func (s *Service) ResendVerification(ctx context.Context, req *auth.ResendVerifi
 }
 
 // VerifyEmail confirms a sign-up by its link token or by (email, code): the account becomes active,
-// the team goes to provisioning, and a 10-minute hand-off into it comes back.
+// the team goes to provisioning, and a 10-minute hand-off into it comes back. With sign-up approval
+// on the team goes to review instead: the operators get a letter each, the answer carries the slug
+// and awaiting_approval, and no hand-off or session is made. A second click on the link then
+// answers the same and writes nothing.
 func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest) (*auth.VerifyEmailResponse, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -354,13 +373,13 @@ func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest)
 	}
 	var res platformstore.VerifyResult
 	if tok := strings.TrimSpace(req.GetToken()); tok != "" {
-		res, err = s.d.Store.VerifyByLink(ctx, HashToken(tok), now, nt)
+		res, err = s.d.Store.VerifyByLink(ctx, HashToken(tok), now, nt, s.review())
 	} else {
 		email, c, ierr := s.codeInput(ctx, req.GetEmail(), req.GetCode())
 		if ierr != nil {
 			return nil, ierr
 		}
-		res, err = s.d.Store.VerifyByCode(ctx, s.attempt(PurposeVerify, email, c, now), nt)
+		res, err = s.d.Store.VerifyByCode(ctx, s.attempt(PurposeVerify, email, c, now), nt, s.review())
 	}
 	if errors.Is(err, platformstore.ErrTokenInvalid) {
 		return nil, errCode()
@@ -369,8 +388,17 @@ func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest)
 		s.log(ctx, "verify email", err)
 		return nil, errInternal()
 	}
+	if res.AwaitingApproval {
+		s.audit(ctx, res.UserID, res.TeamID, "verify", map[string]string{"team": "review"})
+		return &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, AwaitingApproval: true}, nil
+	}
 	s.audit(ctx, res.UserID, res.TeamID, "verify", nil)
 	return &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, HandoffCode: code}, nil
+}
+
+// review is the store's approval switch: on, with the console address for the operators' letters.
+func (s *Service) review() platformstore.Review {
+	return platformstore.Review{On: s.d.SignupApproval, ConsoleLink: "https://console." + s.base + "/"}
 }
 
 // --- sign-in ---
@@ -472,11 +500,12 @@ func (s *Service) signInRoot(ctx context.Context, u platformstore.User, now time
 	resp := &auth.SignInResponse{Token: tok, Teams: make([]*auth.TeamRef, 0, len(teams))}
 	for _, t := range teams {
 		resp.Teams = append(resp.Teams, &auth.TeamRef{
-			Slug:     t.Slug,
-			Name:     t.Name,
-			Role:     t.Role,
-			ReadOnly: t.Status == string(tenant.StatusSuspended),
-			Ready:    t.Status != string(tenant.StatusProvisioning),
+			Slug:             t.Slug,
+			Name:             t.Name,
+			Role:             t.Role,
+			ReadOnly:         t.Status == string(tenant.StatusSuspended),
+			Ready:            t.Status != string(tenant.StatusProvisioning) && t.Status != string(tenant.StatusReview),
+			AwaitingApproval: t.Status == string(tenant.StatusReview),
 		})
 	}
 	s.audit(ctx, u.ID, 0, "signin", map[string]string{"target": "root"})
@@ -574,6 +603,9 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 	if err != nil {
 		return nil, errNoAccess()
 	}
+	if team.Status == tenant.StatusReview {
+		return nil, s.awaitingOrNoAccess(ctx, u.ID, team.ID)
+	}
 	m, ok, err := s.d.Store.Membership(ctx, u.ID, team.ID)
 	if err != nil {
 		s.log(ctx, "membership", err)
@@ -594,6 +626,22 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 		return nil, errInternal()
 	}
 	return &auth.IssueHandoffResponse{Url: s.teamURL(m.Slug, "/auth", "code", code), Code: code}, nil
+}
+
+// awaitingOrNoAccess refuses a hand-off into a team in review: team_awaiting_approval to its
+// members (the root list already shows them the mark), the generic no-access to anyone else.
+func (s *Service) awaitingOrNoAccess(ctx context.Context, userID, teamID int64) error {
+	teams, err := s.d.Store.MemberTeams(ctx, userID)
+	if err != nil {
+		s.log(ctx, "member teams", err)
+		return errInternal()
+	}
+	for _, t := range teams {
+		if t.TeamID == teamID && t.Status == string(tenant.StatusReview) {
+			return errAwaiting()
+		}
+	}
+	return errNoAccess()
 }
 
 // ExchangeHandoff turns a hand-off code into a team token on the team host (x-team). A team still
@@ -818,7 +866,12 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		return nil, errBad(errLongPassword.Error())
 	}
 	handle := ""
+	terms := ""
 	if !inv.AccountExists {
+		if !req.GetTermsAccepted() {
+			return nil, errTerms()
+		}
+		terms = s.d.TermsVersion
 		if err := CheckPassword(pw); err != nil {
 			return nil, errBad(err.Error())
 		}
@@ -847,6 +900,7 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		Handle:          handle,
 		HandleBase:      HandleBase(inv.Email),
 		Handoff:         nt,
+		TermsVersion:    terms,
 		Ensure: func(ctx context.Context, inv platformstore.Invite, handle string) error {
 			super, perms, err := InvitePermissions(inv.Permissions, inv.Role)
 			if err != nil {
@@ -866,6 +920,8 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		return nil, errAuth()
 	case errors.Is(err, platformstore.ErrHandleTaken):
 		return nil, status.Error(codes.AlreadyExists, "name taken")
+	case errors.Is(err, platformstore.ErrTermsRequired):
+		return nil, errTerms()
 	case errors.Is(err, platformstore.ErrTokenInvalid):
 		return nil, errCode()
 	case err != nil:

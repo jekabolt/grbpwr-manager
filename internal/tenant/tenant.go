@@ -18,7 +18,9 @@ import (
 type Status string
 
 const (
-	StatusPending      Status = "pending"
+	StatusPending Status = "pending"
+	// StatusReview is a confirmed sign-up waiting for an operator: listed to its owner, never routed.
+	StatusReview       Status = "review"
 	StatusProvisioning Status = "provisioning"
 	StatusActive       Status = "active"
 	// StatusSuspended is read-only: the team can sign in and read, every write is refused.

@@ -57,7 +57,10 @@ type flow struct {
 	clock time.Time
 }
 
-func newFlow(t *testing.T) *flow {
+func newFlow(t *testing.T) *flow { t.Helper(); return newFlowWith(t, false) }
+
+// newFlowWith builds the flow with sign-up approval on or off.
+func newFlowWith(t *testing.T, approval bool) *flow {
 	t.Helper()
 	d := flowDSN(t, flowDB)
 	if err := testdbguard.CheckMySQLDSN(d); err != nil {
@@ -122,6 +125,7 @@ func newFlow(t *testing.T) *flow {
 				return nil
 			},
 		},
+		SignupApproval: approval,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -190,9 +194,28 @@ func TestIdentityFlow(t *testing.T) {
 	const pw = "anna-password-1"
 	ctx := ctxFrom("10.0.0.1", "")
 
+	// Without the terms the sheet is refused before anything is written or mailed.
+	_, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: pw, TeamName: "Atelier Anna", TeamSlug: "atelier-anna"})
+	wantCode(t, err, codes.InvalidArgument, "sign-up without terms")
+	if status.Convert(err).Message() != "terms_required" {
+		t.Fatalf("sign-up without terms = %v", err)
+	}
+	var written int
+	if err := f.st.DB().Get(&written, `SELECT (SELECT COUNT(*) FROM platform_user) + (SELECT COUNT(*) FROM team) + (SELECT COUNT(*) FROM platform_email)`); err != nil || written != 0 {
+		t.Fatalf("a refused sign-up wrote %d rows, %v", written, err)
+	}
+
 	// Sign-up: {} and a letter with a code and a link, written to the outbox.
-	if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: pw, TeamName: "Atelier Anna", TeamSlug: "atelier-anna"}); err != nil {
+	if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: pw, TeamName: "Atelier Anna", TeamSlug: "atelier-anna", TermsAccepted: true}); err != nil {
 		t.Fatal(err)
+	}
+	var terms struct {
+		Version sql.NullString `db:"terms_version"`
+		At      sql.NullTime   `db:"terms_accepted_at"`
+	}
+	if err := f.st.DB().Get(&terms, `SELECT terms_version, terms_accepted_at FROM platform_user WHERE email = ?`, anna); err != nil ||
+		terms.Version.String != DefaultTermsVersion || !terms.At.Valid || terms.At.Time.Sub(f.clock).Abs() > time.Second {
+		t.Fatalf("terms of anna = %+v, %v", terms, err)
 	}
 	kind, code, link := f.lastLetter(anna)
 	if kind != "verify" || len(code) != 6 {
@@ -204,8 +227,8 @@ func TestIdentityFlow(t *testing.T) {
 		t.Fatalf("a secret is stored in plain text (%d, %v)", stored, err)
 	}
 	// The address is taken now, for a stranger and for anna alike: the same answer.
-	_, e1 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: "delivered+b3x@resend.dev", Password: pw, TeamName: "X", TeamSlug: "atelier-anna"})
-	_, e2 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "other-password", TeamName: "X", TeamSlug: "atelier-anna"})
+	_, e1 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: "delivered+b3x@resend.dev", Password: pw, TeamName: "X", TeamSlug: "atelier-anna", TermsAccepted: true})
+	_, e2 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "other-password", TeamName: "X", TeamSlug: "atelier-anna", TermsAccepted: true})
 	wantCode(t, e1, codes.AlreadyExists, "stranger on a taken address")
 	if e2 == nil || e1.Error() != e2.Error() {
 		t.Fatalf("taken-address answers differ: %v / %v", e1, e2)
@@ -215,7 +238,7 @@ func TestIdentityFlow(t *testing.T) {
 	if err := f.st.DB().Get(&hashBefore, `SELECT password_hash FROM platform_user WHERE email = ?`, anna); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "attacker-password", TeamName: "Evil", TeamSlug: "evil-anna"}); err != nil {
+	if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "attacker-password", TeamName: "Evil", TeamSlug: "evil-anna", TermsAccepted: true}); err != nil {
 		t.Fatal(err)
 	}
 	var hashAfter string
@@ -246,7 +269,7 @@ func TestIdentityFlow(t *testing.T) {
 		_, err := f.svc.VerifyEmail(cctx, &auth.VerifyEmailRequest{Email: anna, Code: wrong(code)})
 		wantCode(t, err, codes.InvalidArgument, "wrong code")
 	}
-	_, err := f.svc.VerifyEmail(cctx, &auth.VerifyEmailRequest{Email: anna, Code: code})
+	_, err = f.svc.VerifyEmail(cctx, &auth.VerifyEmailRequest{Email: anna, Code: code})
 	wantCode(t, err, codes.InvalidArgument, "right code after five wrong")
 	// …while the link still works, once.
 	vr, err := f.svc.VerifyEmail(cctx, &auth.VerifyEmailRequest{Token: link})
@@ -354,21 +377,34 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 	if err != nil || gi.GetTeamName() != "Atelier Anna" || gi.GetAccountExists() {
 		t.Fatalf("get invite = %v, %v", gi, err)
 	}
-	ai, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k"})
+	// A new account needs the terms; the invite stays usable after the refusal.
+	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k"})
+	if status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != "terms_required" {
+		t.Fatalf("invite for a new account without terms = %v", err)
+	}
+	ai, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k", TermsAccepted: true})
 	if err != nil || ai.GetTeamSlug() != "atelier-anna" || ai.GetHandoffCode() == "" {
 		t.Fatalf("accept = %v, %v", ai, err)
 	}
 	if p := f.teams.ensured["bob.k"]; len(p) != 1 || p[0].Section != "products" || p[0].Access != entity.AccessWrite {
 		t.Fatalf("team admins row of bob = %v", p)
 	}
-	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k"})
+	if err := f.st.DB().Get(&terms, `SELECT terms_version, terms_accepted_at FROM platform_user WHERE email = ?`, bob); err != nil ||
+		terms.Version.String != DefaultTermsVersion || !terms.At.Valid {
+		t.Fatalf("terms of bob = %+v, %v", terms, err)
+	}
+	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k", TermsAccepted: true})
 	wantCode(t, err, codes.InvalidArgument, "invite reused")
+	// An existing account is not asked for the terms again.
+	if _, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: invite(bob), Password: "bob-password-1"}); err != nil {
+		t.Fatalf("invite for an existing account without terms: %v", err)
+	}
 	// A suspended team refuses new members.
 	ctok := invite("delivered+b3cara@resend.dev")
 	if _, err := f.st.DB().Exec(`UPDATE team SET status = 'suspended' WHERE id = ?`, teamID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: ctok, Password: "cara-password-1", Handle: "cara"})
+	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: ctok, Password: "cara-password-1", Handle: "cara", TermsAccepted: true})
 	wantCode(t, err, codes.FailedPrecondition, "suspended team")
 
 	// Operators: the env list creates the operator with an unusable password.
@@ -376,14 +412,171 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 		t.Fatal(err)
 	}
 	var op struct {
-		Op   bool   `db:"is_operator"`
-		Hash string `db:"password_hash"`
+		Op    bool           `db:"is_operator"`
+		Hash  string         `db:"password_hash"`
+		Terms sql.NullString `db:"terms_version"`
 	}
-	if err := f.st.DB().Get(&op, `SELECT is_operator, password_hash FROM platform_user WHERE email = 'delivered+b3op@resend.dev'`); err != nil || !op.Op || !strings.HasPrefix(op.Hash, "!unusable$") {
+	if err := f.st.DB().Get(&op, `SELECT is_operator, password_hash, terms_version FROM platform_user WHERE email = 'delivered+b3op@resend.dev'`); err != nil ||
+		!op.Op || !strings.HasPrefix(op.Hash, "!unusable$") || op.Terms.Valid {
 		t.Fatalf("operator = %+v, %v", op, err)
 	}
 
 	// Every letter went to the test inbox only.
+	var stray int
+	if err := f.st.DB().Get(&stray, `SELECT COUNT(*) FROM platform_email WHERE to_email NOT LIKE 'delivered+%@resend.dev'`); err != nil || stray != 0 {
+		t.Fatalf("letters outside the test inbox: %d, %v", stray, err)
+	}
+}
+
+// teamLetters are the outbox letters of a kind, oldest first.
+func (f *flow) teamLetters(kind string) []letterRow {
+	f.t.Helper()
+	var rows []letterRow
+	if err := f.st.DB().Select(&rows, `SELECT id, to_email, template, payload FROM platform_email WHERE template = ? ORDER BY id`, kind); err != nil {
+		f.t.Fatal(err)
+	}
+	return rows
+}
+
+func TestSignupApproval(t *testing.T) {
+	f := newFlowWith(t, true)
+	const (
+		anna = "delivered+b3anna@resend.dev"
+		bob  = "delivered+b3bob@resend.dev"
+		op   = "delivered+b3op@resend.dev"
+		pw   = "anna-password-1"
+	)
+	ctx := ctxFrom("10.0.1.1", "")
+	if err := f.svc.SyncOperators(ctx); err != nil {
+		t.Fatal(err)
+	}
+	signUp := func(email, name, slug string) (code, link string) {
+		t.Helper()
+		if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: email, Password: pw, TeamName: name, TeamSlug: slug, TermsAccepted: true}); err != nil {
+			t.Fatal(err)
+		}
+		_, code, link = f.lastLetter(email)
+		return code, link
+	}
+
+	// Verify by link: the account is active, the team waits in review, no hand-off and no session.
+	_, link := signUp(anna, "Atelier Anna", "atelier-anna")
+	vr, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: link})
+	if err != nil || vr.GetTeamSlug() != "atelier-anna" || vr.GetHandoffCode() != "" || !vr.GetAwaitingApproval() {
+		t.Fatalf("verify under approval = %v, %v", vr, err)
+	}
+	var team struct {
+		ID      int64        `db:"id"`
+		Status  string       `db:"status"`
+		Expires sql.NullTime `db:"pending_expires_at"`
+	}
+	if err := f.st.DB().Get(&team, `SELECT id, status, pending_expires_at FROM team WHERE slug = 'atelier-anna'`); err != nil ||
+		team.Status != "review" || team.Expires.Valid {
+		t.Fatalf("team after verify = %+v, %v", team, err)
+	}
+	var handoffs, sessions int
+	if err := f.st.DB().Get(&handoffs, `SELECT COUNT(*) FROM email_token WHERE purpose = 'handoff'`); err != nil || handoffs != 0 {
+		t.Fatalf("hand-offs = %d, %v", handoffs, err)
+	}
+	if err := f.st.DB().Get(&sessions, `SELECT COUNT(*) FROM user_session`); err != nil || sessions != 0 {
+		t.Fatalf("sessions = %d, %v", sessions, err)
+	}
+	// One team_request letter per active operator: team name, slug, the person's email, the console.
+	reqs := f.teamLetters("team_request")
+	if len(reqs) != 1 || reqs[0].To != op {
+		t.Fatalf("team_request letters = %+v", reqs)
+	}
+	var p struct {
+		Link     string `json:"link"`
+		TeamName string `json:"team_name"`
+		Slug     string `json:"slug"`
+		Email    string `json:"email"`
+	}
+	if err := json.Unmarshal(reqs[0].Payload, &p); err != nil || p.Link != "https://console.beta.lekalo.studio/" ||
+		p.TeamName != "Atelier Anna" || p.Slug != "atelier-anna" || p.Email != anna {
+		t.Fatalf("team_request payload = %s, %v", reqs[0].Payload, err)
+	}
+	// A second click on the link answers the same and writes no second operator letter.
+	again, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: link})
+	if err != nil || again.GetTeamSlug() != "atelier-anna" || again.GetHandoffCode() != "" || !again.GetAwaitingApproval() {
+		t.Fatalf("second verify = %v, %v", again, err)
+	}
+	if n := len(f.teamLetters("team_request")); n != 1 {
+		t.Fatalf("team_request letters after a second click = %d", n)
+	}
+
+	// Verify by code goes the same way.
+	bcode, _ := signUp(bob, "Bob Studio", "bob-studio")
+	bv, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Email: bob, Code: bcode})
+	if err != nil || bv.GetHandoffCode() != "" || !bv.GetAwaitingApproval() {
+		t.Fatalf("verify by code under approval = %v, %v", bv, err)
+	}
+	if n := len(f.teamLetters("team_request")); n != 2 {
+		t.Fatalf("team_request letters after bob = %d", n)
+	}
+
+	// The root list marks the team; a hand-off into it is refused with the reason.
+	sctx := ctxFrom("10.0.1.2", "")
+	sr, err := f.svc.SignIn(sctx, &auth.SignInRequest{Login: anna, Password: pw, Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT})
+	if err != nil || len(sr.GetTeams()) != 1 {
+		t.Fatalf("root sign-in = %v, %v", sr, err)
+	}
+	if ref := sr.GetTeams()[0]; ref.GetSlug() != "atelier-anna" || ref.GetReady() || !ref.GetAwaitingApproval() {
+		t.Fatalf("team ref = %v", ref)
+	}
+	_, err = f.svc.IssueHandoff(sctx, sr.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "team_awaiting_approval" {
+		t.Fatalf("hand-off into a team in review = %v", err)
+	}
+	// Someone else hears the generic no-access, as for any team that is not theirs.
+	br, err := f.svc.SignIn(sctx, &auth.SignInRequest{Login: bob, Password: pw, Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, e1 := f.svc.IssueHandoff(sctx, br.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
+	_, e2 := f.svc.IssueHandoff(sctx, br.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "no-such-team"})
+	wantCode(t, e1, codes.PermissionDenied, "hand-off into another's team in review")
+	if e2 == nil || e1.Error() != e2.Error() {
+		t.Fatalf("no-access answers differ: %v / %v", e1, e2)
+	}
+	// On the team's own host the review slug is an unknown team.
+	_, eh := f.svc.SignIn(ctxFrom("10.0.1.3", "atelier-anna"), &auth.SignInRequest{Login: anna, Password: pw, Target: auth.SignInTarget_SIGN_IN_TARGET_TEAM})
+	_, eu := f.svc.SignIn(ctxFrom("10.0.1.3", "no-such-team"), &auth.SignInRequest{Login: anna, Password: pw, Target: auth.SignInTarget_SIGN_IN_TARGET_TEAM})
+	wantCode(t, eh, codes.Unauthenticated, "team sign-in on a review slug")
+	if eu == nil || eh.Error() != eu.Error() {
+		t.Fatalf("team-host answers differ: %v / %v", eh, eu)
+	}
+	// The address stays held while the team waits.
+	_, err = f.svc.SignUp(ctx, &auth.SignUpRequest{Email: "delivered+b3x@resend.dev", Password: pw, TeamName: "X", TeamSlug: "atelier-anna", TermsAccepted: true})
+	wantCode(t, err, codes.AlreadyExists, "sign-up on an address in review")
+
+	// Approval (the console's transaction): review → provisioning plus the team_approved letter to the owner.
+	tx, err := f.st.DB().Beginx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE team SET status = 'provisioning' WHERE id = ? AND status = 'review'`, team.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := platformstore.TeamApprovedLetterTx(context.Background(), tx, team.ID, "https://atelier-anna.beta.lekalo.studio/", f.clock); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ok := f.teamLetters("team_approved")
+	if len(ok) != 1 || ok[0].To != anna {
+		t.Fatalf("team_approved letters = %+v", ok)
+	}
+	p.Email = ""
+	if err := json.Unmarshal(ok[0].Payload, &p); err != nil || p.Link != "https://atelier-anna.beta.lekalo.studio/" ||
+		p.Slug != "atelier-anna" || p.TeamName != "Atelier Anna" || p.Email != "" {
+		t.Fatalf("team_approved payload = %s, %v", ok[0].Payload, err)
+	}
+	// After approval a second click on the old link is an ordinary used link.
+	_, err = f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: link})
+	wantCode(t, err, codes.InvalidArgument, "old link after approval")
+
 	var stray int
 	if err := f.st.DB().Get(&stray, `SELECT COUNT(*) FROM platform_email WHERE to_email NOT LIKE 'delivered+%@resend.dev'`); err != nil || stray != 0 {
 		t.Fatalf("letters outside the test inbox: %d, %v", stray, err)
