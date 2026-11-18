@@ -111,12 +111,11 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			return fmt.Errorf("assembly revision changed: %w", entity.ErrTechCardSavedAssemblyMoved)
 		}
 		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
-			source, err := buildSavedAssemblyCompleteSourceV1(card, row, lines, token)
+			source, err := buildCheckedSavedAssemblyCompleteSourceV1(
+				card, row, lines, token, in.ExpectedCompleteSourceSHA256,
+			)
 			if err != nil {
 				return err
-			}
-			if in.ExpectedCompleteSourceSHA256 != "" && source.SourceSHA256 != in.ExpectedCompleteSourceSHA256 {
-				return fmt.Errorf("complete Assembly source changed: %w", entity.ErrTechCardSavedAssemblyMoved)
 			}
 			sidecar, err := readSavedAssemblyAnchorSidecar(ctx, rep.DB(), row)
 			if err != nil {

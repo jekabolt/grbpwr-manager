@@ -142,7 +142,9 @@ func TestSavedAssemblyCompleteSourceKeepsRawOwnedSeamsAndAllRows(t *testing.T) {
 	slices.Reverse(card.Patterns)
 	slices.Reverse(card.PieceDxfAliases)
 	slices.Reverse(card.Seams)
-	reordered, err := buildSavedAssemblyCompleteSourceV1(card, source.Rows[2], lines, completeSourceClock)
+	reordered, err := buildCheckedSavedAssemblyCompleteSourceV1(
+		card, source.Rows[2], lines, completeSourceClock, source.SourceSHA256,
+	)
 	require.NoError(t, err)
 	require.Equal(t, source.SourceSHA256, reordered.SourceSHA256,
 		"anchor choice, unordered row retrieval and orphan seam retrieval do not change the source")
@@ -170,6 +172,11 @@ func TestSavedAssemblyCompleteSourceDigestBindsCurrentInputs(t *testing.T) {
 			changed, err := buildSavedAssemblyCompleteSourceV1(card, anchor, lines, completeSourceClock)
 			require.NoError(t, err)
 			require.NotEqual(t, want.SourceSHA256, changed.SourceSHA256)
+			stale, err := buildCheckedSavedAssemblyCompleteSourceV1(
+				card, anchor, lines, completeSourceClock, want.SourceSHA256,
+			)
+			require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyMoved)
+			require.Nil(t, stale)
 		})
 	}
 	newClock, err := buildSavedAssemblyCompleteSourceV1(base, anchor, lines,

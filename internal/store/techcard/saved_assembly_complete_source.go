@@ -60,6 +60,25 @@ func validateCompleteSourcePieceInputOwnership(ctx context.Context, db dependenc
 	return nil
 }
 
+// buildCheckedSavedAssemblyCompleteSourceV1 hands out only a complete projection that still
+// matches the caller's pinned source, even when the requested anchor row has not changed.
+func buildCheckedSavedAssemblyCompleteSourceV1(
+	card *entity.TechCard,
+	anchor entity.SavedPatternRowIdentity,
+	lines []entity.RollGoodsLine,
+	revision string,
+	expectedSourceSHA256 string,
+) (*entity.SavedAssemblyCompleteSourceV1, error) {
+	source, err := buildSavedAssemblyCompleteSourceV1(card, anchor, lines, revision)
+	if err != nil {
+		return nil, err
+	}
+	if expectedSourceSHA256 != "" && source.SourceSHA256 != expectedSourceSHA256 {
+		return nil, fmt.Errorf("complete Assembly source changed: %w", entity.ErrTechCardSavedAssemblyMoved)
+	}
+	return source, nil
+}
+
 // buildSavedAssemblyCompleteSourceV1 is intentionally separate from the strict selected-operation
 // read. It commits stored source metadata, including unanchored, rejected or stale rows as such.
 func buildSavedAssemblyCompleteSourceV1(
