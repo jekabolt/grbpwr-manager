@@ -13,10 +13,6 @@ domains:
 - domain: backend.grbpwr.com
   type: PRIMARY
   zone: grbpwr.com
-# Teams API host (lekalo.studio). backend.grbpwr.com stays the primary.
-- domain: api.lekalo.studio
-  type: ALIAS
-  zone: lekalo.studio
 envs:
 - key: MYSQL_AUTOMIGRATE
   scope: RUN_TIME
@@ -49,52 +45,6 @@ envs:
 - key: HTTP_ADDRESS
   scope: RUN_TIME
   value: 0.0.0.0
-# Teams mode (lekalo.studio), 02-DESIGN §14. EMPTY = teams mode OFF: the single-tenant
-# backend exactly as before. Set (with every PLATFORM_*/TENANT_* below) only at the teams launch.
-- key: PLATFORM_MYSQL_DSN
-  scope: RUN_TIME
-  type: SECRET
-  value: ''
-- key: PLATFORM_BASE_DOMAIN
-  scope: RUN_TIME
-  value: lekalo.studio
-# Team #1's old admin origin(s): the only origins a pre-teams token is accepted from.
-- key: PLATFORM_LEGACY_ADMIN_ORIGINS
-  scope: RUN_TIME
-  value: 'https://admin.grbpwr.com'
-- key: PLATFORM_OPERATOR_EMAILS
-  scope: RUN_TIME
-  value: ''
-- key: PLATFORM_MAIL_FROM
-  scope: RUN_TIME
-  value: no-reply@lekalo.studio
-- key: PLATFORM_MAILER_ENABLED
-  scope: RUN_TIME
-  value: "false"
-- key: PLATFORM_TOKEN_PEPPER
-  scope: RUN_TIME
-  type: SECRET
-  value: ''
-- key: TENANT_DB_PREFIX
-  scope: RUN_TIME
-  value: ''
-# Empty = the MYSQL_DSN database (a different name refuses boot).
-- key: TENANT_TEAM1_DB
-  scope: RUN_TIME
-  value: ''
-- key: TENANT_STOREFRONT_TEAM_ID
-  scope: RUN_TIME
-  value: "1"
-- key: TENANT_SPARES
-  scope: RUN_TIME
-  value: ''
-- key: TENANT_PROVISION_PER_HOUR
-  scope: RUN_TIME
-  value: ''
-# Team hosts for app-level CORS; must match the ingress regex below. Anchored ^…$ or boot is refused.
-- key: HTTP_ALLOWED_ORIGIN_REGEX
-  scope: RUN_TIME
-  value: '^https://([a-z0-9-]{1,40}\.)?lekalo\.studio$'
 - key: HTTP_ALLOWED_ORIGINS
   scope: RUN_TIME
   value: '["https://backend.grbpwr.com","https://mikevelko.github.io","https://jekabolt.github.io","https://0101oak.github.io","https://grbpwr.com","https://admin.grbpwr.com"]'
@@ -615,7 +565,6 @@ ingress:
       - Accept
       - Origin
       - Grpc-Metadata-Authorization
-      - Grpc-Metadata-X-Team
       allow_methods:
       - GET
       - HEAD
@@ -637,9 +586,6 @@ ingress:
       - exact: https://mikevelko.github.io
       - exact: https://jekabolt.github.io
       - exact: https://0101oak.github.io
-      # Team hosts <slug>.lekalo.studio (and the root lekalo.studio): one label, anchored —
-      # mirrors HTTP_ALLOWED_ORIGIN_REGEX.
-      - regex: ^https://([a-z0-9-]{1,40}\.)?lekalo\.studio$
       expose_headers:
       - Content-Length
       - X-Request-Id
