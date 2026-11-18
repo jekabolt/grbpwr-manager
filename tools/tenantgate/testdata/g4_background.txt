@@ -1,0 +1,8 @@
+# G4b ratchet: context.Background()/TODO() calls per file in internal/store, internal/apisrv, app and worker packages.
+# Format: path<TAB>count. Files without calls are not listed.
+# Refresh: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update
+app/app.go	2
+internal/apisrv/admin/server.go	1
+internal/apisrv/frontend/order_submit.go	1
+internal/store/migrate.go	1
+internal/store/migreplay/seed.go	1
