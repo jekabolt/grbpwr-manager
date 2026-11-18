@@ -19,7 +19,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
-	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -58,6 +57,8 @@ type Server struct {
 	auth.UnimplementedAuthServiceServer
 	// platform is the control plane in teams mode (platform.go); zero = teams mode off.
 	platform platformHandle
+	// creds is the control plane's password write in teams mode (SetPlatform); nil = mode OFF.
+	creds credentialPlane
 	// edge is the tenant binder (edge.go); nil = single-tenant chain.
 	edge Edge
 
@@ -479,6 +480,16 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
+	// Teams mode: the control plane is authoritative (changePasswordTeams, platform.go).
+	if s.creds != nil {
+		handled, err := s.changePasswordTeams(ctx, username, pwHashNew)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return &auth.ChangePasswordResponse{AuthToken: token}, nil
+		}
+	}
 	err = s.adminRepository.ChangePassword(ctx, username, pwHashNew)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to change password",
@@ -487,20 +498,6 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 	s.InvalidateAdminAccount(username)
-	// Teams mode: team #1 admins sign in through the control plane too (EnsureTeamOne made a
-	// platform_user per admins row), so the new hash goes there as well. A missing platform user
-	// is not an error: the admins row is the source of truth for the legacy admin.
-	if st := s.platform.store; st != nil {
-		if err := st.SetPasswordHashByHandle(ctx, username, pwHashNew); err != nil {
-			if errors.Is(err, platformstore.ErrUserNotFound) {
-				slog.Default().WarnContext(ctx, "change password: no platform user for the admin",
-					slog.String("username", username))
-			} else {
-				slog.Default().ErrorContext(ctx, "change password: control plane hash not updated",
-					slog.String("username", username), slog.String("err", err.Error()))
-			}
-		}
-	}
 	return &auth.ChangePasswordResponse{
 		AuthToken: token,
 	}, nil
