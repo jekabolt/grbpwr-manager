@@ -11,9 +11,24 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 const fingerprintTimeout = time.Minute
+
+// SchemaCurrent reports whether team t's database is at the binary's migration level, latest being
+// LatestMigrationID() read once at boot (it parses the embedded migration set: never per request).
+// Team #1 is always current: store.New migrates it synchronously before the server listens. Any
+// other team is current only when its control-plane schema_version equals latest; an empty latest
+// (no embedded migrations) makes nothing current. The request edge answers UNAVAILABLE for a team
+// that is not.
+func SchemaCurrent(t tenant.Team, latest string) bool {
+	if t.ID == tenant.TeamOneID {
+		return true
+	}
+	return latest != "" && t.SchemaVersion == latest
+}
 
 // The schema of the connected database only (DATABASE()): no database name ever enters the SQL.
 // gorp_migrations is left out: it records history, not shape.

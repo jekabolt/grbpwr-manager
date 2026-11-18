@@ -5,12 +5,18 @@
 //   - spare keeper (30 s): keeps Spares ready spare databases at the latest migration, at most
 //     PerHour created per hour; a failed spare stays failed for an operator, never dropped;
 //   - claimer (2 s): a team in provisioning gets a ready spare (or, with none, one made on the
-//     spot inside the worker — never in a request), is seeded and activated;
+//     spot inside the worker — never in a request), is seeded and activated, all under the team's
+//     lease (one owner per team: only the holder may scrub or activate);
 //   - fleet migrator (after boot, then every 30 min): active and suspended teams and ready spares
-//     behind the binary are migrated one at a time, their schema fingerprint compared with the
+//     behind the binary are migrated one at a time, each under its database's lease (one migrator
+//     per database across instances), their schema fingerprint compared with the
 //     reference (G8, warn only); team #1 is migrated synchronously at boot by store.New and only
 //     fingerprinted here;
 //   - pending sweep (10 min): sign-ups never confirmed are removed, their slug freed.
+//
+// Every spare database, the keeper's and the cold path's alike, is reserved through
+// Platform.ReserveSpare: one control-plane transaction that enforces the hourly cap across all
+// workers, failed databases included.
 //
 // Every database name read from the control plane or generated here passes the allowlist
 // (store.NewTeamDBName: TENANT_DB_PREFIX + 8 [a-z0-9], never team #1's database) before it reaches
@@ -41,6 +47,8 @@ const (
 	maxBackoff      = 5 * time.Minute
 	firstBackoff    = 2 * time.Second
 	driftLinesShown = 5
+	// DefaultLeaseTTL is how long a lease outlives a holder that stopped renewing it.
+	DefaultLeaseTTL = 2 * time.Minute
 )
 
 // Intervals of the loops; tests shorten them.
@@ -63,16 +71,19 @@ func DefaultIntervals() Intervals {
 
 // Platform is the control-plane surface the worker uses (*platformstore.Store).
 type Platform interface {
-	CountSpares(ctx context.Context, version string, since time.Time) (platformstore.SpareCounts, error)
-	InsertSpare(ctx context.Context, dbName string) error
+	ReserveSpare(ctx context.Context, dbName, version string, perHour, keep int) error
 	MarkSpareReady(ctx context.Context, dbName, version, fingerprint string) error
 	MarkSpareFailed(ctx context.Context, dbName, reason string) error
-	SetSpareSchema(ctx context.Context, dbName, version, fingerprint string) error
+	SetSpareSchema(ctx context.Context, dbName, token, version, fingerprint string) error
 	ReadySpares(ctx context.Context) ([]platformstore.Spare, error)
 	ProvisioningTeams(ctx context.Context, limit int) ([]platformstore.ProvisioningTeam, error)
-	ClaimSpare(ctx context.Context, teamID int64, version string) (string, error)
-	ActivateTeam(ctx context.Context, teamID int64, version, fingerprint string) error
-	SetTeamSchema(ctx context.Context, teamID int64, version, fingerprint string) error
+	ClaimSpare(ctx context.Context, teamID int64, version string) (dbName string, claimed bool, err error)
+	ActivateTeam(ctx context.Context, teamID int64, token, version, fingerprint string) error
+	SetTeamSchema(ctx context.Context, teamID int64, dbName, token, version, fingerprint string) error
+	AcquireLease(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error)
+	ExtendLease(ctx context.Context, key, token string, ttl time.Duration) error
+	ReleaseLease(ctx context.Context, key, token string) error
+	CheckProvisionLease(ctx context.Context, teamID int64, dbName, token string) error
 	SchemaTeams(ctx context.Context) ([]platformstore.SchemaTeam, error)
 	ReferenceSpare(ctx context.Context, version string) (dbName, fingerprint string, ok bool, err error)
 	SweepPendingTeams(ctx context.Context, now time.Time, limit int) (int, error)
@@ -113,6 +124,9 @@ type Config struct {
 	Spares  int    // TENANT_SPARES (0 = DefaultSpares)
 	PerHour int    // TENANT_PROVISION_PER_HOUR (0 = DefaultPerHour)
 	Every   Intervals
+	// LeaseTTL is the provisioning / migration lease lifetime (0 = DefaultLeaseTTL); the holder
+	// renews it every third of that while it works.
+	LeaseTTL time.Duration
 }
 
 // Worker is the provisioner.
@@ -124,8 +138,8 @@ type Worker struct {
 	admins dependency.Admin
 	now    func() time.Time
 	log    *slog.Logger
-	// seed seeds the team in ctx; Seed over db / admins unless a test replaces it.
-	seed func(ctx context.Context, ownerHandle string) error
+	// seed seeds the team in ctx under guard; Seed over db / admins unless a test replaces it.
+	seed func(ctx context.Context, ownerHandle string, guard func(context.Context) error) error
 
 	mu      sync.Mutex
 	backoff map[int64]retry // team id → next attempt
@@ -164,6 +178,9 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins depend
 	if cfg.Every == (Intervals{}) {
 		cfg.Every = DefaultIntervals()
 	}
+	if cfg.LeaseTTL <= 0 {
+		cfg.LeaseTTL = DefaultLeaseTTL
+	}
 	if pf == nil || schema == nil || db == nil || admins == nil {
 		return nil, errors.New("provision: missing dependency")
 	}
@@ -177,7 +194,9 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins depend
 		log:     slog.Default(),
 		backoff: map[int64]retry{},
 	}
-	w.seed = func(ctx context.Context, owner string) error { return Seed(ctx, w.db, w.admins, owner) }
+	w.seed = func(ctx context.Context, owner string, guard func(context.Context) error) error {
+		return Seed(ctx, w.db, w.admins, owner, guard)
+	}
 	return w, nil
 }
 
@@ -230,51 +249,55 @@ func (w *Worker) allowed(dbName string) error {
 // ─── spare keeper ──────────────────────────────────────────────────────────────────────────────
 
 // KeepSparesOnce creates at most one spare when fewer than Spares are ready at the latest
-// migration and the hourly cap allows.
+// migration (or being created) and the shared hourly cap allows.
 func (w *Worker) KeepSparesOnce(ctx context.Context) error {
-	latest := w.schema.Latest()
-	if latest == "" {
-		return errors.New("provision: no embedded migrations")
-	}
-	c, err := w.pf.CountSpares(ctx, latest, w.now().Add(-time.Hour))
-	if err != nil {
-		w.log.ErrorContext(ctx, "provision: count spares", slog.String("err", err.Error()))
-		return err
-	}
-	if c.Ready+c.Creating >= w.cfg.Spares {
+	_, err := w.makeSpare(ctx, w.cfg.Spares)
+	switch {
+	case errors.Is(err, platformstore.ErrEnoughSpares):
+		return nil
+	case errors.Is(err, platformstore.ErrSpareQuota):
+		w.capReached(ctx)
 		return nil
 	}
-	if c.CreatedSince >= w.cfg.PerHour {
-		w.mu.Lock()
-		quiet := w.now().Sub(w.capLog) < 10*time.Minute
-		if !quiet {
-			w.capLog = w.now()
-		}
-		w.mu.Unlock()
-		if !quiet {
-			w.log.WarnContext(ctx, "provision: hourly database creation cap reached; spares wait",
-				slog.Int("created_last_hour", c.CreatedSince), slog.Int("cap", w.cfg.PerHour))
-		}
-		return nil
-	}
-	_, err = w.makeSpare(ctx)
 	return err
 }
 
-// makeSpare records, creates, migrates and fingerprints one spare database.
-func (w *Worker) makeSpare(ctx context.Context) (string, error) {
+// capReached logs the hourly cap at most every 10 minutes.
+func (w *Worker) capReached(ctx context.Context) {
+	w.mu.Lock()
+	quiet := !w.capLog.IsZero() && w.now().Sub(w.capLog) < 10*time.Minute
+	if !quiet {
+		w.capLog = w.now()
+	}
+	w.mu.Unlock()
+	if !quiet {
+		w.log.WarnContext(ctx, "provision: hourly database creation cap reached; spares wait", slog.Int("cap", w.cfg.PerHour))
+	}
+}
+
+// makeSpare reserves (under the shared hourly cap; keep > 0 = only while fewer than keep spares are
+// ready or being created), creates, migrates and fingerprints one spare database.
+// ErrSpareQuota / ErrEnoughSpares come back unwrapped.
+func (w *Worker) makeSpare(ctx context.Context, keep int) (string, error) {
+	latest := w.schema.Latest()
+	if latest == "" {
+		return "", errors.New("provision: no embedded migrations")
+	}
 	var name string
 	var err error
 	for range 3 { // a random-name collision with an existing row is retried with a new name
 		if name, err = NewDBName(w.cfg.Prefix, w.cfg.Team1DB); err != nil {
 			return "", err
 		}
-		if err = w.pf.InsertSpare(ctx, name); err == nil {
+		err = w.pf.ReserveSpare(ctx, name, latest, w.cfg.PerHour, keep)
+		if err == nil || errors.Is(err, platformstore.ErrSpareQuota) || errors.Is(err, platformstore.ErrEnoughSpares) {
 			break
 		}
 	}
 	if err != nil {
-		w.log.ErrorContext(ctx, "provision: record spare", slog.String("err", err.Error()))
+		if !errors.Is(err, platformstore.ErrSpareQuota) && !errors.Is(err, platformstore.ErrEnoughSpares) {
+			w.log.ErrorContext(ctx, "provision: reserve spare", slog.String("err", err.Error()))
+		}
 		return "", err
 	}
 	fail := func(stage string, err error) (string, error) {
@@ -311,6 +334,68 @@ func (w *Worker) makeSpare(ctx context.Context) (string, error) {
 	return name, nil
 }
 
+// ─── leases ────────────────────────────────────────────────────────────────────────────────────
+
+// withLease runs fn while this worker holds key. held is false (fn not run) when another worker
+// holds it. The lease is renewed every LeaseTTL/3; if it is lost (or cannot be renewed for a whole
+// TTL) fn's ctx is cancelled with platformstore.ErrLeaseLost, and the guarded writes refuse anyway.
+// The lease is released when fn returns.
+func (w *Worker) withLease(ctx context.Context, key string, fn func(ctx context.Context, token string) error) (held bool, err error) {
+	ttl := w.cfg.LeaseTTL
+	token, ok, err := w.pf.AcquireLease(ctx, key, ttl)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	lctx, cancel := context.WithCancelCause(ctx)
+	stopped := make(chan struct{})
+	var renewer sync.WaitGroup
+	renewer.Add(1)
+	go func() {
+		defer renewer.Done()
+		tick := time.NewTicker(ttl / 3)
+		defer tick.Stop()
+		lastOK := time.Now()
+		for {
+			select {
+			case <-stopped:
+				return
+			case <-lctx.Done():
+				return
+			case <-tick.C:
+			}
+			err := w.pf.ExtendLease(lctx, key, token, ttl)
+			switch {
+			case err == nil:
+				lastOK = time.Now()
+			case errors.Is(err, platformstore.ErrLeaseLost) || time.Since(lastOK) >= ttl:
+				w.log.ErrorContext(ctx, "provision: lease lost; stopping", slog.String("lease", key), slog.String("err", err.Error()))
+				cancel(platformstore.ErrLeaseLost)
+				return
+			default:
+				w.log.WarnContext(ctx, "provision: lease renewal failed; retrying", slog.String("lease", key), slog.String("err", err.Error()))
+			}
+		}
+	}()
+	defer func() {
+		close(stopped)
+		renewer.Wait()
+		cancel(nil)
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer rcancel()
+		if rerr := w.pf.ReleaseLease(rctx, key, token); rerr != nil {
+			w.log.WarnContext(ctx, "provision: release lease", slog.String("lease", key), slog.String("err", rerr.Error()))
+		}
+	}()
+	err = fn(lctx, token)
+	if err != nil && context.Cause(lctx) == platformstore.ErrLeaseLost {
+		err = fmt.Errorf("%w: %w", platformstore.ErrLeaseLost, err)
+	}
+	return true, err
+}
+
 // ─── claim + seed ──────────────────────────────────────────────────────────────────────────────
 
 // ClaimOnce provisions every team waiting in provisioning whose retry time has come.
@@ -341,41 +426,70 @@ func (w *Worker) ClaimOnce(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// ProvisionTeam claims (or makes) the team's database, seeds it and activates the team.
-// Safe to rerun at any step.
+// ProvisionTeam claims (or makes) the team's database, seeds it and activates the team. Safe to
+// rerun at any step. Everything runs under the team's lease: a team another worker is provisioning
+// is skipped (nil). t comes from a listing and may be stale: only t.ID, t.Slug and t.OwnerHandle
+// are used; the database comes from a fresh, locked read of the team row (ClaimSpare).
 func (w *Worker) ProvisionTeam(ctx context.Context, t platformstore.ProvisioningTeam) error {
 	if t.ID == tenant.TeamOneID {
 		return errors.New("provision: team #1 is never provisioned")
 	}
+	held, err := w.withLease(ctx, platformstore.TeamLeaseKey(t.ID), func(ctx context.Context, token string) error {
+		return w.provision(ctx, t, token)
+	})
+	if err == nil && !held {
+		w.log.DebugContext(ctx, "provision: team held by another worker", slog.Int64("tid", t.ID))
+	}
+	return err
+}
+
+// provision runs under the team lease token.
+func (w *Worker) provision(ctx context.Context, t platformstore.ProvisioningTeam, token string) error {
 	latest := w.schema.Latest()
-	dbName := t.DBName.String
-	fresh := false
-	if !t.DBName.Valid || dbName == "" {
-		var err error
-		dbName, err = w.pf.ClaimSpare(ctx, t.ID, latest)
-		if errors.Is(err, platformstore.ErrNoSpare) {
-			// Cold path, here in the worker: make one spare now, then claim (whichever ready
-			// spare the claim hands out — they are all equal).
-			w.log.WarnContext(ctx, "provision: no ready spare; creating a database for the team",
-				slog.Int64("tid", t.ID), slog.String("slug", t.Slug))
-			if _, err = w.makeSpare(ctx); err != nil {
-				return err
+	dbName, claimed, err := w.pf.ClaimSpare(ctx, t.ID, latest)
+	if errors.Is(err, platformstore.ErrNoSpare) {
+		// Cold path, here in the worker: make one spare now (under the shared hourly cap), then
+		// claim (whichever ready spare the claim hands out — they are all equal).
+		w.log.WarnContext(ctx, "provision: no ready spare; creating a database for the team",
+			slog.Int64("tid", t.ID), slog.String("slug", t.Slug))
+		if _, err = w.makeSpare(ctx, 0); err != nil {
+			if errors.Is(err, platformstore.ErrSpareQuota) {
+				w.capReached(ctx)
 			}
-			dbName, err = w.pf.ClaimSpare(ctx, t.ID, latest)
+			return fmt.Errorf("cold path: %w", err)
 		}
-		if errors.Is(err, platformstore.ErrNotProvisioning) {
-			return nil // confirmed elsewhere or gone: nothing to do
-		}
-		if err != nil {
-			return fmt.Errorf("claim: %w", err)
-		}
-		fresh = true
+		dbName, claimed, err = w.pf.ClaimSpare(ctx, t.ID, latest)
+	}
+	if errors.Is(err, platformstore.ErrNotProvisioning) {
+		return nil // activated, suspended or gone meanwhile: nothing was touched
+	}
+	if err != nil {
+		return fmt.Errorf("claim: %w", err)
 	}
 	if err := w.allowed(dbName); err != nil {
 		return fmt.Errorf("team database refused: %w", err)
 	}
-	version := latest
-	if !fresh {
+	held, err := w.withLease(ctx, platformstore.DBLeaseKey(dbName), func(ctx context.Context, _ string) error {
+		return w.seedAndActivate(ctx, t, token, dbName, claimed)
+	})
+	if err == nil && !held {
+		return fmt.Errorf("database %s is being migrated by another worker", dbName)
+	}
+	return err
+}
+
+// seedAndActivate brings the team's database forward (unless just claimed at latest), seeds it and
+// activates the team; it holds the team lease token and the database's lease.
+func (w *Worker) seedAndActivate(ctx context.Context, t platformstore.ProvisioningTeam, token, dbName string, claimed bool) error {
+	guard := func(ctx context.Context) error { return w.pf.CheckProvisionLease(ctx, t.ID, dbName, token) }
+	if err := guard(ctx); err != nil {
+		if errors.Is(err, platformstore.ErrNotProvisioning) {
+			return nil // moved on between the claim and here: nothing touched
+		}
+		return err
+	}
+	version := w.schema.Latest()
+	if !claimed {
 		// A rerun after a crash, possibly by an older binary: bring the database forward first.
 		var err error
 		if version, err = w.schema.Migrate(ctx, dbName); err != nil {
@@ -391,17 +505,14 @@ func (w *Worker) ProvisionTeam(ctx context.Context, t platformstore.Provisioning
 	if got, _ := tenant.From(tctx); got.DBName != dbName {
 		return fmt.Errorf("directory says database %q, claim said %q", got.DBName, dbName)
 	}
-	if err := w.seed(tctx, t.OwnerHandle); err != nil {
+	if err := w.seed(tctx, t.OwnerHandle, guard); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
 	lines, err := w.schema.Lines(ctx, dbName)
 	if err != nil {
 		return fmt.Errorf("fingerprint: %w", err)
 	}
-	if err := w.pf.ActivateTeam(ctx, t.ID, version, store.FingerprintOf(lines)); err != nil {
-		if errors.Is(err, platformstore.ErrNotProvisioning) {
-			return nil
-		}
+	if err := w.pf.ActivateTeam(ctx, t.ID, token, version, store.FingerprintOf(lines)); err != nil {
 		return fmt.Errorf("activate: %w", err)
 	}
 	dir.Invalidate(t.ID)

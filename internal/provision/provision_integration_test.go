@@ -175,7 +175,7 @@ func TestSpareClaimSkipLocked(t *testing.T) {
 	defer cancel()
 	e := newEnv(t, ctx)
 	for _, n := range []string{"prvt_aaaaaaa1", "prvt_aaaaaaa2", "prvt_aaaaaaa3"} {
-		if err := e.pf.InsertSpare(ctx, n); err != nil {
+		if err := e.pf.ReserveSpare(ctx, n, "v1", 10, 0); err != nil {
 			t.Fatal(err)
 		}
 		if err := e.pf.MarkSpareReady(ctx, n, "v1", strings.Repeat("a", 64)); err != nil {
@@ -191,7 +191,7 @@ func TestSpareClaimSkipLocked(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got[i], errs[i] = e.pf.ClaimSpare(ctx, id, "v1")
+			got[i], _, errs[i] = e.pf.ClaimSpare(ctx, id, "v1")
 		}()
 	}
 	wg.Wait()
@@ -199,23 +199,161 @@ func TestSpareClaimSkipLocked(t *testing.T) {
 		t.Fatalf("claims %v %v", got, errs)
 	}
 	// A rerun returns the same database; a wrong version finds nothing.
-	if again, err := e.pf.ClaimSpare(ctx, a, "v1"); err != nil || again != got[0] {
-		t.Fatalf("rerun %q %v", again, err)
+	if again, claimed, err := e.pf.ClaimSpare(ctx, a, "v1"); err != nil || again != got[0] || claimed {
+		t.Fatalf("rerun %q %v %v", again, claimed, err)
 	}
 	c := e.team(t, "charlie", "bob", "provisioning")
-	if _, err := e.pf.ClaimSpare(ctx, c, "v2"); !errors.Is(err, platformstore.ErrNoSpare) {
+	if _, _, err := e.pf.ClaimSpare(ctx, c, "v2"); !errors.Is(err, platformstore.ErrNoSpare) {
 		t.Fatalf("wrong version: %v", err)
 	}
 	var fileKey sql.NullString
 	if err := e.pf.DB().Get(&fileKey, `SELECT file_key FROM team WHERE id = ?`, a); err != nil || len(fileKey.String) != 32 {
 		t.Fatalf("file_key %q %v", fileKey.String, err)
 	}
-	if _, err := e.pf.ClaimSpare(ctx, tenant.TeamOneID, "v1"); !errors.Is(err, platformstore.ErrNotProvisioning) {
+	if _, _, err := e.pf.ClaimSpare(ctx, tenant.TeamOneID, "v1"); !errors.Is(err, platformstore.ErrNotProvisioning) {
 		t.Fatalf("claim for a missing team: %v", err)
 	}
 	cnt, err := e.pf.CountSpares(ctx, "v1", time.Now().Add(-time.Hour))
 	if err != nil || cnt.Ready != 1 || cnt.CreatedSince != 3 {
 		t.Fatalf("counts %+v %v", cnt, err)
+	}
+}
+
+// TestProvisionLease: one holder per key; a live lease is not taken, an expired one is; the old
+// holder can neither renew nor release it; guarded writes follow the token (control plane only).
+func TestProvisionLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e := newEnv(t, ctx)
+	key := platformstore.TeamLeaseKey(42)
+	first, ok, err := e.pf.AcquireLease(ctx, key, time.Minute)
+	if err != nil || !ok || len(first) != 32 {
+		t.Fatalf("first %q %v %v", first, ok, err)
+	}
+	if _, ok, err := e.pf.AcquireLease(ctx, key, time.Minute); err != nil || ok {
+		t.Fatalf("second holder got a live lease: %v %v", ok, err)
+	}
+	if err := e.pf.ExtendLease(ctx, key, first, time.Minute); err != nil {
+		t.Fatalf("holder cannot renew: %v", err)
+	}
+	// Expire it: the next worker takes over, the old token is dead.
+	if _, err := e.pf.DB().Exec(`UPDATE provision_lease SET expires_at = UTC_TIMESTAMP(3) - INTERVAL 1 SECOND WHERE lease_key = ?`, key); err != nil {
+		t.Fatal(err)
+	}
+	second, ok, err := e.pf.AcquireLease(ctx, key, time.Minute)
+	if err != nil || !ok || second == first {
+		t.Fatalf("expired lease not re-taken: %q %v %v", second, ok, err)
+	}
+	if err := e.pf.ExtendLease(ctx, key, first, time.Minute); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("old holder renewed: %v", err)
+	}
+	if err := e.pf.ReleaseLease(ctx, key, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := e.pf.AcquireLease(ctx, key, time.Minute); ok {
+		t.Fatal("old holder's release freed the new holder's lease")
+	}
+	if err := e.pf.ReleaseLease(ctx, key, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := e.pf.AcquireLease(ctx, key, time.Minute); !ok {
+		t.Fatal("released lease not free")
+	}
+	if _, ok, err := e.pf.AcquireLease(ctx, "spare-quota", time.Minute); ok || err == nil {
+		t.Fatal("the quota row handed out as a lease")
+	}
+
+	// Activation needs the team's lease token, and the guard sees provisioning + database.
+	tid := e.team(t, "leased", "lena", "provisioning")
+	if _, err := e.pf.DB().Exec(`UPDATE team SET db_name = 'prvt_leased01' WHERE id = ?`, tid); err != nil {
+		t.Fatal(err)
+	}
+	tok, ok, err := e.pf.AcquireLease(ctx, platformstore.TeamLeaseKey(tid), time.Minute)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := e.pf.CheckProvisionLease(ctx, tid, "prvt_leased01", "wrong"); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("guard with a wrong token: %v", err)
+	}
+	if err := e.pf.CheckProvisionLease(ctx, tid, "prvt_other001", tok); !errors.Is(err, platformstore.ErrNotProvisioning) {
+		t.Fatalf("guard with another database: %v", err)
+	}
+	if err := e.pf.CheckProvisionLease(ctx, tid, "prvt_leased01", tok); err != nil {
+		t.Fatalf("guard: %v", err)
+	}
+	if err := e.pf.ActivateTeam(ctx, tid, "wrong", "v1", strings.Repeat("a", 64)); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("activate with a wrong token: %v", err)
+	}
+	if err := e.pf.ActivateTeam(ctx, tid, tok, "v1", strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := e.pf.ActivateTeam(ctx, tid, tok, "v1", strings.Repeat("a", 64)); !errors.Is(err, platformstore.ErrNotProvisioning) {
+		t.Fatalf("second activate: %v", err)
+	}
+	if err := e.pf.CheckProvisionLease(ctx, tid, "prvt_leased01", tok); !errors.Is(err, platformstore.ErrNotProvisioning) {
+		t.Fatalf("guard on an active team: %v", err)
+	}
+	// Schema writes need the database's lease.
+	if err := e.pf.SetTeamSchema(ctx, tid, "prvt_leased01", tok, "v2", ""); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("schema write under the team lease, not the database's: %v", err)
+	}
+	dbTok, ok, err := e.pf.AcquireLease(ctx, platformstore.DBLeaseKey("prvt_leased01"), time.Minute)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := e.pf.SetTeamSchema(ctx, tid, "prvt_leased01", dbTok, "v2", ""); err != nil {
+		t.Fatal(err)
+	}
+	var v string
+	_ = e.pf.DB().Get(&v, `SELECT schema_version FROM team WHERE id = ?`, tid)
+	if v != "v2" {
+		t.Fatalf("schema_version %q", v)
+	}
+}
+
+// TestSpareQuota: the hourly cap is one reservation shared by every caller — eight concurrent
+// reservations under a cap of three get exactly three; failed rows count; the keeper stops at
+// its spare count (control plane only).
+func TestSpareQuota(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	e := newEnv(t, ctx)
+	if err := e.pf.ReserveSpare(ctx, "prvt_failed01", "v1", 3, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pf.MarkSpareFailed(ctx, "prvt_failed01", "boom"); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = e.pf.ReserveSpare(ctx, fmt.Sprintf("prvt_quota%03d", i), "v1", 3, 0)
+		}()
+	}
+	wg.Wait()
+	okN, quotaN := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			okN++
+		case errors.Is(err, platformstore.ErrSpareQuota):
+			quotaN++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if okN != 2 || quotaN != 6 {
+		t.Fatalf("reserved %d, refused %d (cap 3, one failed row already counted)", okN, quotaN)
+	}
+	// The keeper: two creating spares already, keep 2 → enough; keep 5 → the cap still refuses.
+	if err := e.pf.ReserveSpare(ctx, "prvt_keeper01", "v1", 100, 2); !errors.Is(err, platformstore.ErrEnoughSpares) {
+		t.Fatalf("keeper over its count: %v", err)
+	}
+	if err := e.pf.ReserveSpare(ctx, "prvt_keeper01", "v1", 3, 5); !errors.Is(err, platformstore.ErrSpareQuota) {
+		t.Fatalf("keeper past the cap: %v", err)
 	}
 }
 
@@ -306,7 +444,17 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	if _, err := spareDB.Exec(`DELETE FROM gorp_migrations WHERE id = ?`, latest); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.pf.SetSpareSchema(ctx, behind, "previous", refFP); err != nil {
+	if err := e.pf.SetSpareSchema(ctx, behind, "no-lease", "previous", refFP); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("schema write without the lease: %v", err)
+	}
+	tok, ok, err := e.pf.AcquireLease(ctx, platformstore.DBLeaseKey(behind), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("lease %v %v", ok, err)
+	}
+	if err := e.pf.SetSpareSchema(ctx, behind, tok, "previous", refFP); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.pf.ReleaseLease(ctx, platformstore.DBLeaseKey(behind), tok); err != nil {
 		t.Fatal(err)
 	}
 	// Team #1 here is an empty database: the fleet only warns about it (drift), never fails on it.
@@ -369,14 +517,30 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 		t.Fatalf("admins %d supers %d admin %q, owner %q", admins, supers, admin, owner)
 	}
 
-	// Seed rerun is a no-op.
+	// The live team is never scrubbed again: Seed refuses on an active team, and even when the
+	// caller forges the directory status, the lease guard (team not provisioning) stops it before
+	// the first statement. No row changes.
 	before := rowCounts(t, teamDB)
-	if err := provision.Seed(ctxA, ms.DB(), ms.Admin(), owner); err != nil {
-		t.Fatal(err)
+	teamTok, ok, err := e.pf.AcquireLease(ctx, platformstore.TeamLeaseKey(spareTeam), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("team lease %v %v", ok, err)
 	}
+	guard := func(ctx context.Context) error { return e.pf.CheckProvisionLease(ctx, spareTeam, tmA.DBName, teamTok) }
+	if err := provision.Seed(ctxA, ms.DB(), ms.Admin(), owner, guard); err == nil {
+		t.Fatal("seed ran on an active team")
+	}
+	forged := tmA
+	forged.Status = tenant.StatusProvisioning
+	if err := provision.Seed(tenant.With(ctx, forged), ms.DB(), ms.Admin(), owner, guard); !errors.Is(err, platformstore.ErrNotProvisioning) {
+		t.Fatalf("seed on an active team behind a forged status: %v", err)
+	}
+	if err := e.pf.ActivateTeam(ctx, spareTeam, "not-the-token", latest, refFP); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("activate without the lease: %v", err)
+	}
+	_ = e.pf.ReleaseLease(ctx, platformstore.TeamLeaseKey(spareTeam), teamTok)
 	after := rowCounts(t, teamDB)
 	if d := diffCounts(before, after); d != "" {
-		t.Fatalf("seed rerun changed rows: %s", d)
+		t.Fatalf("a refused seed changed rows: %s", d)
 	}
 
 	// No grbpwr text anywhere in the fresh team.
@@ -385,7 +549,7 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	}
 
 	// Seed is refused on team #1, whatever ctx asks.
-	if err := provision.Seed(tenant.With(ctx, tenant.TeamOne(itOne)), ms.DB(), ms.Admin(), "kate"); err == nil {
+	if err := provision.Seed(tenant.With(ctx, tenant.TeamOne(itOne)), ms.DB(), ms.Admin(), "kate", func(context.Context) error { return nil }); err == nil {
 		t.Fatal("seed ran on team #1")
 	}
 

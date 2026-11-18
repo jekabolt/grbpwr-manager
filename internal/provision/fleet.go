@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
 
 // MigrateFleetOnce brings every active / suspended team and every ready spare whose schema_version
 // is not the binary's latest forward, one database at a time, then checks its fingerprint against
 // the reference (G8). Team #1 is never migrated here (store.New does it at boot); it is only
-// fingerprinted and compared. A failure leaves that database behind (its calls answer UNAVAILABLE)
+// fingerprinted and compared. Each database is migrated under its lease (DBLeaseKey), taken in a
+// short control-plane statement, never a transaction held across the migration; a database whose
+// lease another instance holds is skipped this pass. A failure leaves that database behind (its calls answer UNAVAILABLE)
 // and is retried on the next pass.
 func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
 	latest := w.schema.Latest()
@@ -59,50 +62,65 @@ func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// migrateSpare migrates one ready spare under its database lease; held elsewhere = skipped.
 func (w *Worker) migrateSpare(ctx context.Context, dbName string) error {
 	if err := w.allowed(dbName); err != nil {
 		w.log.ErrorContext(ctx, "provision: spare name refused", slog.String("db", dbName), slog.String("err", err.Error()))
 		return err
 	}
-	version, err := w.schema.Migrate(ctx, dbName)
-	if err != nil {
-		w.log.ErrorContext(ctx, "spare_migrate_failed", slog.String("db", dbName), slog.String("err", err.Error()))
-		return err
+	held, err := w.withLease(ctx, platformstore.DBLeaseKey(dbName), func(ctx context.Context, token string) error {
+		version, err := w.schema.Migrate(ctx, dbName)
+		if err != nil {
+			w.log.ErrorContext(ctx, "spare_migrate_failed", slog.String("db", dbName), slog.String("err", err.Error()))
+			return err
+		}
+		lines, err := w.schema.Lines(ctx, dbName)
+		if err != nil {
+			return fmt.Errorf("provision: fingerprint spare %s: %w", dbName, err)
+		}
+		return w.pf.SetSpareSchema(ctx, dbName, token, version, store.FingerprintOf(lines))
+	})
+	if err == nil && !held {
+		w.log.InfoContext(ctx, "provision: spare migrated elsewhere; skipped", slog.String("db", dbName))
 	}
-	lines, err := w.schema.Lines(ctx, dbName)
-	if err != nil {
-		return fmt.Errorf("provision: fingerprint spare %s: %w", dbName, err)
-	}
-	return w.pf.SetSpareSchema(ctx, dbName, version, store.FingerprintOf(lines))
+	return err
 }
 
+// migrateTeam migrates one team database under its lease; held elsewhere = skipped. The schema
+// version is written only while the lease is still this worker's.
 func (w *Worker) migrateTeam(ctx context.Context, id int64, slug, dbName string) error {
 	if err := w.allowed(dbName); err != nil {
 		w.log.ErrorContext(ctx, "team_migrate_failed",
 			slog.Int64("tid", id), slog.String("slug", slug), slog.String("err", "database name refused: "+err.Error()))
 		return err
 	}
-	version, err := w.schema.Migrate(ctx, dbName)
-	if err != nil {
-		w.log.ErrorContext(ctx, "team_migrate_failed",
-			slog.Int64("tid", id), slog.String("slug", slug), slog.String("version", w.schema.Latest()),
-			slog.String("err", err.Error()))
-		return err
+	held, err := w.withLease(ctx, platformstore.DBLeaseKey(dbName), func(ctx context.Context, token string) error {
+		version, err := w.schema.Migrate(ctx, dbName)
+		if err != nil {
+			w.log.ErrorContext(ctx, "team_migrate_failed",
+				slog.Int64("tid", id), slog.String("slug", slug), slog.String("version", w.schema.Latest()),
+				slog.String("err", err.Error()))
+			return err
+		}
+		lines, err := w.schema.Lines(ctx, dbName)
+		if err != nil {
+			// Migrated but not fingerprinted: record the version (the team serves again) without a
+			// fingerprint; the console shows it unknown.
+			w.log.ErrorContext(ctx, "provision: fingerprint team", slog.String("slug", slug), slog.String("err", err.Error()))
+			_ = w.pf.SetTeamSchema(ctx, id, dbName, token, version, "")
+			return err
+		}
+		if err := w.pf.SetTeamSchema(ctx, id, dbName, token, version, store.FingerprintOf(lines)); err != nil {
+			return err
+		}
+		w.log.InfoContext(ctx, "provision: team migrated", slog.String("slug", slug), slog.String("version", version))
+		w.compare(ctx, slug, version, lines)
+		return nil
+	})
+	if err == nil && !held {
+		w.log.InfoContext(ctx, "provision: team migrated elsewhere; skipped", slog.String("slug", slug))
 	}
-	lines, err := w.schema.Lines(ctx, dbName)
-	if err != nil {
-		// Migrated but not fingerprinted: record the version (the team serves again) without a
-		// fingerprint; the next pass of the console shows it unknown.
-		w.log.ErrorContext(ctx, "provision: fingerprint team", slog.String("slug", slug), slog.String("err", err.Error()))
-		_ = w.pf.SetTeamSchema(ctx, id, version, "")
-		return err
-	}
-	if err := w.pf.SetTeamSchema(ctx, id, version, store.FingerprintOf(lines)); err != nil {
-		return err
-	}
-	w.log.InfoContext(ctx, "provision: team migrated", slog.String("slug", slug), slog.String("version", version))
-	w.compare(ctx, slug, version, lines)
-	return nil
+	return err
 }
 
 // checkTeamOne fingerprints team #1 and compares it with the reference (warn only, never fatal).

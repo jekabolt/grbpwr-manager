@@ -160,33 +160,84 @@ type fakePlatform struct {
 	mu           sync.Mutex
 	spares       map[string]*platformstore.Spare
 	teams        map[int64]*fakeTeam
+	leases       map[string]string // key → token
 	createdSince int
 	swept        int
+	tokens       int
 }
 
 func newFakePlatform() *fakePlatform {
-	return &fakePlatform{spares: map[string]*platformstore.Spare{}, teams: map[int64]*fakeTeam{}}
+	return &fakePlatform{spares: map[string]*platformstore.Spare{}, teams: map[int64]*fakeTeam{}, leases: map[string]string{}}
+}
+
+// steal hands key's lease to another worker (as if this one's expired and was taken over).
+func (p *fakePlatform) steal(key string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.leases[key] = "someone-else"
+}
+
+func (p *fakePlatform) holds(key, token string) bool { return token != "" && p.leases[key] == token }
+
+func (p *fakePlatform) AcquireLease(_ context.Context, key string, _ time.Duration) (string, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, taken := p.leases[key]; taken {
+		return "", false, nil
+	}
+	p.tokens++
+	tok := fmt.Sprint("tok", p.tokens)
+	p.leases[key] = tok
+	return tok, true, nil
+}
+func (p *fakePlatform) ExtendLease(_ context.Context, key, token string, _ time.Duration) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.holds(key, token) {
+		return platformstore.ErrLeaseLost
+	}
+	return nil
+}
+func (p *fakePlatform) ReleaseLease(_ context.Context, key, token string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.holds(key, token) {
+		delete(p.leases, key)
+	}
+	return nil
+}
+func (p *fakePlatform) CheckProvisionLease(_ context.Context, id int64, db, token string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.holds(platformstore.TeamLeaseKey(id), token) {
+		return platformstore.ErrLeaseLost
+	}
+	if t := p.teams[id]; t == nil || t.status != "provisioning" || t.db != db {
+		return platformstore.ErrNotProvisioning
+	}
+	return nil
 }
 
 func ns(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
 
-func (p *fakePlatform) CountSpares(_ context.Context, v string, _ time.Time) (platformstore.SpareCounts, error) {
+func (p *fakePlatform) ReserveSpare(_ context.Context, db, v string, perHour, keep int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	c := platformstore.SpareCounts{CreatedSince: p.createdSince}
+	ready, creating := 0, 0
 	for _, s := range p.spares {
 		switch {
 		case s.Status == platformstore.SpareReady && s.SchemaVersion.String == v:
-			c.Ready++
+			ready++
 		case s.Status == platformstore.SpareCreating:
-			c.Creating++
+			creating++
 		}
 	}
-	return c, nil
-}
-func (p *fakePlatform) InsertSpare(_ context.Context, db string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	if keep > 0 && ready+creating >= keep {
+		return platformstore.ErrEnoughSpares
+	}
+	if p.createdSince >= perHour {
+		return platformstore.ErrSpareQuota
+	}
 	p.spares[db] = &platformstore.Spare{DBName: db, Status: platformstore.SpareCreating}
 	p.createdSince++
 	return nil
@@ -204,9 +255,12 @@ func (p *fakePlatform) MarkSpareFailed(_ context.Context, db, _ string) error {
 	p.spares[db].Status = platformstore.SpareFailed
 	return nil
 }
-func (p *fakePlatform) SetSpareSchema(_ context.Context, db, v, fp string) error {
+func (p *fakePlatform) SetSpareSchema(_ context.Context, db, token, v, fp string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.holds(platformstore.DBLeaseKey(db), token) {
+		return platformstore.ErrLeaseLost
+	}
 	s := p.spares[db]
 	s.SchemaVersion, s.SchemaFingerprint = ns(v), ns(fp)
 	return nil
@@ -233,28 +287,31 @@ func (p *fakePlatform) ProvisioningTeams(context.Context, int) ([]platformstore.
 	}
 	return out, nil
 }
-func (p *fakePlatform) ClaimSpare(_ context.Context, id int64, v string) (string, error) {
+func (p *fakePlatform) ClaimSpare(_ context.Context, id int64, v string) (string, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	t := p.teams[id]
 	if t == nil || t.status != "provisioning" {
-		return "", platformstore.ErrNotProvisioning
+		return "", false, platformstore.ErrNotProvisioning
 	}
 	if t.db != "" {
-		return t.db, nil
+		return t.db, false, nil
 	}
 	for name, s := range p.spares {
 		if s.Status == platformstore.SpareReady && s.SchemaVersion.String == v {
 			s.Status = platformstore.SpareClaimed
 			t.db = name
-			return name, nil
+			return name, true, nil
 		}
 	}
-	return "", platformstore.ErrNoSpare
+	return "", false, platformstore.ErrNoSpare
 }
-func (p *fakePlatform) ActivateTeam(_ context.Context, id int64, v, _ string) error {
+func (p *fakePlatform) ActivateTeam(_ context.Context, id int64, token, v, _ string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.holds(platformstore.TeamLeaseKey(id), token) {
+		return platformstore.ErrLeaseLost
+	}
 	t := p.teams[id]
 	if t.status != "provisioning" {
 		return platformstore.ErrNotProvisioning
@@ -262,9 +319,12 @@ func (p *fakePlatform) ActivateTeam(_ context.Context, id int64, v, _ string) er
 	t.status, t.version = "active", v
 	return nil
 }
-func (p *fakePlatform) SetTeamSchema(_ context.Context, id int64, v, _ string) error {
+func (p *fakePlatform) SetTeamSchema(_ context.Context, id int64, db, token, v, _ string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.holds(platformstore.DBLeaseKey(db), token) {
+		return platformstore.ErrLeaseLost
+	}
 	p.teams[id].version = v
 	return nil
 }
@@ -496,5 +556,165 @@ func TestWorkerStartStop(t *testing.T) {
 	stop()
 	if pf.teams[8].status != "active" {
 		t.Fatal("the running worker did not provision the team")
+	}
+}
+
+// A team listed as provisioning, activated by another worker before this one got to it (a stale
+// list row that still carries db_name), is never seeded again: the scrub would wipe live data.
+func TestWorkerStaleRowNeverReseedsActiveTeam(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	w := newWorker(t, pf, sc, 1)
+	seeded := false
+	w.SetSeedForTest(func(context.Context, string) error { seeded = true; return nil })
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "active", owner: "kate", db: "lkb_t_live0000", version: "0477_x.sql"}
+	stale := platformstore.ProvisioningTeam{ID: 7, Slug: "alpha", DBName: ns("lkb_t_live0000"), OwnerHandle: "kate"}
+	_ = w.ProvisionTeam(context.Background(), stale)
+	if seeded || len(sc.migrated) != 0 {
+		t.Fatalf("a live team was touched: seeded=%v migrated=%v", seeded, sc.migrated)
+	}
+}
+
+// The cold path shares the hourly cap with the keeper: a migration that keeps failing creates at
+// most PerHour databases, however many teams wait and however often they retry.
+func TestWorkerColdPathStopsAtHourlyCap(t *testing.T) {
+	pf := newFakePlatform()
+	failing := &failingSchema{fakeSchema: &fakeSchema{latest: "0477_x.sql"}}
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 3}, pf, failing, nopDB{}, nopAdmin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	w.SetNowForTest(func() time.Time { return now })
+	w.SetSeedForTest(func(context.Context, string) error { return nil })
+	for id := int64(10); id < 15; id++ {
+		pf.teams[id] = &fakeTeam{slug: fmt.Sprint("t", id), status: "provisioning", owner: "o"}
+	}
+	for range 10 {
+		_ = w.ClaimOnce(context.Background())
+		now = now.Add(10 * time.Minute) // past every backoff, inside one real hour of rows
+	}
+	if n := len(failing.created); n > 3 {
+		t.Fatalf("%d databases created, cap 3", n)
+	}
+}
+
+// A team whose lease another worker holds is not touched at all.
+func TestWorkerTeamLeaseHeldElsewhereSkips(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	w := newWorker(t, pf, sc, 1)
+	seeded := false
+	w.SetSeedForTest(func(context.Context, string) error { seeded = true; return nil })
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "provisioning", owner: "kate", db: "lkb_t_half0000"}
+	pf.steal(platformstore.TeamLeaseKey(7))
+	if err := w.ClaimOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if seeded || len(sc.migrated) != 0 || pf.teams[7].status != "provisioning" {
+		t.Fatalf("touched under another worker's lease: seeded=%v migrated=%v", seeded, sc.migrated)
+	}
+}
+
+// A worker whose team lease is taken over while it seeds does not activate the team.
+func TestWorkerLostLeaseNeverActivates(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	w := newWorker(t, pf, sc, 1)
+	if err := w.KeepSparesOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "provisioning", owner: "kate"}
+	w.SetSeedForTest(func(context.Context, string) error { pf.steal(platformstore.TeamLeaseKey(7)); return nil })
+	err := w.ClaimOnce(context.Background())
+	if !errors.Is(err, platformstore.ErrLeaseLost) || pf.teams[7].status != "provisioning" {
+		t.Fatalf("err %v status %s", err, pf.teams[7].status)
+	}
+}
+
+// The fleet skips a database another instance is migrating, and a migrator that lost its lease
+// mid-migration does not write the schema version.
+func TestWorkerFleetHonoursDatabaseLease(t *testing.T) {
+	pf := newFakePlatform()
+	sc := &stealingSchema{fakeSchema: &fakeSchema{latest: "0477_x.sql"}, pf: pf, steal: "lkb_t_lost0000"}
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, sc, nopDB{}, nopAdmin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf.teams[2] = &fakeTeam{slug: "held", status: "active", db: "lkb_t_held0000", version: "0476_y.sql"}
+	pf.teams[3] = &fakeTeam{slug: "lost", status: "active", db: "lkb_t_lost0000", version: "0476_y.sql"}
+	pf.teams[4] = &fakeTeam{slug: "free", status: "active", db: "lkb_t_free0000", version: "0476_y.sql"}
+	pf.steal(platformstore.DBLeaseKey("lkb_t_held0000"))
+	if err := w.MigrateFleetOnce(context.Background()); !errors.Is(err, platformstore.ErrLeaseLost) {
+		t.Fatalf("lost lease not reported: %v", err)
+	}
+	if got := fmt.Sprint(sc.migrated); strings.Contains(got, "lkb_t_held0000") {
+		t.Fatalf("migrated a database held elsewhere: %v", sc.migrated)
+	}
+	if pf.teams[2].version != "0476_y.sql" || pf.teams[3].version != "0476_y.sql" || pf.teams[4].version != "0477_x.sql" {
+		t.Fatalf("versions held=%s lost=%s free=%s", pf.teams[2].version, pf.teams[3].version, pf.teams[4].version)
+	}
+}
+
+// stealingSchema hands the lease of one database to another worker while migrating it.
+type stealingSchema struct {
+	*fakeSchema
+	pf    *fakePlatform
+	steal string
+}
+
+func (s *stealingSchema) Migrate(ctx context.Context, db string) (string, error) {
+	if db == s.steal {
+		s.pf.steal(platformstore.DBLeaseKey(db))
+	}
+	return s.fakeSchema.Migrate(ctx, db)
+}
+
+// A lease taken over while its holder works cancels the holder's context (renewal finds it gone).
+func TestWorkerLeaseRenewalStopsWorkOnLoss(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, LeaseTTL: 30 * time.Millisecond}, pf, sc, nopDB{}, nopAdmin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.KeepSparesOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "provisioning", owner: "kate"}
+	cancelled := false
+	w.SetSeedForTest(func(ctx context.Context, _ string) error {
+		pf.steal(platformstore.TeamLeaseKey(7))
+		select {
+		case <-ctx.Done():
+			cancelled = true
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+			return nil
+		}
+	})
+	err = w.ClaimOnce(context.Background())
+	if !cancelled || !errors.Is(err, platformstore.ErrLeaseLost) || pf.teams[7].status != "provisioning" {
+		t.Fatalf("cancelled=%v err=%v status=%s", cancelled, err, pf.teams[7].status)
+	}
+}
+
+// store.SchemaCurrent is the edge's predicate: team #1 always, others only at the latest version.
+func TestSchemaCurrent(t *testing.T) {
+	latest := store.LatestMigrationID()
+	if latest == "" {
+		t.Fatal("no embedded migrations")
+	}
+	cases := []struct {
+		team   tenant.Team
+		latest string
+		want   bool
+	}{
+		{tenant.Team{ID: tenant.TeamOneID}, latest, true},
+		{tenant.Team{ID: 2, SchemaVersion: latest}, latest, true},
+		{tenant.Team{ID: 2, SchemaVersion: "0001_init.sql"}, latest, false},
+		{tenant.Team{ID: 2}, latest, false},
+		{tenant.Team{ID: 2}, "", false},
+	}
+	for _, c := range cases {
+		if got := store.SchemaCurrent(c.team, c.latest); got != c.want {
+			t.Fatalf("SchemaCurrent(%+v, %q) = %v", c.team, c.latest, got)
+		}
 	}
 }

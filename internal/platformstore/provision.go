@@ -74,11 +74,58 @@ FROM spare_db`, version, since.UTC(), since.UTC()).Scan(&c.Ready, &c.Creating, &
 	return c, nil
 }
 
-// InsertSpare records a spare database about to be created (state creating). The row exists before
-// CREATE DATABASE runs, so a crash leaves a visible row, never an unknown database.
-func (s *Store) InsertSpare(ctx context.Context, dbName string) error {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO spare_db (db_name, status, created_at) VALUES (?, 'creating', UTC_TIMESTAMP(3))`, dbName); err != nil {
-		return fmt.Errorf("platformstore: insert spare %s: %w", dbName, err)
+// ErrSpareQuota: the hourly cap on new team databases is spent (every spare_db row created in the
+// last hour counts, failed and claimed ones included).
+var ErrSpareQuota = errors.New("platformstore: hourly database creation cap reached")
+
+// ErrEnoughSpares: enough spares are ready or being created; the keeper has nothing to do.
+var ErrEnoughSpares = errors.New("platformstore: enough spare databases")
+
+// quotaRow is the provision_lease row every reservation locks (0003_provision_lease.sql).
+const quotaRow = "spare-quota"
+
+// ReserveSpare is the only way a spare database comes to exist: in one control-plane transaction,
+// serialised on the quota row, it counts the spare_db rows created in the last hour (every state)
+// and refuses with ErrSpareQuota at perHour; with keep > 0 (the keeper) it also refuses with
+// ErrEnoughSpares when keep spares are ready at version or still being created; otherwise it
+// records dbName in state creating. The row exists before CREATE DATABASE runs, so a crash leaves a
+// visible row, never an unknown database, and the cap counts it.
+func (s *Store) ReserveSpare(ctx context.Context, dbName, version string, perHour, keep int) error {
+	if perHour <= 0 {
+		return ErrSpareQuota
+	}
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("platformstore: reserve spare: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The quota row ships with migration 0003; recreate it if an operator removed it.
+	if _, err := tx.ExecContext(ctx, `INSERT IGNORE INTO provision_lease (lease_key, token, expires_at) VALUES (?, '', '9999-12-31 00:00:00.000')`, quotaRow); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: quota row: %w", err)
+	}
+	var locked string
+	if err := tx.GetContext(ctx, &locked, `SELECT lease_key FROM provision_lease WHERE lease_key = ? FOR UPDATE`, quotaRow); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: lock: %w", err)
+	}
+	var c SpareCounts
+	if err := tx.QueryRowxContext(ctx, `SELECT
+  COALESCE(SUM(status = 'ready' AND schema_version = ?), 0),
+  COALESCE(SUM(status = 'creating' AND created_at >= UTC_TIMESTAMP(3) - INTERVAL 1 HOUR), 0),
+  COALESCE(SUM(created_at >= UTC_TIMESTAMP(3) - INTERVAL 1 HOUR), 0)
+FROM spare_db`, version).Scan(&c.Ready, &c.Creating, &c.CreatedSince); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: count: %w", err)
+	}
+	if keep > 0 && c.Ready+c.Creating >= keep {
+		return ErrEnoughSpares
+	}
+	if c.CreatedSince >= perHour {
+		return ErrSpareQuota
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO spare_db (db_name, status, created_at) VALUES (?, 'creating', UTC_TIMESTAMP(3))`, dbName); err != nil {
+		return fmt.Errorf("platformstore: reserve spare %s: %w", dbName, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: commit: %w", err)
 	}
 	return nil
 }
@@ -108,11 +155,19 @@ func (s *Store) MarkSpareFailed(ctx context.Context, dbName, reason string) erro
 	return nil
 }
 
-// SetSpareSchema records a ready spare's new migration level after the fleet migrator ran.
-func (s *Store) SetSpareSchema(ctx context.Context, dbName, version, fingerprint string) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE spare_db SET schema_version = ?, schema_fingerprint = ? WHERE db_name = ? AND status = 'ready'`,
-		version, fingerprint, dbName); err != nil {
+// SetSpareSchema records a ready spare's new migration level after the fleet migrator ran, only
+// while token holds the lease DBLeaseKey(dbName) (ErrLeaseLost otherwise). A spare claimed
+// meanwhile is left alone: its team records its own level.
+func (s *Store) SetSpareSchema(ctx context.Context, dbName, token, version, fingerprint string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE spare_db s
+JOIN provision_lease l ON l.lease_key = ? AND l.token = ? AND l.expires_at > UTC_TIMESTAMP(3)
+SET s.schema_version = ?, s.schema_fingerprint = ?
+WHERE s.db_name = ? AND s.status = 'ready'`, DBLeaseKey(dbName), token, version, fingerprint, dbName)
+	if err != nil {
 		return fmt.Errorf("platformstore: spare %s schema: %w", dbName, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return s.leaseHeld(ctx, DBLeaseKey(dbName), token)
 	}
 	return nil
 }
@@ -147,13 +202,14 @@ const claimCandidates = 20
 
 // ClaimSpare gives a provisioning team the oldest ready spare at version, in one control-plane
 // transaction: the spare row is taken FOR UPDATE SKIP LOCKED (two workers never take the same
-// spare), marked claimed, and the team gets db_name and a fresh 128-bit file_key. A team that
-// already has its database gets it back unchanged (a rerun after a crash). ErrNoSpare: nothing
-// ready at that version; ErrNotProvisioning: the team is gone or moved on.
-func (s *Store) ClaimSpare(ctx context.Context, teamID int64, version string) (string, error) {
+// spare), marked claimed, and the team gets db_name and a fresh 128-bit file_key; claimed is true.
+// A team that already has its database gets it back unchanged with claimed false (a rerun after a
+// crash). The team row is read under lock here, never from an earlier listing. ErrNoSpare:
+// nothing ready at that version; ErrNotProvisioning: the team is gone or moved on.
+func (s *Store) ClaimSpare(ctx context.Context, teamID int64, version string) (dbName string, claimed bool, err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return "", fmt.Errorf("platformstore: claim spare: begin: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -163,15 +219,15 @@ func (s *Store) ClaimSpare(ctx context.Context, teamID int64, version string) (s
 	}
 	if err := tx.GetContext(ctx, &cur, `SELECT status, db_name FROM team WHERE id = ? FOR UPDATE`, teamID); err != nil {
 		if isNoRows(err) {
-			return "", ErrNotProvisioning
+			return "", false, ErrNotProvisioning
 		}
-		return "", fmt.Errorf("platformstore: claim spare: read team: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: read team: %w", err)
 	}
 	if cur.Status != string(tenant.StatusProvisioning) {
-		return "", ErrNotProvisioning
+		return "", false, ErrNotProvisioning
 	}
 	if cur.DBName.Valid && cur.DBName.String != "" {
-		return cur.DBName.String, nil
+		return cur.DBName.String, false, nil
 	}
 	// Two steps: spare_db has no (status, schema_version, created_at) index, so a locking
 	// "ORDER BY created_at LIMIT 1" sorts after reading and locks every candidate, and a second
@@ -180,9 +236,8 @@ func (s *Store) ClaimSpare(ctx context.Context, teamID int64, version string) (s
 	var candidates []string
 	if err := tx.SelectContext(ctx, &candidates, `SELECT db_name FROM spare_db
 WHERE status = 'ready' AND schema_version = ? ORDER BY created_at, db_name LIMIT ?`, version, claimCandidates); err != nil {
-		return "", fmt.Errorf("platformstore: claim spare: candidates: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: candidates: %w", err)
 	}
-	var dbName string
 	for _, c := range candidates {
 		err = tx.GetContext(ctx, &dbName, `SELECT db_name FROM spare_db
 WHERE db_name = ? AND status = 'ready' AND schema_version = ? FOR UPDATE SKIP LOCKED`, c, version)
@@ -190,56 +245,156 @@ WHERE db_name = ? AND status = 'ready' AND schema_version = ? FOR UPDATE SKIP LO
 			break
 		}
 		if !isNoRows(err) {
-			return "", fmt.Errorf("platformstore: claim spare: pick: %w", err)
+			return "", false, fmt.Errorf("platformstore: claim spare: pick: %w", err)
 		}
 	}
 	if dbName == "" {
-		return "", ErrNoSpare
+		return "", false, ErrNoSpare
 	}
 	key, err := randomHex(16)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE spare_db SET status = 'claimed', claimed_team_id = ?, claimed_at = UTC_TIMESTAMP(3) WHERE db_name = ?`,
 		teamID, dbName); err != nil {
-		return "", fmt.Errorf("platformstore: claim spare: mark: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: mark: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE team SET db_name = ?, file_key = ? WHERE id = ?`, dbName, key, teamID); err != nil {
-		return "", fmt.Errorf("platformstore: claim spare: attach: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: attach: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("platformstore: claim spare: commit: %w", err)
+		return "", false, fmt.Errorf("platformstore: claim spare: commit: %w", err)
 	}
 	s.dir.Invalidate(teamID)
-	return dbName, nil
+	return dbName, true, nil
 }
 
-// ActivateTeam ends provisioning: status active, activated_at, schema version and fingerprint.
-// ErrNotProvisioning when the team is no longer provisioning (activated already: a rerun is fine).
-func (s *Store) ActivateTeam(ctx context.Context, teamID int64, version, fingerprint string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE team SET status = 'active', activated_at = UTC_TIMESTAMP(3),
-  schema_version = ?, schema_fingerprint = ?
-WHERE id = ? AND status = 'provisioning' AND db_name IS NOT NULL`, version, fingerprint, teamID)
+// ActivateTeam ends provisioning: status active, activated_at, schema version and fingerprint, in
+// one statement that also requires token to hold TeamLeaseKey(teamID). ErrLeaseLost: the lease
+// expired or passed to another worker; ErrNotProvisioning: the team is no longer provisioning.
+func (s *Store) ActivateTeam(ctx context.Context, teamID int64, token, version, fingerprint string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE team t
+JOIN provision_lease l ON l.lease_key = ? AND l.token = ? AND l.expires_at > UTC_TIMESTAMP(3)
+SET t.status = 'active', t.activated_at = UTC_TIMESTAMP(3), t.schema_version = ?, t.schema_fingerprint = ?
+WHERE t.id = ? AND t.status = 'provisioning' AND t.db_name IS NOT NULL`, TeamLeaseKey(teamID), token, version, fingerprint, teamID)
 	if err != nil {
 		return fmt.Errorf("platformstore: activate team %d: %w", teamID, err)
 	}
 	s.dir.Invalidate(teamID)
 	if n, _ := res.RowsAffected(); n != 1 {
+		if err := s.leaseHeld(ctx, TeamLeaseKey(teamID), token); err != nil {
+			return err
+		}
 		return ErrNotProvisioning
 	}
 	return nil
 }
 
-// SetTeamSchema records a team's migration level and schema fingerprint.
-func (s *Store) SetTeamSchema(ctx context.Context, teamID int64, version, fingerprint string) error {
+// SetTeamSchema records a team's migration level and schema fingerprint ("" = unknown), only while
+// token holds DBLeaseKey(dbName) and the team still points at dbName (ErrLeaseLost otherwise).
+func (s *Store) SetTeamSchema(ctx context.Context, teamID int64, dbName, token, version, fingerprint string) error {
 	var fp any
 	if fingerprint != "" {
 		fp = fingerprint
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE team SET schema_version = ?, schema_fingerprint = ? WHERE id = ?`, version, fp, teamID); err != nil {
+	res, err := s.db.ExecContext(ctx, `UPDATE team t
+JOIN provision_lease l ON l.lease_key = ? AND l.token = ? AND l.expires_at > UTC_TIMESTAMP(3)
+SET t.schema_version = ?, t.schema_fingerprint = ?
+WHERE t.id = ? AND t.db_name = ?`, DBLeaseKey(dbName), token, version, fp, teamID, dbName)
+	if err != nil {
 		return fmt.Errorf("platformstore: team %d schema: %w", teamID, err)
 	}
 	s.dir.Invalidate(teamID)
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Nothing changed: either the values were already there (fine) or the lease is gone.
+		return s.leaseHeld(ctx, DBLeaseKey(dbName), token)
+	}
+	return nil
+}
+
+// ─── leases ────────────────────────────────────────────────────────────────────────────────────
+
+// ErrLeaseLost: the token no longer holds the lease (expired, released, or taken by another worker).
+var ErrLeaseLost = errors.New("platformstore: provisioning lease not held")
+
+// TeamLeaseKey is the lease a worker holds while it claims, seeds and activates one team.
+func TeamLeaseKey(teamID int64) string { return fmt.Sprintf("team:%d", teamID) }
+
+// DBLeaseKey is the lease a worker holds while it migrates (or seeds) one team or spare database.
+func DBLeaseKey(dbName string) string { return "db:" + dbName }
+
+// AcquireLease takes key for ttl in one statement: a new key is inserted, an expired one is taken
+// over, a live one is left to its holder (ok false). The token returned proves ownership to the
+// guarded writes, ExtendLease and ReleaseLease.
+func (s *Store) AcquireLease(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error) {
+	if key == quotaRow {
+		return "", false, fmt.Errorf("platformstore: %q is not a lease", key)
+	}
+	token, err = randomHex(16)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO provision_lease (lease_key, token, expires_at)
+VALUES (?, ?, UTC_TIMESTAMP(3) + INTERVAL ? MICROSECOND) AS n
+ON DUPLICATE KEY UPDATE
+  token = IF(provision_lease.expires_at <= UTC_TIMESTAMP(3), n.token, provision_lease.token),
+  expires_at = IF(provision_lease.expires_at <= UTC_TIMESTAMP(3), n.expires_at, provision_lease.expires_at)`,
+		key, token, ttl.Microseconds()); err != nil {
+		return "", false, fmt.Errorf("platformstore: acquire lease %s: %w", key, err)
+	}
+	var holder string
+	if err := s.db.GetContext(ctx, &holder, `SELECT token FROM provision_lease WHERE lease_key = ?`, key); err != nil {
+		return "", false, fmt.Errorf("platformstore: acquire lease %s: read: %w", key, err)
+	}
+	if holder != token {
+		return "", false, nil
+	}
+	return token, true, nil
+}
+
+// ExtendLease pushes a held lease's expiry to now + ttl; ErrLeaseLost when token no longer holds it.
+func (s *Store) ExtendLease(ctx context.Context, key, token string, ttl time.Duration) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE provision_lease SET expires_at = UTC_TIMESTAMP(3) + INTERVAL ? MICROSECOND
+WHERE lease_key = ? AND token = ? AND expires_at > UTC_TIMESTAMP(3)`, ttl.Microseconds(), key, token); err != nil {
+		return fmt.Errorf("platformstore: extend lease %s: %w", key, err)
+	}
+	return s.leaseHeld(ctx, key, token)
+}
+
+// ReleaseLease gives a held lease back; a lease held by another token is left alone.
+func (s *Store) ReleaseLease(ctx context.Context, key, token string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM provision_lease WHERE lease_key = ? AND token = ?`, key, token); err != nil {
+		return fmt.Errorf("platformstore: release lease %s: %w", key, err)
+	}
+	return nil
+}
+
+// CheckProvisionLease is the seed's guard: nil only while token holds TeamLeaseKey(teamID), the
+// team is provisioning and its database is dbName. ErrLeaseLost / ErrNotProvisioning otherwise.
+func (s *Store) CheckProvisionLease(ctx context.Context, teamID int64, dbName, token string) error {
+	if err := s.leaseHeld(ctx, TeamLeaseKey(teamID), token); err != nil {
+		return err
+	}
+	var n int
+	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM team WHERE id = ? AND status = 'provisioning' AND db_name = ?`, teamID, dbName); err != nil {
+		return fmt.Errorf("platformstore: check team %d: %w", teamID, err)
+	}
+	if n != 1 {
+		return ErrNotProvisioning
+	}
+	return nil
+}
+
+// leaseHeld is nil while token holds key unexpired, ErrLeaseLost otherwise.
+func (s *Store) leaseHeld(ctx context.Context, key, token string) error {
+	var n int
+	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM provision_lease
+WHERE lease_key = ? AND token = ? AND token <> '' AND expires_at > UTC_TIMESTAMP(3)`, key, token); err != nil {
+		return fmt.Errorf("platformstore: lease %s: %w", key, err)
+	}
+	if n != 1 {
+		return ErrLeaseLost
+	}
 	return nil
 }
 
