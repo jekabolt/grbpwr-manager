@@ -1,0 +1,346 @@
+package bucket
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+)
+
+// READ-ONLY MANAGED HOSTS (teams wave, lane B8).
+//
+// A copied team database keeps file urls on the host of the installation it was copied from (team
+// grbpwr in lekalo: files.grbpwr.com, bucket grbpwr). That installation is still live and owns those
+// objects. BUCKET_S3_READONLY_HOSTS names such hosts. Two questions, two answers:
+//
+//   - «is this url ours to READ» (URLReadable): our own host, or a read-only host — the latter only
+//     for team #1 (teams mode) / always with teams mode off. A read-only object lives in ANOTHER
+//     bucket, so it is read over https from its public host, never by key from our bucket.
+//   - «is this url ours to CHANGE» (URLChangeable / ManagedObjectKeyFromURL): our own host only, and
+//     never a read-only host even when it is also configured as ours. A delete aimed at a read-only
+//     host is refused before any network call with one WARN line, and the caller goes on as if the
+//     object were not ours.
+//
+// Empty list = nothing here changes a byte of today's behaviour.
+
+// ErrReadOnlyHost marks a change (delete / overwrite / move) aimed at a read-only host.
+var ErrReadOnlyHost = errors.New("bucket: url is on a read-only host")
+
+// errNotReadable marks a read-only host url read by a team that may not read it.
+var errNotReadable = errors.New("bucket: url is on a read-only host this team may not read")
+
+// legacyReadMaxBytes bounds one read from a read-only host; callers apply their own smaller caps.
+const legacyReadMaxBytes = MaxArchiveObjectBytes
+
+// ReadOnlyHosts returns the configured read-only hosts, lower-case, in order, without duplicates.
+func ReadOnlyHosts(c *Config) []string {
+	if c == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(c.ReadOnlyHosts, ",") {
+		h := configuredURLHost(part)
+		if h == "" {
+			continue
+		}
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	return out
+}
+
+// ValidateReadOnlyHosts checks the raw env value: each entry is a bare host or an https origin
+// with no path, query or userinfo. Empty is valid (today's behaviour).
+func ValidateReadOnlyHosts(raw string) error {
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		s := part
+		if !strings.Contains(s, "://") {
+			s = "https://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+			strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("bucket read-only host %q must be a host or an https origin without a path", part)
+		}
+	}
+	return nil
+}
+
+// ValidateReadOnly is the boot check of the read-only configuration (config.Validate and New both
+// run it). The host list must be well-formed and must not name any of our own writable hosts: an
+// upload goes to OUR bucket, so a read-only host that is also ours would be written to. The optional
+// bucket list (BUCKET_S3_READONLY_BUCKETS, `endpoint/bucket`) closes the case where the read-only
+// CDN host differs from the S3 host: our write endpoint + bucket must not be one of them.
+// Both variables empty = nil, nothing checked (today's behaviour).
+func ValidateReadOnly(c *Config) error {
+	if c == nil {
+		return nil
+	}
+	if err := ValidateReadOnlyHosts(c.ReadOnlyHosts); err != nil {
+		return fmt.Errorf("BUCKET_S3_READONLY_HOSTS: %w", err)
+	}
+	if ro := ReadOnlyHosts(c); len(ro) > 0 {
+		managed := map[string]struct{}{}
+		for _, h := range ManagedHosts(c) {
+			managed[h] = struct{}{}
+		}
+		for _, h := range ro {
+			if _, ok := managed[h]; ok {
+				return fmt.Errorf("BUCKET_S3_READONLY_HOSTS names %q, which is also a writable host of this "+
+					"server (BUCKET_SUBDOMAIN_ENDPOINT / BUCKET_S3_ENDPOINT + bucket): uploads would land there", h)
+			}
+		}
+	}
+	buckets, err := readOnlyBuckets(c.ReadOnlyBuckets)
+	if err != nil {
+		return err
+	}
+	if len(buckets) == 0 {
+		return nil
+	}
+	endpoint := configuredURLHost(c.S3Endpoint)
+	own := endpoint + "/" + strings.ToLower(strings.TrimSpace(c.S3BucketName))
+	for _, b := range buckets {
+		if b == own {
+			return fmt.Errorf("BUCKET_S3_READONLY_BUCKETS names %q, which is this server's write bucket "+
+				"(BUCKET_S3_ENDPOINT + BUCKET_S3_BUCKET_NAME): uploads would land there", b)
+		}
+	}
+	return nil
+}
+
+// readOnlyBuckets parses BUCKET_S3_READONLY_BUCKETS: comma-separated `endpoint/bucket` pairs, an
+// optional https:// in front, case-folded. Empty = none.
+func readOnlyBuckets(raw string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		s := strings.Trim(strings.TrimPrefix(strings.ToLower(part), "https://"), "/")
+		endpoint, name, ok := strings.Cut(s, "/")
+		if !ok || endpoint == "" || name == "" || strings.Contains(name, "/") ||
+			strings.ContainsAny(s, "@?#\\ \t") {
+			return nil, fmt.Errorf("BUCKET_S3_READONLY_BUCKETS entry %q must be endpoint/bucket", part)
+		}
+		out = append(out, canonicalHost("https", endpoint)+"/"+name)
+	}
+	return out, nil
+}
+
+func (c *Config) isReadOnlyHost(host string) bool {
+	if c == nil || strings.TrimSpace(c.ReadOnlyHosts) == "" {
+		return false
+	}
+	host = canonicalHost("https", host)
+	for _, h := range ReadOnlyHosts(c) {
+		if h == host {
+			return true
+		}
+	}
+	return false
+}
+
+// readOnlyHonoured: the read-only list belongs to team #1. With teams mode off every request is
+// team #1 (a context with no team is a background job of the single installation).
+func (c *Config) readOnlyHonoured(ctx context.Context) bool {
+	if t, ok := tenant.From(ctx); ok {
+		return t.ID == tenant.TeamOneID
+	}
+	return !c.TeamsMode
+}
+
+// readOnlyURL parses raw and reports whether it is an https url on a read-only host.
+func (c *Config) readOnlyURL(raw string) (*url.URL, bool) {
+	if c == nil || strings.TrimSpace(c.ReadOnlyHosts) == "" {
+		return nil, false
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return nil, false
+	}
+	return u, c.isReadOnlyHost(canonicalHost(u.Scheme, u.Host))
+}
+
+// URLChangeable answers «may this installation delete / overwrite / move the object behind raw»:
+// only on our own host, never on a read-only one.
+func URLChangeable(c *Config, raw string) bool {
+	_, err := ManagedObjectKeyFromURL(c, raw)
+	return err == nil
+}
+
+// URLReadable answers «may the team in ctx read the object behind raw as one of its files»: our own
+// host, or a read-only host when the list is honoured for this team.
+func URLReadable(ctx context.Context, c *Config, raw string) bool {
+	if _, ok := c.readOnlyURL(raw); ok {
+		return c.readOnlyHonoured(ctx)
+	}
+	return URLChangeable(c, raw)
+}
+
+// OpenStoredURL opens the object behind a url stored on a row (archive export, crop, design reads).
+// A read-only host url is read from that host (team #1 only); any other url keeps today's path:
+// the key parsed from the url, read from our bucket through GetManagedObject's segment gate.
+func (b *Bucket) OpenStoredURL(ctx context.Context, rawURL string) (io.ReadCloser, int64, error) {
+	if u, ok := b.Config.readOnlyURL(rawURL); ok {
+		return b.openReadOnly(ctx, u)
+	}
+	key, err := ObjectKeyFromStoredURL(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	return b.GetManagedObject(ctx, key)
+}
+
+// OpenManagedURL is the host-checked reader (AI inline pictures): our own host by key, a read-only
+// host over https (team #1 only), anything else refused before any network call.
+func (b *Bucket) OpenManagedURL(ctx context.Context, rawURL string) (io.ReadCloser, int64, error) {
+	if u, ok := b.Config.readOnlyURL(rawURL); ok {
+		return b.openReadOnly(ctx, u)
+	}
+	key, err := ManagedObjectKeyFromURL(b.Config, rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	return b.GetManagedObject(ctx, key)
+}
+
+// ManagedObjectGetter is the by-key reader every stored-url reader already holds.
+type ManagedObjectGetter interface {
+	GetManagedObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error)
+}
+
+type storedURLOpener interface {
+	OpenStoredURL(ctx context.Context, rawURL string) (io.ReadCloser, int64, error)
+}
+
+// OpenStoredObject is OpenStoredURL for a caller that holds the bucket behind an interface. A reader
+// that is not a *Bucket (a test fake) keeps today's path: key from the url, GetManagedObject.
+func OpenStoredObject(ctx context.Context, objects ManagedObjectGetter, rawURL string) (io.ReadCloser, int64, error) {
+	if o, ok := objects.(storedURLOpener); ok {
+		return o.OpenStoredURL(ctx, rawURL)
+	}
+	key, err := ObjectKeyFromStoredURL(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	return objects.GetManagedObject(ctx, key)
+}
+
+// PatternObjectSource answers «where does the pattern object behind rawURL live» for the tokenized
+// pattern path: "" = our own bucket (every url that is not on a read-only host — exactly today's
+// rule), a lower-case read-only host = that host's public objects. ok=false: the url is on a
+// read-only host this team may not read, so it is not one of its pattern objects at all. With the
+// list empty this is always ("", true) and makes no call of any kind.
+func (b *Bucket) PatternObjectSource(ctx context.Context, rawURL string) (string, bool) {
+	if b == nil || strings.TrimSpace(b.Config.ReadOnlyHosts) == "" {
+		return "", true
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", true
+	}
+	host := canonicalHost(u.Scheme, u.Host)
+	if !b.Config.isReadOnlyHost(host) {
+		return "", true
+	}
+	if !b.Config.readOnlyHonoured(ctx) {
+		return "", false
+	}
+	return host, true
+}
+
+// ReadOnlyPatternURL is the link of a pattern object recorded as living on read-only host `host`:
+// its public url there, built without any network call and without looking at our own bucket —
+// ownership comes from the recorded host, never from whether a key exists somewhere. Refused when
+// the host is no longer configured, the team may not read it, or the key is not a pattern key.
+func (b *Bucket) ReadOnlyPatternURL(ctx context.Context, host, objectKey string) (string, time.Time, error) {
+	host = canonicalHost("https", host)
+	if host == "" || !b.Config.isReadOnlyHost(host) {
+		return "", time.Time{}, fmt.Errorf("pattern object host %q is not a configured read-only host", host)
+	}
+	if !b.Config.readOnlyHonoured(ctx) {
+		return "", time.Time{}, fmt.Errorf("%w: %s", errNotReadable, host)
+	}
+	key := strings.Trim(objectKey, "/")
+	if !isManagedKeyInSegment(key, patternObjectPathSegment) || !isAllowedReadOnlyKey(key) {
+		return "", time.Time{}, fmt.Errorf("%w: %q on read-only host %s", ErrManagedKeyNotAllowed, key, host)
+	}
+	return (&url.URL{Scheme: "https", Host: host, Path: "/" + key}).String(), time.Now().UTC().Add(presignWindow), nil
+}
+
+// isAllowedReadOnlyKey: a read-only read takes the public objects an export needs (media, patterns)
+// and nothing private: no files-library, archives or imports, no empty or dot segments.
+func isAllowedReadOnlyKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, seg := range strings.Split(key, "/") {
+		switch seg {
+		case "", ".", "..", libraryFolder, ArchiveSegment, ImportSegment:
+			return false
+		}
+	}
+	return true
+}
+
+// legacyClient is the https client of read-only reads: the injected one (tests) or a fresh client on
+// the shared default transport. Redirects are refused either way — a redirect would be a fetch of a
+// host nobody configured.
+func (b *Bucket) legacyClient() *http.Client {
+	c := &http.Client{Timeout: 5 * time.Minute}
+	if b.legacyHTTP != nil {
+		cp := *b.legacyHTTP
+		c = &cp
+	}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+func (b *Bucket) openReadOnly(ctx context.Context, u *url.URL) (io.ReadCloser, int64, error) {
+	if !b.Config.readOnlyHonoured(ctx) {
+		return nil, 0, fmt.Errorf("%w: %s", errNotReadable, u.Host)
+	}
+	key := strings.Trim(u.Path, "/")
+	if !isAllowedReadOnlyKey(key) {
+		return nil, 0, fmt.Errorf("%w: %q on read-only host %s", ErrManagedKeyNotAllowed, key, u.Host)
+	}
+	target := (&url.URL{Scheme: "https", Host: u.Host, Path: "/" + key}).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read-only object %q: %w", key, err)
+	}
+	resp, err := b.legacyClient().Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read-only object %q on %s: %w", key, u.Host, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("read-only object %q on %s: status %d", key, u.Host, resp.StatusCode)
+	}
+	if resp.ContentLength > legacyReadMaxBytes {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("%w: read-only object %q is %d bytes", ErrArchiveObjectTooLarge, key, resp.ContentLength)
+	}
+	return readCloser{Reader: newCapReader(resp.Body, legacyReadMaxBytes), Closer: resp.Body}, resp.ContentLength, nil
+}
+
+type readCloser struct {
+	io.Reader
+	io.Closer
+}

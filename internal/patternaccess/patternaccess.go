@@ -37,6 +37,18 @@ type Presigner interface {
 	PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error)
 }
 
+// ReadOnlyPatterns is the read-only-host half of the file store (lane B8, BUCKET_S3_READONLY_HOSTS):
+// which host a stored pattern url's object lives on, and the link of an object on a read-only host.
+// *bucket.Bucket implements it; a Presigner that does not (test fakes) means «no read-only hosts» —
+// every object is in our own bucket, exactly today's behaviour.
+type ReadOnlyPatterns interface {
+	// PatternObjectSource: "" = our own bucket, else the read-only host; ok=false = not one of this
+	// team's pattern objects (a read-only host this team may not read).
+	PatternObjectSource(ctx context.Context, rawURL string) (host string, ok bool)
+	// ReadOnlyPatternURL links an object recorded on read-only host `host`, with no network call.
+	ReadOnlyPatternURL(ctx context.Context, host, objectKey string) (string, time.Time, error)
+}
+
 // CardManifests is the narrow slice of dependency.TechCards the viewer manifest needs
 // (see viewer.go). dependency.TechCards satisfies it.
 type CardManifests interface {
@@ -76,6 +88,8 @@ type Service struct {
 	cards   CardManifests
 	minter  *patterntoken.Minter
 	presign Presigner
+	// readOnly is presign's ReadOnlyPatterns side, nil when it has none (see ReadOnlyPatterns).
+	readOnly ReadOnlyPatterns
 
 	// viewerBaseURL is this backend's external origin (PatternToken.PublicBaseURL,
 	// trailing slash trimmed) — the per-file /api/p urls inside a viewer manifest are
@@ -127,6 +141,9 @@ func New(objects dependency.PatternObjects, cards CardManifests, presign Presign
 		cardStats:       teamStats[int]{},
 		stopCh:          make(chan struct{}),
 	}
+	if ro, ok := presign.(ReadOnlyPatterns); ok {
+		s.readOnly = ro
+	}
 	go s.flushLoop()
 	return s, nil
 }
@@ -140,6 +157,24 @@ func (s *Service) Stop() {
 		s.ipLimiter.Stop()
 		s.viewerIPLimiter.Stop()
 	})
+}
+
+// patternRef names the access-row identity of a stored pattern url: its key plus the host the object
+// lives on ("" = our own bucket). ok=false: not a managed pattern object of this team — no token.
+func (s *Service) patternRef(ctx context.Context, rawURL, filename string) (entity.PatternObjectRef, bool) {
+	k, ok := storeutil.PatternObjectKey(rawURL)
+	if !ok {
+		return entity.PatternObjectRef{}, false
+	}
+	ref := entity.PatternObjectRef{Key: k, Filename: filename}
+	if s.readOnly != nil {
+		host, ok := s.readOnly.PatternObjectSource(ctx, rawURL)
+		if !ok {
+			return entity.PatternObjectRef{}, false
+		}
+		ref.SourceHost = host
+	}
+	return ref, true
 }
 
 func (s *Service) flushLoop() {
@@ -218,8 +253,8 @@ func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, p
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(ps))
 	for _, p := range ps {
-		if k, ok := storeutil.PatternObjectKey(p.GetUrl()); ok {
-			refs = append(refs, entity.PatternObjectRef{Key: k, Filename: p.GetFilename()})
+		if ref, ok := s.patternRef(ctx, p.GetUrl(), p.GetFilename()); ok {
+			refs = append(refs, ref)
 		}
 	}
 	rows, err := s.objects.EnsureByKeys(ctx, refs)
@@ -227,16 +262,16 @@ func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, p
 		slog.Default().ErrorContext(ctx, "fill pattern urls failed", slog.String("err", err.Error()))
 		return
 	}
-	s.applyTechCardURLs(baseURL, rows, ps)
+	s.applyTechCardURLs(ctx, baseURL, rows, ps)
 }
 
-func (s *Service) applyTechCardURLs(baseURL string, rows map[string]entity.PatternObjectAccess, ps []*pb_common.TechCardSizePattern) {
+func (s *Service) applyTechCardURLs(ctx context.Context, baseURL string, rows map[entity.PatternObjectID]entity.PatternObjectAccess, ps []*pb_common.TechCardSizePattern) {
 	for _, p := range ps {
-		k, ok := storeutil.PatternObjectKey(p.GetUrl())
+		ref, ok := s.patternRef(ctx, p.GetUrl(), "")
 		if !ok {
 			continue
 		}
-		row, ok := rows[k]
+		row, ok := rows[ref.ID()]
 		if !ok {
 			continue
 		}
@@ -264,8 +299,8 @@ func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL strin
 	refs := make([]entity.PatternObjectRef, 0, len(groups))
 	for _, ps := range groups {
 		for _, p := range ps {
-			if k, ok := storeutil.PatternObjectKey(p.GetUrl()); ok {
-				refs = append(refs, entity.PatternObjectRef{Key: k, Filename: p.GetFilename()})
+			if ref, ok := s.patternRef(ctx, p.GetUrl(), p.GetFilename()); ok {
+				refs = append(refs, ref)
 			}
 		}
 	}
@@ -279,11 +314,11 @@ func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL strin
 	}
 	for _, ps := range groups {
 		for _, p := range ps {
-			k, ok := storeutil.PatternObjectKey(p.GetUrl())
+			ref, ok := s.patternRef(ctx, p.GetUrl(), "")
 			if !ok {
 				continue
 			}
-			row, ok := rows[k]
+			row, ok := rows[ref.ID()]
 			if !ok {
 				continue
 			}
@@ -366,7 +401,19 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	download := r.URL.Query().Get("dl") == "1"
-	signed, expiresAt, err := s.presign.PresignPatternObject(ctx, row.ObjectKey, download, row.Filename.String)
+	var signed string
+	var expiresAt time.Time
+	if row.SourceHost != "" {
+		// Recorded on a read-only host (a row copied from another installation): linked straight
+		// there, never via our bucket — the same key in our bucket is a different object.
+		if s.readOnly == nil {
+			notFound("read-only host not served")
+			return
+		}
+		signed, expiresAt, err = s.readOnly.ReadOnlyPatternURL(ctx, row.SourceHost, row.ObjectKey)
+	} else {
+		signed, expiresAt, err = s.presign.PresignPatternObject(ctx, row.ObjectKey, download, row.Filename.String)
+	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "pattern presign failed", slog.String("err", err.Error()))
 		notFound("presign error")

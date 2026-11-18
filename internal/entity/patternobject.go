@@ -13,6 +13,10 @@ import (
 type PatternObjectAccess struct {
 	Id        int64  `db:"id"`
 	ObjectKey string `db:"object_key"`
+	// SourceHost is where the object lives: "" = our own bucket (every row written before 0477, and
+	// every object this server uploaded); a host = a read-only host's public objects (a row copied
+	// from another installation, BUCKET_S3_READONLY_HOSTS). Part of the identity with ObjectKey.
+	SourceHost string `db:"source_host"`
 	// Filename is the upload's human name, used for the download disposition (the object
 	// key itself is a timestamp plus random hex). NULL for legacy rows.
 	Filename     sql.NullString `db:"filename"`
@@ -29,6 +33,25 @@ type PatternObjectAccess struct {
 type PatternObjectRef struct {
 	Key      string
 	Filename string
+	// SourceHost: "" = our own bucket, else the read-only host the url was on (see
+	// PatternObjectAccess.SourceHost).
+	SourceHost string
+}
+
+// ID is the ref's identity in the access table.
+func (r PatternObjectRef) ID() PatternObjectID {
+	return PatternObjectID{SourceHost: r.SourceHost, Key: r.Key}
+}
+
+// PatternObjectID identifies one access row: the same key on two hosts is two objects.
+type PatternObjectID struct {
+	SourceHost string
+	Key        string
+}
+
+// ID is the row's identity (see PatternObjectID).
+func (a PatternObjectAccess) ID() PatternObjectID {
+	return PatternObjectID{SourceHost: a.SourceHost, Key: a.ObjectKey}
 }
 
 // TechCardPatternViewerAccess is the card-level twin of PatternObjectAccess (0288): the

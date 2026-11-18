@@ -211,7 +211,7 @@ func (s *Server) designObjectHoldsBytes(ctx context.Context, rawURL string, want
 	if err != nil {
 		return false, err
 	}
-	rc, size, err := s.bucket.GetManagedObject(ctx, key)
+	rc, size, err := bucket.OpenStoredObject(ctx, s.bucket, rawURL)
 	if err != nil {
 		return false, fmt.Errorf("object %q: %w", key, err)
 	}

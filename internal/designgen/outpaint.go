@@ -422,7 +422,7 @@ func fetchStoredBytes(ctx context.Context, objects objectFetcher, rawURL string)
 	if err != nil {
 		return nil, err
 	}
-	rc, size, err := objects.GetManagedObject(ctx, key)
+	rc, size, err := bucket.OpenStoredObject(ctx, objects, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("object %q: %w", key, err)
 	}

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -101,6 +102,10 @@ type Config struct {
 	HTTPTimeout time.Duration
 	Objects     ObjectFetcher
 	KeyFromURL  func(rawURL string) (string, error)
+	// OpenURL, when set, replaces KeyFromURL + Objects: the bucket's host-checked url reader
+	// (bucket.Bucket.OpenManagedURL — our own host by key, a read-only host of team #1 over https,
+	// anything else refused before any network call).
+	OpenURL func(ctx context.Context, rawURL string) (io.ReadCloser, int64, error)
 }
 
 // Client is the Gemini chat transport. A nil *Client is valid and permanently disabled.
@@ -315,11 +320,11 @@ func overCeiling(n int) *aiprov.CallError {
 // CodeBadRequest (ours, not the provider's — and not retryable, so a bucket hiccup never feeds the
 // PROVIDER's breaker), one that does not fit is CodeTooLarge.
 func (c *Client) readObject(ctx context.Context, n int, rawURL string, room int64) (string, []byte, error) {
-	if c.cfg.KeyFromURL == nil || c.cfg.Objects == nil {
+	if c.cfg.OpenURL == nil && (c.cfg.KeyFromURL == nil || c.cfg.Objects == nil) {
 		return "", nil, fail(aiprov.CodeBadRequest, 0, false, false,
 			fmt.Errorf("%s: picture %d: no media reader is configured for https pictures", provider, n))
 	}
-	key, err := c.cfg.KeyFromURL(rawURL)
+	key, err := c.urlKey(rawURL)
 	if err != nil {
 		return "", nil, fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("%s: picture %d is not our media: %w", provider, n, err))
 	}
@@ -328,7 +333,7 @@ func (c *Client) readObject(ctx context.Context, n int, rawURL string, room int6
 		return "", nil, fail(aiprov.CodeBadRequest, 0, false, false,
 			fmt.Errorf("%s: picture %d: %q is not a png, jpeg, webp or gif", provider, n, truncate(path.Base(key), 60)))
 	}
-	rc, size, err := c.cfg.Objects.GetManagedObject(ctx, key)
+	rc, size, err := c.openObject(ctx, rawURL, key)
 	if err != nil {
 		return "", nil, fail(aiprov.CodeBadRequest, 0, false, false, fmt.Errorf("%s: picture %d could not be read: %w", provider, n, err))
 	}
@@ -766,4 +771,28 @@ func truncate(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n]) + "…"
+}
+
+// urlKey is the key a picture is named by: the host-checked parser, or — with OpenURL — the url's
+// path (OpenURL does the host check itself, before any network call).
+func (c *Client) urlKey(rawURL string) (string, error) {
+	if c.cfg.OpenURL == nil {
+		return c.cfg.KeyFromURL(rawURL)
+	}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", err
+	}
+	key := strings.Trim(u.Path, "/")
+	if key == "" {
+		return "", fmt.Errorf("url %q carries no key", rawURL)
+	}
+	return key, nil
+}
+
+func (c *Client) openObject(ctx context.Context, rawURL, key string) (io.ReadCloser, int64, error) {
+	if c.cfg.OpenURL != nil {
+		return c.cfg.OpenURL(ctx, rawURL)
+	}
+	return c.cfg.Objects.GetManagedObject(ctx, key)
 }
