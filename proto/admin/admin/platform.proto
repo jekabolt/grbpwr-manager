@@ -64,6 +64,14 @@ service PlatformService {
       body: "*"
     };
   }
+
+  // EnterTeam issues a hand-off code that opens the team's workspace for the operator.
+  rpc EnterTeam(EnterTeamRequest) returns (EnterTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/enter"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
@@ -166,3 +174,11 @@ message DeclineTeamRequest {
 }
 
 message DeclineTeamResponse {}
+
+message EnterTeamRequest {
+  string team_slug = 1;
+}
+
+message EnterTeamResponse {
+  string handoff_code = 1;
+}
