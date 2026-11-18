@@ -15,7 +15,7 @@ import (
 
 // A saved native Join has two existing lines and one independently minted result line.
 // The caller binds their block names to the verified native review, before entering this
-// read-only stage. This type is intentionally private until the guarded document RPC is wired.
+// read-only stage, which is shared by native authorization and the pre-commit delta check.
 type joinLineGroup struct {
 	lineKey    string
 	blockNames []string
@@ -42,8 +42,8 @@ func blockedJoin(detail string) error {
 	return fmt.Errorf("saved native join: %s: %w", detail, entity.ErrTechCardSavedAssemblyUnsupported)
 }
 
-// The UpdateTechCardTx caller must already hold the shared card row FOR UPDATE. No locked
-// write path uses this prerequisite yet. It neither mints a receipt nor mutates the card.
+// The UpdateTechCardTx caller must already hold the card row FOR UPDATE. This predicate
+// reads all stored references before the ordinary document writer may retire either piece.
 func readJoinRetirementUnderLock(ctx context.Context, rep dependency.Repository, want joinRetirement) (*joinRetirementRows, error) {
 	if err := validateSavedAssemblySnapshotRequest(entity.SavedAssemblySnapshotRequest{
 		ExpectedRow: want.row, Profile: entity.SavedAssemblySnapshotCompleteSourceV1,
@@ -291,7 +291,7 @@ func plainJoinSourcePiece(p entity.TechCardPiece) bool {
 	if p.PiecesPerGarment != 1 || !p.CutSymmetry.Valid || p.CutSymmetry.String != string(entity.PieceCutSymmetryIdentical) {
 		return false
 	}
-	allowed := entity.TechCardPiece{Id: p.Id, LineKey: p.LineKey, Name: p.Name, PiecesPerGarment: 1, CutSymmetry: p.CutSymmetry}
+	allowed := entity.TechCardPiece{Grainline: "lengthwise", Id: p.Id, LineKey: p.LineKey, Name: p.Name, PiecesPerGarment: 1, CutSymmetry: p.CutSymmetry}
 	if len(p.Materials) == 0 {
 		p.Materials = nil
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/jpk"
@@ -222,7 +223,11 @@ func TestGuardedPieceRenameGatewayMySQL(t *testing.T) {
 
 func newGuardedRenameGateway(t *testing.T, ctx context.Context, repository *store.MYSQLStore) *httptest.Server {
 	t.Helper()
-	adminServer, err := admin.New(repository, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	return newGuardedPatternGateway(t, ctx, repository, nil)
+}
+func newGuardedPatternGateway(t *testing.T, ctx context.Context, repository *store.MYSQLStore, files dependency.FileStore) *httptest.Server {
+	t.Helper()
+	adminServer, err := admin.New(repository, files, nil, nil, nil, nil, nil, nil, nil, nil,
 		entity.LabelAddress{}, "", "", jpk.Taxpayer{}, decimal.Zero)
 	require.NoError(t, err)
 	t.Cleanup(func() { adminServer.StopRevalidation(context.Background()) })

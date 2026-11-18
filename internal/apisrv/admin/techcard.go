@@ -885,7 +885,12 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	}
 	var tc *entity.TechCardInsert
 	var err error
-	if rename := req.GetGuardedPieceRename(); rename != nil {
+	if join := req.GetGuardedPieceJoin(); join != nil {
+		if req.GetTechCard() != nil || req.GetGuardedPieceRename() != nil || snapshotReason != "" || saveSessionID != "" {
+			return nil, status.Error(codes.InvalidArgument, "send the guarded Join by itself")
+		}
+		tc, err = s.prepareGuardedNativePieceJoin(ctx, int(req.Id), int(req.ExpectedLockVersion), join)
+	} else if rename := req.GetGuardedPieceRename(); rename != nil {
 		if req.GetTechCard() != nil || snapshotReason != "" || saveSessionID != "" {
 			return nil, status.Error(codes.InvalidArgument, "send a guarded rename by itself")
 		}
@@ -904,6 +909,14 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
 	if err != nil {
+		if req.GetGuardedPieceJoin() != nil {
+			if errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+				return nil, status.Error(codes.Aborted, "saved Assembly binding changed")
+			}
+			if errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
+				return nil, status.Error(codes.FailedPrecondition, "saved Join no longer matches the reviewed document and files")
+			}
+		}
 		return nil, s.techCardWriteError(ctx, err)
 	}
 	s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)

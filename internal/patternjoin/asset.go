@@ -19,26 +19,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 type ObjectStore interface {
 	GetManagedObject(context.Context, string) (io.ReadCloser, int64, error)
 }
-type Asset struct {
-	URL    string
-	Size   int64
-	SHA256 string
-}
-type DirectedEdge struct{ Curve, Start, End string }
-type Selection struct {
-	FixedInterval, MovingInterval        DirectedEdge
-	CardID                               int
-	FabricPurpose, BOMLineKey, SizeToken string
-	SizeID                               int
-	Fixed, Moving, Result                string
-	FixedEdge, MovingEdge                int
-	TranslateX, TranslateY               int64 // millionths of a millimetre, the ordinary writer precision
-}
+type Asset = entity.JoinPatternAsset
+type DirectedEdge = entity.JoinDirectedEdge
+type Selection = entity.JoinBoundarySelection
 
 // Binding identifies the two exact objects and native blocks, without authorizing a card write.
 type Binding struct {

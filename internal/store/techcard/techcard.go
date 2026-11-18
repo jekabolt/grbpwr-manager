@@ -507,13 +507,20 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// cannot pass the card-row lock, and build the blob from this transaction's state. Direct store
 	// callers that supplied SnapshotJSON keep their existing path and version validation below.
 	var guardedRenameBefore *entity.TechCard
-	if tc.BuildSnapshotFromLockedCard != nil || tc.GuardedPieceRename != nil {
+	var join *lockedNativeJoin
+	if tc.BuildSnapshotFromLockedCard != nil || tc.GuardedPieceRename != nil || tc.GuardedPieceJoin != nil {
 		locked, err := rep.TechCards().GetTechCardById(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload locked tech card for snapshot: %w", err)
 		}
 		if locked == nil {
 			return nil, fmt.Errorf("locked tech card %d snapshot reload returned nil", id)
+		}
+		if tc.GuardedPieceJoin != nil {
+			join, err = prepareLockedNativeJoin(ctx, rep, locked, tc)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if tc.GuardedPieceRename != nil {
 			if err := verifyGuardedPieceRenameUnderLock(ctx, rep.DB(), id, locked, tc.GuardedPieceRename); err != nil {
@@ -916,12 +923,16 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if err := bumpTechCardAssemblyClock(ctx, rep.DB(), id); err != nil {
 		return nil, err
 	}
-	if guardedRenameBefore != nil {
+	if guardedRenameBefore != nil || join != nil {
 		after, err := rep.TechCards().GetTechCardById(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("verify guarded piece rename before commit: %w", err)
 		}
-		if !matchesGuardedPieceRenameResult(guardedRenameBefore, after, tc.GuardedPieceRename) {
+		if join != nil {
+			if err := join.verify(after); err != nil {
+				return nil, err
+			}
+		} else if !matchesGuardedPieceRenameResult(guardedRenameBefore, after, tc.GuardedPieceRename) {
 			return nil, entity.ErrTechCardPieceRenameProtected
 		}
 	}

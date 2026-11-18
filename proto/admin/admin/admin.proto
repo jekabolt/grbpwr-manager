@@ -10189,9 +10189,38 @@ message UpdateTechCardRequest {
   // Name-only Workbench edit. Send without tech_card so an older server cannot execute a
   // full document rewrite after ignoring this field.
   GuardedZeroOperationPieceRename guarded_piece_rename = 6;
+  GuardedNativePieceJoin guarded_piece_join = 7;
 }
 
 // Pins a display name change to a current zero-operation card and exact saved DXF row.
+// Explicit, single-size saved native boundary Join. The server constructs the document delta.
+message GuardedNativePieceJoin {
+  message Boundary {
+    string piece_line_key = 1;
+    string piece_identity = 2;
+    string curve_id = 3;
+    string start_vertex_id = 4;
+    string end_vertex_id = 5;
+  }
+  TechCardSavedPatternRowIdentity expected_row = 1;
+  string expected_assembly_revision = 2;
+  string expected_complete_source_sha256 = 3;
+  Boundary fixed = 4;
+  Boundary moving = 5;
+  string result_line_key = 6;
+  string result_identity = 7;
+  string fabric_purpose = 8;
+  string bom_line_key = 9;
+  int32 size_id = 10;
+  string size_token = 11;
+  sint64 translate_x_millionths_mm = 12;
+  sint64 translate_y_millionths_mm = 13;
+  string reviewed_url = 14;
+  int64 reviewed_size_bytes = 15;
+  string reviewed_sha256 = 16;
+  string reviewed_filename = 17;
+}
+
 message GuardedZeroOperationPieceRename {
   string piece_line_key = 1;
   string expected_name = 2;

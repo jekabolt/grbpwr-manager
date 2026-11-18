@@ -13,14 +13,7 @@ import (
 
 // Document names the identities the store must independently re-read under the ordinary
 // UpdateTechCard lock. A valid native signature does not establish that they still exist.
-type Document struct {
-	Row                                        entity.SavedPatternRowIdentity
-	AssemblyRevision, CompleteSourceSHA256     string
-	FixedLineKey, MovingLineKey, ResultLineKey string
-}
-
-// CheckSavedDocument is injected by the server, within its existing card-row transaction.
-// Its concrete store owner reads the complete Assembly snapshot and both exact alias groups.
+type Document = entity.JoinPatternDocument
 type CheckSavedDocument func(context.Context, Document, Selection) error
 
 type Lineage struct {

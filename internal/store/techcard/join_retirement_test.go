@@ -35,7 +35,7 @@ func joinFixture(t *testing.T) (*entity.TechCard, joinRetirement) {
 	const moving = "01JABCDEFGHJKMNPQRSTVWXYZE"
 	for i, name := range []string{"FP", "BP"} {
 		k := []string{fixed, moving}[i]
-		card.Pieces = append(card.Pieces, entity.TechCardPiece{Id: i + 51, LineKey: k, Name: name, PiecesPerGarment: 1, CutSymmetry: sql.NullString{Valid: true, String: "identical"}})
+		card.Pieces = append(card.Pieces, entity.TechCardPiece{Id: i + 51, LineKey: k, Name: name, Grainline: "lengthwise", PiecesPerGarment: 1, CutSymmetry: sql.NullString{Valid: true, String: "identical"}})
 		card.PieceDxfAliases = append(card.PieceDxfAliases, entity.TechCardPieceDxfAlias{PieceId: i + 51, PieceLineKey: k, FabricPurpose: "main", BlockName: name})
 	}
 	card.GarmentLabels = []entity.TechCardGarmentLabel{{LineKey: joinLabel, Key: "brand"}}

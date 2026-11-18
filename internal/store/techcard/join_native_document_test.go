@@ -103,7 +103,7 @@ func TestSignedNativeLineageAtOrdinaryDocumentLock(t *testing.T) {
 				nativeEdge := func(e edge) patternjoin.DirectedEdge {
 					return patternjoin.DirectedEdge{Curve: e.SourceCurveID, Start: e.StartVertexID, End: e.EndVertexID}
 				}
-				picked := patternjoin.Selection{FixedInterval: nativeEdge(intent.Fixed), MovingInterval: nativeEdge(intent.Moving), CardID: card.Id, FabricPurpose: "main", BOMLineKey: completeSourceMainBOM, SizeToken: intent.SizeToken, SizeID: 7, Fixed: intent.Fixed.PieceID, Moving: intent.Moving.PieceID, Result: intent.NewIdentity, FixedEdge: 1, MovingEdge: 3, TranslateX: 1e6 * intent.TranslateMovingMm.X, TranslateY: 1e6 * intent.TranslateMovingMm.Y}
+				picked := patternjoin.Selection{FixedInterval: nativeEdge(intent.Fixed), MovingInterval: nativeEdge(intent.Moving), CardID: card.Id, FabricPurpose: "main", BOMLineKey: completeSourceMainBOM, SizeToken: intent.SizeToken, SizeID: 4, Fixed: intent.Fixed.PieceID, Moving: intent.Moving.PieceID, Result: intent.NewIdentity, FixedEdge: 1, MovingEdge: 3, TranslateX: 1e6 * intent.TranslateMovingMm.X, TranslateY: 1e6 * intent.TranslateMovingMm.Y}
 				j.row.URL, j.row.SizeBytes, j.row.SHA256 = a.URL, a.Size, a.SHA256
 				for i := range card.Patterns {
 					p := &card.Patterns[i]
