@@ -216,6 +216,8 @@ message SignUpRequest {
   string password = 2;
   string team_name = 3;
   string team_slug = 4;
+  // terms_accepted must be true for a new account; the server refuses otherwise.
+  bool terms_accepted = 5;
 }
 
 message SignUpResponse {}
@@ -312,6 +314,8 @@ message AcceptInviteRequest {
   string password = 2;
   // handle is the person's name inside the team when the invited email has no account yet.
   string handle = 3;
+  // terms_accepted must be true for a new account; the server refuses otherwise.
+  bool terms_accepted = 4;
 }
 
 message AcceptInviteResponse {
