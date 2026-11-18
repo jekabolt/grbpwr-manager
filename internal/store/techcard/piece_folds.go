@@ -20,7 +20,8 @@ import (
 // the fingerprint: it is the seams' fingerprint over the fold's ONE piece, recomputed on every read.
 //
 // KEYED, PARTIAL UPSERT; NO lock_version BUMP; the card row is taken FOR UPDATE first and left
-// unchanged; a released card refuses. seq is unique per (piece, size_key) over the stored list —
+// unchanged; a released card refuses. Fold edits advance the separate saved Assembly revision.
+// seq is unique per (piece, size_key) over the stored list —
 // checked after the write inside the same transaction, so a reorder that swaps two seqs passes.
 
 // pieceFoldRow is one tech_card_piece_fold row as scanned. JSON columns are scanned as bytes.
@@ -132,6 +133,9 @@ func (s *Store) UpsertTechCardPieceFolds(ctx context.Context, in entity.TechCard
 		if err := writeTechCardPieceFoldsTx(ctx, db, in.TechCardId, in.Folds, in.By, pieceFoldWriteOpts{}); err != nil {
 			return err
 		}
+		if err := bumpTechCardAssemblyClock(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
 		// The echo is read in the same transaction. Assigned, never appended — txFunc may retry.
 		list, err := listTechCardPieceFolds(ctx, db, in.TechCardId)
 		if err != nil {
@@ -175,6 +179,11 @@ func (s *Store) ReplaceTechCardPieceFolds(ctx context.Context, in entity.TechCar
 		// This helper writes every row before judging the result-wide seq, count and step-order rules.
 		if err := writeTechCardPieceFoldsTx(ctx, db, in.TechCardId, in.Folds, in.By, pieceFoldWriteOpts{}); err != nil {
 			return err
+		}
+		if n > 0 || len(in.Folds) > 0 {
+			if err := bumpTechCardAssemblyClock(ctx, db, in.TechCardId); err != nil {
+				return err
+			}
 		}
 		list, err := listTechCardPieceFolds(ctx, db, in.TechCardId)
 		if err != nil {
@@ -463,6 +472,11 @@ func (s *Store) DeleteTechCardPieceFolds(ctx context.Context, techCardID int, fo
 		n, err := deleteTechCardPieceFoldsTx(ctx, db, techCardID, keys)
 		if err != nil {
 			return err
+		}
+		if n > 0 {
+			if err := bumpTechCardAssemblyClock(ctx, db, techCardID); err != nil {
+				return err
+			}
 		}
 		list, err := listTechCardPieceFolds(ctx, db, techCardID)
 		if err != nil {
