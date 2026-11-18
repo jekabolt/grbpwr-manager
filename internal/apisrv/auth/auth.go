@@ -14,18 +14,17 @@ import (
 	"log/slog"
 
 	"github.com/go-chi/jwtauth/v5"
-	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
-	"github.com/jekabolt/grbpwr-manager/internal/observability"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"golang.org/x/sync/singleflight"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -59,6 +58,8 @@ type Server struct {
 	auth.UnimplementedAuthServiceServer
 	// platform is the control plane in teams mode (platform.go); zero = teams mode off.
 	platform platformHandle
+	// edge is the tenant binder (edge.go); nil = single-tenant chain.
+	edge Edge
 
 	adminRepository dependency.Admin
 	pwhash          *pwhash.PasswordHasher
@@ -486,6 +487,20 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 	s.InvalidateAdminAccount(username)
+	// Teams mode: team #1 admins sign in through the control plane too (EnsureTeamOne made a
+	// platform_user per admins row), so the new hash goes there as well. A missing platform user
+	// is not an error: the admins row is the source of truth for the legacy admin.
+	if st := s.platform.store; st != nil {
+		if err := st.SetPasswordHashByHandle(ctx, username, pwHashNew); err != nil {
+			if errors.Is(err, platformstore.ErrUserNotFound) {
+				slog.Default().WarnContext(ctx, "change password: no platform user for the admin",
+					slog.String("username", username))
+			} else {
+				slog.Default().ErrorContext(ctx, "change password: control plane hash not updated",
+					slog.String("username", username), slog.String("err", err.Error()))
+			}
+		}
+	}
 	return &auth.ChangePasswordResponse{
 		AuthToken: token,
 	}, nil
@@ -496,39 +511,61 @@ type errorMessage struct {
 	Error string `json:"error"`
 }
 
-// WithAuth middleware checks if the user is authenticated.
-
+// WithAuth authenticates an admin request without authorizing it: the token verifies, its team
+// resolves (teams mode) and its account is enabled. It guards /statusz and the grpc-gateway mount
+// /api/admin — there the gateway calls the gRPC server over loopback, where
+// UnaryAdminAuthInterceptor runs the whole chain (status, origin, session, feature, RBAC).
 func (s *Server) WithAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer ")
-		sub, err := jwt.VerifyTokenWithExpectations(s.JwtAuth, token, s.jwtExpectations)
-		if err == nil {
-			err = s.checkAdminAccountState(r.Context(), sub)
-		}
-		if err != nil {
+		if err := s.authenticate(r.Context(), token); err != nil {
 			// Return a constant message to the (anonymous) caller; the raw jwx error
 			// distinguishes expired vs bad-signature vs audience-mismatch and is an
 			// oracle for probers. Keep the detail server-side.
 			slog.Default().WarnContext(r.Context(), "auth request rejected", slog.String("err", err.Error()))
-			errMsg := errorMessage{Error: "unauthorized"}
-
-			// Set content type to JSON
 			w.Header().Set("Content-Type", "application/json")
 			if status.Code(err) == codes.Unavailable {
 				w.WriteHeader(http.StatusServiceUnavailable)
 			} else {
 				w.WriteHeader(http.StatusUnauthorized)
 			}
-
-			// Write the JSON error message
-			if err := json.NewEncoder(w).Encode(errMsg); err != nil {
+			if err := json.NewEncoder(w).Encode(errorMessage{Error: "unauthorized"}); err != nil {
 				slog.Default().Error("failed to encode auth error response", slog.String("err", err.Error()))
 			}
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authenticate is WithAuth's check: a legacy token (team #1) or, in teams mode, a team token whose
+// team exists; then the account state in that team.
+func (s *Server) authenticate(ctx context.Context, token string) error {
+	claims, err := jwt.VerifyTeamToken(s.JwtAuth, token, s.jwtExpectations)
+	if err != nil {
+		return err
+	}
+	tid := int64(1)
+	if !claims.Legacy {
+		if !s.teamsMode() || claims.Audience != jwt.AudTeam {
+			return status.Error(codes.Unauthenticated, "not a team token")
+		}
+		tid = claims.TeamID
+	}
+	if s.edge != nil {
+		team, err := s.edge.TeamByID(ctx, tid)
+		if err != nil {
+			if errors.Is(err, tenant.ErrNotFound) {
+				return status.Error(codes.Unauthenticated, "team not found")
+			}
+			return status.Error(codes.Unavailable, "team unavailable")
+		}
+		if team.Status == tenant.StatusDeleted {
+			return status.Error(codes.Unauthenticated, "team deleted")
+		}
+		ctx = tenant.With(ctx, team)
+	}
+	return s.checkAdminAccountState(ctx, claims.Handle)
 }
 
 // GetTokenMetadata returns the token from grpc metadata context.
@@ -601,7 +638,9 @@ const adminServicePrefix = rbac.MethodPrefix
 
 // InvalidateAdminAccount evicts one account from the authentication caches. Admin account
 // mutations call this after the database write succeeds, so the next request must read the new
-// existence/disabled state instead of waiting for the normal cache window.
+// existence/disabled state instead of waiting for the normal cache window. The caches are keyed by
+// (team, username); the account is evicted for every team, because the caller does not say which
+// team's admins table it changed and a needless miss costs one lookup.
 func (s *Server) InvalidateAdminAccount(username string) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if username == "" {
@@ -614,31 +653,47 @@ func (s *Server) InvalidateAdminAccount(username string) {
 	if s.adminStateGeneration == nil {
 		s.adminStateGeneration = make(map[string]uint64)
 	}
-	delete(s.adminStates, username)
-	s.adminStateGeneration[username]++
-	// Forget while the state mutex is held: a request arriving after invalidation cannot join
-	// an older flight and receive the state that flight read before the mutation.
+	for key := range s.adminStates {
+		if accountKeyUser(key) == username {
+			delete(s.adminStates, key)
+			// Forget while the state mutex is held: a request arriving after invalidation cannot
+			// join an older flight and receive the state that flight read before the mutation.
+			s.adminStateFlight.Forget(key)
+		}
+	}
 	s.adminStateFlight.Forget(username)
+	// The generation is per username (all teams), so a lookup of any team that raced this
+	// invalidation cannot put the old state back.
+	s.adminStateGeneration[username]++
 	s.adminStateMu.Unlock()
-	s.adminIDs.Delete(username)
+	s.adminIDs.Range(func(k, _ any) bool {
+		if key, ok := k.(string); ok && accountKeyUser(key) == username {
+			s.adminIDs.Delete(k)
+		}
+		return true
+	})
 }
 
 // checkAdminAccountState verifies that a token subject still names an enabled account. Tokens
 // without a subject predate account-backed admin auth (master/legacy) and remain valid.
+//
+// The state is per team: ctx carries the team whose admins table is read (tenant.With), and the
+// cache key is (team, username) (accountKey).
 func (s *Server) checkAdminAccountState(ctx context.Context, username string) error {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if username == "" {
 		return nil
 	}
-	if state, ok := s.cachedAdminAccountState(username); ok {
+	key := accountKey(ctx, username)
+	if state, ok := s.cachedAdminAccountState(key); ok {
 		return adminAccountStateError(state)
 	}
 
-	v, err, _ := s.adminStateFlight.Do(username, func() (any, error) {
-		if state, ok := s.cachedAdminAccountState(username); ok {
+	v, err, _ := s.adminStateFlight.Do(key, func() (any, error) {
+		if state, ok := s.cachedAdminAccountState(key); ok {
 			return state, nil
 		}
-		return s.lookupAdminAccountState(ctx, username)
+		return s.lookupAdminAccountState(ctx, key, username)
 	})
 	if err != nil {
 		return err
@@ -646,22 +701,22 @@ func (s *Server) checkAdminAccountState(ctx context.Context, username string) er
 	return adminAccountStateError(v.(adminAccountStateEntry))
 }
 
-func (s *Server) cachedAdminAccountState(username string) (adminAccountStateEntry, bool) {
+func (s *Server) cachedAdminAccountState(key string) (adminAccountStateEntry, bool) {
 	now := s.clockNow()
 	s.adminStateMu.Lock()
 	defer s.adminStateMu.Unlock()
-	state, ok := s.adminStates[username]
+	state, ok := s.adminStates[key]
 	return state, ok && now.Before(state.expires)
 }
 
-func (s *Server) adminAccountStateSnapshot(username string) (adminAccountStateEntry, bool, uint64) {
+func (s *Server) adminAccountStateSnapshot(key, username string) (adminAccountStateEntry, bool, uint64) {
 	s.adminStateMu.Lock()
 	defer s.adminStateMu.Unlock()
-	state, ok := s.adminStates[username]
+	state, ok := s.adminStates[key]
 	return state, ok, s.adminStateGeneration[username]
 }
 
-func (s *Server) storeAdminAccountState(username string, generation uint64, state adminAccountStateEntry) bool {
+func (s *Server) storeAdminAccountState(key, username string, generation uint64, state adminAccountStateEntry) bool {
 	s.adminStateMu.Lock()
 	defer s.adminStateMu.Unlock()
 	if s.adminStateGeneration[username] != generation {
@@ -670,12 +725,12 @@ func (s *Server) storeAdminAccountState(username string, generation uint64, stat
 	if s.adminStates == nil {
 		s.adminStates = make(map[string]adminAccountStateEntry)
 	}
-	s.adminStates[username] = state
+	s.adminStates[key] = state
 	return true
 }
 
-func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (adminAccountStateEntry, error) {
-	previous, hadPrevious, generation := s.adminAccountStateSnapshot(username)
+func (s *Server) lookupAdminAccountState(ctx context.Context, key, username string) (adminAccountStateEntry, error) {
+	previous, hadPrevious, generation := s.adminAccountStateSnapshot(key, username)
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminAccountLookupTimeout)
 	defer cancel()
 
@@ -687,7 +742,7 @@ func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (
 			if previous.expires.After(previous.staleUntil) {
 				previous.expires = previous.staleUntil
 			}
-			s.storeAdminAccountState(username, generation, previous)
+			s.storeAdminAccountState(key, username, generation, previous)
 			if previous.exists && !previous.disabled {
 				slog.Default().WarnContext(ctx, "admin account state lookup failed; using recently verified state",
 					slog.String("username", username),
@@ -714,10 +769,10 @@ func (s *Server) lookupAdminAccountState(ctx context.Context, username string) (
 		expires:    now.Add(s.adminAccountStateTTL()),
 		staleUntil: now.Add(s.adminAccountStateStaleWindow()),
 	}
-	stored := s.storeAdminAccountState(username, generation, state)
+	stored := s.storeAdminAccountState(key, username, generation, state)
 	if state.exists && stored {
 		id := account.Id
-		s.adminIDs.Store(username, adminIDEntry{id: &id, expires: now.Add(s.adminIDTTL)})
+		s.adminIDs.Store(key, adminIDEntry{id: &id, expires: now.Add(s.adminIDTTL)})
 	}
 	if !state.exists {
 		slog.Default().WarnContext(ctx, "admin token subject no longer exists",
@@ -752,53 +807,6 @@ func adminAccountStateError(state adminAccountStateEntry) error {
 	return nil
 }
 
-// UnaryAdminAuthInterceptor returns an interceptor that authenticates every admin
-// RPC via its JWT, verifies that its subject still names an enabled account, and
-// authorizes it against the token's embedded permissions. Tokens minted before
-// RBAC carry no permission claims and are treated as full access (legacy). The
-// resolved subject and authorization are placed in context.
-func (s *Server) UnaryAdminAuthInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if !strings.HasPrefix(info.FullMethod, adminServicePrefix) {
-			return handler(ctx, req)
-		}
-		token, err := GetTokenMetadata(ctx)
-		if err != nil {
-			return nil, status.Error(codes.Unauthenticated, "unauthorized")
-		}
-		sub, super, permStrs, legacy, err := jwt.VerifyAdminToken(s.JwtAuth, token, s.jwtExpectations)
-		if err != nil {
-			// Log the raw verification error server-side; return a constant so the
-			// jwx failure stage is not disclosed to the caller.
-			slog.Default().WarnContext(ctx, "invalid admin auth token", slog.String("err", err.Error()))
-			return nil, status.Error(codes.Unauthenticated, "unauthorized")
-		}
-		if err := s.checkAdminAccountState(ctx, sub); err != nil {
-			return nil, err
-		}
-		perms := rbac.ParsePermissions(permStrs)
-		if !rbac.Authorize(info.FullMethod, legacy, super, perms) {
-			slog.Default().WarnContext(ctx, "admin authorization denied",
-				slog.String("username", sub),
-				slog.String("method", info.FullMethod),
-			)
-			return nil, status.Errorf(codes.PermissionDenied, "insufficient permissions for %s", info.FullMethod)
-		}
-		if sub != "" {
-			ctx = PutAdminUsername(ctx, sub)
-			// WHO a provider call is made for — the AI spend ledger's actor. The username is what
-			// design_run.author already stores; the id survives a rename. A failed id lookup never
-			// fails the RPC: the actor then carries the username alone.
-			adminID := s.adminIDFor(ctx, sub)
-			ctx = aiprov.WithActor(ctx, aiprov.Actor{Username: sub, AdminID: adminID})
-			// The same admin on the call's Sentry hub, by admins.id only (a no-op without SENTRY_DSN).
-			observability.SetAdmin(ctx, adminID)
-		}
-		ctx = putAdminAuthz(ctx, AdminAuthz{Legacy: legacy, Super: super, Perms: perms})
-		return handler(ctx, req)
-	}
-}
-
 // adminIDFor returns username's admins.id for the AI actor, nil when it is not known. One lookup per
 // username per adminIDCacheTTL: the answer is cached, and so is a failure (no such admin — a deleted
 // account, a legacy token's subject — or a DB error), which is logged once per window instead of on
@@ -814,21 +822,22 @@ func (s *Server) adminIDFor(ctx context.Context, username string) *int {
 	if s.adminRepository == nil {
 		return nil
 	}
-	if id, ok := s.cachedAdminID(username); ok {
+	key := accountKey(ctx, username)
+	if id, ok := s.cachedAdminID(key); ok {
 		return id
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	v, _, _ := s.adminIDFlight.Do(username, func() (any, error) {
+	v, _, _ := s.adminIDFlight.Do(key, func() (any, error) {
 		return s.lookupAdminID(ctx, username), nil
 	})
 	return copyIntPtr(v.(*int))
 }
 
-// cachedAdminID is the cached answer for username while its window lasts.
-func (s *Server) cachedAdminID(username string) (*int, bool) {
-	v, ok := s.adminIDs.Load(username)
+// cachedAdminID is the cached answer for an accountKey while its window lasts.
+func (s *Server) cachedAdminID(key string) (*int, bool) {
+	v, ok := s.adminIDs.Load(key)
 	if !ok {
 		return nil, false
 	}
@@ -850,7 +859,8 @@ func (s *Server) cachedAdminID(username string) (*int, bool) {
 // depend on the one request that happened to start it: a cancelled starter would otherwise hand all
 // the others a nil id and cache that failure for five minutes.
 func (s *Server) lookupAdminID(ctx context.Context, username string) *int {
-	if id, ok := s.cachedAdminID(username); ok {
+	key := accountKey(ctx, username)
+	if id, ok := s.cachedAdminID(key); ok {
 		return id
 	}
 	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), adminIDLookupTimeout)
@@ -873,7 +883,7 @@ func (s *Server) lookupAdminID(ctx context.Context, username string) *int {
 		v := admin.Id
 		id = &v
 	}
-	s.adminIDs.Store(username, adminIDEntry{id: id, expires: s.clockNow().Add(s.adminIDTTL)})
+	s.adminIDs.Store(key, adminIDEntry{id: id, expires: s.clockNow().Add(s.adminIDTTL)})
 	return copyIntPtr(id)
 }
 

@@ -127,22 +127,9 @@ func TestOverridesNameRealMethods(t *testing.T) {
 		live[method.MethodName] = true
 	}
 
-	pendingP0 := map[string]bool{
-		"ListTeamMembers":   true,
-		"InviteTeamMember":  true,
-		"RevokeTeamInvite":  true,
-		"ResendTeamInvite":  true,
-		"RemoveTeamMember":  true,
-		"SetTeamMemberRole": true,
-	}
 	for name := range methodOverrides {
-		if !live[name] && !pendingP0[name] {
+		if !live[name] {
 			t.Errorf("override %q has no AdminService method", name)
-		}
-	}
-	for name := range pendingP0 {
-		if _, ok := methodOverrides[name]; !ok {
-			t.Errorf("pending P0 method %q is not pre-mapped", name)
 		}
 	}
 }

@@ -1001,10 +1001,12 @@ var methodRequirements = map[string]Requirement{
 // allowlist is the set of admin methods any authenticated account may call
 // regardless of its section grants. These are panel-wide reads that every screen
 // needs (the dictionary) or an account's view of its own identity/permissions.
-var allowlist = map[string]struct{}{
-	"GetDictionary":       {},
-	"GetCurrentAccount":   {},
-	"ListAccountSections": {},
+// Each entry carries its access class: a suspended (read-only) team may call the
+// read ones only (Access).
+var allowlist = map[string]entity.AccessLevel{
+	"GetDictionary":       entity.AccessRead,
+	"GetCurrentAccount":   entity.AccessRead,
+	"ListAccountSections": entity.AccessRead,
 	// Настройки цеха are shop-wide reference data — how long the cutting table is, and later the
 	// default seam allowance, the stack-height limit and the minimum gap. They are read from TWO
 	// sections that do not contain one another: the tech-card nesting modal (tech_cards) and the
@@ -1017,7 +1019,7 @@ var allowlist = map[string]struct{}{
 	// sense as the dictionary, and a table's length is not confidential. The WRITE stays gated on
 	// production:write above — reading the shop's настройка and changing it for everyone are
 	// different rights.
-	"GetWorkshopSettings": {},
+	"GetWorkshopSettings": entity.AccessRead,
 	// ПИКЕР ЛЮДЕЙ. Moved here from rd(SectionTechCards), with the GetWorkshopSettings argument above
 	// applied word for word: a picker of people is needed from at least three sections that do not
 	// contain one another (files: owners and, later, access; tasks: the assignee; tech cards: the Q5
@@ -1031,7 +1033,7 @@ var allowlist = map[string]struct{}{
 	// REFUSED an allowlist, which enumerates the whole style portfolio by article and name. Nothing
 	// here says what anybody may DO: permissions travel on ListAccounts, which stays rd(accounts).
 	// is_super is in the answer on purpose: the "no access to this section" screen names who grants it.
-	"ListAdmins": {},
+	"ListAdmins": entity.AccessRead,
 	// СВОЮ СПЕЦИАЛЬНОСТЬ ЧЕЛОВЕК ПРАВИТ САМ, поэтому запись здесь, а не в wr(SectionAccounts) — и это
 	// не послабление, а единственное место, где проверка вообще может стоять: интерсептор отрезал бы
 	// self-edit ДО хендлера, и «одна строка на свой аккаунт» не выполнилась бы никогда. Чужой
@@ -1045,7 +1047,7 @@ var allowlist = map[string]struct{}{
 	//
 	// Послабление кончается на записи: УДАЛЕНИЕ позиции общего словаря
 	// (DeleteAccountSpecialty) стоит в methodRequirements как wr(SectionAccounts) — см. довод там.
-	"SetAccountSpecialties": {},
+	"SetAccountSpecialties": entity.AccessWrite,
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings
@@ -1085,18 +1087,18 @@ func ParsePermissions(perms []string) map[string]entity.AccessLevel {
 	return m
 }
 
-// Authorize reports whether an account with the given super flag and parsed
+// Allow reports whether an account with the given super flag and parsed
 // permission map may call fullMethod. A SuperOnly method is allowed for a super
-// account and for nobody else — legacy tokens included. Otherwise legacy tokens
-// (pre-RBAC) and super accounts are allowed everything; allowlisted methods are
-// allowed for anyone authenticated; unmapped methods are denied (fail closed).
-func Authorize(fullMethod string, legacy, super bool, perms map[string]entity.AccessLevel) bool {
+// account and for nobody else. Otherwise super accounts are allowed everything;
+// allowlisted methods are allowed for anyone authenticated; unmapped methods are
+// denied (fail closed). A token without the super claim carries no access beyond
+// its perms: the pre-RBAC "no claim = full access" rule is gone (teams §3).
+func Allow(fullMethod string, super bool, perms map[string]entity.AccessLevel) bool {
 	req, allowlisted, known := Lookup(fullMethod)
-	// FIRST, before the legacy/super bypass below: a legacy token is full access but it is NOT super.
 	if known && req.SuperOnly {
 		return super
 	}
-	if allowlisted || legacy || super {
+	if allowlisted || super {
 		return true
 	}
 	if !known {
@@ -1104,6 +1106,36 @@ func Authorize(fullMethod string, legacy, super bool, perms map[string]entity.Ac
 	}
 	have, ok := perms[req.Section]
 	return ok && have.Covers(req.Access)
+}
+
+// Authorize is Allow with the old signature. The legacy flag is IGNORED: a token
+// without the super claim is never full access any more (teams §3).
+//
+// Deprecated: use Allow.
+func Authorize(fullMethod string, _ bool, super bool, perms map[string]entity.AccessLevel) bool {
+	return Allow(fullMethod, super, perms)
+}
+
+// Access returns the access class of an admin method: the level of its
+// methodRequirements entry, or the explicit class of an allowlisted method. A
+// SuperOnly method reports write (it is never callable on a read-only team).
+// ok=false for an unmapped method; callers fail closed.
+func Access(fullMethod string) (entity.AccessLevel, bool) {
+	if len(fullMethod) <= len(MethodPrefix) || fullMethod[:len(MethodPrefix)] != MethodPrefix {
+		return "", false
+	}
+	name := fullMethod[len(MethodPrefix):]
+	if lvl, ok := allowlist[name]; ok {
+		return lvl, lvl.Valid()
+	}
+	req, ok := methodRequirements[name]
+	if !ok || !req.Access.Valid() {
+		return "", false
+	}
+	if req.SuperOnly {
+		return entity.AccessWrite, true
+	}
+	return req.Access, true
 }
 
 // Lookup resolves a gRPC full method to its access requirement.

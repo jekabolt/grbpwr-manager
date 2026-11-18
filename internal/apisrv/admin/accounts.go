@@ -49,7 +49,28 @@ func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAc
 		acc.Permissions = permsToProto(authz.Perms)
 	}
 	acc.Specialties = s.currentAccountSpecialties(ctx, username)
-	return &pb_admin.GetCurrentAccountResponse{Account: acc}, nil
+	return &pb_admin.GetCurrentAccountResponse{Account: acc, Workspace: workspaceToProto(ctx)}, nil
+}
+
+// workspaceToProto is the team the call runs in, as the admin chain resolved it (teams §6): slug,
+// name, role, the feature keys that are on, read-only when the team is suspended. nil outside the
+// chain (an in-process caller).
+func workspaceToProto(ctx context.Context) *pb_admin.Workspace {
+	w, ok := authsrv.GetWorkspace(ctx)
+	if !ok {
+		return nil
+	}
+	features := make([]string, 0, len(w.Features))
+	for _, k := range w.Features {
+		features = append(features, string(k))
+	}
+	return &pb_admin.Workspace{
+		Slug:     w.Team.Slug,
+		Name:     w.Team.Name,
+		Role:     w.Role,
+		Features: features,
+		ReadOnly: w.ReadOnly,
+	}
 }
 
 // currentAccountSpecialties reads the caller's own specialties, and ONLY them.

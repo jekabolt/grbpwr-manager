@@ -1,12 +1,11 @@
 package auth
 
 import (
-	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
-	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"github.com/go-chi/chi/v5"
+	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,56 +25,71 @@ const unauthorizedBody = `{"error":"unauthorized"}`
 // expiry but knows nothing about admin claims, so a perfectly valid storefront
 // customer token would sail through it.
 //
-// The parity with the interceptor is structural, not by imitation: the same
-// s.JwtAuth, the same s.jwtExpectations, the same jwt.VerifyAdminToken. Any
-// future change to how admin tokens are verified lands on both at once.
+// The parity with the interceptor is structural, not by imitation: both run adminChain (edge.go)
+// — the same JWT verification, team, status gate, Origin lock, session, account state and
+// feature gate (feature.ForRoute on the chi route pattern). On a suspended team only GET, HEAD
+// and OPTIONS pass (403 team_read_only); a switched-off feature answers 403 feature_off.
 //
 // Only AuthMetadataKey (Grpc-Metadata-Authorization) is read, because that is the
 // only header the gRPC path reads — a bare Authorization header never reaches the
 // admin service, so honouring one here would create a way in that does not exist
 // anywhere else.
 //
-// The middleware authenticates and populates; it does NOT check a section. The
-// handler does that itself (see RequireAdminSection), which mirrors the
-// "permission shapes the response" pattern already used for costing.
+// The middleware does NOT check a section. The handler does that itself (see
+// RequireAdminSection), which mirrors the "permission shapes the response" pattern already used
+// for costing.
 func (s *Server) WithAdminAuthz(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := r.Header.Get(AuthMetadataKey)
-		if raw == "" {
-			writeAuthError(w, http.StatusUnauthorized)
-			return
-		}
 		token := strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))
 		if token == "" {
 			writeAuthError(w, http.StatusUnauthorized)
 			return
 		}
-		sub, super, permStrs, legacy, err := jwt.VerifyAdminToken(s.JwtAuth, token, s.jwtExpectations)
-		if err != nil {
-			slog.Default().WarnContext(r.Context(), "invalid admin auth token on http endpoint",
-				slog.String("path", r.URL.Path), slog.String("err", err.Error()))
-			writeAuthError(w, http.StatusUnauthorized)
-			return
-		}
-		if err := s.checkAdminAccountState(r.Context(), sub); err != nil {
-			if status.Code(err) == codes.Unavailable {
-				writeAuthError(w, http.StatusServiceUnavailable)
-			} else {
-				writeAuthError(w, http.StatusUnauthorized)
-			}
-			return
-		}
-		ctx := r.Context()
-		if sub != "" {
-			ctx = PutAdminUsername(ctx, sub)
-		}
-		ctx = putAdminAuthz(ctx, AdminAuthz{
-			Legacy: legacy,
-			Super:  super,
-			Perms:  rbac.ParsePermissions(permStrs),
+		pattern := routePattern(r)
+		ctx, err := s.adminChain(r.Context(), adminCall{
+			token:    token,
+			origin:   r.Header.Get("Origin"),
+			method:   r.Method + " " + pattern,
+			readOnly: r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions,
+			features: func() ([]feature.Key, bool) { return feature.ForRoute(r.Method, pattern) },
 		})
+		if err != nil {
+			writeChainError(w, err)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// routePattern is the chi route pattern of the request (feature.ForRoute keys on it), or the path
+// when chi has none.
+func routePattern(r *http.Request) string {
+	if rc := chi.RouteContext(r.Context()); rc != nil {
+		if p := rc.RoutePattern(); p != "" {
+			return p
+		}
+	}
+	return r.URL.Path
+}
+
+// writeChainError maps an adminChain status to the HTTP answer. 401 and 503 keep the constant
+// body; the two 403s name the reason the admin client shows.
+func writeChainError(w http.ResponseWriter, err error) {
+	switch st, _ := status.FromError(err); st.Code() {
+	case codes.Unavailable:
+		writeAuthError(w, http.StatusServiceUnavailable)
+	case codes.FailedPrecondition:
+		writeJSONError(w, http.StatusForbidden, msgTeamReadOnly)
+	case codes.PermissionDenied:
+		if st.Message() == msgFeatureOff {
+			writeJSONError(w, http.StatusForbidden, msgFeatureOff)
+		} else {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+		}
+	default:
+		writeAuthError(w, http.StatusUnauthorized)
+	}
 }
 
 // writeAuthError emits the constant JSON body with the given status.
@@ -83,4 +97,10 @@ func writeAuthError(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte(unauthorizedBody))
+}
+
+func writeJSONError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
 }

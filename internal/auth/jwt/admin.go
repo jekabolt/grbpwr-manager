@@ -9,9 +9,9 @@ import (
 )
 
 // Admin authorization claim keys. The presence of claimSuper marks a token as
-// RBAC-aware ("new style"). Tokens minted before RBAC carry neither claim; such
-// tokens are reported as legacy by VerifyAdminToken and callers treat them as
-// full access so the rollout does not lock out already-issued sessions.
+// RBAC-aware ("new style"). Tokens minted before RBAC carry neither claim; they
+// no longer get full access (teams §3): the admin chain verifies with
+// VerifyTeamToken, where a missing super claim means super=false, no permissions.
 const (
 	claimSuper = "super"
 	claimPerms = "perms"
@@ -61,6 +61,8 @@ func NewAdminTokenAt(jwtAuth *jwtauth.JWTAuth, ttl time.Duration, subject string
 }
 
 // VerifyAdminToken verifies an admin JWT and extracts its authorization claims.
+//
+// Deprecated: the admin chain uses VerifyTeamToken. Do not treat legacy=true as full access.
 //
 //   - legacy=true  → the token predates RBAC (no super claim); super/perms are
 //     zero and the caller should treat the account as full access.
