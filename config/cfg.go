@@ -485,7 +485,7 @@ func bindEnvVars() {
 	viper.BindEnv("http.address", "HTTP_ADDRESS")
 	viper.BindEnv("http.allowed_origins", "HTTP_ALLOWED_ORIGINS")
 	viper.BindEnv("http.allow_dev_origins", "HTTP_ALLOW_DEV_ORIGINS")
-	viper.BindEnv("http.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
+	_ = viper.BindEnv("http.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 	viper.BindEnv("http.block_local_origin_writes", "HTTP_BLOCK_LOCAL_ORIGIN_WRITES")
 
 	// Auth

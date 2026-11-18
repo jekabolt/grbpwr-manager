@@ -1113,7 +1113,7 @@ func Allow(fullMethod string, super bool, perms map[string]entity.AccessLevel) b
 // method except the SuperOnly ones. Teams mode never calls it: there a token without claims gets Allow.
 func AllowPreRBAC(fullMethod string) bool {
 	req, _, known := Lookup(fullMethod)
-	return !(known && req.SuperOnly)
+	return !known || !req.SuperOnly
 }
 
 // Authorize is Allow with the old signature. The legacy flag is IGNORED: a token
