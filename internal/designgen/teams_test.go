@@ -17,12 +17,13 @@ import (
 // waits for its ctx, claims[team] is what that team's ClaimRuns returns (once).
 type teamTrail struct {
 	runStore
-	mu       sync.Mutex
-	revived  []int64
-	claimed  []int64
-	failTeam int64
-	hangTeam int64
-	claims   map[int64][]entity.DesignRun
+	mu        sync.Mutex
+	revived   []int64
+	claimed   []int64
+	failTeam  int64
+	hangTeam  int64
+	panicOnce int64 // this team's next ClaimRuns panics
+	claims    map[int64][]entity.DesignRun
 }
 
 func teamOf(ctx context.Context) int64 {
@@ -54,6 +55,10 @@ func (s *teamTrail) ClaimRuns(ctx context.Context, _ int, _ time.Duration, _ str
 	defer s.mu.Unlock()
 	id := teamOf(ctx)
 	s.claimed = append(s.claimed, id)
+	if id == s.panicOnce {
+		s.panicOnce = 0
+		panic("claim blew up")
+	}
 	runs := s.claims[id]
 	delete(s.claims, id)
 	return runs, nil
@@ -158,6 +163,24 @@ func TestTeamsTickProviderCallIsNotInTheWalk(t *testing.T) {
 	require.True(t, w.tick(context.Background()))
 	_, claimed = st.seen()
 	require.Equal(t, []int64{1, 1, 2}, claimed, "slot free again: both teams claim")
+}
+
+// A panic after the slot is taken but before the batch goroutine starts frees the slot and the
+// team's busy mark; the team is claimed again once its backoff is over.
+func TestTeamsTickPanicBeforeTheBatchFreesTheSlot(t *testing.T) {
+	st := &teamTrail{runStore: &fakeStore{}, panicOnce: 1}
+	w, now := teamsWorker(t, st, nil, loopOver(tOne), 1)
+	require.True(t, w.tick(context.Background()))
+	require.Zero(t, len(w.slots), "the slot is free again")
+	w.gate.mu.Lock()
+	busy := w.gate.state(1).busy
+	w.gate.mu.Unlock()
+	require.False(t, busy, "the team is not left busy")
+
+	*now = now.Add(backoffBase + time.Second)
+	require.True(t, w.tick(context.Background()))
+	_, claimed := st.seen()
+	require.Equal(t, []int64{1, 1}, claimed, "claimed again on the next due tick")
 }
 
 func TestWorkerKeepsALedgerSweepClockPerTeam(t *testing.T) {

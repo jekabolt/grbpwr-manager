@@ -189,18 +189,30 @@ func (w *Worker) claimForTeam(ctx context.Context, now time.Time) {
 		w.gate.release(id)
 		w.gate.record(id, ok, w.clock())
 	}
+	// A panic between here and the batch goroutine (recovered above) must not keep the slot and
+	// the team's busy mark forever: the guard frees both unless the slot was released normally or
+	// handed to the batch goroutine.
+	owned := true
+	defer func() {
+		if owned {
+			done(false)
+		}
+	}()
 	runs, token, err := w.claimBatch(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "design generation worker failed",
 			slog.String("action", "claim design runs"), slog.Int64("tid", id), slog.String("slug", slug),
 			slog.String("err", err.Error()))
+		owned = false
 		done(false)
 		return
 	}
 	if len(runs) == 0 {
+		owned = false
 		done(true)
 		return
 	}
+	owned = false // the batch goroutine owns the slot from here
 	w.wg.Add(1)
 	go func(runs []entity.DesignRun) {
 		defer w.wg.Done()
