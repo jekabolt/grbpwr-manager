@@ -32,6 +32,104 @@ service AuthService {
       body: "*"
     };
   }
+
+  // TEAMS (multi-tenant identity)
+
+  // SignUp creates a pending user and a pending team and sends a verify letter.
+  rpc SignUp(SignUpRequest) returns (SignUpResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/sign-up"
+      body: "*"
+    };
+  }
+
+  // CheckTeamSlug tells whether a team address is free and suggests one.
+  rpc CheckTeamSlug(CheckTeamSlugRequest) returns (CheckTeamSlugResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/check-team-slug"
+      body: "*"
+    };
+  }
+
+  // VerifyEmail confirms an email by link token or by email + six-digit code.
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/verify-email"
+      body: "*"
+    };
+  }
+
+  // ResendVerification sends a new verify letter.
+  rpc ResendVerification(ResendVerificationRequest) returns (ResendVerificationResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/resend-verification"
+      body: "*"
+    };
+  }
+
+  // SignIn authenticates by email or handle and returns a token for the target.
+  rpc SignIn(SignInRequest) returns (SignInResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/sign-in"
+      body: "*"
+    };
+  }
+
+  // IssueHandoff turns a root token into a single-use code for a team origin.
+  rpc IssueHandoff(IssueHandoffRequest) returns (IssueHandoffResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/issue-handoff"
+      body: "*"
+    };
+  }
+
+  // ExchangeHandoff swaps a hand-off code for a team token; the slug travels in Grpc-Metadata-X-Team.
+  rpc ExchangeHandoff(ExchangeHandoffRequest) returns (ExchangeHandoffResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/exchange-handoff"
+      body: "*"
+    };
+  }
+
+  // SignOut revokes the session of the calling token.
+  rpc SignOut(SignOutRequest) returns (SignOutResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/sign-out"
+      body: "*"
+    };
+  }
+
+  // RequestPasswordReset sends a reset letter (generic response).
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/request-password-reset"
+      body: "*"
+    };
+  }
+
+  // ResetPassword sets a new password by link token or by email + code.
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/reset-password"
+      body: "*"
+    };
+  }
+
+  // GetInvite describes an invite by its link token.
+  rpc GetInvite(GetInviteRequest) returns (GetInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/get-invite"
+      body: "*"
+    };
+  }
+
+  // AcceptInvite joins the invited team; a new user sets a password.
+  rpc AcceptInvite(AcceptInviteRequest) returns (AcceptInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/accept-invite"
+      body: "*"
+    };
+  }
 }
 
 // LoginRequest is the request message for the Login RPC.
@@ -87,4 +185,132 @@ message ChangePasswordRequest {
 message ChangePasswordResponse {
   // auth_token is the JWT token for the user.
   string auth_token = 1;
+}
+
+// SignInTarget is where a SignIn token is meant to be used.
+enum SignInTarget {
+  SIGN_IN_TARGET_UNKNOWN = 0;
+  // root: lists teams, valid only for IssueHandoff.
+  SIGN_IN_TARGET_ROOT = 1;
+  // team: the team named by Grpc-Metadata-X-Team.
+  SIGN_IN_TARGET_TEAM = 2;
+  // console: the operator console.
+  SIGN_IN_TARGET_CONSOLE = 3;
+}
+
+// TeamRef is one team the signed-in user belongs to.
+message TeamRef {
+  string slug = 1;
+  string name = 2;
+  // role is owner or member.
+  string role = 3;
+  bool read_only = 4;
+  // ready is false while the team is provisioning.
+  bool ready = 5;
+}
+
+message SignUpRequest {
+  string email = 1;
+  string password = 2;
+  string team_name = 3;
+  string team_slug = 4;
+}
+
+message SignUpResponse {}
+
+message CheckTeamSlugRequest {
+  string slug = 1;
+  string name = 2;
+}
+
+message CheckTeamSlugResponse {
+  bool available = 1;
+  string suggestion = 2;
+}
+
+message VerifyEmailRequest {
+  string token = 1;
+  string email = 2;
+  string code = 3;
+}
+
+message VerifyEmailResponse {
+  string team_slug = 1;
+  string handoff_code = 2;
+}
+
+message ResendVerificationRequest {
+  string email = 1;
+}
+
+message ResendVerificationResponse {}
+
+message SignInRequest {
+  // login is an email or a handle.
+  string login = 1;
+  string password = 2;
+  SignInTarget target = 3;
+}
+
+message SignInResponse {
+  string token = 1;
+  repeated TeamRef teams = 2;
+}
+
+message IssueHandoffRequest {
+  string team_slug = 1;
+}
+
+message IssueHandoffResponse {
+  string url = 1;
+  string code = 2;
+}
+
+message ExchangeHandoffRequest {
+  string code = 1;
+}
+
+message ExchangeHandoffResponse {
+  string token = 1;
+}
+
+message SignOutRequest {}
+
+message SignOutResponse {}
+
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message RequestPasswordResetResponse {}
+
+message ResetPasswordRequest {
+  string token = 1;
+  string email = 2;
+  string code = 3;
+  string new_password = 4;
+}
+
+message ResetPasswordResponse {}
+
+message GetInviteRequest {
+  string token = 1;
+}
+
+message GetInviteResponse {
+  string team_name = 1;
+  string email = 2;
+  bool account_exists = 3;
+}
+
+message AcceptInviteRequest {
+  string token = 1;
+  string password = 2;
+  // handle is the person's name inside the team when the invited email has no account yet.
+  string handle = 3;
+}
+
+message AcceptInviteResponse {
+  string team_slug = 1;
+  string handoff_code = 2;
 }

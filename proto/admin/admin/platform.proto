@@ -1,0 +1,138 @@
+syntax = "proto3";
+
+package admin;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;admin";
+
+// PlatformService is the operator console over the control plane. A team is
+// addressed by slug, never by id.
+service PlatformService {
+  // ListTeams returns every team with its people, features and AI spend.
+  rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse) {
+    option (google.api.http) = {get: "/api/platform/teams"};
+  }
+
+  // GetTeam returns one team and its members.
+  rpc GetTeam(GetTeamRequest) returns (GetTeamResponse) {
+    option (google.api.http) = {get: "/api/platform/teams/{team_slug}"};
+  }
+
+  // ListFeatures returns the feature catalog.
+  rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse) {
+    option (google.api.http) = {get: "/api/platform/features"};
+  }
+
+  // SetTeamFeature switches one feature of a team on or off.
+  rpc SetTeamFeature(SetTeamFeatureRequest) returns (SetTeamFeatureResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/features"
+      body: "*"
+    };
+  }
+
+  // SetTeamStatus suspends a team (read only) or makes it active again.
+  rpc SetTeamStatus(SetTeamStatusRequest) returns (SetTeamStatusResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/status"
+      body: "*"
+    };
+  }
+
+  // RenameTeam changes a team's slug and/or name; the old slug redirects.
+  rpc RenameTeam(RenameTeamRequest) returns (RenameTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/rename"
+      body: "*"
+    };
+  }
+}
+
+// PlatformTeam is one team as the console sees it.
+message PlatformTeam {
+  string slug = 1;
+  string name = 2;
+  // status is active, read_only, provisioning or pending.
+  string status = 3;
+  int32 people = 4;
+  google.protobuf.Timestamp created_at = 5;
+  // features are the enabled feature keys.
+  repeated string features = 6;
+  // ai_spend_month_usd is the current month's AI spend, decimal string.
+  string ai_spend_month_usd = 7;
+  int32 ai_unpriced_calls_month = 8;
+  bool schema_ok = 9;
+}
+
+// PlatformMember is one member of a team as the console sees it.
+message PlatformMember {
+  string handle = 1;
+  string email = 2;
+  string role = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+}
+
+// FeatureInfo is one entry of the feature catalog.
+message FeatureInfo {
+  string key = 1;
+  string title = 2;
+  string group = 3;
+  bool default_on = 4;
+  bool team_one_only = 5;
+}
+
+message ListTeamsRequest {
+  string query = 1;
+}
+
+message ListTeamsResponse {
+  repeated PlatformTeam teams = 1;
+  // ai_spend_month_total_usd is the fleet total, decimal string.
+  string ai_spend_month_total_usd = 2;
+}
+
+message GetTeamRequest {
+  string team_slug = 1;
+}
+
+message GetTeamResponse {
+  PlatformTeam team = 1;
+  repeated PlatformMember members = 2;
+}
+
+message ListFeaturesRequest {}
+
+message ListFeaturesResponse {
+  repeated FeatureInfo features = 1;
+}
+
+message SetTeamFeatureRequest {
+  string team_slug = 1;
+  string feature = 2;
+  bool enabled = 3;
+}
+
+message SetTeamFeatureResponse {
+  PlatformTeam team = 1;
+}
+
+message SetTeamStatusRequest {
+  string team_slug = 1;
+  bool read_only = 2;
+}
+
+message SetTeamStatusResponse {
+  PlatformTeam team = 1;
+}
+
+message RenameTeamRequest {
+  string team_slug = 1;
+  string new_slug = 2;
+  string new_name = 3;
+}
+
+message RenameTeamResponse {
+  PlatformTeam team = 1;
+}
