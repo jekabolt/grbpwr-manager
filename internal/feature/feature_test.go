@@ -44,11 +44,11 @@ func TestDefaultOnGolden(t *testing.T) {
 
 func TestCatalogHasStableKeysAndGroups(t *testing.T) {
 	wantGroups := map[string][]Key{
-		"operations": {Orders, Fulfillment, Tasks, Files, Analytics, Accounting},
+		"operations": {Analytics, Accounting, Orders, Fulfillment, Tasks, Files},
 		"catalog":    {Products, Media, Hero, Promo, EmailCampaigns, Archive},
 		"production": {Models, Fittings, TechCards, Materials, Production},
 		"members":    {Membership, Support},
-		"admin":      {Settings, Dictionaries, AI, AIProviders, LocalAccounts},
+		"admin":      {Settings, AI, AIProviders, LocalAccounts},
 	}
 	gotGroups := make(map[string][]Key, len(wantGroups))
 	seen := make(map[Key]bool, len(catalog))

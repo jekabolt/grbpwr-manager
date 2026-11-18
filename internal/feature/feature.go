@@ -34,7 +34,6 @@ const (
 	Analytics      Key = "analytics"
 	Accounting     Key = "accounting"
 	Settings       Key = "settings"
-	Dictionaries   Key = "dictionaries"
 	AIProviders    Key = "ai_providers"
 	LocalAccounts  Key = "local_accounts"
 )
@@ -50,20 +49,20 @@ type Info struct {
 
 var catalog = []Info{
 	// operations
+	{Key: Analytics, Title: "analytics", Group: "operations"},
+	{Key: Accounting, Title: "accounting", Group: "operations"},
 	{Key: Orders, Title: "orders", Group: "operations"},
 	{Key: Fulfillment, Title: "fulfillment", Group: "operations"},
 	{Key: Tasks, Title: "tasks", Group: "operations", DefaultOn: true},
 	{Key: Files, Title: "files", Group: "operations", DefaultOn: true},
-	{Key: Analytics, Title: "analytics", Group: "operations"},
-	{Key: Accounting, Title: "accounting", Group: "operations"},
 
 	// catalog
 	{Key: Products, Title: "products", Group: "catalog"},
 	{Key: Media, Title: "media", Group: "catalog", DefaultOn: true},
 	{Key: Hero, Title: "hero", Group: "catalog"},
 	{Key: Promo, Title: "promo", Group: "catalog"},
-	{Key: EmailCampaigns, Title: "email campaigns", Group: "catalog"},
-	{Key: Archive, Title: "archive", Group: "catalog"},
+	{Key: EmailCampaigns, Title: "email", Group: "catalog"},
+	{Key: Archive, Title: "timeline", Group: "catalog"},
 
 	// production
 	{Key: Models, Title: "models", Group: "production", DefaultOn: true},
@@ -73,12 +72,13 @@ var catalog = []Info{
 	{Key: Production, Title: "production", Group: "production", DefaultOn: true},
 
 	// members
-	{Key: Membership, Title: "membership", Group: "members"},
+	{Key: Membership, Title: "members", Group: "members"},
 	{Key: Support, Title: "support", Group: "members"},
 
 	// admin
+	// Dictionaries (colours, collections, sizes) are not a switch: every team has
+	// them (owner decision 18.11), so the section maps to Core below.
 	{Key: Settings, Title: "settings", Group: "admin"},
-	{Key: Dictionaries, Title: "dictionaries", Group: "admin"},
 	{Key: AI, Title: "ai", Group: "admin", DefaultOn: true},
 	{Key: AIProviders, Title: "ai providers", Group: "admin", TeamOneOnly: true},
 	{Key: LocalAccounts, Title: "local accounts", Group: "admin", TeamOneOnly: true},
@@ -167,7 +167,7 @@ var sectionFeatures = map[string]Key{
 	rbac.SectionCampaigns:    EmailCampaigns,
 	rbac.SectionModels:       Models,
 	rbac.SectionFittings:     Fittings,
-	rbac.SectionDictionaries: Dictionaries,
+	rbac.SectionDictionaries: Core,
 	rbac.SectionTechCards:    TechCards,
 	rbac.SectionProduction:   Production,
 	rbac.SectionInventory:    Materials,
