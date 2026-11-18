@@ -1226,7 +1226,7 @@ func (s *Server) archiveBlobFromURL(ctx context.Context, sp *archiveSpool, prefi
 	if err != nil {
 		return archiveBlob{}, err
 	}
-	rc, _, err := s.bucket.GetManagedObject(ctx, key)
+	rc, _, err := bucket.OpenStoredObject(ctx, s.bucket, rawURL)
 	if err != nil {
 		return archiveBlob{}, fmt.Errorf("object %q: %w", key, err)
 	}

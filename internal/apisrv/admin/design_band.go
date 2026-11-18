@@ -1191,7 +1191,7 @@ func (s *Server) designFetchObject(ctx context.Context, rawURL string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	rc, size, err := s.bucket.GetManagedObject(ctx, key)
+	rc, size, err := bucket.OpenStoredObject(ctx, s.bucket, rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("object %q: %w", key, err)
 	}

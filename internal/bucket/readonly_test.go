@@ -173,7 +173,9 @@ func TestReadOnlyHostReadByTeamOne(t *testing.T) {
 			b, store, legacyURL, hits := legacyBucket(t, tc.teamsMode)
 			for _, open := range []func(context.Context, string) (io.ReadCloser, int64, error){
 				b.OpenStoredURL, b.OpenManagedURL,
-				func(ctx context.Context, raw string) (io.ReadCloser, int64, error) { return OpenStoredObject(ctx, b, raw) },
+				func(ctx context.Context, raw string) (io.ReadCloser, int64, error) {
+					return OpenStoredObject(ctx, b, raw)
+				},
 			} {
 				rc, size, err := open(tc.ctx, legacyURL)
 				require.NoError(t, err)
