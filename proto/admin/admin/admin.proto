@@ -4624,6 +4624,53 @@ service AdminService {
   rpc GetAiSpendReport(GetAiSpendReportRequest) returns (GetAiSpendReportResponse) {
     option (google.api.http) = {get: "/api/admin/ai/spend"};
   }
+
+  // TEAM MEMBERS (multi-tenant: people of the calling team)
+
+  // ListTeamMembers returns the calling team's members and its open invites.
+  rpc ListTeamMembers(ListTeamMembersRequest) returns (ListTeamMembersResponse) {
+    option (google.api.http) = {get: "/api/admin/team/members"};
+  }
+
+  // InviteTeamMember sends an invite letter to join the calling team.
+  rpc InviteTeamMember(InviteTeamMemberRequest) returns (InviteTeamMemberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/invites"
+      body: "*"
+    };
+  }
+
+  // RevokeTeamInvite cancels an open invite.
+  rpc RevokeTeamInvite(RevokeTeamInviteRequest) returns (RevokeTeamInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/invites/{invite_ref}/revoke"
+      body: "*"
+    };
+  }
+
+  // ResendTeamInvite sends the invite letter again.
+  rpc ResendTeamInvite(ResendTeamInviteRequest) returns (ResendTeamInviteResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/invites/{invite_ref}/resend"
+      body: "*"
+    };
+  }
+
+  // RemoveTeamMember removes a member from the calling team.
+  rpc RemoveTeamMember(RemoveTeamMemberRequest) returns (RemoveTeamMemberResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/members/{username}/remove"
+      body: "*"
+    };
+  }
+
+  // SetTeamMemberRole sets a member's role (owner or member).
+  rpc SetTeamMemberRole(SetTeamMemberRoleRequest) returns (SetTeamMemberRoleResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/members/{username}/role"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -12884,6 +12931,20 @@ message GetCurrentAccountRequest {}
 
 message GetCurrentAccountResponse {
   AdminAccount account = 1;
+  // workspace is the team the token belongs to.
+  Workspace workspace = 2;
+}
+
+// Workspace is the calling team as the admin shell sees it.
+message Workspace {
+  string slug = 1;
+  string name = 2;
+  // role is owner or member.
+  string role = 3;
+  // features are the enabled feature keys of the team.
+  repeated string features = 4;
+  // read_only is true while the team is suspended.
+  bool read_only = 5;
 }
 
 message ListAccountSectionsRequest {}
@@ -15388,3 +15449,69 @@ message GetAiSpendReportResponse {
   repeated AiSpendProviderRow by_provider = 8;
   repeated AiSpendActorRow by_actor = 9;
 }
+
+// TEAM MEMBERS
+
+// TeamMember is one member of the calling team.
+message TeamMember {
+  string username = 1;
+  string email = 2;
+  // role is owner or member.
+  string role = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+  // you is true for the calling account.
+  bool you = 5;
+}
+
+// TeamInvite is one invite of the calling team.
+message TeamInvite {
+  // invite_ref is an opaque handle for revoke/resend; never shown.
+  string invite_ref = 1;
+  string email = 2;
+  string role = 3;
+  google.protobuf.Timestamp sent_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  // status is pending, accepted, revoked or expired.
+  string status = 6;
+}
+
+message ListTeamMembersRequest {}
+
+message ListTeamMembersResponse {
+  repeated TeamMember members = 1;
+  repeated TeamInvite invites = 2;
+}
+
+message InviteTeamMemberRequest {
+  string email = 1;
+  string role = 2;
+}
+
+message InviteTeamMemberResponse {
+  TeamInvite invite = 1;
+}
+
+message RevokeTeamInviteRequest {
+  string invite_ref = 1;
+}
+
+message RevokeTeamInviteResponse {}
+
+message ResendTeamInviteRequest {
+  string invite_ref = 1;
+}
+
+message ResendTeamInviteResponse {}
+
+message RemoveTeamMemberRequest {
+  string username = 1;
+}
+
+message RemoveTeamMemberResponse {}
+
+message SetTeamMemberRoleRequest {
+  string username = 1;
+  string role = 2;
+}
+
+message SetTeamMemberRoleResponse {}

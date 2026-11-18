@@ -931,6 +931,13 @@ var methodRequirements = map[string]Requirement{
 	"SetAccountDisabled":       wr(SectionAccounts),
 	"DeleteAccount":            wr(SectionAccounts),
 	"ResetAccountPassword":     wr(SectionAccounts),
+	// team members (multi-tenant): people and invites of the calling team
+	"ListTeamMembers":   rd(SectionAccounts),
+	"InviteTeamMember":  wr(SectionAccounts),
+	"RevokeTeamInvite":  wr(SectionAccounts),
+	"ResendTeamInvite":  wr(SectionAccounts),
+	"RemoveTeamMember":  wr(SectionAccounts),
+	"SetTeamMemberRole": wr(SectionAccounts),
 	// УДАЛЕНИЕ ПОЗИЦИИ СЛОВАРЯ СПЕЦИАЛЬНОСТЕЙ — ЗДЕСЬ, А НЕ В allowlist РЯДОМ С ЗАПИСЬЮ.
 	// SetAccountSpecialties внизу разрешён всем аутентифицированным, потому что человек правит СВОЁ
 	// самоописание, и новое имя только добавляется: ни у кого на экране ничего не пропадает.
