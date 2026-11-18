@@ -460,10 +460,14 @@ func TestStrictRefusesNoTeam(t *testing.T) {
 }
 
 // TestStoreOpensOnRoutingPool: store.NewForTest runs on the routing pool with team #1 from the DSN.
+// Team B's database is admitted by the prefix, as TENANT_DB_PREFIX does on beta and prod; without
+// it the allowlist holds team #1 only.
 func TestStoreOpensOnRoutingPool(t *testing.T) {
 	one, two, dsn := setupTwoTeams(t)
 	ctx := context.Background()
-	st, err := store.NewForTest(ctx, store.Config{DSN: dsn, MaxOpenConnections: 1, MaxIdleConnections: 1})
+	cfg := store.Config{DSN: dsn, MaxOpenConnections: 1, MaxIdleConnections: 1}
+	cfg.Tenant.DBPrefix = dbPrefix
+	st, err := store.NewForTest(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,8 +500,8 @@ func TestStoreOpensOnRoutingPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store tx on team B: %v", err)
 	}
-	cfg, _ := mysql.ParseDSN(dsn)
-	if !strings.HasSuffix(cfg.DBName, "_test") {
+	mc, _ := mysql.ParseDSN(dsn)
+	if !strings.HasSuffix(mc.DBName, "_test") {
 		t.Fatal("test pool is not on a _test database")
 	}
 }
