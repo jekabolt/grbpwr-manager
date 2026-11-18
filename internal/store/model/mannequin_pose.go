@@ -54,12 +54,12 @@ func (row modelMannequinPoseRow) stored() (*entity.StoredModelMannequinPose, err
 	return stored, nil
 }
 
-func loadModelMannequinPose(ctx context.Context, rep dependency.Repository, modelID int, forUpdate bool) (*entity.StoredModelMannequinPose, error) {
+func loadModelMannequinPose(ctx context.Context, db dependency.DB, modelID int, forUpdate bool) (*entity.StoredModelMannequinPose, error) {
 	query := modelMannequinPoseSelect
 	if forUpdate {
 		query += " FOR UPDATE"
 	}
-	row, err := storeutil.QueryNamedOne[modelMannequinPoseRow](ctx, rep.DB(), query, map[string]any{"model_id": modelID})
+	row, err := storeutil.QueryNamedOne[modelMannequinPoseRow](ctx, db, query, map[string]any{"model_id": modelID})
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (s *Store) GetModelMannequinPose(ctx context.Context, modelID int) (*entity
 			return err
 		}
 		var err error
-		stored, err = loadModelMannequinPose(ctx, rep, modelID, false)
+		stored, err = loadModelMannequinPose(ctx, rep.DB(), modelID, false)
 		if errors.Is(err, sql.ErrNoRows) {
 			stored = nil
 			return nil
@@ -125,7 +125,7 @@ func (s *Store) PutModelMannequinPose(
 			return err
 		}
 
-		current, err := loadModelMannequinPose(ctx, rep, modelID, true)
+		current, err := loadModelMannequinPose(ctx, rep.DB(), modelID, true)
 		if errors.Is(err, sql.ErrNoRows) {
 			current = nil
 		} else if err != nil {
@@ -177,7 +177,7 @@ func (s *Store) PutModelMannequinPose(
 				return &entity.ModelMannequinPoseConflictError{CurrentRevision: currentRevision}
 			}
 		}
-		stored, err = loadModelMannequinPose(ctx, rep, modelID, false)
+		stored, err = loadModelMannequinPose(ctx, rep.DB(), modelID, false)
 		return err
 	})
 	if err != nil {
