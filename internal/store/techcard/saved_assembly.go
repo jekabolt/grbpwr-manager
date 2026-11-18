@@ -20,6 +20,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
+	"github.com/shopspring/decimal"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -411,6 +412,7 @@ func savedFullAssemblyAOContent(row entity.SavedPatternRowIdentity, serverAssemb
 		return nil, "", err
 	}
 	receipts := make([]any, 0, len(card.Operations))
+	one := decimal.NewFromInt(1)
 	for i := range card.Operations {
 		op := card.Operations[i]
 		if len(op.SeamKeys) == 0 {
@@ -421,6 +423,10 @@ func savedFullAssemblyAOContent(row entity.SavedPatternRowIdentity, serverAssemb
 				i, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
 		number := int(op.OperationNumber.Int32)
+		if op.FullnessRatio.Valid && !op.FullnessRatio.Decimal.Equal(one) {
+			return nil, "", fmt.Errorf("operation %d has fullness ratio %s outside the equal-length physical profile: %w",
+				number, op.FullnessRatio.Decimal, entity.ErrTechCardSavedAssemblyUnsupported)
+		}
 		selected, err := selectSavedAssemblySeams(card, number)
 		if err != nil {
 			return nil, "", err
