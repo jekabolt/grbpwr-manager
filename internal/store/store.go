@@ -49,7 +49,9 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/support"
 	"github.com/jekabolt/grbpwr-manager/internal/store/task"
 	"github.com/jekabolt/grbpwr-manager/internal/store/techcard"
+	"github.com/jekabolt/grbpwr-manager/internal/store/tenantdb"
 	"github.com/jekabolt/grbpwr-manager/internal/store/workshop"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
 
@@ -73,6 +75,44 @@ type Config struct {
 	ConnMaxLifetime    time.Duration `mapstructure:"conn_max_lifetime"`
 	ConnMaxIdleTime    time.Duration `mapstructure:"conn_max_idle_time"`
 	TLSCAPath          string        `mapstructure:"tls_ca_path"`
+	// Tenant routes the shared pool per ctx team (02-DESIGN §1). Zero value = teams mode off with
+	// team #1 on the DSN database: every call runs where it ran before, and a call without a team
+	// in ctx is counted (tenant_missing_ctx_total). Set by app from the platform config.
+	Tenant tenantdb.Options `mapstructure:"-"`
+}
+
+// tenantOptions fills team #1 from the DSN database when the caller left Tenant unset.
+func (c Config) tenantOptions() (tenantdb.Options, error) {
+	o := c.Tenant
+	if o.Team1.ID == 0 {
+		mc, err := mysql.ParseDSN(c.DSN)
+		if err != nil {
+			return o, fmt.Errorf("parse dsn: %w", err)
+		}
+		o.Team1 = tenant.TeamOne(mc.DBName)
+	}
+	return o, nil
+}
+
+// openPool opens the tenant-routing pool with the configured limits.
+func openPool(cfg Config) (*sqlx.DB, *tenantdb.Connector, error) {
+	o, err := cfg.tenantOptions()
+	if err != nil {
+		return nil, nil, err
+	}
+	d, router, err := tenantdb.Open(cfg.DSN, o)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cfg.MaxOpenConnections > 0 {
+		d.SetMaxOpenConns(cfg.MaxOpenConnections)
+	}
+	if cfg.MaxIdleConnections > 0 {
+		d.SetMaxIdleConns(cfg.MaxIdleConnections)
+	}
+	d.SetConnMaxLifetime(cfg.connMaxLifetime())
+	d.SetConnMaxIdleTime(cfg.connMaxIdleTime())
+	return d, router, nil
 }
 
 // connMaxLifetime returns the configured connection max lifetime or the default
@@ -95,10 +135,12 @@ func (c Config) connMaxIdleTime() time.Duration {
 
 // MYSQLStore implements methods to access MYSQL database
 type MYSQLStore struct {
-	db    dependency.DB
-	txDB  txDB
-	ts    time.Time
-	close context.CancelFunc
+	db dependency.DB
+	// router is the tenant-routing connector under db (counters for G1).
+	router *tenantdb.Connector
+	txDB   txDB
+	ts     time.Time
+	close  context.CancelFunc
 
 	// Sub-stores (composed for transaction propagation)
 	productStore       *product.Store
@@ -217,19 +259,10 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("failed to register TLS config: %w", err)
 	}
 
-	d, err := sqlx.Open("mysql", cfg.DSN)
+	d, router, err := openPool(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't open database : %v", err)
+		return nil, fmt.Errorf("couldn't open database : %w", err)
 	}
-
-	if cfg.MaxOpenConnections > 0 {
-		d.SetMaxOpenConns(cfg.MaxOpenConnections)
-	}
-	if cfg.MaxIdleConnections > 0 {
-		d.SetMaxIdleConns(cfg.MaxIdleConnections)
-	}
-	d.SetConnMaxLifetime(cfg.connMaxLifetime())
-	d.SetConnMaxIdleTime(cfg.connMaxIdleTime())
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer pingCancel()
@@ -256,8 +289,9 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		// SELECT * on that table fail (struct scan: missing destination name ...).
 		// This keeps reads resilient to that schema/struct drift; transactions inherit
 		// the flag from the DB in sqlx.
-		db:    d.Unsafe(),
-		close: c,
+		db:     d.Unsafe(),
+		close:  c,
+		router: router,
 	}
 	initSubStores(ss)
 
@@ -377,19 +411,10 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		return nil, fmt.Errorf("failed to register TLS config: %w", err)
 	}
 
-	d, err := sqlx.Open("mysql", cfg.DSN)
+	d, router, err := openPool(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't open database : %v", err)
+		return nil, fmt.Errorf("couldn't open database : %w", err)
 	}
-
-	if cfg.MaxOpenConnections > 0 {
-		d.SetMaxOpenConns(cfg.MaxOpenConnections)
-	}
-	if cfg.MaxIdleConnections > 0 {
-		d.SetMaxIdleConns(cfg.MaxIdleConnections)
-	}
-	d.SetConnMaxLifetime(cfg.connMaxLifetime())
-	d.SetConnMaxIdleTime(cfg.connMaxIdleTime())
 
 	pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer pingCancel()
@@ -416,8 +441,9 @@ func NewForTest(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 		// SELECT * on that table fail (struct scan: missing destination name ...).
 		// This keeps reads resilient to that schema/struct drift; transactions inherit
 		// the flag from the DB in sqlx.
-		db:    d.Unsafe(),
-		close: c,
+		db:     d.Unsafe(),
+		close:  c,
+		router: router,
 	}
 	initSubStores(ss)
 
@@ -615,4 +641,12 @@ func dbCACertPEM() string {
 		return pem
 	}
 	return os.Getenv("db.CA_CERT")
+}
+
+// TenantStats returns the routing pool's counters (tenant_missing_ctx_total, USE switches).
+func (ms *MYSQLStore) TenantStats() tenantdb.Stats {
+	if ms == nil || ms.router == nil {
+		return tenantdb.Stats{}
+	}
+	return ms.router.Stats()
 }
