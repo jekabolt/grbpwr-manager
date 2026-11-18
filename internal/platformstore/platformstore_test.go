@@ -142,6 +142,34 @@ FROM platform_user u JOIN team_member m ON m.user_id = u.id AND m.team_id = 1 OR
 		t.Fatal("admin without a hash adopted")
 	}
 
+	// A stranger signed up on the platform as "x"; later team #1 gets an admin "x" (a super, and
+	// disabled on the next boot). Neither boot adopts the stranger, disables them or touches the hash.
+	if _, err := st.DB().Exec(`INSERT INTO platform_user (email, handle, password_hash, status, created_at)
+VALUES ('x@example.test', 'x', 'h-stranger', 'active', UTC_TIMESTAMP(3))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, disabled := range []bool{false, true} {
+		if err := st.EnsureTeamOne(ctx, "grbpwr_test", []platformstore.TeamOneAdmin{
+			{Username: "x", PasswordHash: "h-admin-x", Super: true, Disabled: disabled},
+			{Username: "boss", PasswordHash: "h-boss", Super: true},
+		}); err != nil {
+			t.Fatalf("stranger handle, disabled=%v: %v", disabled, err)
+		}
+		var got struct {
+			Hash    string `db:"password_hash"`
+			Status  string `db:"status"`
+			Members int    `db:"members"`
+		}
+		if err := st.DB().Get(&got, `SELECT u.password_hash, u.status,
+  (SELECT COUNT(*) FROM team_member m WHERE m.user_id = u.id) AS members
+FROM platform_user u WHERE u.handle = 'x'`); err != nil {
+			t.Fatal(err)
+		}
+		if got.Hash != "h-stranger" || got.Status != "active" || got.Members != 0 {
+			t.Fatalf("stranger after boot (disabled=%v): %+v", disabled, got)
+		}
+	}
+
 	team, err := st.Directory().ByID(ctx, 1)
 	if err != nil {
 		t.Fatal(err)

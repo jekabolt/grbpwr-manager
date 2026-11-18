@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -23,7 +24,11 @@ type TeamOneAdmin struct {
 //   - an existing team #1 on another database is an error (team #1 is never re-pointed);
 //   - an existing user's password hash is never overwritten (a later change wins);
 //   - a disabled admin disables its user; an enabled admin never re-enables a disabled user;
-//   - an existing membership is left as it is.
+//   - an existing membership is left as it is;
+//   - an existing user who is NOT already in team #1 is left alone (no membership, no disable)
+//     and logged: the handle belongs to someone who signed up on the platform, and a later admin
+//     with the same username must not hand them grbpwr. Boot goes on — a stranger's sign-up must
+//     never stop the store.
 func (s *Store) EnsureTeamOne(ctx context.Context, dbName string, admins []TeamOneAdmin) error {
 	if strings.TrimSpace(dbName) == "" {
 		return fmt.Errorf("platformstore: team #1 needs its database name")
@@ -67,6 +72,16 @@ VALUES (?, ?, ?, ?, NULL, 'all', 'active', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
 		err := tx.GetContext(ctx, &u, `SELECT id, status FROM platform_user WHERE handle = ? FOR UPDATE`, handle)
 		switch {
 		case err == nil:
+			var member int
+			if err := tx.GetContext(ctx, &member, `SELECT COUNT(*) FROM team_member WHERE team_id = ? AND user_id = ?`,
+				tenant.TeamOneID, u.ID); err != nil {
+				return fmt.Errorf("platformstore: ensure team #1: membership of %s: %w", handle, err)
+			}
+			if member == 0 {
+				slog.Default().ErrorContext(ctx, "platformstore: team #1 admin's handle belongs to a platform user outside team #1; not adopted",
+					slog.String("handle", handle))
+				continue
+			}
 			if a.Disabled && u.Status != "disabled" {
 				if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET status = 'disabled' WHERE id = ?`, u.ID); err != nil {
 					return fmt.Errorf("platformstore: ensure team #1: disable %s: %w", handle, err)
