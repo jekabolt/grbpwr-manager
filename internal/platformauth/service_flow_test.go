@@ -48,12 +48,20 @@ type fakeTeams struct {
 	mu      sync.Mutex
 	ensured map[string][]entity.AdminPermission // handle → perms written into a team
 	pwSet   map[string]string
-	// disabled: handle → its admins row is disabled (staged by a join, not yet enabled).
+	// disabled: handle → its admins row is disabled; pending: the row carries the join marker.
 	disabled map[string]bool
+	pending  map[string]bool
 	// onEnsure, when set, runs before the admins row is staged; an error fails the write.
 	onEnsure func(handle string) error
-	// onEnable, when set, runs before the admins row is enabled; an error fails the enable.
+	// onEnable, when set, runs before the compare-and-set; an error fails the enable.
 	onEnable func(handle string) error
+	// loseEnableResult: the enable commits in the team database, then its answer is lost.
+	loseEnableResult bool
+}
+
+// adminDisable is an admin (or a removal) disabling the row: the marker goes in the same write.
+func (ft *fakeTeams) adminDisable(handle string) {
+	ft.disabled[handle], ft.pending[handle] = true, false
 }
 
 type flow struct {
@@ -98,7 +106,7 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}},
+	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}},
 		clock: time.Now().UTC().Truncate(time.Second)}
 	svc, err := New(Deps{
 		Store:   st,
@@ -112,7 +120,7 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 				f.teams.mu.Lock()
 				defer f.teams.mu.Unlock()
 				perms, ok := f.teams.ensured[handle]
-				return TeamAccount{Super: perms == nil, Perms: perms, Disabled: f.teams.disabled[handle]}, ok, nil
+				return TeamAccount{Super: perms == nil, Perms: perms, Disabled: f.teams.disabled[handle], JoinPending: f.teams.pending[handle]}, ok, nil
 			},
 			StageMember: func(_ context.Context, _ tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
 				f.teams.mu.Lock()
@@ -128,19 +136,25 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 					perms = []entity.AdminPermission{}
 				}
 				f.teams.ensured[handle] = perms
-				f.teams.disabled[handle] = true
+				f.teams.disabled[handle], f.teams.pending[handle] = true, true
 				return nil
 			},
-			EnableMember: func(_ context.Context, _ tenant.Team, handle string) error {
+			EnableMember: func(_ context.Context, _ tenant.Team, handle string) (bool, error) {
 				f.teams.mu.Lock()
 				defer f.teams.mu.Unlock()
 				if f.teams.onEnable != nil {
 					if err := f.teams.onEnable(handle); err != nil {
-						return err
+						return false, err
 					}
 				}
-				f.teams.disabled[handle] = false
-				return nil
+				if !f.teams.pending[handle] { // the store's compare-and-set: only a staged row
+					return false, nil
+				}
+				f.teams.disabled[handle], f.teams.pending[handle] = false, false
+				if f.teams.loseEnableResult {
+					return false, errors.New("connection reset after commit")
+				}
+				return true, nil
 			},
 			TeamOnePassword: func(_ context.Context, handle, hash string) error {
 				f.teams.mu.Lock()
@@ -427,7 +441,11 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 	}
 	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k", TermsAccepted: true})
 	wantCode(t, err, codes.InvalidArgument, "invite reused")
-	// An existing account is not asked for the terms again.
+	// An existing account (removed from the team meanwhile) is not asked for the terms again.
+	if _, err := f.st.DB().Exec(`UPDATE team_member m JOIN platform_user u ON u.id = m.user_id SET m.status = 'removed'
+WHERE m.team_id = ? AND u.email = ?`, teamID, bob); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: invite(bob), Password: "bob-password-1"}); err != nil {
 		t.Fatalf("invite for an existing account without terms: %v", err)
 	}

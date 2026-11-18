@@ -33,6 +33,8 @@ var (
 	ErrTeamAwaitingApproval = errors.New("platformstore: team awaiting approval")
 	// ErrTermsRequired: an invite would create an account and the terms were not accepted.
 	ErrTermsRequired = errors.New("platformstore: terms not accepted")
+	// ErrAlreadyMember: the invite is for a person who is already an active member of the team.
+	ErrAlreadyMember = errors.New("platformstore: already a member")
 )
 
 // User statuses (platform_user.status).

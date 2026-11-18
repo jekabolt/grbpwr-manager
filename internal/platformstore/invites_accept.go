@@ -62,8 +62,10 @@ type AcceptParams struct {
 	// rights. It runs between the two control-plane commits, outside any transaction: a failure or
 	// crash leaves the membership reserved ('joining'), the row unusable and the invite live.
 	Stage func(ctx context.Context, inv Invite, handle string) error
-	// Enable enables the staged row once the membership is active (the join's last step).
-	Enable func(ctx context.Context, inv Invite, handle string) error
+	// Enable finishes the staged row once the membership is active (the join's last step): it
+	// re-reads the membership and enables the row only through the team-side compare-and-set.
+	// false = not enabled (the member was removed or the row re-decided meanwhile).
+	Enable func(ctx context.Context, inv Invite, userID int64, handle string) (bool, error)
 	// TermsVersion is the terms version accepted on the join page ("" = not accepted). Required
 	// only when the invite creates a new account; an existing one is never asked again.
 	TermsVersion string
@@ -76,7 +78,8 @@ type AcceptResult struct {
 	TeamID   int64
 	TeamSlug string
 	Created  bool
-	// EnablePending: the last step failed; the row is enabled on the member's next sign-in.
+	// EnablePending: the last step failed or found nothing to enable; a row still staged is
+	// finished on the member's next platform sign-in to the team.
 	EnablePending bool
 }
 
@@ -85,18 +88,21 @@ type AcceptResult struct {
 //
 //  1. reserve (one commit): the account (existing → its password must match; pending → activated
 //     with the new password; none → created with the chosen handle, email counted verified) and a
-//     'joining' membership with enable_pending set (sign-in and hand-off read only 'active'); an
-//     already active membership stays active;
-//  2. Stage writes the member's admins row DISABLED with the invite's rights;
+//     'joining' membership (sign-in and hand-off read only 'active'); an invite for a person who is
+//     already an active member is refused (ErrAlreadyMember) and changes nothing;
+//  2. Stage writes the member's admins row DISABLED with the invite's rights and the team-side
+//     join_pending marker;
 //  3. activate (one commit): the membership becomes active, the invite is consumed, the hand-off
 //     inserted;
-//  4. Enable enables the row and enable_pending is cleared.
+//  4. Enable re-reads the membership and enables the row through the team-side compare-and-set.
 //
-// A crash after step 2 leaves the row disabled and the invite live (the same link runs again; an
-// expired one is swept by SweepJoining). A crash after step 3 leaves enable_pending on an active
-// membership: the member's next platform sign-in to the team enables the row (HealMember).
-// ErrTeamReadOnly for a suspended team, ErrWrongPassword, ErrHandleTaken, ErrTermsRequired, else
-// ErrTokenInvalid.
+// The marker lives in the team database, so enabling and clearing it are one write, and any
+// disable of the row clears it: a late finish never re-enables a row someone disabled. A crash
+// after step 2 leaves the row disabled and the invite live (the same link runs again; an expired
+// one is swept by SweepJoining, the row stays disabled). A crash after step 3 leaves the marker on
+// an active member's row: their next platform sign-in to the team finishes it.
+// ErrTeamReadOnly for a suspended team, ErrWrongPassword, ErrHandleTaken, ErrTermsRequired,
+// ErrAlreadyMember, else ErrTokenInvalid.
 func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult, error) {
 	res, inv, err := s.reserveInvite(ctx, p)
 	if err != nil {
@@ -112,24 +118,11 @@ func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult,
 	}
 	res.TeamID, res.TeamSlug = inv.TeamID, inv.TeamSlug
 	if p.Enable != nil {
-		if err := p.Enable(ctx, inv, res.Handle); err != nil {
+		if ok, err := p.Enable(ctx, inv, res.UserID, res.Handle); err != nil || !ok {
 			res.EnablePending = true
-			return res, nil
 		}
 	}
-	if err := s.ClearEnablePending(ctx, inv.TeamID, res.UserID); err != nil {
-		res.EnablePending = true
-	}
 	return res, nil
-}
-
-// ClearEnablePending marks the join of an active member finished: its admins row is enabled.
-func (s *Store) ClearEnablePending(ctx context.Context, teamID, userID int64) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE team_member SET enable_pending = 0
-WHERE team_id = ? AND user_id = ? AND status = 'active'`, teamID, userID); err != nil {
-		return fmt.Errorf("platformstore: clear enable pending: %w", err)
-	}
-	return nil
 }
 
 // SweepJoining removes reserved memberships whose invite is no longer live (expired, revoked or
@@ -198,6 +191,15 @@ func (s *Store) reserveInvite(ctx context.Context, p AcceptParams) (AcceptResult
 			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {
 				return ErrWrongPassword
 			}
+			// After the password: the membership state is not told to someone who only holds the link.
+			var active int
+			if err := tx.GetContext(ctx, &active, `SELECT COUNT(*) FROM team_member
+WHERE team_id = ? AND user_id = ? AND status = 'active'`, inv.TeamID, u.ID); err != nil {
+				return fmt.Errorf("platformstore: read membership: %w", err)
+			}
+			if active > 0 {
+				return ErrAlreadyMember
+			}
 			res.UserID, res.Handle = u.ID, u.Handle
 		case u.Status == UserPending:
 			// The invite proves the inbox: the half-finished sign-up becomes a verified account.
@@ -209,8 +211,8 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, p.NewPasswordH
 		default:
 			return ErrTokenInvalid
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, enable_pending, created_at)
-VALUES (?, ?, ?, 'joining', 1, ?) ON DUPLICATE KEY UPDATE status = IF(status = 'active', 'active', 'joining'), enable_pending = 1`,
+		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
+VALUES (?, ?, ?, 'joining', ?) ON DUPLICATE KEY UPDATE status = IF(status = 'active', 'active', 'joining')`,
 			inv.TeamID, res.UserID, inv.Role, p.Now); err != nil {
 			return fmt.Errorf("platformstore: reserve membership: %w", err)
 		}

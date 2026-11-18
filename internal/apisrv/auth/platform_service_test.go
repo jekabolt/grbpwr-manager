@@ -70,8 +70,32 @@ func (a *teamAdmins) SetAccountDisabled(_ context.Context, username string, disa
 	if !ok {
 		return sql.ErrNoRows
 	}
-	r.Disabled = disabled
+	r.Disabled, r.JoinPending = disabled, false
 	return nil
+}
+
+// StageJoin and FinishJoin follow *admin.Store (covered against MySQL by the store's own test).
+func (a *teamAdmins) StageJoin(_ context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r, ok := a.rows[username]
+	if !ok {
+		r = &entity.AdminAccount{Admin: entity.Admin{Username: username, PasswordHash: pwHash}}
+		a.rows[username] = r
+	}
+	r.Disabled, r.JoinPending, r.IsSuper, r.Permissions = true, true, isSuper, perms
+	return nil
+}
+
+func (a *teamAdmins) FinishJoin(_ context.Context, username string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r, ok := a.rows[username]
+	if !ok || !r.JoinPending {
+		return false, nil
+	}
+	r.Disabled, r.JoinPending = false, false
+	return true, nil
 }
 
 // TestInviteCrashAfterStagingKeepsLegacyLoginOut: a removed member keeps a usable password in their
@@ -132,13 +156,24 @@ func TestInviteCrashAfterStagingKeepsLegacyLoginOut(t *testing.T) {
 		t.Fatalf("new staged row = disabled %v", r.Disabled)
 	}
 
-	// Step 4: enabled, the password works; enabling twice changes nothing.
-	for range 2 {
-		if err := srv.enableTeamAdmin(ctx, "kim"); err != nil {
-			t.Fatal(err)
-		}
+	// Step 4: enabled once, the password works; a second finish finds nothing to do.
+	if ok, err := srv.enableTeamAdmin(ctx, "kim"); err != nil || !ok {
+		t.Fatalf("finish = %v, %v", ok, err)
+	}
+	if ok, err := srv.enableTeamAdmin(ctx, "kim"); err != nil || ok {
+		t.Fatalf("second finish = %v, %v", ok, err)
 	}
 	if err := login("kim"); err != nil {
 		t.Fatalf("legacy login after step 4: %v", err)
+	}
+	// A staged row an admin disabled is never finished.
+	if err := srv.stageTeamAdmin(ctx, "noa", false, write); err != nil {
+		t.Fatal(err)
+	}
+	if err := admins.SetAccountDisabled(ctx, "noa", true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := srv.enableTeamAdmin(ctx, "noa"); err != nil || ok || !admins.rows["noa"].Disabled {
+		t.Fatalf("finish after an admin disable = %v, %v", ok, err)
 	}
 }

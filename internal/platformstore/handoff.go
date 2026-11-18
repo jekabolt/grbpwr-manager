@@ -23,9 +23,6 @@ type MemberTeam struct {
 	Name   string `db:"name"`
 	Role   string `db:"role"`
 	Status string `db:"status"`
-	// EnablePending: the join has not enabled the member's admins row yet (read by Membership and
-	// ExchangeHandoff only).
-	EnablePending bool `db:"enable_pending"`
 }
 
 // CreateSession inserts a user_session row. teamID 0 = none (root, console).
@@ -71,7 +68,7 @@ ORDER BY t.name, t.id`, userID); err != nil {
 // in review, which has no workspace yet and is never entered.
 func (s *Store) Membership(ctx context.Context, userID, teamID int64) (MemberTeam, bool, error) {
 	var m MemberTeam
-	err := s.db.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status, m.enable_pending
+	err := s.db.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
 FROM team_member m JOIN team t ON t.id = m.team_id
 WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' AND t.status IN ('provisioning', 'active', 'suspended')`,
 		userID, teamID)
@@ -118,7 +115,7 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 			return ErrTokenInvalid
 		}
 		var m MemberTeam
-		err := tx.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status, m.enable_pending
+		err := tx.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
 FROM team_member m JOIN team t ON t.id = m.team_id
 WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active'`, t.UserID, teamID)
 		if isNoRows(err) {

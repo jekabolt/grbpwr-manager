@@ -77,12 +77,12 @@ func (s *Server) platformHooks() platformauth.Hooks {
 			if acc == nil {
 				return platformauth.TeamAccount{}, false, nil
 			}
-			return platformauth.TeamAccount{Super: acc.IsSuper, Perms: acc.Permissions, Disabled: acc.Disabled}, true, nil
+			return platformauth.TeamAccount{Super: acc.IsSuper, Perms: acc.Permissions, Disabled: acc.Disabled, JoinPending: acc.JoinPending}, true, nil
 		},
 		StageMember: func(ctx context.Context, team tenant.Team, handle string, super bool, perms []entity.AdminPermission) error {
 			return s.stageTeamAdmin(tenant.With(ctx, team), handle, super, perms)
 		},
-		EnableMember: func(ctx context.Context, team tenant.Team, handle string) error {
+		EnableMember: func(ctx context.Context, team tenant.Team, handle string) (bool, error) {
 			return s.enableTeamAdmin(tenant.With(ctx, team), handle)
 		},
 		TeamOnePassword: func(ctx context.Context, handle, hash string) error {
@@ -99,53 +99,52 @@ func (s *Server) platformHooks() platformauth.Hooks {
 	}
 }
 
-// stageTeamAdmin writes an invited member's admins row in the pinned team DISABLED with these rights:
-// an existing row is disabled before its rights change, a new one gets a hash nobody can match. The
-// row stays unusable (legacy Login refuses it) until enableTeamAdmin, which the join runs only after
-// the control plane made the member active.
-func (s *Server) stageTeamAdmin(ctx context.Context, handle string, super bool, perms []entity.AdminPermission) error {
-	defer s.InvalidateAdminAccount(handle)
-	cur, err := s.adminRepository.GetAdminByUsername(ctx, handle)
-	switch {
-	case err == nil:
-		if !cur.Disabled {
-			if err := s.adminRepository.SetAccountDisabled(ctx, handle, true); err != nil {
-				return fmt.Errorf("stage team admin: disable: %w", err)
-			}
-		}
-		if err := s.adminRepository.SetAccountPermissions(ctx, handle, super, perms); err != nil {
-			return fmt.Errorf("stage team admin: permissions: %w", err)
-		}
-		return nil
-	case errors.Is(err, sql.ErrNoRows):
-		hash, err := platformauth.UnusableHash(s.pwhash)()
-		if err != nil {
-			return fmt.Errorf("stage team admin: hash: %w", err)
-		}
-		if err := s.adminRepository.AddAccount(ctx, handle, hash, super, perms); err != nil {
-			return fmt.Errorf("stage team admin: add: %w", err)
-		}
-		if err := s.adminRepository.SetAccountDisabled(ctx, handle, true); err != nil {
-			return fmt.Errorf("stage team admin: disable: %w", err)
-		}
-		return nil
-	default:
-		return fmt.Errorf("stage team admin: read: %w", err)
-	}
+// teamJoins is the team-side half of an invite's join (*admin.Store): the staged row and its
+// compare-and-set finish. Not part of dependency.Admin so the shared interface and its mocks stay
+// untouched; the coordinator may move it there.
+type teamJoins interface {
+	StageJoin(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error
+	FinishJoin(ctx context.Context, username string) (bool, error)
 }
 
-// enableTeamAdmin enables a staged admins row in the pinned team (idempotent).
-func (s *Server) enableTeamAdmin(ctx context.Context, handle string) error {
+func (s *Server) teamJoins() (teamJoins, error) {
+	j, ok := s.adminRepository.(teamJoins)
+	if !ok {
+		return nil, errors.New("admin repository cannot stage team joins")
+	}
+	return j, nil
+}
+
+// stageTeamAdmin writes an invited member's admins row in the pinned team DISABLED with these rights
+// and the join_pending marker, in one transaction (a new row gets a hash nobody can match). Legacy
+// Login refuses the row until enableTeamAdmin finishes the join.
+func (s *Server) stageTeamAdmin(ctx context.Context, handle string, super bool, perms []entity.AdminPermission) error {
 	defer s.InvalidateAdminAccount(handle)
-	cur, err := s.adminRepository.GetAdminByUsername(ctx, handle)
+	j, err := s.teamJoins()
 	if err != nil {
-		return fmt.Errorf("enable team admin: read: %w", err)
+		return err
 	}
-	if !cur.Disabled {
-		return nil
+	hash, err := platformauth.UnusableHash(s.pwhash)()
+	if err != nil {
+		return fmt.Errorf("stage team admin: hash: %w", err)
 	}
-	if err := s.adminRepository.SetAccountDisabled(ctx, handle, false); err != nil {
-		return fmt.Errorf("enable team admin: %w", err)
+	if err := j.StageJoin(ctx, handle, hash, super, perms); err != nil {
+		return fmt.Errorf("stage team admin: %w", err)
 	}
 	return nil
+}
+
+// enableTeamAdmin finishes a staged admins row in the pinned team: enabled only while its
+// join_pending marker is still set. false = nothing enabled.
+func (s *Server) enableTeamAdmin(ctx context.Context, handle string) (bool, error) {
+	defer s.InvalidateAdminAccount(handle)
+	j, err := s.teamJoins()
+	if err != nil {
+		return false, err
+	}
+	ok, err := j.FinishJoin(ctx, handle)
+	if err != nil {
+		return false, fmt.Errorf("enable team admin: %w", err)
+	}
+	return ok, nil
 }
