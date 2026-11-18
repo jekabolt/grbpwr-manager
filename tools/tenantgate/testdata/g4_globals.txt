@@ -735,6 +735,11 @@ internal/fal/fal.go	retired3D
 internal/fal/images.go	falImageFormats
 internal/fal/images.go	falImageSizes
 internal/fal/images.go	singleImageEdit
+internal/feature/feature.go	catalog
+internal/feature/feature.go	defaultOn
+internal/feature/feature.go	methodOverrides
+internal/feature/feature.go	routeFeatures
+internal/feature/feature.go	sectionFeatures
 internal/fusingops/presscopy.go	PressCopyColumns
 internal/localeutil/localeutil.go	Supported
 internal/mail/campaign_footer.go	fallbackLanguageIDToCode
