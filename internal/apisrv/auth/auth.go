@@ -607,6 +607,9 @@ func PutAdminUsername(ctx context.Context, username string) context.Context {
 // Legacy marks a pre-RBAC token, which is treated as full access. Super grants
 // full access. Perms is the section→access map for scoped accounts.
 type AdminAuthz struct {
+	// Legacy marks a pre-RBAC token (no super claim) in teams mode OFF only: full non-super
+	// access, as before teams. It is never set in teams mode, and it is not jwt.TeamClaims.Legacy
+	// (a token without a team, which may well carry super / perms).
 	Legacy bool
 	Super  bool
 	Perms  map[string]entity.AccessLevel

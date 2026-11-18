@@ -329,3 +329,15 @@ func TestNoMutatingMethodIsRead(t *testing.T) {
 		}
 	}
 }
+
+func TestAllowPreRBAC(t *testing.T) {
+	if !AllowPreRBAC(MethodPrefix + "ListOrders") {
+		t.Error("a pre-RBAC token must keep a scoped read")
+	}
+	if !AllowPreRBAC(MethodPrefix + "UpdateColorway") {
+		t.Error("a pre-RBAC token must keep a scoped write")
+	}
+	if AllowPreRBAC(MethodPrefix + "UpdateAiProvider") {
+		t.Error("a pre-RBAC token is not super: super-only methods stay closed")
+	}
+}

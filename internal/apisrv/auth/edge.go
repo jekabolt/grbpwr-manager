@@ -185,7 +185,7 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 		return ctx, status.Error(codes.PermissionDenied, msgFeatureOff)
 	}
 
-	if call.grpcMethod != "" && !rbac.Allow(call.grpcMethod, authz.Super, authz.Perms) {
+	if call.grpcMethod != "" && !authz.allows(call.grpcMethod) {
 		slog.Default().WarnContext(ctx, "admin authorization denied",
 			slog.String("username", claims.Handle), slog.String("method", call.grpcMethod))
 		return ctx, status.Errorf(codes.PermissionDenied, "insufficient permissions for %s", call.grpcMethod)
@@ -224,7 +224,23 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 	if err := s.checkAdminAccountState(ctx, claims.Handle); err != nil {
 		return AdminAuthz{}, err
 	}
+	// Teams mode OFF is an identity: a legacy token minted before the super / perms claims existed
+	// keeps full non-super access, as before teams. Teams mode keeps the strict rule.
+	if !s.teamsMode() && claims.Legacy && !hasClaim(s.JwtAuth, token, claimSuper) {
+		return AdminAuthz{Legacy: true}, nil
+	}
 	return AdminAuthz{Super: claims.Super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
+}
+
+// claimSuper is the super claim of an admin token; its absence marks a pre-RBAC token.
+const claimSuper = "super"
+
+// allows is the RBAC decision for an admin method under this authorization.
+func (a AdminAuthz) allows(fullMethod string) bool {
+	if a.Legacy {
+		return rbac.AllowPreRBAC(fullMethod)
+	}
+	return rbac.Allow(fullMethod, a.Super, a.Perms)
 }
 
 // hasClaim reports whether an already verified token carries a claim jwt.TeamClaims does not
