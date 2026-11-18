@@ -2,9 +2,12 @@
 // multi-tenant backend from bypassing the per-team database pool.
 //
 //	G2  TestG2RawDBHandles       sql.Open / sqlx.Open & co only in tenantdb, platformstore,
-//	                             migrate*.go, the migration replay tool, tools/, cmd/ and tests.
+//	                             migrate*.go, the migration replay tool, tools/ and tests.
+//	                             Generated code is skipped only in the known generation dirs.
 //	G3  TestG3NoSchemaInSQL      no `USE x` and no `db.table` in SQL strings or team
 //	                             migrations (internal/store/sql/*.sql): a team DB stays unqualified.
+//	                             A dynamic schema (`%s.t`, `?.t`, "FROM " + db + ".t", `USE %s`)
+//	                             is a finding too, except in the files of g3DynamicAllowed.
 //	G4a TestG4PackageGlobals     ratchet on package-level vars (process-wide state);
 //	                             baseline testdata/g4_globals.txt.
 //	G4b TestG4BackgroundContext  ratchet on context.Background()/TODO() per file in store,
@@ -205,6 +208,24 @@ func pkgCall(n ast.Node) (pkg, fn string, ok bool) {
 
 // ---------------------------------------------------------------- G2
 
+// knownGenerated lists where generated Go lives. G2 skips only these, not any file that merely
+// carries a "Code generated" header — a header is one line anyone can paste over a raw pool.
+var knownGenerated = []string{
+	"proto/gen",
+	"openapi/gen",
+	"internal/dependency/mocks",
+	"internal/betaseed/rpc_gen.go",
+}
+
+func isKnownGenerated(rel string) bool {
+	for _, g := range knownGenerated {
+		if hasPrefixDir(rel, g) {
+			return true
+		}
+	}
+	return false
+}
+
 var rawHandleFuncs = map[string]map[string]bool{
 	"database/sql":            {"Open": true, "OpenDB": true},
 	"github.com/jmoiron/sqlx": {"Open": true, "Connect": true, "NewDb": true, "MustOpen": true, "MustConnect": true, "ConnectContext": true},
@@ -216,7 +237,7 @@ func g2Allowed(rel string) bool {
 	case strings.HasSuffix(rel, "_test.go"):
 		return true
 	case hasPrefixDir(rel, "internal/store/tenantdb"), hasPrefixDir(rel, "internal/platformstore"),
-		hasPrefixDir(rel, "internal/store/migreplay"), hasPrefixDir(rel, "tools"), hasPrefixDir(rel, "cmd"):
+		hasPrefixDir(rel, "internal/store/migreplay"), hasPrefixDir(rel, "tools"):
 		return true
 	case path.Dir(rel) == "internal/store" && strings.HasPrefix(path.Base(rel), "migrate"):
 		return true
@@ -225,7 +246,7 @@ func g2Allowed(rel string) bool {
 }
 
 func g2Scan(s *srcFile) []finding {
-	if g2Allowed(s.Rel) {
+	if g2Allowed(s.Rel) || isKnownGenerated(s.Rel) {
 		return nil
 	}
 	byLocal := map[string][]string{} // local name -> import paths of interest
@@ -267,6 +288,16 @@ var (
 	wsOnlyRe    = regexp.MustCompile(`[^\n]`)
 	dupKeyRe    = regexp.MustCompile(`(?i)\bON\s+DUPLICATE\s+KEY\s+UPDATE\b`)
 
+	// A schema that is filled in at run time: a fmt verb or a placeholder before the dot.
+	dynVerb      = "(?:%(?:\\[\\d+\\])?[sv]|\\?)"
+	dynSchemaRe  = regexp.MustCompile("(?i)\\b(?:DELETE\\s+FROM|FROM|JOIN|INTO|UPDATE|TABLE(?:\\s+IF\\s+(?:NOT\\s+)?EXISTS)?|REFERENCES)\\s+`?" + dynVerb + "`?\\s*\\.")
+	dynUseRe     = regexp.MustCompile("(?i)(?:^|;)\\s*USE\\s+`?" + dynVerb)
+	concatLeftRe = regexp.MustCompile("(?i)\\b(?:FROM|JOIN|INTO|UPDATE|TABLE|EXISTS|REFERENCES)\\s+`?$")
+	concatUseRe  = regexp.MustCompile("(?:^|;)\\s*USE\\s+`?$") // upper case only: prose says "Use "
+	concatTailRe = regexp.MustCompile("^`?\\s*;?\\s*$")
+	sqlVerbRe    = regexp.MustCompile(`(?i)\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|REPLACE|TRUNCATE)\b`)
+	concatDotRe  = regexp.MustCompile("^`?\\s*\\.")
+
 	systemSchemas = map[string]bool{"information_schema": true, "performance_schema": true, "mysql": true, "sys": true}
 )
 
@@ -276,13 +307,18 @@ func unquoteIdent(s string) string { return strings.Trim(s, "`") }
 func sqlViolations(sql string) []string {
 	sql = strings.TrimSpace(wsRe.ReplaceAllString(sql, " "))
 	var out []string
-	if m := useStmtRe.FindString(sql); m != "" {
+	if dynUseRe.MatchString(sql) {
+		out = append(out, "USE of a run-time database")
+	} else if m := useStmtRe.FindString(sql); m != "" {
 		out = append(out, "USE statement")
+	}
+	if m := dynSchemaRe.FindString(sql); m != "" {
+		out = append(out, fmt.Sprintf("run-time schema %q", strings.TrimSpace(m)))
 	}
 	flat := dupKeyRe.ReplaceAllString(sql, "ON DUPLICATE KEY SET")
 	for _, m := range qualRe.FindAllStringSubmatch(flat, -1) {
 		schema := strings.ToLower(unquoteIdent(m[1]))
-		if systemSchemas[schema] {
+		if systemSchemas[schema] || strings.ContainsAny(schema, "%?") { // %s / ? : the run-time check above
 			continue
 		}
 		out = append(out, fmt.Sprintf("schema-qualified table %q", unquoteIdent(m[1])+"."+unquoteIdent(m[2])))
@@ -305,12 +341,89 @@ func g3InScope(rel string) bool {
 	return hasPrefixDir(rel, "internal") || hasPrefixDir(rel, "app") || hasPrefixDir(rel, "cmd")
 }
 
+// g3DynamicAllowed lists, by file, the only places that may build SQL with a schema chosen at run
+// time (provisioning a team database, its migrations). Empty today: the team migrations open a
+// pool on the team's own DSN and stay unqualified. Add a file here, never a rule.
+var g3DynamicAllowed = map[string]bool{}
+
+// markChain records every + link under b, so a chain is checked once, from its top.
+func markChain(b *ast.BinaryExpr, seen map[*ast.BinaryExpr]bool) {
+	seen[b] = true
+	for _, e := range []ast.Expr{b.X, b.Y} {
+		if inner, ok := ast.Unparen(e).(*ast.BinaryExpr); ok && inner.Op == token.ADD {
+			markChain(inner, seen)
+		}
+	}
+}
+
+// plusOperands flattens a chain of + into its operands, nil for a non-string chain.
+func plusOperands(e ast.Expr) []ast.Expr {
+	e = ast.Unparen(e)
+	if b, ok := e.(*ast.BinaryExpr); ok && b.Op == token.ADD {
+		return append(plusOperands(b.X), plusOperands(b.Y)...)
+	}
+	return []ast.Expr{e}
+}
+
+func strLit(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	v, err := strconv.Unquote(lit.Value)
+	return v, err == nil
+}
+
+// concatSchema reports "SELECT … FROM " + x + ".t" and "USE " + x: a run-time value in schema
+// position. Prose that happens to say "into " + x + "." is not SQL: a schema concatenation counts
+// only when the chain's literals carry a SQL verb, and a USE only in upper case, ending the chain.
+func concatSchema(b *ast.BinaryExpr) string {
+	ops := plusOperands(b)
+	var lits strings.Builder
+	for _, op := range ops {
+		if v, ok := strLit(op); ok {
+			lits.WriteString(v + " ")
+		}
+	}
+	isSQL := sqlVerbRe.MatchString(lits.String())
+	for i := 1; i < len(ops); i++ {
+		if _, isLit := strLit(ops[i]); isLit {
+			continue
+		}
+		left, ok := strLit(ops[i-1])
+		if !ok {
+			continue
+		}
+		left = wsRe.ReplaceAllString(left, " ")
+		var right string
+		hasRight := false
+		if i+1 < len(ops) {
+			right, hasRight = strLit(ops[i+1])
+		}
+		if concatUseRe.MatchString(left) && (i+1 == len(ops) || hasRight && concatTailRe.MatchString(right)) {
+			return "USE of a run-time database"
+		}
+		if isSQL && concatLeftRe.MatchString(left) && hasRight && concatDotRe.MatchString(right) {
+			return "run-time schema built by concatenation"
+		}
+	}
+	return ""
+}
+
 func g3ScanGo(s *srcFile) []finding {
 	if !g3InScope(s.Rel) || s.Generated {
 		return nil
 	}
+	dynamicOK := g3DynamicAllowed[s.Rel]
 	var out []finding
+	inChain := map[*ast.BinaryExpr]bool{} // inner links of a + chain already checked as a whole
 	ast.Inspect(s.File, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BinaryExpr); ok && b.Op == token.ADD && !inChain[b] {
+			markChain(b, inChain)
+			if v := concatSchema(b); v != "" && !dynamicOK {
+				out = append(out, finding{s.Rel, s.pos(b.Pos()), g3Message(v)})
+			}
+		}
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true
@@ -320,6 +433,9 @@ func g3ScanGo(s *srcFile) []finding {
 			return true
 		}
 		for _, v := range sqlViolations(str) {
+			if dynamicOK && strings.Contains(v, "run-time") {
+				continue
+			}
 			out = append(out, finding{s.Rel, s.pos(lit.Pos()), g3Message(v)})
 		}
 		return true
