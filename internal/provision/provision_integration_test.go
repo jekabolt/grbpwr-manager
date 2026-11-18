@@ -439,7 +439,7 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	defer ms.Close()
 	schema := provision.StoreSchema{BaseDSN: base, Prefix: itPrefix}
 	newW := func(spares int) *provision.Worker {
-		w, err := provision.New(provision.Config{Prefix: itPrefix, Team1DB: itOne, Spares: spares, PerHour: 10}, e.pf, schema, ms.DB(), ms.Admin())
+		w, err := provision.New(provision.Config{Prefix: itPrefix, Team1DB: itOne, Spares: spares, PerHour: 10}, e.pf, schema, ms.DB())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -558,12 +558,12 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 		t.Fatalf("team lease %v %v", ok, err)
 	}
 	guard := func(ctx context.Context) error { return e.pf.CheckProvisionLease(ctx, spareTeam, tmA.DBName, teamTok) }
-	if err := provision.Seed(ctxA, ms.DB(), ms.Admin(), owner, guard); err == nil {
+	if err := provision.Seed(ctxA, ms.DB(), owner, guard); err == nil {
 		t.Fatal("seed ran on an active team")
 	}
 	forged := tmA
 	forged.Status = tenant.StatusProvisioning
-	if err := provision.Seed(tenant.With(ctx, forged), ms.DB(), ms.Admin(), owner, guard); !errors.Is(err, platformstore.ErrNotProvisioning) {
+	if err := provision.Seed(tenant.With(ctx, forged), ms.DB(), owner, guard); !errors.Is(err, platformstore.ErrNotProvisioning) {
 		t.Fatalf("seed on an active team behind a forged status: %v", err)
 	}
 	if err := e.pf.ActivateTeam(ctx, spareTeam, "not-the-token", latest, refFP); !errors.Is(err, platformstore.ErrLeaseLost) {
@@ -621,6 +621,82 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	if liveTopics() != 1 {
 		t.Fatal("a live row was deleted from an activated team database")
 	}
+	// The migration runs on the lock's own session: with gorp_migrations write-locked, the migrator
+	// waits — on the very connection that holds the lock. Killing that connection ends the run, and a
+	// second holder gets the lock only once nothing of the first run is left on the server. Before the
+	// fix the DDL ran on a pool of its own and kept waiting after its lock was gone.
+	blocker, err := e.root.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.ExecContext(ctx, "LOCK TABLES `"+tmA.DBName+"`.gorp_migrations WRITE"); err != nil {
+		t.Fatal(err)
+	}
+	mig, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
+	if err != nil || !ok {
+		t.Fatalf("lock %v %v", ok, err)
+	}
+	var migLock int64
+	if err := e.root.QueryRow(`SELECT IS_USED_LOCK(?)`, store.TeamLockName(tmA.DBName)).Scan(&migLock); err != nil || migLock == 0 {
+		t.Fatalf("lock owner %d %v", migLock, err)
+	}
+	migErr := make(chan error, 1)
+	go func() { _, err := mig.Migrate(ctx); migErr <- err }()
+	waitingOn := func() (ids []int64) {
+		rows, err := e.root.Query(`SELECT ID FROM information_schema.PROCESSLIST WHERE DB = ? AND STATE = 'Waiting for table metadata lock'`, tmA.DBName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			_ = rows.Scan(&id)
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	var waiting []int64
+	for deadline := time.Now().Add(15 * time.Second); len(waiting) == 0; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the migration never reached gorp_migrations")
+		}
+		waiting = waitingOn()
+	}
+	if len(waiting) != 1 || waiting[0] != migLock {
+		t.Fatalf("migration statements wait on connections %v, the lock is held by %d", waiting, migLock)
+	}
+	if _, err := e.root.Exec(fmt.Sprintf("KILL %d", migLock)); err != nil {
+		t.Fatal(err)
+	}
+	var second *store.TeamDBLock
+	for deadline := time.Now().Add(10 * time.Second); second == nil; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the lock never came free after its connection was killed")
+		}
+		if second, ok, err = store.LockTeamDB(ctx, base, itPrefix, tmA.DBName); err != nil {
+			t.Fatal(err)
+		} else if !ok {
+			second = nil
+		}
+	}
+	if left := waitingOn(); len(left) != 0 {
+		t.Fatalf("a second holder has the lock while the first run still waits on %v", left)
+	}
+	select {
+	case err := <-migErr:
+		if err == nil {
+			t.Fatal("a migration whose lock connection was killed reported success")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the migration never ended after its lock connection was killed")
+	}
+	mig.Release(ctx)
+	second.Release(ctx)
+	if _, err := blocker.ExecContext(ctx, `UNLOCK TABLES`); err != nil {
+		t.Fatal(err)
+	}
+	_ = blocker.Close()
+
 	// The fence dies with its connection: once killed, statements on it fail, Migrate refuses, and
 	// the next holder gets the lock.
 	lost, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
@@ -642,6 +718,21 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	}
 	if _, err := lost.Migrate(ctx); !errors.Is(err, store.ErrTeamLockLost) {
 		t.Fatalf("migrate under a killed lock: %v", err)
+	}
+	// A stale seeder cannot touch the owner's admin row through a dead lock, even when its guard
+	// still passes (the race between a check and the next statement): the row stays as it is.
+	if _, err := teamDB.Exec(`UPDATE admins SET disabled = TRUE, is_super = FALSE WHERE username = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := provision.Seed(tenant.With(ctx, forged), lost, owner, func(context.Context) error { return nil }); err == nil {
+		t.Fatal("seed ran through a killed lock")
+	}
+	var disabled, super bool
+	if err := teamDB.QueryRow(`SELECT disabled, is_super FROM admins WHERE username = ?`, owner).Scan(&disabled, &super); err != nil || !disabled || super {
+		t.Fatalf("a stale seeder changed the owner's row: disabled %v super %v %v", disabled, super, err)
+	}
+	if _, err := teamDB.Exec(`UPDATE admins SET disabled = FALSE, is_super = TRUE WHERE username = ?`, owner); err != nil {
+		t.Fatal(err)
 	}
 	lost.Release(ctx)
 	next, ok, err := store.LockTeamDB(ctx, base, itPrefix, tmA.DBName)
@@ -665,7 +756,7 @@ func TestProvisionTeamEndToEnd(t *testing.T) {
 	}
 
 	// Seed is refused on team #1, whatever ctx asks.
-	if err := provision.Seed(tenant.With(ctx, tenant.TeamOne(itOne)), ms.DB(), ms.Admin(), "kate", func(context.Context) error { return nil }); err == nil {
+	if err := provision.Seed(tenant.With(ctx, tenant.TeamOne(itOne)), ms.DB(), "kate", func(context.Context) error { return nil }); err == nil {
 		t.Fatal("seed ran on team #1")
 	}
 

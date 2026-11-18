@@ -86,7 +86,7 @@ func TestNameNewRefusesBadConfig(t *testing.T) {
 		{Prefix: "bad-prefix", Team1DB: team1DB},
 		{Prefix: prefix, Team1DB: "lkb_t_abcd1234"}, // team #1 looks like a new team's database
 	} {
-		if _, err := provision.New(c, pf, &fakeSchema{}, nopDB{}, nopAdmin{}); err == nil {
+		if _, err := provision.New(c, pf, &fakeSchema{}, nopDB{}); err == nil {
 			t.Errorf("config %+v accepted", c)
 		}
 	}
@@ -107,7 +107,6 @@ func TestNameSchemaDiff(t *testing.T) {
 // ─── worker with fakes ─────────────────────────────────────────────────────────────────────────
 
 type nopDB struct{ dependency.DB }
-type nopAdmin struct{ dependency.Admin }
 
 type fakeSchema struct {
 	mu       sync.Mutex
@@ -122,6 +121,10 @@ type fakeSchema struct {
 	running   map[string]int  // db → migrations running now
 	overlap   int             // most migrations seen running at once on one database
 	execs     []string        // statements run through a lock: "db: query"
+	// killOn: the lock session dies right after a statement containing it (Alive still says yes —
+	// the race between a guard and the next statement); later statements on that lock fail.
+	killOn string
+	dead   map[string]bool
 }
 
 func (s *fakeSchema) Create(_ context.Context, db string) error {
@@ -176,7 +179,16 @@ type fakeLock struct {
 func (l *fakeLock) ExecContext(_ context.Context, q string, _ ...any) (sql.Result, error) {
 	l.s.mu.Lock()
 	defer l.s.mu.Unlock()
+	if l.s.dead[l.db] {
+		return nil, store.ErrTeamLockLost
+	}
 	l.s.execs = append(l.s.execs, l.db+": "+q)
+	if l.s.killOn != "" && strings.Contains(q, l.s.killOn) {
+		if l.s.dead == nil {
+			l.s.dead = map[string]bool{}
+		}
+		l.s.dead[l.db] = true
+	}
 	return nil, nil
 }
 func (l *fakeLock) Migrate(ctx context.Context) (string, error) { return l.s.Migrate(ctx, l.db) }
@@ -425,7 +437,7 @@ func (p *fakePlatform) Directory() tenant.Directory { return fakeDir{p} }
 
 func newWorker(t *testing.T, pf *fakePlatform, sc *fakeSchema, spares int) *provision.Worker {
 	t.Helper()
-	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: spares, PerHour: 3}, pf, sc, nopDB{}, nopAdmin{})
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: spares, PerHour: 3}, pf, sc, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +475,7 @@ func TestWorkerFailedSpareStaysFailed(t *testing.T) {
 	w := newWorker(t, pf, sc, 1)
 	// Fail every migrate: the name is random.
 	failing := &fakeSchema{latest: "0477_x.sql", failAll: true}
-	w2, _ := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, failing, nopDB{}, nopAdmin{})
+	w2, _ := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, failing, nopDB{})
 	_ = w
 	if err := w2.KeepSparesOnce(context.Background()); err == nil {
 		t.Fatal("no error from a failing migrate")
@@ -605,7 +617,7 @@ func TestWorkerStartStop(t *testing.T) {
 	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
 	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1,
 		Every: provision.Intervals{Keeper: 5 * time.Millisecond, Claim: 5 * time.Millisecond, Fleet: time.Hour, Sweep: 5 * time.Millisecond, FleetDelay: time.Hour}},
-		pf, sc, nopDB{}, nopAdmin{})
+		pf, sc, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +660,7 @@ func TestWorkerStaleRowNeverReseedsActiveTeam(t *testing.T) {
 func TestWorkerColdPathStopsAtHourlyCap(t *testing.T) {
 	pf := newFakePlatform()
 	failing := &fakeSchema{latest: "0477_x.sql", failAll: true}
-	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 3}, pf, failing, nopDB{}, nopAdmin{})
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 3}, pf, failing, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +720,7 @@ func TestWorkerFleetHonoursDatabaseLease(t *testing.T) {
 			pf.steal(platformstore.DBLeaseKey(db))
 		}
 	}
-	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, sc, nopDB{}, nopAdmin{})
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1}, pf, sc, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +742,7 @@ func TestWorkerFleetHonoursDatabaseLease(t *testing.T) {
 // A lease taken over while its holder works cancels the holder's context (renewal finds it gone).
 func TestWorkerLeaseRenewalStopsWorkOnLoss(t *testing.T) {
 	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql"}
-	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, LeaseTTL: 30 * time.Millisecond}, pf, sc, nopDB{}, nopAdmin{})
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, LeaseTTL: 30 * time.Millisecond}, pf, sc, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -837,6 +849,44 @@ func TestWorkerLostLeaseHolderNeverScrubsActivatedTeam(t *testing.T) {
 	}
 }
 
+// The owner's admin row is written on the lock's session like the scrub: once that session is
+// gone (here right after the workshop defaults, past the guard), a stale worker cannot create,
+// re-enable or re-super the owner in a team another worker may already run. Before the fix the
+// owner went through the routing pool, outside the lock.
+func TestWorkerStaleSeedNeverWritesAdminAfterLockLoss(t *testing.T) {
+	pf, sc := newFakePlatform(), &fakeSchema{latest: "0477_x.sql", killOn: "workshop_settings"}
+	w := newWorker(t, pf, sc, 1)
+	ctx := context.Background()
+	if err := w.KeepSparesOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pf.teams[7] = &fakeTeam{slug: "alpha", status: "provisioning", owner: "kate"}
+	_ = w.ClaimOnce(ctx)
+	adminWrites := func() (n int) {
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		for _, q := range sc.execs {
+			if strings.Contains(q, "admins") || strings.Contains(q, "admin_permission") {
+				n++
+			}
+		}
+		return n
+	}
+	if n := adminWrites(); n != 0 || pf.teams[7].status != "provisioning" {
+		t.Fatalf("after the lock died: %d admin writes, status %s", n, pf.teams[7].status)
+	}
+	// A live lock: the owner goes through it, then the team is activated.
+	sc.mu.Lock()
+	sc.killOn, sc.dead = "", nil
+	sc.mu.Unlock()
+	if err := w.ProvisionTeam(ctx, platformstore.ProvisioningTeam{ID: 7, Slug: "alpha", OwnerHandle: "kate"}); err != nil || pf.teams[7].status != "active" {
+		t.Fatalf("provision: %v %s", err, pf.teams[7].status)
+	}
+	if n := adminWrites(); n != 2 {
+		t.Fatalf("owner statements on the lock: %d, want 2", n)
+	}
+}
+
 // Fix 2: migrator A stalls mid-migration past its lease; migrator B takes the expired lease but
 // cannot take the database lock, so it never starts the same migration. Without the lock both run
 // DDL on one database at once.
@@ -876,7 +926,7 @@ func TestWorkerFleetMigratorsNeverOverlap(t *testing.T) {
 func TestWorkerSpareBreakerStopsAfterThreeFailures(t *testing.T) {
 	pf := newFakePlatform()
 	sc := &fakeSchema{latest: "0477_x.sql", failAll: true}
-	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 10}, pf, sc, nopDB{}, nopAdmin{})
+	w, err := provision.New(provision.Config{Prefix: prefix, Team1DB: team1DB, Spares: 1, PerHour: 10}, pf, sc, nopDB{})
 	if err != nil {
 		t.Fatal(err)
 	}

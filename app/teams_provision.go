@@ -31,7 +31,7 @@ func (a *App) startProvisioner(ctx context.Context) (stop func(), err error) {
 		Team1DB: a.teamOne.DBName,
 		Spares:  a.c.Platform.Spares,
 		PerHour: a.c.Platform.ProvisionPerHour,
-	}, a.platform, provision.StoreSchema{BaseDSN: a.c.DB.DSN, Prefix: a.c.Platform.DBPrefix}, ms.DB(), ms.Admin())
+	}, a.platform, provision.StoreSchema{BaseDSN: a.c.DB.DSN, Prefix: a.c.Platform.DBPrefix}, ms.DB())
 	if err != nil {
 		return nil, fmt.Errorf("provisioner: %w", err)
 	}

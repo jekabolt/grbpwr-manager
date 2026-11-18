@@ -163,11 +163,10 @@ type Worker struct {
 	pf     Platform
 	schema Schema
 	db     dependency.DB
-	admins dependency.Admin
 	now    func() time.Time
 	log    *slog.Logger
-	// seed seeds the team in ctx through exec (the database lock's connection) under guard; Seed
-	// over exec / admins unless a test replaces it.
+	// seed seeds the team in ctx through exec (the database lock's session) under guard; Seed
+	// unless a test replaces it.
 	seed func(ctx context.Context, exec Execer, ownerHandle string, guard func(context.Context) error) error
 
 	mu      sync.Mutex
@@ -194,8 +193,9 @@ func CheckPrefix(prefix, team1DB string) error {
 	return nil
 }
 
-// New builds the worker. db / admins are the routing pool and the admins store (team in ctx).
-func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins dependency.Admin) (*Worker, error) {
+// New builds the worker. db is the routing pool (team in ctx); every write to a team database
+// being provisioned goes through that database's lock instead.
+func New(cfg Config, pf Platform, schema Schema, db dependency.DB) (*Worker, error) {
 	if err := CheckPrefix(cfg.Prefix, cfg.Team1DB); err != nil {
 		return nil, err
 	}
@@ -211,7 +211,7 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins depend
 	if cfg.LeaseTTL <= 0 {
 		cfg.LeaseTTL = DefaultLeaseTTL
 	}
-	if pf == nil || schema == nil || db == nil || admins == nil {
+	if pf == nil || schema == nil || db == nil {
 		return nil, errors.New("provision: missing dependency")
 	}
 	w := &Worker{
@@ -219,13 +219,12 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins depend
 		pf:      pf,
 		schema:  schema,
 		db:      db,
-		admins:  admins,
 		now:     time.Now,
 		log:     slog.Default(),
 		backoff: map[int64]retry{},
 	}
 	w.seed = func(ctx context.Context, exec Execer, owner string, guard func(context.Context) error) error {
-		return Seed(ctx, exec, w.admins, owner, guard)
+		return Seed(ctx, exec, owner, guard)
 	}
 	return w, nil
 }
