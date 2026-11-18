@@ -283,7 +283,8 @@ type SignUpParams struct {
 	Now                                             time.Time
 	PendingTTL                                      time.Duration
 	MaxOwnedTeams, MaxLettersPerHour                int
-	// PasswordMatches checks the typed password against an active account's stored hash.
+	// PasswordMatches checks the typed password against an account's stored hash. "" must cost the
+	// same as a real check and answer false (the caller compares against a dummy hash).
 	PasswordMatches func(hash string) bool
 	Letter          MakeLetter
 }
@@ -298,9 +299,11 @@ type SignUpResult struct {
 
 // SignUp registers a person and a pending team and queues ONE verify letter, in one transaction.
 //
-// A pending (unverified) email signing up again replaces its password and pending teams. An active
-// account gets a new team only when the typed password is its password and it owns fewer than
-// MaxOwnedTeams; otherwise nothing happens. ErrSlugTaken when the address is held.
+// A pending (unverified) email signing up again replaces its pending teams; its password only when
+// the typed one matches or no verify letter of it is still live (a stranger cannot re-key a sign-up
+// in progress). An active account gets a new team only when the typed password is its password and
+// it owns fewer than MaxOwnedTeams; otherwise nothing happens. ErrSlugTaken when the address is held
+// — also for the pending owner of that address unless the typed password is its password.
 func (s *Store) SignUp(ctx context.Context, p SignUpParams) (SignUpResult, error) {
 	var res SignUpResult
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -318,13 +321,16 @@ func (s *Store) SignUp(ctx context.Context, p SignUpParams) (SignUpResult, error
 			return fmt.Errorf("platformstore: slug held: %w", err)
 		}
 		if held > 0 {
-			// A pending user re-signing up for its own pending address gets it back below.
-			var own int
-			if err := tx.GetContext(ctx, &own, `SELECT COUNT(*) FROM team t JOIN platform_user u ON u.id = t.created_by
-WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pending'`, p.Slug, p.Email); err != nil {
+			// A pending user re-signing up for its own pending address, with its password, gets it back
+			// below. Everyone else — the same email with another password included — hears "taken",
+			// after the same password check, so the answer and its cost never single the email out.
+			var ownHash string
+			err := tx.GetContext(ctx, &ownHash, `SELECT u.password_hash FROM team t JOIN platform_user u ON u.id = t.created_by
+WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pending' LIMIT 1`, p.Slug, p.Email)
+			if err != nil && !isNoRows(err) {
 				return fmt.Errorf("platformstore: slug owner: %w", err)
 			}
-			if own == 0 {
+			if p.PasswordMatches == nil || !p.PasswordMatches(ownHash) {
 				return ErrSlugTaken
 			}
 		}
@@ -352,6 +358,17 @@ WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pendin
 			return err
 		case u.Status == UserPending:
 			uid = u.ID
+			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {
+				var live int
+				if err := tx.GetContext(ctx, &live, `SELECT COUNT(*) FROM email_token
+WHERE user_id = ? AND purpose = 'verify' AND used_at IS NULL AND expires_at > ?`, uid, p.Now); err != nil {
+					return fmt.Errorf("platformstore: live verify letters: %w", err)
+				}
+				if live > 0 {
+					res.Reason = "pending_password_mismatch"
+					return nil
+				}
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, p.PasswordHash, uid); err != nil {
 				return fmt.Errorf("platformstore: replace pending password: %w", err)
 			}

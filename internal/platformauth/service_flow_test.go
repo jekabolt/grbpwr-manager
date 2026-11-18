@@ -207,8 +207,30 @@ func TestIdentityFlow(t *testing.T) {
 	_, e1 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: "delivered+b3x@resend.dev", Password: pw, TeamName: "X", TeamSlug: "atelier-anna"})
 	_, e2 := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "other-password", TeamName: "X", TeamSlug: "atelier-anna"})
 	wantCode(t, e1, codes.AlreadyExists, "stranger on a taken address")
-	if e1.Error() != e2.Error() {
+	if e2 == nil || e1.Error() != e2.Error() {
 		t.Fatalf("taken-address answers differ: %v / %v", e1, e2)
+	}
+	// A stranger cannot re-key anna's sign-up in progress: {} and nothing changes, no letter.
+	var hashBefore string
+	if err := f.st.DB().Get(&hashBefore, `SELECT password_hash FROM platform_user WHERE email = ?`, anna); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SignUp(ctx, &auth.SignUpRequest{Email: anna, Password: "attacker-password", TeamName: "Evil", TeamSlug: "evil-anna"}); err != nil {
+		t.Fatal(err)
+	}
+	var hashAfter string
+	var evil int
+	if err := f.st.DB().Get(&hashAfter, `SELECT password_hash FROM platform_user WHERE email = ?`, anna); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.DB().Get(&evil, `SELECT COUNT(*) FROM team WHERE slug = 'evil-anna'`); err != nil {
+		t.Fatal(err)
+	}
+	if hashAfter != hashBefore || evil != 0 {
+		t.Fatal("a pending sign-up was re-keyed by another password")
+	}
+	if _, c2, l2 := f.lastLetter(anna); c2 != code || l2 != link {
+		t.Fatal("a letter went out for the re-key attempt")
 	}
 
 	// Wrong codes: an unknown email and a known one answer identically.

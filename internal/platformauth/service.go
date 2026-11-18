@@ -294,7 +294,7 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	res, err := s.d.Store.SignUp(ctx, platformstore.SignUpParams{
 		Email: email, PasswordHash: hash, TeamName: name, Slug: slug, HandleBase: HandleBase(email),
 		Now: now, PendingTTL: PendingTeamTTL, MaxOwnedTeams: MaxOwnedTeams, MaxLettersPerHour: MaxLettersPerEmailHr,
-		PasswordMatches: func(stored string) bool { return s.d.Hasher.Validate(req.GetPassword(), stored) == nil },
+		PasswordMatches: s.passwordMatcher(req.GetPassword()),
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
 	})
 	if errors.Is(err, platformstore.ErrSlugTaken) {
@@ -310,6 +310,18 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 		s.audit(ctx, 0, 0, "signup_ignored", map[string]string{"reason": res.Reason})
 	}
 	return &auth.SignUpResponse{}, nil
+}
+
+// passwordMatcher checks password against a stored hash; "" (no account) runs the same check
+// against the dummy hash and answers false, so a miss costs what a hit costs.
+func (s *Service) passwordMatcher(password string) func(stored string) bool {
+	return func(stored string) bool {
+		if stored == "" {
+			_ = s.d.Hasher.Validate(password, s.dummyHash)
+			return false
+		}
+		return s.d.Hasher.Validate(password, stored) == nil
+	}
 }
 
 // ResendVerification queues a fresh letter for a pending sign-up. Always {}.
