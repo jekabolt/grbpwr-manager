@@ -137,14 +137,23 @@ type retry struct {
 	delay time.Duration
 }
 
+// CheckPrefix refuses a TENANT_DB_PREFIX that is empty, outside [a-z0-9_]{1,56}, or whose new-team
+// pattern could match team #1's database.
+func CheckPrefix(prefix, team1DB string) error {
+	if err := store.NewTeamDBName(prefix, team1DB, prefix+"aaaaaaaa"); err != nil {
+		return fmt.Errorf("provision: TENANT_DB_PREFIX: %w", err)
+	}
+	if strings.HasPrefix(team1DB, prefix) && len(team1DB) == len(prefix)+8 {
+		// Team #1's database would match the new-team pattern: refuse rather than risk it.
+		return fmt.Errorf("provision: team #1's database %q looks like a new-team database of prefix %q", team1DB, prefix)
+	}
+	return nil
+}
+
 // New builds the worker. db / admins are the routing pool and the admins store (team in ctx).
 func New(cfg Config, pf Platform, schema Schema, db dependency.DB, admins dependency.Admin) (*Worker, error) {
-	if err := store.NewTeamDBName(cfg.Prefix, cfg.Team1DB, cfg.Prefix+"aaaaaaaa"); err != nil {
-		return nil, fmt.Errorf("provision: TENANT_DB_PREFIX: %w", err)
-	}
-	if strings.HasPrefix(cfg.Team1DB, cfg.Prefix) && len(cfg.Team1DB) == len(cfg.Prefix)+8 {
-		// Team #1's database would match the new-team pattern: refuse rather than risk it.
-		return nil, fmt.Errorf("provision: team #1's database %q looks like a new-team database of prefix %q", cfg.Team1DB, cfg.Prefix)
+	if err := CheckPrefix(cfg.Prefix, cfg.Team1DB); err != nil {
+		return nil, err
 	}
 	if cfg.Spares <= 0 {
 		cfg.Spares = DefaultSpares
