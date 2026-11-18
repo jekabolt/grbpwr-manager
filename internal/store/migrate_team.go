@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 	migrate "github.com/rubenv/sql-migrate"
@@ -13,6 +15,25 @@ import (
 // teamDBName is what a team database may be called: a plain identifier, so it can never smuggle a
 // second statement or a schema qualifier into a DSN or a USE.
 var teamDBName = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+
+// DSNDatabase returns the database a MySQL DSN names, by the driver's own rule: after the last '/',
+// up to the first '?', taken as written (driver v1.6 does not unescape it). It does not call
+// mysql.ParseDSN, which also resolves tls=<name> and refuses a name not registered yet: "custom" is
+// registered only inside store.New, and config is loaded before that. "" for an empty DSN.
+func DSNDatabase(dsn string) (string, error) {
+	if dsn == "" {
+		return "", nil
+	}
+	i := strings.LastIndexByte(dsn, '/')
+	if i < 0 {
+		return "", errors.New("invalid DSN: missing the slash separating the database name")
+	}
+	name := dsn[i+1:]
+	if j := strings.IndexByte(name, '?'); j >= 0 {
+		name = name[:j]
+	}
+	return name, nil
+}
 
 // TeamDSN returns baseDSN pointed at dbName: same host, user, TLS and params, another database.
 func TeamDSN(baseDSN, dbName string) (string, error) {

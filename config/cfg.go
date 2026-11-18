@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/reconcile"
@@ -162,15 +161,16 @@ func (c *Config) resolveTenant() error {
 	if c.DB.DSN == "" {
 		return nil
 	}
-	mc, err := mysql.ParseDSN(c.DB.DSN)
+	// Not mysql.ParseDSN: it refuses tls=custom until store.New registers that name.
+	dbName, err := store.DSNDatabase(c.DB.DSN)
 	if err != nil {
 		return fmt.Errorf("mysql.dsn: %w", err)
 	}
 	switch {
 	case c.Platform.Team1DB == "":
-		c.Platform.Team1DB = mc.DBName
-	case c.Platform.Team1DB != mc.DBName:
-		return fmt.Errorf("TENANT_TEAM1_DB %q is not the MYSQL_DSN database %q", c.Platform.Team1DB, mc.DBName)
+		c.Platform.Team1DB = dbName
+	case c.Platform.Team1DB != dbName:
+		return fmt.Errorf("TENANT_TEAM1_DB %q is not the MYSQL_DSN database %q", c.Platform.Team1DB, dbName)
 	}
 	c.DB.Tenant = tenantdb.Options{
 		Team1:    tenant.TeamOne(c.Platform.Team1DB),

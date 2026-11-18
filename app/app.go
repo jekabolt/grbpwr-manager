@@ -10,7 +10,6 @@ import (
 
 	"log/slog"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/jekabolt/grbpwr-manager/config"
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
 	"github.com/jekabolt/grbpwr-manager/internal/aftership"
@@ -1503,11 +1502,11 @@ func (e *stripeOrderExpirer) ExpireOrderPayment(ctx context.Context, orderUUID s
 func (a *App) teamOneFromConfig() (tenant.Team, error) {
 	db := a.c.Platform.Team1DB
 	if db == "" {
-		mc, err := mysql.ParseDSN(a.c.DB.DSN)
-		if err != nil {
+		// Runs before store.New registers tls=custom, so not mysql.ParseDSN.
+		var err error
+		if db, err = store.DSNDatabase(a.c.DB.DSN); err != nil {
 			return tenant.Team{}, fmt.Errorf("team #1 database: %w", err)
 		}
-		db = mc.DBName
 	}
 	if db == "" {
 		return tenant.Team{}, errors.New("team #1 database: MYSQL_DSN names no database")
