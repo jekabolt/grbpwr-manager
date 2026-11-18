@@ -207,6 +207,8 @@ message TeamRef {
   bool read_only = 4;
   // ready is false while the team is provisioning.
   bool ready = 5;
+  // awaiting_approval is true while the team waits for an operator's approval; ready is false then.
+  bool awaiting_approval = 6;
 }
 
 message SignUpRequest {
@@ -214,6 +216,8 @@ message SignUpRequest {
   string password = 2;
   string team_name = 3;
   string team_slug = 4;
+  // terms_accepted must be true for a new account; the server refuses otherwise.
+  bool terms_accepted = 5;
 }
 
 message SignUpResponse {}
@@ -237,6 +241,8 @@ message VerifyEmailRequest {
 message VerifyEmailResponse {
   string team_slug = 1;
   string handoff_code = 2;
+  // awaiting_approval is true when the team waits for an operator's approval; handoff_code is empty then.
+  bool awaiting_approval = 3;
 }
 
 message ResendVerificationRequest {
@@ -308,6 +314,8 @@ message AcceptInviteRequest {
   string password = 2;
   // handle is the person's name inside the team when the invited email has no account yet.
   string handle = 3;
+  // terms_accepted must be true for a new account; the server refuses otherwise.
+  bool terms_accepted = 4;
 }
 
 message AcceptInviteResponse {
