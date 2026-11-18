@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/jwtauth/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -166,7 +167,8 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 	if s.edge != nil {
 		ctx = tenant.With(ctx, team)
 	}
-	if err := s.checkAdminAccountState(ctx, claims.Handle); err != nil {
+	authz, err := s.teamAccess(ctx, team, call.token, claims)
+	if err != nil {
 		return ctx, err
 	}
 
@@ -183,8 +185,7 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 		return ctx, status.Error(codes.PermissionDenied, msgFeatureOff)
 	}
 
-	perms := rbac.ParsePermissions(claims.Perms)
-	if call.grpcMethod != "" && !rbac.Allow(call.grpcMethod, claims.Super, perms) {
+	if call.grpcMethod != "" && !rbac.Allow(call.grpcMethod, authz.Super, authz.Perms) {
 		slog.Default().WarnContext(ctx, "admin authorization denied",
 			slog.String("username", claims.Handle), slog.String("method", call.grpcMethod))
 		return ctx, status.Errorf(codes.PermissionDenied, "insufficient permissions for %s", call.grpcMethod)
@@ -197,7 +198,44 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 		slog.String("origin", call.origin),
 		slog.String("method", call.method),
 	)
-	return s.populateAdmin(ctx, claims.Handle, AdminAuthz{Super: claims.Super, Perms: perms}, workspaceOf(team, claims.Super, eff)), nil
+	return s.populateAdmin(ctx, claims.Handle, authz, workspaceOf(team, authz.Super, eff)), nil
+}
+
+// claimOperator marks a team token minted by operator entry (a console operator opening a team's
+// workspace through a hand-off code). Its holder is a platform user who is not a member of the
+// team and has no admins row in its database.
+const claimOperator = "op"
+
+// teamAccess is THE decision «may this verified token still act on this team», and the only place
+// that reads membership: every admin entry point (adminChain for gRPC and the upload routes,
+// authenticate for WithAuth) calls it, no handler looks membership up on its own. ctx carries the
+// team already (the account lookup reads the team's admins table).
+//
+// Today: the subject's admins row in the team must exist and be enabled; the authorization is the
+// token's super / perms claims. Operator entry is added HERE when the console lane lands (an op
+// token: check the platform user is a live operator and the hand-off grant, skip the admins row,
+// decide its authorization); until then an op token is refused, fail closed.
+func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string, claims jwt.TeamClaims) (AdminAuthz, error) {
+	if hasClaim(s.JwtAuth, token, claimOperator) {
+		slog.Default().WarnContext(ctx, "operator-entry token refused: not supported yet",
+			slog.Int64("tid", team.ID), slog.String("sub", claims.Handle))
+		return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	if err := s.checkAdminAccountState(ctx, claims.Handle); err != nil {
+		return AdminAuthz{}, err
+	}
+	return AdminAuthz{Super: claims.Super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
+}
+
+// hasClaim reports whether an already verified token carries a claim jwt.TeamClaims does not
+// expose. A token that no longer verifies counts as carrying it (fail closed).
+func hasClaim(a *jwtauth.JWTAuth, token, claim string) bool {
+	t, err := jwtauth.VerifyToken(a, token)
+	if err != nil {
+		return true
+	}
+	_, ok := t.PrivateClaims()[claim]
+	return ok
 }
 
 // statusGate is teams §7: deleted → 401, provisioning or schema behind → UNAVAILABLE, suspended →

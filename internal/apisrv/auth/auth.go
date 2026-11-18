@@ -552,8 +552,10 @@ func (s *Server) authenticate(ctx context.Context, token string) error {
 		}
 		tid = claims.TeamID
 	}
+	team := tenant.Team{ID: tenant.TeamOneID, Slug: tenant.TeamOneSlug, Name: tenant.TeamOneName,
+		Profile: tenant.ProfileAll, Status: tenant.StatusActive}
 	if s.edge != nil {
-		team, err := s.edge.TeamByID(ctx, tid)
+		team, err = s.edge.TeamByID(ctx, tid)
 		if err != nil {
 			if errors.Is(err, tenant.ErrNotFound) {
 				return status.Error(codes.Unauthenticated, "team not found")
@@ -565,7 +567,8 @@ func (s *Server) authenticate(ctx context.Context, token string) error {
 		}
 		ctx = tenant.With(ctx, team)
 	}
-	return s.checkAdminAccountState(ctx, claims.Handle)
+	_, err = s.teamAccess(ctx, team, token, claims)
+	return err
 }
 
 // GetTokenMetadata returns the token from grpc metadata context.
