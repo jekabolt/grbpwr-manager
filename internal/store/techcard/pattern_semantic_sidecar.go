@@ -109,7 +109,27 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if isPatternProductCompositeSidecarMediaType(in.MediaType) {
+		if in.MediaType != entity.PatternProductCompositeSidecarV8MediaType {
+			if prior != nil && prior.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+				return fmt.Errorf("current native cross-row review cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+			}
+			if in.ExpectedPreviousSidecarSHA256 == nil {
+				// Older writers may omit their prior digest. Inspect only the protected V8 slot
+				// under the current pattern/card locks; older sidecars retain their old policy.
+				if err := rejectNativeCrossRowReviewOverwriteV8(ctx, db, pattern.Id); err != nil {
+					return err
+				}
+			}
+		}
+		if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+			if err := validateNativeCrossRowReviewWriteV8(ctx, rep, in, savedPatternAuthorityRow{
+				LineKey: in.PatternLineKey, FabricPurpose: pattern.FabricPurpose, BomLineKey: pattern.BomLineKey,
+				URL: pattern.URL, SizeBytes: pattern.SizeBytes, SHA256: sql.NullString{String: pattern.SHA256, Valid: true},
+				PatternVersion: pattern.Version, SavedRowRevision: pattern.SavedRowRevision,
+			}, cardLockVersion); err != nil {
+				return err
+			}
+		} else if isPatternProductCompositeSidecarMediaType(in.MediaType) {
 			clock, err := readTechCardAssemblyClock(ctx, db, in.TechCardId)
 			if err != nil {
 				return err

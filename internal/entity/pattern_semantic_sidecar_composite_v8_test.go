@@ -128,7 +128,8 @@ func TestPatternProductNativeCrossRowReviewV8FirstAndFreshRead(t *testing.T) {
 	first := nativeCrossRowWriteFixtureV8(t, review)
 	require.NoError(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current))
 	existingWriter := first
-	require.ErrorContains(t, ValidatePatternSemanticSidecarWrite(&existingWriter), "media_type")
+	existingWriter.By = "local-review-test"
+	require.NoError(t, ValidatePatternSemanticSidecarWrite(&existingWriter))
 
 	row := current.AnchorRow
 	stored := PatternSemanticSidecar{

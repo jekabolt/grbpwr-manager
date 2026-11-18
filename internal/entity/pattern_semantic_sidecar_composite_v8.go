@@ -227,13 +227,10 @@ func decodeNativeCrossRowReviewV8(payload []byte) (*patternProductCompositeSidec
 	return &review, nil
 }
 
-// ValidateFirstPatternProductNativeCrossRowReviewV8 validates the new request and its independently
-// rebuilt current source. The caller must enforce actual prior-slot absence under the same lock.
-// This validator does not register V8 as writable or certify ROOT geometry.
-func ValidateFirstPatternProductNativeCrossRowReviewV8(in PatternSemanticSidecarWrite, current PatternProductNativeCrossRowCurrentV8) error {
+func validateNativeCrossRowReviewWriteV8(in PatternSemanticSidecarWrite) (*patternProductCompositeSidecarV8Review, error) {
 	review, err := decodeNativeCrossRowReviewV8(in.Payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	row := review.Bindings.AnchorRow
 	if in.MediaType != PatternProductCompositeSidecarV8MediaType ||
@@ -247,27 +244,48 @@ func ValidateFirstPatternProductNativeCrossRowReviewV8(in PatternSemanticSidecar
 		in.SelectedOperationNumber != review.Selection.OperationNumber ||
 		in.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(in.Payload) ||
 		in.ExpectedPostSaveReceiptSHA256 != PatternProductNativeCrossRowReviewReceiptV8(in.Payload) {
-		return nativeCrossRowViolationV8("request CAS, complete source seal or review receipt differs from the V8 bytes")
+		return nil, nativeCrossRowViolationV8("request CAS, complete source seal or review receipt differs from the V8 bytes")
+	}
+	return review, nil
+}
+
+// ValidateFirstPatternProductNativeCrossRowReviewV8 validates the new request and its independently
+// rebuilt current source. The writer must enforce actual prior-slot absence under the same lock.
+// This validation is scoped to saved-source review, not ROOT geometry.
+func ValidateFirstPatternProductNativeCrossRowReviewV8(in PatternSemanticSidecarWrite, current PatternProductNativeCrossRowCurrentV8) error {
+	review, err := validateNativeCrossRowReviewWriteV8(in)
+	if err != nil {
+		return err
 	}
 	return verifyNativeCrossRowReviewCurrentV8(review, current)
+}
+
+func validateNativeCrossRowReviewStoredBindingV8(payload []byte, metadata PatternSemanticSidecar) (*patternProductCompositeSidecarV8Review, error) {
+	review, err := decodeNativeCrossRowReviewV8(payload)
+	if err != nil {
+		return nil, err
+	}
+	row := review.Bindings.AnchorRow
+	if metadata.MediaType != PatternProductCompositeSidecarV8MediaType ||
+		metadata.TechCardId != row.TechCardID || metadata.PatternLineKey != row.PatternLineKey ||
+		metadata.CardLockVersion != row.CardLockVersion || metadata.SavedRowRevision != row.Revision ||
+		metadata.DxfSHA256 != row.SHA256 || metadata.PatternVersion != row.PatternVersion ||
+		metadata.PostSaveReceiptSHA256 != PatternProductNativeCrossRowReviewReceiptV8(payload) {
+		return nil, nativeCrossRowViolationV8("native cross-row review differs from the stored row binding")
+	}
+	return review, nil
 }
 
 // ValidateStoredPatternProductNativeCrossRowReviewV8 verifies stored bytes against a fresh
 // Complete Source projection. Successful verification still requires independent ROOT replay.
 func ValidateStoredPatternProductNativeCrossRowReviewV8(stored PatternSemanticSidecar, current PatternProductNativeCrossRowCurrentV8) error {
-	review, err := decodeNativeCrossRowReviewV8(stored.Payload)
+	if stored.ByteLength != len(stored.Payload) ||
+		stored.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(stored.Payload) {
+		return fmt.Errorf("stored native cross-row review bytes differ: %w", ErrTechCardPatternSidecarCorrupt)
+	}
+	review, err := validateNativeCrossRowReviewStoredBindingV8(stored.Payload, stored)
 	if err != nil {
 		return fmt.Errorf("invalid stored native cross-row review: %w", ErrTechCardPatternSidecarCorrupt)
-	}
-	row := review.Bindings.AnchorRow
-	if stored.MediaType != PatternProductCompositeSidecarV8MediaType ||
-		stored.TechCardId != row.TechCardID || stored.PatternLineKey != row.PatternLineKey ||
-		stored.CardLockVersion != row.CardLockVersion || stored.SavedRowRevision != row.Revision ||
-		stored.DxfSHA256 != row.SHA256 || stored.PatternVersion != row.PatternVersion ||
-		stored.ByteLength != len(stored.Payload) ||
-		stored.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(stored.Payload) ||
-		stored.PostSaveReceiptSHA256 != PatternProductNativeCrossRowReviewReceiptV8(stored.Payload) {
-		return fmt.Errorf("stored native cross-row review metadata differs: %w", ErrTechCardPatternSidecarCorrupt)
 	}
 	return verifyNativeCrossRowReviewCurrentV8(review, current)
 }
