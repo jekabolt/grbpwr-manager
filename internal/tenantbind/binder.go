@@ -514,12 +514,17 @@ func (b *Binder) bindFor(ctx context.Context, c Class) (context.Context, error) 
 		return tenant.With(ctx, t), nil
 	case ClassToken:
 		return tenant.With(ctx, b.teamOne), nil
+	case ClassHealth:
+		// Probes, swagger, static files: team #1 in both modes. /readyz pings the strict store, which
+		// refuses a ctx with no team (503 on every probe); team #1 is the boot team whose database
+		// the process cannot run without, so it is the readiness signal. /livez touches no database.
+		return tenant.With(ctx, b.teamOne), nil
 	case ClassLegacyAuth:
 		if slug := tenant.HeaderSlug(ctx); slug != "" && !strings.EqualFold(slug, b.teamOne.Slug) {
 			return nil, status.Error(codes.PermissionDenied, errTeamMismatch.Error())
 		}
 		return tenant.With(ctx, b.teamOne), nil
-	case ClassXTeam, ClassClaim, ClassPlatform, ClassHealth:
+	case ClassXTeam, ClassClaim, ClassPlatform:
 		if !teams {
 			// Exactly as the single-tenant binary: everything runs as team #1.
 			return tenant.With(ctx, b.teamOne), nil

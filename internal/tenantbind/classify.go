@@ -24,7 +24,7 @@ const (
 	// ClassPlatform: PlatformService and its gateway /api/platform — control plane only,
 	// aud=console, no team in ctx.
 	ClassPlatform Class = "platform"
-	// ClassHealth: probes, swagger and static files — no team.
+	// ClassHealth: probes, swagger and static files — team #1 (the boot team) in both modes.
 	ClassHealth Class = "health"
 )
 

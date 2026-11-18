@@ -158,7 +158,7 @@ func TestModeOffBindsTeamOneEverywhere(t *testing.T) {
 func TestTeamsModeBinding(t *testing.T) {
 	b, _ := teamsBinder(t)
 	ctx := context.Background()
-	for _, c := range []Class{ClassClaim, ClassXTeam, ClassPlatform, ClassHealth} {
+	for _, c := range []Class{ClassClaim, ClassXTeam, ClassPlatform} {
 		bound, err := b.bindFor(ctx, c)
 		if err != nil {
 			t.Fatalf("%q: %v", c, err)
@@ -167,7 +167,7 @@ func TestTeamsModeBinding(t *testing.T) {
 			t.Fatalf("%q bound a team in teams mode; the chain or handler binds it", c)
 		}
 	}
-	for _, c := range []Class{ClassStorefront, ClassToken, ClassLegacyAuth} {
+	for _, c := range []Class{ClassStorefront, ClassToken, ClassLegacyAuth, ClassHealth} {
 		bound, err := b.bindFor(ctx, c)
 		if err != nil {
 			t.Fatalf("%q: %v", c, err)
@@ -324,7 +324,7 @@ func TestInterceptorsAndMiddleware(t *testing.T) {
 		"/api/frontend/hero": 299,
 		"/api/p/abc":         299,
 		"/api/admin/x":       204,
-		"/livez":             204,
+		"/livez":             299, // health class: team #1 (the /readyz ping needs it)
 		"/api/nothing":       http.StatusForbidden,
 	} {
 		rec := httptest.NewRecorder()
