@@ -41,7 +41,7 @@ func nativeWholePlacementFixtureV10(t *testing.T, retained, previous PatternSema
 	document.WriteCAS.ExpectedPreviousSidecarSHA256 = previous.SidecarSHA256
 	document.Components[0] = nativePlacementComponentV9(retainedNativeCrossRowKindV10, retained.MediaType, retained.Payload)
 	world := nativeWholeWorldPlacementV1{
-		SchemaVersion: nativeWholePlacementDomainV10, RetainedCarrierSHA256: retained.SidecarSHA256, Body: body,
+		SchemaVersion: "tech-card-complete-source-native-whole-world-placement/1", RetainedCarrierSHA256: retained.SidecarSHA256, Body: body,
 		Layout: nativeWholeWorldLayoutV1{
 			SizeID: review.Selection.SizeID, SizeToken: review.Selection.SizeToken,
 			RuntimeCandidateSHA256: strings.Repeat("a", 64), CutGraphSHA256: strings.Repeat("b", 64),

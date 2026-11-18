@@ -181,7 +181,7 @@ func wholePlacementWriteFixtureV10(
 	xyz := make([]byte, 6*3*4)
 	binary.LittleEndian.PutUint32(xyz[:4], math.Float32bits(x))
 	world, err := json.Marshal(map[string]any{
-		"schemaVersion": "tech-card-complete-source-native-whole-placement/1", "retainedCarrierSha256": retained.SidecarSHA256,
+		"schemaVersion": "tech-card-complete-source-native-whole-world-placement/1", "retainedCarrierSha256": retained.SidecarSHA256,
 		"body": map[string]any{
 			"modelId": model.ModelID, "modelUpdatedAt": model.ModelUpdatedAt, "modelPhysicalInputsSha256": model.ModelPhysicalInputsSHA256,
 			"pose":     map[string]string{"kind": model.Pose.Kind, "canonicalSha256": model.Pose.CanonicalSHA256},

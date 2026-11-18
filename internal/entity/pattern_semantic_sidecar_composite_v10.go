@@ -12,6 +12,7 @@ const (
 	patternProductCompositeSidecarDocumentV10  = "pattern-import-dxf-product-composite-sidecar-document/10"
 	nativeWholePlacementProfileV10             = "saved-full-assembly/native-whole-world-placement/1"
 	nativeWholePlacementDomainV10              = "tech-card-complete-source-native-whole-placement/1"
+	nativeWholeWorldPlacementDocumentV1        = "tech-card-complete-source-native-whole-world-placement/1"
 	nativeWholeWorldPlacementMediaTypeV1       = "application/vnd.grbpwr.pattern-dxf-native-whole-world-placement.v1+json"
 	retainedNativeCrossRowKindV10              = "retained-native-cross-row-carrier"
 	nativeWholeWorldPlacementKindV10           = "native-whole-world-placement-v1"
@@ -120,7 +121,7 @@ func decodeNativeWholePlacementV10(payload []byte) (*decodedNativeWholePlacement
 	if err := decodeCanonicalNativeCrossRowPlacementJSON(worldBytes, &parsed.world, maxNativeWholePlacementBytesV10); err != nil {
 		return nil, nativeWholePlacementViolationV10("whole placement component is not canonical")
 	}
-	if parsed.world.SchemaVersion != nativeWholePlacementDomainV10 ||
+	if parsed.world.SchemaVersion != nativeWholeWorldPlacementDocumentV1 ||
 		parsed.world.RetainedCarrierSHA256 != retained.SHA256 ||
 		parsed.world.Layout.SizeID != parsed.review.Selection.SizeID ||
 		parsed.world.Layout.SizeToken != parsed.review.Selection.SizeToken {
