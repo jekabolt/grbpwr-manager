@@ -87,8 +87,8 @@ func NewTeamTokenAt(a *jwtauth.JWTAuth, ttl time.Duration, c TeamClaims, now tim
 
 // VerifyTeamToken verifies signature and expiry and reads the claims.
 //
-// A platform token (uid or a platform audience present) must be whole: one platform audience, a
-// positive uid, a sid, a positive tid exactly when the audience is team. When exp.Audience is a
+// A platform token (uid or a platform audience present) must be whole: one platform audience, exp
+// and iat with exp after iat, a positive uid, a sid, a positive tid exactly when the audience is team. When exp.Audience is a
 // platform audience the token's must equal it. exp.Issuer and a non-platform exp.Audience are the
 // legacy admin token's expectations and apply to legacy tokens only.
 //
@@ -142,6 +142,10 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 	c.Audience = platformAud
 	if exp != nil && isPlatformAud(exp.Audience) && exp.Audience != c.Audience {
 		return TeamClaims{}, ErrInvalidClaims
+	}
+	// jwtauth checks exp only when present: a platform token must carry both, exp after iat.
+	if iat, ex := t.IssuedAt(), t.Expiration(); iat.IsZero() || ex.IsZero() || !ex.After(iat) {
+		return TeamClaims{}, fmt.Errorf("%w: exp and iat required, exp after iat", errTeamClaims)
 	}
 	if c.UserID, err = int64Claim(m[claimUserID]); err != nil || c.UserID <= 0 {
 		return TeamClaims{}, fmt.Errorf("%w: uid", errTeamClaims)

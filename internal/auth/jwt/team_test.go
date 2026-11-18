@@ -122,6 +122,43 @@ func TestMalformedPlatformTokensRefused(t *testing.T) {
 	}
 }
 
+// TestPlatformTokenNeedsExpAndIat — jwtauth checks exp only when it is there; a platform token
+// without exp would never expire. Legacy tokens are not touched by this rule.
+func TestPlatformTokenNeedsExpAndIat(t *testing.T) {
+	a := teamAuth()
+	now := time.Now()
+	base := func() map[string]any {
+		return map[string]any{"sub": "x", "aud": AudTeam, "uid": 1, "tid": 2, "sid": "s"}
+	}
+	enc := func(claims map[string]any) string {
+		_, s, err := a.Encode(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	ok := base()
+	ok["iat"], ok["exp"] = now.Add(-time.Minute).Unix(), now.Add(time.Hour).Unix()
+	if _, err := VerifyTeamToken(a, enc(ok), nil); err != nil {
+		t.Fatalf("whole token refused: %v", err)
+	}
+	noExp := base()
+	noExp["iat"] = now.Add(-time.Minute).Unix()
+	noIat := base()
+	noIat["exp"] = now.Add(time.Hour).Unix()
+	same := base()
+	same["iat"], same["exp"] = now.Add(-time.Minute).Unix(), now.Add(-time.Minute).Unix()
+	for name, c := range map[string]map[string]any{"no exp": noExp, "no iat": noIat, "exp = iat": same} {
+		if _, err := VerifyTeamToken(a, enc(c), nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	legacy := map[string]any{"sub": "admin", "super": true}
+	if c, err := VerifyTeamToken(a, enc(legacy), nil); err != nil || !c.Legacy {
+		t.Errorf("legacy token without exp/iat: %+v %v", c, err)
+	}
+}
+
 func TestNewTeamTokenRefusesBadClaims(t *testing.T) {
 	a := teamAuth()
 	bad := []TeamClaims{
