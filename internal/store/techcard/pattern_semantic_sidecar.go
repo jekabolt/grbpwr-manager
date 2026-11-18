@@ -109,17 +109,19 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if prior != nil && isNativeCrossRowCarrier(prior.MediaType) && in.MediaType != entity.PatternProductCompositeSidecarV9MediaType {
+		if prior != nil && isNativeCrossRowCarrier(prior.MediaType) &&
+			in.MediaType != entity.PatternProductCompositeSidecarV10MediaType &&
+			(in.MediaType != entity.PatternProductCompositeSidecarV9MediaType || prior.MediaType == entity.PatternProductCompositeSidecarV10MediaType) {
 			return fmt.Errorf("current native cross-row carrier cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 		}
 		if in.ExpectedPreviousSidecarSHA256 == nil {
-			// Legacy writers may omit their prior digest. Protect both native
+			// Legacy writers may omit their prior digest. Protect the native
 			// media under the card and row lock without changing legacy CAS.
 			if err := rejectProtectedNativeCrossRowOverwrite(ctx, db, pattern.Id); err != nil {
 				return err
 			}
 		}
-		if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType || in.MediaType == entity.PatternProductCompositeSidecarV9MediaType {
+		if isNativeCrossRowCarrier(in.MediaType) {
 			current, err := loadCurrentNativeCrossRowWrite(ctx, rep, in, savedPatternAuthorityRow{
 				LineKey: in.PatternLineKey, FabricPurpose: pattern.FabricPurpose, BomLineKey: pattern.BomLineKey,
 				URL: pattern.URL, SizeBytes: pattern.SizeBytes, SHA256: sql.NullString{String: pattern.SHA256, Valid: true},
@@ -131,7 +133,7 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 			if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
 				err = entity.ValidateFirstPatternProductNativeCrossRowReviewV8(in, current)
 			} else {
-				err = validateNativeCrossRowPlacementWriteV9(ctx, db, in, prior, current)
+				err = validateNativePlacementWrite(ctx, db, in, prior, current)
 			}
 			if err != nil {
 				return err

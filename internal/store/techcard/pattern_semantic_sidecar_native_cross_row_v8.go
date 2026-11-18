@@ -18,10 +18,11 @@ func rejectProtectedNativeCrossRowOverwrite(ctx context.Context, db dependency.D
 	}](ctx, db, `
 		SELECT media_type
 		FROM tech_card_pattern_semantic_sidecar
-		WHERE pattern_row_id = :id AND media_type IN (:review, :placement)
+		WHERE pattern_row_id = :id AND media_type IN (:review, :placement, :whole)
 		FOR UPDATE`, map[string]any{
 		"id": patternID, "review": entity.PatternProductCompositeSidecarV8MediaType,
 		"placement": entity.PatternProductCompositeSidecarV9MediaType,
+		"whole":     entity.PatternProductCompositeSidecarV10MediaType,
 	})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):

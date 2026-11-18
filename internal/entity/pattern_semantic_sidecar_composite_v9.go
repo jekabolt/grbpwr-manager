@@ -33,16 +33,10 @@ type nativeCrossRowPlacementDocumentV9 struct {
 }
 
 type nativeCrossRowWorldPlacementV1 struct {
-	SchemaVersion string `json:"schemaVersion"`
-	ReviewSHA256  string `json:"reviewSha256"`
-	Body          struct {
-		NeutralPlacementModelAuthorityV1
-		Observed struct {
-			BodyPositionsFloat32LeSHA256 string `json:"bodyPositionsFloat32LeSha256"`
-			BodyTrianglesUint32LeSHA256  string `json:"bodyTrianglesUint32LeSha256"`
-		} `json:"observed"`
-	} `json:"body"`
-	Placement struct {
+	SchemaVersion string                         `json:"schemaVersion"`
+	ReviewSHA256  string                         `json:"reviewSha256"`
+	Body          neutralPlacementObservedBodyV1 `json:"body"`
+	Placement     struct {
 		CenterMm       [3]float64 `json:"centerMm"`
 		DepthOffsetsMm [2]int     `json:"depthOffsetsMm"`
 		DirectedCut    struct {
@@ -53,6 +47,33 @@ type nativeCrossRowWorldPlacementV1 struct {
 			Pieces                                  [2]nativeCrossRowPieceWorldPlacementV1 `json:"pieces"`
 		} `json:"directedCut"`
 	} `json:"placement"`
+}
+
+type neutralPlacementObservedBodyV1 struct {
+	NeutralPlacementModelAuthorityV1
+	Observed struct {
+		BodyPositionsFloat32LeSHA256 string `json:"bodyPositionsFloat32LeSha256"`
+		BodyTrianglesUint32LeSHA256  string `json:"bodyTrianglesUint32LeSha256"`
+	} `json:"observed"`
+}
+
+func (body neutralPlacementObservedBodyV1) validate() error {
+	neutralSHA, err := NeutralPlacementPoseCanonicalSHA256V1()
+	if err != nil {
+		return err
+	}
+	timestamp, timestampErr := time.Parse(time.RFC3339Nano, body.ModelUpdatedAt)
+	if body.ModelID <= 0 || body.ModelID > math.MaxInt32 || timestampErr != nil || timestamp.Year() < 1 ||
+		!strings.HasSuffix(body.ModelUpdatedAt, "Z") || body.ModelUpdatedAt != wirePlacementTimestampV9(timestamp) ||
+		body.Pose.Kind != NeutralPlacementPoseKindV1 || body.Pose.CanonicalSHA256 != neutralSHA {
+		return fmt.Errorf("a valid persisted model with the exact neutral pose is required")
+	}
+	if !ValidPatternSemanticSidecarSHA256(body.ModelPhysicalInputsSHA256) ||
+		!ValidPatternSemanticSidecarSHA256(body.Observed.BodyPositionsFloat32LeSHA256) ||
+		!ValidPatternSemanticSidecarSHA256(body.Observed.BodyTrianglesUint32LeSHA256) {
+		return fmt.Errorf("model and observed body digests must be lowercase SHA-256")
+	}
+	return nil
 }
 
 type nativeCrossRowPieceWorldPlacementV1 struct {
@@ -153,19 +174,11 @@ func validateNativeCrossRowWorldPlacementV1(world nativeCrossRowWorldPlacementV1
 		directed.GridSHA256 != review.Review.GridSHA256 {
 		return nativeCrossRowPlacementViolationV9("world placement must retain the exact V8 review and grid")
 	}
-	neutralSHA, err := NeutralPlacementPoseCanonicalSHA256V1()
-	if err != nil {
-		return err
-	}
-	timestamp, timestampErr := time.Parse(time.RFC3339Nano, body.ModelUpdatedAt)
-	if body.ModelID <= 0 || body.ModelID > math.MaxInt32 || timestampErr != nil || timestamp.Year() < 1 ||
-		!strings.HasSuffix(body.ModelUpdatedAt, "Z") || body.ModelUpdatedAt != wirePlacementTimestampV9(timestamp) ||
-		body.Pose.Kind != NeutralPlacementPoseKindV1 || body.Pose.CanonicalSHA256 != neutralSHA {
-		return nativeCrossRowPlacementViolationV9("a valid persisted model with the exact neutral pose is required")
+	if err := body.validate(); err != nil {
+		return nativeCrossRowPlacementViolationV9(err.Error())
 	}
 	for _, digest := range []string{
-		body.ModelPhysicalInputsSHA256, body.Observed.BodyPositionsFloat32LeSHA256,
-		body.Observed.BodyTrianglesUint32LeSHA256, directed.CarrierMaterialPositionsFloat64LeSHA256,
+		directed.CarrierMaterialPositionsFloat64LeSHA256,
 		directed.CarrierTrianglesUint32LeSHA256, directed.PositionsInvMassFloat32LeSHA256,
 	} {
 		if !ValidPatternSemanticSidecarSHA256(digest) {

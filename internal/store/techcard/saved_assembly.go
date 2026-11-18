@@ -129,7 +129,7 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 				if sidecar.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
 					err = entity.ValidateStoredPatternProductNativeCrossRowReviewV8(*sidecar, current)
 				} else {
-					err = validateStoredNativeCrossRowPlacementV9(ctx, rep.DB(), *sidecar, current)
+					err = validateStoredNativePlacement(ctx, rep.DB(), *sidecar, current)
 				}
 				if errors.Is(err, entity.ErrTechCardPatternSidecarBindingMoved) {
 					return fmt.Errorf("native cross-row carrier moved: %w: %w", entity.ErrTechCardSavedAssemblyMoved, err)

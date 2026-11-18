@@ -11,15 +11,17 @@ import (
 )
 
 func isNativeCrossRowCarrier(media string) bool {
-	return media == entity.PatternProductCompositeSidecarV8MediaType || media == entity.PatternProductCompositeSidecarV9MediaType
+	return media == entity.PatternProductCompositeSidecarV8MediaType ||
+		media == entity.PatternProductCompositeSidecarV9MediaType ||
+		media == entity.PatternProductCompositeSidecarV10MediaType
 }
 
-func validateNativeCrossRowPlacementWriteV9(
+func validateNativePlacementWrite(
 	ctx context.Context, db dependency.DB, in entity.PatternSemanticSidecarWrite, prior *priorPatternSemanticSidecar,
 	current entity.PatternProductNativeCrossRowCurrentV8,
 ) error {
 	if prior == nil || !isNativeCrossRowCarrier(prior.MediaType) {
-		return fmt.Errorf("native cross-row placement requires current V8 or V9: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		return fmt.Errorf("native placement requires a current native carrier: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 	}
 	stored := entity.PatternSemanticSidecar{
 		TechCardId: in.TechCardId, PatternLineKey: in.PatternLineKey,
@@ -28,7 +30,13 @@ func validateNativeCrossRowPlacementWriteV9(
 		MediaType: prior.MediaType, ByteLength: prior.ByteLength, Payload: prior.Payload,
 		PostSaveReceiptSHA256: prior.PostSaveReceiptSHA256,
 	}
-	binding, err := entity.CheckPatternProductNativeCrossRowPlacementTransitionV9(in, stored)
+	var binding entity.NeutralPlacementModelAuthorityV1
+	var err error
+	if in.MediaType == entity.PatternProductCompositeSidecarV10MediaType {
+		binding, err = entity.CheckPatternProductNativeWholePlacementTransitionV10(in, stored)
+	} else {
+		binding, err = entity.CheckPatternProductNativeCrossRowPlacementTransitionV9(in, stored)
+	}
 	if err != nil {
 		return err
 	}
@@ -38,20 +46,32 @@ func validateNativeCrossRowPlacementWriteV9(
 	if err != nil {
 		return nativeCrossRowPlacementModelError(err)
 	}
+	if in.MediaType == entity.PatternProductCompositeSidecarV10MediaType {
+		return entity.ValidatePatternProductNativeWholePlacementWriteCurrentV10(in, current, lockedModel)
+	}
 	return entity.ValidatePatternProductNativeCrossRowPlacementWriteCurrentV9(in,
 		entity.PatternProductNativeCrossRowPlacementCurrentV9{Source: current, Model: lockedModel})
 }
 
-func validateStoredNativeCrossRowPlacementV9(
+func validateStoredNativePlacement(
 	ctx context.Context, db dependency.DB, stored entity.PatternSemanticSidecar, current entity.PatternProductNativeCrossRowCurrentV8,
 ) error {
-	binding, err := entity.ReadPatternProductNativeCrossRowPlacementBindingV9(stored)
+	var binding entity.NeutralPlacementModelAuthorityV1
+	var err error
+	if stored.MediaType == entity.PatternProductCompositeSidecarV10MediaType {
+		binding, err = entity.ReadPatternProductNativeWholePlacementBindingV10(stored)
+	} else {
+		binding, err = entity.ReadPatternProductNativeCrossRowPlacementBindingV9(stored)
+	}
 	if err != nil {
 		return err
 	}
 	snapshotModel, err := model.ReadNeutralPlacementModelAuthorityV1(ctx, db, binding.ModelID)
 	if err != nil {
 		return nativeCrossRowPlacementModelError(err)
+	}
+	if stored.MediaType == entity.PatternProductCompositeSidecarV10MediaType {
+		return entity.ValidateStoredPatternProductNativeWholePlacementV10(stored, current, snapshotModel)
 	}
 	return entity.ValidateStoredPatternProductNativeCrossRowPlacementV9(stored,
 		entity.PatternProductNativeCrossRowPlacementCurrentV9{Source: current, Model: snapshotModel})
