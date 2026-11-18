@@ -41,12 +41,50 @@ func dsn(t *testing.T, db string) string {
 		os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), host, port, db)
 }
 
+func TestMain(m *testing.M) {
+	os.Exit(serialized(m))
+}
+
+// serialized runs the package holding a server-wide lock shared with the tenantdb tests: the
+// disposable test MySQL keeps its data in memory, and two packages migrating full team schemas at
+// once can exhaust it.
+func serialized(m *testing.M) int {
+	host := os.Getenv("MYSQL_HOST")
+	if host == "" {
+		return m.Run()
+	}
+	port := os.Getenv("MYSQL_PORT")
+	if port == "" {
+		port = "3306"
+	}
+	db, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/", os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), host, port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer db.Close()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer conn.Close()
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK('teams_schema_tests', 900)`).Scan(&got); err != nil || got.Int64 != 1 {
+		fmt.Fprintf(os.Stderr, "test schema lock: %v %v\n", got, err)
+		return 1
+	}
+	defer conn.ExecContext(ctx, `SELECT RELEASE_LOCK('teams_schema_tests')`)
+	return m.Run()
+}
+
 func TestEnsureAndDisable(t *testing.T) {
 	d := dsn(t, dbOne)
 	if err := testdbguard.CheckMySQLDSN(d); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	root, err := sql.Open("mysql", dsn(t, ""))
 	if err != nil {
@@ -59,9 +97,6 @@ func TestEnsureAndDisable(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := store.MigrateTeam(ctx, d, db); err != nil {
-			t.Fatalf("migrate %s: %v", db, err)
-		}
 	}
 	t.Cleanup(func() {
 		if r, err := sql.Open("mysql", dsn(t, "")); err == nil {
@@ -71,6 +106,16 @@ func TestEnsureAndDisable(t *testing.T) {
 			r.Close()
 		}
 	})
+	// Team B gets the real migrations. Team #1 only needs the two admin tables (the test container
+	// keeps its data in memory; a second full schema is not worth it).
+	if _, err := store.MigrateTeam(ctx, d, dbTwo); err != nil {
+		t.Fatalf("migrate %s: %v", dbTwo, err)
+	}
+	for _, tb := range []string{"admins", "admin_permission"} {
+		if _, err := root.ExecContext(ctx, "CREATE TABLE `"+dbOne+"`.`"+tb+"` LIKE `"+dbTwo+"`.`"+tb+"`"); err != nil {
+			t.Fatalf("copy %s: %v", tb, err)
+		}
+	}
 
 	one := tenant.TeamOne(dbOne)
 	two := tenant.Team{ID: 2, Slug: "bravo", DBName: dbTwo, Status: tenant.StatusActive}

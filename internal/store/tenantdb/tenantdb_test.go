@@ -90,59 +90,116 @@ func baseDSN(t *testing.T, db string) string {
 		os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), host, port, db)
 }
 
-// setupTwoTeams creates and migrates both databases and puts admins row id 1 = "alpha" in team #1
-// and id 1 = "bravo" in team B.
+// migrated holds the package's two databases, created once (team #1 fully migrated): a full migration run is
+// several hundred files, too slow to repeat per test.
+var migrated struct {
+	once sync.Once
+	err  error
+}
+
+func migrateOnce(t *testing.T, dsnOne string) {
+	t.Helper()
+	migrated.once.Do(func() { migrated.err = createAndMigrate(t, dsnOne) })
+	if migrated.err != nil {
+		t.Fatal(migrated.err)
+	}
+}
+
+func createAndMigrate(t *testing.T, dsnOne string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	root, err := sql.Open("mysql", baseDSN(t, ""))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, db := range []string{dbOne, dbTwo} {
+		if _, err := root.ExecContext(ctx, "DROP DATABASE IF EXISTS `"+db+"`"); err != nil {
+			return err
+		}
+		if _, err := root.ExecContext(ctx, "CREATE DATABASE `"+db+"` CHARACTER SET utf8mb4"); err != nil {
+			return err
+		}
+	}
+	want := store.LatestMigrationID()
+	if want == "" {
+		return errors.New("LatestMigrationID is empty")
+	}
+	began := time.Now()
+	v, err := store.MigrateTeam(ctx, dsnOne, dbOne)
+	if err != nil {
+		return fmt.Errorf("migrate %s: %w", dbOne, err)
+	}
+	if v != want {
+		return fmt.Errorf("migrate %s: version %q, want %q", dbOne, v, want)
+	}
+	t.Logf("migrated %s in %s", dbOne, time.Since(began).Round(time.Second))
+	// Running it again is a no-op.
+	if _, err := store.MigrateTeam(ctx, dsnOne, dbOne); err != nil {
+		return fmt.Errorf("second migrate: %w", err)
+	}
+	// Team B gets the admin tables only: the disposable test MySQL keeps its data in memory and does
+	// not hold two full team schemas next to the other lanes' containers. The pool never looks at
+	// the schema, only at which database a statement lands in.
+	for _, tb := range []string{"admins", "admin_permission"} {
+		if _, err := root.ExecContext(ctx, "CREATE TABLE `"+dbTwo+"`.`"+tb+"` LIKE `"+dbOne+"`.`"+tb+"`"); err != nil {
+			return fmt.Errorf("copy %s: %w", tb, err)
+		}
+	}
+	return nil
+}
+
+func TestMain(m *testing.M) {
+	os.Exit(runPackage(m))
+}
+
+// runPackage holds a server-wide lock shared with the teamsync tests for the whole package: the
+// disposable test MySQL keeps its data in memory, and two packages migrating full team schemas at
+// once can exhaust it. Then it drops this package's databases.
+func runPackage(m *testing.M) int {
+	if os.Getenv("MYSQL_HOST") == "" {
+		return m.Run()
+	}
+	port := os.Getenv("MYSQL_PORT")
+	if port == "" {
+		port = "3306"
+	}
+	r, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%s)/", os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), os.Getenv("MYSQL_HOST"), port))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer r.Close()
+	ctx := context.Background()
+	conn, err := r.Conn(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer conn.Close()
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK('teams_schema_tests', 900)`).Scan(&got); err != nil || got.Int64 != 1 {
+		fmt.Fprintf(os.Stderr, "test schema lock: %v %v\n", got, err)
+		return 1
+	}
+	defer conn.ExecContext(ctx, `SELECT RELEASE_LOCK('teams_schema_tests')`)
+	code := m.Run()
+	for _, db := range []string{dbOne, dbTwo} {
+		_, _ = r.Exec("DROP DATABASE IF EXISTS `" + db + "`")
+	}
+	return code
+}
+
+// setupTwoTeams makes sure both databases are migrated and reseeds admins: row id 1 = "alpha" in
+// team #1 and id 1 = "bravo" in team B.
 func setupTwoTeams(t *testing.T) (one, two tenant.Team, dsnOne string) {
 	t.Helper()
 	dsnOne = baseDSN(t, dbOne)
 	if err := testdbguard.CheckMySQLDSN(dsnOne); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	root, err := sql.Open("mysql", baseDSN(t, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	for _, db := range []string{dbOne, dbTwo} {
-		if _, err := root.ExecContext(ctx, "DROP DATABASE IF EXISTS `"+db+"`"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := root.ExecContext(ctx, "CREATE DATABASE `"+db+"` CHARACTER SET utf8mb4"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		r, err := sql.Open("mysql", baseDSN(t, ""))
-		if err != nil {
-			return
-		}
-		defer r.Close()
-		for _, db := range []string{dbOne, dbTwo} {
-			_, _ = r.Exec("DROP DATABASE IF EXISTS `" + db + "`")
-		}
-	})
-
-	want := store.LatestMigrationID()
-	if want == "" {
-		t.Fatal("LatestMigrationID is empty")
-	}
-	for _, db := range []string{dbOne, dbTwo} {
-		v, err := store.MigrateTeam(ctx, dsnOne, db)
-		if err != nil {
-			t.Fatalf("migrate %s: %v", db, err)
-		}
-		if v != want {
-			t.Fatalf("migrate %s: version %q, want %q", db, v, want)
-		}
-	}
-	// Running it again is a no-op.
-	if _, err := store.MigrateTeam(ctx, dsnOne, dbTwo); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-
+	migrateOnce(t, dsnOne)
+	ctx := context.Background()
 	for db, name := range map[string]string{dbOne: "alpha", dbTwo: "bravo"} {
 		dsn, err := store.TeamDSN(dsnOne, db)
 		if err != nil {
@@ -152,7 +209,10 @@ func setupTwoTeams(t *testing.T) (one, two tenant.Team, dsnOne string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = h.ExecContext(ctx, `INSERT INTO admins (id, username, password_hash, is_super) VALUES (1, ?, 'x', 0)`, name)
+		_, err = h.ExecContext(ctx, `DELETE FROM admins`)
+		if err == nil {
+			_, err = h.ExecContext(ctx, `INSERT INTO admins (id, username, password_hash, is_super) VALUES (1, ?, 'x', 0)`, name)
+		}
 		h.Close()
 		if err != nil {
 			t.Fatalf("seed %s: %v", db, err)
