@@ -12,6 +12,7 @@ import (
 	authjwt "github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"github.com/stretchr/testify/assert"
@@ -238,7 +239,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		resp, err := interceptor(ctx, nil, info, handler)
@@ -256,7 +257,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		md := metadata.New(map[string]string{
@@ -296,7 +297,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		md := metadata.New(map[string]string{
@@ -391,7 +392,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		assert.NoError(t, err)
 		return tok
 	}
-	// Legacy token: pre-RBAC, carries no super/perms claims → full access.
+	// Legacy token: pre-RBAC, carries no super/perms claims → no access (the full-access rule is gone).
 	legacyTok, err := authjwt.NewTokenWithSubject(authsrv.JwtAuth, time.Hour, "legacy")
 	assert.NoError(t, err)
 	legacyNoSubject, err := authjwt.NewToken(authsrv.JwtAuth, time.Hour)
@@ -422,7 +423,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"scoped read allowed", scoped, "/admin.AdminService/GetOrderByUUID", true},
 		{"scoped write on read grant denied", scoped, "/admin.AdminService/RefundOrder", false},
 		{"scoped write allowed", scoped, "/admin.AdminService/UploadContentImage", true},
-		{"scoped other section denied", scoped, "/admin.AdminService/UpsertProduct", false},
+		{"scoped other section denied", scoped, "/admin.AdminService/UpdateColorway", false},
 		{"models read may get mannequin pose", modelsRead, "/admin.AdminService/GetModelMannequinPose", true},
 		{"models read may not put mannequin pose", modelsRead, "/admin.AdminService/PutModelMannequinPose", false},
 		{"models write may get mannequin pose", modelsWrite, "/admin.AdminService/GetModelMannequinPose", true},
@@ -430,11 +431,11 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"allowlist always allowed", scoped, "/admin.AdminService/GetDictionary", true},
 		{"self view allowlisted", noAccess, "/admin.AdminService/GetCurrentAccount", true},
 		{"no-access denied", noAccess, "/admin.AdminService/ListOrders", false},
-		{"super bypass", super, "/admin.AdminService/UpsertProduct", true},
+		{"super bypass", super, "/admin.AdminService/UpdateColorway", true},
 		{"super on accounts", super, "/admin.AdminService/CreateAccount", true},
 		{"scoped cannot manage accounts", scoped, "/admin.AdminService/CreateAccount", false},
-		{"legacy full access", legacyTok, "/admin.AdminService/UpsertProduct", true},
-		{"legacy token without username", legacyNoSubject, "/admin.AdminService/UpsertProduct", true},
+		{"legacy token without super has no access (pre-RBAC rule removed, teams §3)", legacyTok, "/admin.AdminService/UpdateColorway", false},
+		{"legacy token without username has no access", legacyNoSubject, "/admin.AdminService/UpdateColorway", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -518,18 +519,27 @@ func TestInterceptorAiMethodsAreSuperOnly(t *testing.T) {
 		})
 	}
 
-	// Every other method: the legacy token keeps the full access it always had.
+	// Every other method: a legacy token without the super claim reaches only the allowlist (the
+	// pre-RBAC "no claim = full access" rule is gone, teams §3); a super token reaches everything.
 	others := 0
 	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
 		if _, ai := aiMethods[m.MethodName]; ai {
 			continue
 		}
 		others++
-		reached, err := call(legacyTok, "/admin.AdminService/"+m.MethodName)
-		if !assert.NoError(t, err, "legacy token must keep full access to %s", m.MethodName) {
-			continue
+		method := "/admin.AdminService/" + m.MethodName
+		_, allowlisted, _ := rbac.Lookup(method)
+		reached, err := call(legacyTok, method)
+		if allowlisted {
+			assert.NoError(t, err, "allowlisted %s", m.MethodName)
+			assert.True(t, reached, "allowlisted %s", m.MethodName)
+		} else {
+			assert.Equal(t, codes.PermissionDenied, status.Code(err), "legacy token without super on %s", m.MethodName)
+			assert.False(t, reached, "legacy token without super reached %s", m.MethodName)
 		}
-		assert.True(t, reached, "legacy token must reach the handler of %s", m.MethodName)
+		reached, err = call(superTok, method)
+		assert.NoError(t, err, "super on %s", m.MethodName)
+		assert.True(t, reached, "super on %s", m.MethodName)
 	}
 	assert.Greater(t, others, 100, "the descriptor walk must cover the whole AdminService")
 }
