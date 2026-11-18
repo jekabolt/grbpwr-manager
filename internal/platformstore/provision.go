@@ -94,15 +94,17 @@ func (s *Store) ReserveSpare(ctx context.Context, dbName, version string, perHou
 	if perHour <= 0 {
 		return ErrSpareQuota
 	}
+	// The quota row ships with migration 0003; recreate it if an operator removed it. Outside the
+	// transaction: INSERT IGNORE on an existing row takes a shared lock, and two transactions each
+	// holding it and then asking FOR UPDATE deadlock.
+	if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO provision_lease (lease_key, token, expires_at) VALUES (?, '', '9999-12-31 00:00:00.000')`, quotaRow); err != nil {
+		return fmt.Errorf("platformstore: reserve spare: quota row: %w", err)
+	}
 	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("platformstore: reserve spare: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// The quota row ships with migration 0003; recreate it if an operator removed it.
-	if _, err := tx.ExecContext(ctx, `INSERT IGNORE INTO provision_lease (lease_key, token, expires_at) VALUES (?, '', '9999-12-31 00:00:00.000')`, quotaRow); err != nil {
-		return fmt.Errorf("platformstore: reserve spare: quota row: %w", err)
-	}
 	var locked string
 	if err := tx.GetContext(ctx, &locked, `SELECT lease_key FROM provision_lease WHERE lease_key = ? FOR UPDATE`, quotaRow); err != nil {
 		return fmt.Errorf("platformstore: reserve spare: lock: %w", err)
