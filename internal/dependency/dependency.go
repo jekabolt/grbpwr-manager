@@ -2166,16 +2166,17 @@ type (
 	// /api/p/{token}. Rows are created lazily; a missing row means default access state.
 	PatternObjects interface {
 		GetById(ctx context.Context, id int64) (*entity.PatternObjectAccess, error)
-		// EnsureByKeys returns rows for the given managed object keys, creating missing
+		// EnsureByKeys returns rows for the given objects (key + source host), creating missing
 		// ones (epoch 0, no expiry) without touching existing state.
-		EnsureByKeys(ctx context.Context, refs []entity.PatternObjectRef) (map[string]entity.PatternObjectAccess, error)
+		EnsureByKeys(ctx context.Context, refs []entity.PatternObjectRef) (map[entity.PatternObjectID]entity.PatternObjectAccess, error)
 		// BumpEpoch invalidates every token minted for the object so far.
 		BumpEpoch(ctx context.Context, id int64) error
 		// Revoke hard-disables access until un-revoked (distinct from a rotating bump).
 		Revoke(ctx context.Context, id int64, at time.Time) error
 		// RecordAccess folds a debounced batch of access stats into the rows.
 		RecordAccess(ctx context.Context, counts map[int64]int64, last map[int64]time.Time) error
-		// DeleteByKeys drops rows whose objects were garbage-collected.
+		// DeleteByKeys drops rows whose objects were garbage-collected — our own bucket's rows
+		// only (source_host ''): an object on a read-only host is never deleted, so its row stays.
 		DeleteByKeys(ctx context.Context, keys []string) error
 
 		// Card-viewer rows (tech_card_pattern_viewer_access, 0288): the card-level twin of

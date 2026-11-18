@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/minio/minio-go/v7"
 )
 
 // presignWindow is the granularity of pattern presign expiry. The expiry is snapped to
@@ -66,31 +64,7 @@ var (
 // come from stored data (the upload's own filename), NEVER from a request parameter — it
 // lands in a response header. An empty value falls back to the object key's basename.
 func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
-	if u, ok := b.readOnlyPatternURL(ctx, objectKey); ok {
-		return u, time.Now().UTC().Add(presignWindow), nil
-	}
 	return b.presignManagedObject(ctx, objectKey, patternObjectPathSegment, download, downloadName)
-}
-
-// readOnlyPatternURL: a pattern row copied from another installation keeps that installation's key,
-// and the object lives in ITS bucket, public-read behind the read-only host (lane B8). For team #1,
-// when our bucket has no such object, the link is the object's public url on the first read-only
-// host. Only with a non-empty list (no extra call otherwise); any other stat failure keeps today's
-// presign.
-func (b *Bucket) readOnlyPatternURL(ctx context.Context, objectKey string) (string, bool) {
-	hosts := ReadOnlyHosts(b.Config)
-	if len(hosts) == 0 || !b.Config.readOnlyHonoured(ctx) {
-		return "", false
-	}
-	key := strings.Trim(objectKey, "/")
-	if !isManagedKeyInSegment(key, patternObjectPathSegment) || !isAllowedReadOnlyKey(key) {
-		return "", false
-	}
-	_, err := b.Client.StatObject(ctx, b.S3BucketName, key, minio.StatObjectOptions{})
-	if err == nil || minio.ToErrorResponse(err).Code != "NoSuchKey" {
-		return "", false
-	}
-	return (&url.URL{Scheme: "https", Host: hosts[0], Path: "/" + key}).String(), true
 }
 
 // PresignLibraryObject is the same mechanism for files-library objects (the file

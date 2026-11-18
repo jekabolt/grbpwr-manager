@@ -28,6 +28,10 @@ type Config struct {
 	// ReadOnlyHosts (BUCKET_S3_READONLY_HOSTS): comma-separated hosts of another installation's
 	// files that this one may READ but never change (see readonly.go). Empty = today's behaviour.
 	ReadOnlyHosts string `mapstructure:"readonly_hosts"`
+	// ReadOnlyBuckets (BUCKET_S3_READONLY_BUCKETS): optional comma-separated `endpoint/bucket` pairs
+	// of the read-only installation's storage. Boot is refused when our own write endpoint + bucket is
+	// one of them — the guard for a CDN host that differs from the S3 host. Empty = no check.
+	ReadOnlyBuckets string `mapstructure:"readonly_buckets"`
 	// TeamsMode is set by the app (PLATFORM_MYSQL_DSN present), not by env: with it on, the
 	// read-only hosts are honoured for team #1 only.
 	TeamsMode bool `mapstructure:"-"`
@@ -38,9 +42,9 @@ type Config struct {
 // 007). fmt routes %v, %+v and %s through Stringer, so all three are covered.
 func (c Config) String() string {
 	return fmt.Sprintf("bucket.Config{S3AccessKey:%s S3SecretAccessKey:%s S3Endpoint:%s S3BucketName:%s "+
-		"S3BucketLocation:%s BaseFolder:%s SubdomainEndpoint:%s ReadOnlyHosts:%s}",
+		"S3BucketLocation:%s BaseFolder:%s SubdomainEndpoint:%s ReadOnlyHosts:%s ReadOnlyBuckets:%s}",
 		redactSecret(c.S3AccessKey), redactSecret(c.S3SecretAccessKey), c.S3Endpoint, c.S3BucketName,
-		c.S3BucketLocation, c.BaseFolder, c.SubdomainEndpoint, c.ReadOnlyHosts)
+		c.S3BucketLocation, c.BaseFolder, c.SubdomainEndpoint, c.ReadOnlyHosts, c.ReadOnlyBuckets)
 }
 
 // redactSecret masks a secret value while preserving whether it was set (empty stays empty so an
@@ -61,7 +65,7 @@ type Bucket struct {
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
-	if err := ValidateReadOnlyHosts(c.ReadOnlyHosts); err != nil {
+	if err := ValidateReadOnly(c); err != nil {
 		return nil, err
 	}
 	cli, err := minio.New(c.S3Endpoint, &minio.Options{

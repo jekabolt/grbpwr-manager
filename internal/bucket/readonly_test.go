@@ -64,15 +64,43 @@ func TestDeleteObjectsRefusesReadOnlyHostBeforeNetwork(t *testing.T) {
 	require.Contains(t, out, "level=WARN")
 }
 
-// A read-only host that is ALSO configured as our own CDN host (a misconfiguration) is still
-// read-only: «never delete there» wins over «it is ours».
-func TestDeleteObjectsReadOnlyWinsOverOwnHost(t *testing.T) {
-	captureWarn(t)
-	b, store, _ := newProbeBucket(t)
-	b.Config.ReadOnlyHosts = "cdn.probe.test"
+// A read-only host that is ALSO one of our writable hosts would let uploads land on it: boot is
+// refused, naming the variable and the host. Both our CDN host and our bucket-origin host count.
+func TestReadOnlyHostOverlappingManagedHostRefusesBoot(t *testing.T) {
+	for ro, host := range map[string]string{
+		"cdn.probe.test":                   "cdn.probe.test",
+		"https://CDN.probe.test/":          "cdn.probe.test",
+		"probe.s3.probe.test":              "probe.s3.probe.test",
+		"files.grbpwr.com, cdn.probe.test": "cdn.probe.test",
+	} {
+		c := &Config{SubdomainEndpoint: "cdn.probe.test", S3Endpoint: "s3.probe.test", S3BucketName: "probe", ReadOnlyHosts: ro}
+		err := ValidateReadOnly(c)
+		require.Errorf(t, err, "%q", ro)
+		require.Contains(t, err.Error(), "BUCKET_S3_READONLY_HOSTS")
+		require.Contains(t, err.Error(), host)
+		_, err = New(c, nil)
+		require.Error(t, err, "bucket.New refuses it before any network call")
+	}
+	require.NoError(t, ValidateReadOnly(&Config{SubdomainEndpoint: "cdn.probe.test", S3Endpoint: "s3.probe.test", S3BucketName: "probe", ReadOnlyHosts: legacyHost}))
+}
 
-	require.NoError(t, b.DeleteObjects(context.Background(), "https://cdn.probe.test/probe/2026/july/x.webp"))
-	require.Empty(t, store.requestLog())
+// BUCKET_S3_READONLY_BUCKETS guards the case where the read-only CDN host differs from the S3 host:
+// our write endpoint + bucket must not be one of the read-only buckets.
+func TestReadOnlyBucketMatchingWriteBucketRefusesBoot(t *testing.T) {
+	c := &Config{SubdomainEndpoint: "cdn.lekalo.test", S3Endpoint: "fra1.digitaloceanspaces.com", S3BucketName: "grbpwr",
+		ReadOnlyHosts: legacyHost, ReadOnlyBuckets: "ams3.digitaloceanspaces.com/other, https://FRA1.digitaloceanspaces.com/GRBPWR"}
+	err := ValidateReadOnly(c)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "BUCKET_S3_READONLY_BUCKETS")
+	require.Contains(t, err.Error(), "fra1.digitaloceanspaces.com/grbpwr")
+
+	c.S3BucketName = "lekalo"
+	require.NoError(t, ValidateReadOnly(c), "another bucket on the same endpoint is fine")
+	c.ReadOnlyBuckets = "fra1.digitaloceanspaces.com"
+	require.Error(t, ValidateReadOnly(c), "an entry without a bucket is malformed")
+	c.ReadOnlyBuckets = ""
+	require.NoError(t, ValidateReadOnly(c), "unset = no check")
+	require.NoError(t, ValidateReadOnly(&Config{SubdomainEndpoint: "cdn.lekalo.test"}), "mode OFF: nothing required")
 }
 
 // The change question (delete / overwrite / move) is answered by ManagedObjectKeyFromURL: a url on a
@@ -232,37 +260,57 @@ func TestReadOnlyHostsParsing(t *testing.T) {
 	require.Empty(t, ReadOnlyHosts(nil))
 }
 
-// A copied pattern row keeps a legacy key; the object is not in our bucket. For team #1 the pattern
-// link resolves to the object's public url on the read-only host; our own pattern objects keep their
-// presigned url, and another team never gets the legacy url.
-func TestPresignPatternObjectFallsBackToReadOnlyHost(t *testing.T) {
+// A copied pattern row records the read-only host it came from; its link is built from that host
+// alone. The same key also sits in our bucket with other bytes: it is never looked at — no
+// StatObject, no request of any kind — and a row from the second configured host links to the
+// second host, not the first.
+func TestReadOnlyPatternURLUsesRecordedHostWithoutBucketCall(t *testing.T) {
 	b, store, _ := newProbeBucket(t)
-	store.headMissing = true
-	b.Config.ReadOnlyHosts = legacyHost
+	b.Config.ReadOnlyHosts = legacyHost + ", files2.grbpwr.com"
 	b.Config.TeamsMode = true
 	team1 := tenant.With(context.Background(), tenant.Team{ID: tenant.TeamOneID})
-
-	legacyKey := "grbpwr-com/tech-card-patterns/2024/may/p-legacy.pdf"
-	got, _, err := b.PresignPatternObject(team1, legacyKey, false, "")
-	require.NoError(t, err)
-	require.Equal(t, "https://"+legacyHost+"/"+legacyKey, got)
-
-	ownKey := "probe/tech-card-patterns/2026/july/p-own.pdf"
-	store.objects[ownKey] = []byte("%PDF-")
-	got, _, err = b.PresignPatternObject(team1, ownKey, false, "")
-	require.NoError(t, err)
-	require.NotContains(t, got, legacyHost)
-	require.Contains(t, got, "X-Amz-Signature")
-
 	other := tenant.With(context.Background(), tenant.Team{ID: 2})
-	got, _, err = b.PresignPatternObject(other, legacyKey, false, "")
+
+	key := "grbpwr-com/tech-card-patterns/2024/may/p.pdf"
+	store.objects[key] = []byte("%PDF- our different bytes")
+
+	host, ok := b.PatternObjectSource(team1, "https://FILES2.grbpwr.com/"+key)
+	require.True(t, ok)
+	require.Equal(t, "files2.grbpwr.com", host)
+	host, ok = b.PatternObjectSource(team1, "https://cdn.probe.test/"+key)
+	require.True(t, ok)
+	require.Empty(t, host, "our own host: our bucket")
+	_, ok = b.PatternObjectSource(other, "https://"+legacyHost+"/"+key)
+	require.False(t, ok, "another team: not one of its pattern objects")
+
+	got, _, err := b.ReadOnlyPatternURL(team1, "files2.grbpwr.com", key)
 	require.NoError(t, err)
+	require.Equal(t, "https://files2.grbpwr.com/"+key, got)
+	got, _, err = b.ReadOnlyPatternURL(team1, legacyHost, key)
+	require.NoError(t, err)
+	require.Equal(t, "https://"+legacyHost+"/"+key, got)
+
+	_, _, err = b.ReadOnlyPatternURL(other, legacyHost, key)
+	require.Error(t, err)
+	_, _, err = b.ReadOnlyPatternURL(team1, "attacker.example", key)
+	require.Error(t, err, "a host that is no longer configured is refused")
+	_, _, err = b.ReadOnlyPatternURL(team1, legacyHost, "grbpwr-com/files-library/x.pdf")
+	require.Error(t, err)
+
+	// Our own pattern object: today's presign, no probe either.
+	got, _, err = b.PresignPatternObject(team1, key, false, "")
+	require.NoError(t, err)
+	require.Contains(t, got, "X-Amz-Signature")
 	require.NotContains(t, got, legacyHost)
 
-	// Empty list: no HEAD at all, today's presign.
-	b.Config.ReadOnlyHosts = ""
-	before := len(store.requestLog())
-	_, _, err = b.PresignPatternObject(team1, "grbpwr-com/tech-card-patterns/2024/may/p-x.pdf", false, "")
-	require.NoError(t, err)
-	require.Len(t, store.requestLog(), before)
+	require.Empty(t, store.requestLog(), "no bucket request at all")
+}
+
+// Empty list: every pattern url is our bucket's, no call of any kind.
+func TestPatternObjectSourceEmptyListIsTodays(t *testing.T) {
+	b, store, _ := newProbeBucket(t)
+	host, ok := b.PatternObjectSource(context.Background(), "https://"+legacyHost+"/grbpwr-com/tech-card-patterns/p.pdf")
+	require.True(t, ok)
+	require.Empty(t, host)
+	require.Empty(t, store.requestLog())
 }

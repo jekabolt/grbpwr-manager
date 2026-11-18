@@ -34,9 +34,9 @@ func (f *fakeObjects) GetById(_ context.Context, id int64) (*entity.PatternObjec
 	return &cp, nil
 }
 
-func (f *fakeObjects) EnsureByKeys(_ context.Context, refs []entity.PatternObjectRef) (map[string]entity.PatternObjectAccess, error) {
+func (f *fakeObjects) EnsureByKeys(_ context.Context, refs []entity.PatternObjectRef) (map[entity.PatternObjectID]entity.PatternObjectAccess, error) {
 	f.ensureCalls++
-	out := map[string]entity.PatternObjectAccess{}
+	out := map[entity.PatternObjectID]entity.PatternObjectAccess{}
 	next := int64(1)
 	for _, r := range f.rows {
 		if r.Id >= next {
@@ -46,22 +46,22 @@ func (f *fakeObjects) EnsureByKeys(_ context.Context, refs []entity.PatternObjec
 	for _, ref := range refs {
 		found := false
 		for _, r := range f.rows {
-			if r.ObjectKey == ref.Key {
+			if r.ObjectKey == ref.Key && r.SourceHost == ref.SourceHost {
 				if !r.Filename.Valid && ref.Filename != "" {
 					r.Filename = sql.NullString{String: ref.Filename, Valid: true}
 				}
-				out[ref.Key] = *r
+				out[ref.ID()] = *r
 				found = true
 				break
 			}
 		}
 		if !found {
-			r := &entity.PatternObjectAccess{Id: next, ObjectKey: ref.Key}
+			r := &entity.PatternObjectAccess{Id: next, ObjectKey: ref.Key, SourceHost: ref.SourceHost}
 			if ref.Filename != "" {
 				r.Filename = sql.NullString{String: ref.Filename, Valid: true}
 			}
 			f.rows[next] = r
-			out[ref.Key] = *r
+			out[ref.ID()] = *r
 			next++
 		}
 	}
