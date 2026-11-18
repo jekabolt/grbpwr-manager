@@ -12,6 +12,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 // workerName is what the health registry, the logs and saferun call this thing. One spelling.
@@ -59,6 +60,12 @@ type Worker struct {
 	ledger        callLedger
 	ledgerSweptAt time.Time
 
+	// teams walks the teams a tick serves (SetTeamLoop); nil = one runOnce on the ctx as given —
+	// the tests' seam and the pre-teams behaviour. teamSweptAt keeps ledgerSweptAt per team, so one
+	// team's sweep never stands in for another's. Both are touched by the loop goroutine only.
+	teams       TeamLoop
+	teamSweptAt map[int64]time.Time
+
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -100,6 +107,16 @@ func newWorker(c *Config, store runStore, media mediaResolver, sink MediaSink, p
 }
 
 func (w *Worker) Name() string { return workerName }
+
+// TeamLoop walks the teams one tick serves: fn runs once per team with ctx bound to that team
+// (tenant.With). The app builds it on tenant.Each and decides who is served — the worker skips
+// suspended teams and teams with `ai` off, the sweeper serves every listed team. A non-nil error
+// with no team served means the list itself failed. Teams mode off: the directory lists team #1
+// only, so a tick is exactly one runOnce on team #1, as before teams.
+type TeamLoop func(ctx context.Context, fn func(ctx context.Context) error) error
+
+// SetTeamLoop makes every tick run per team (teams wave, 02-DESIGN §10). Call before Start.
+func (w *Worker) SetTeamLoop(l TeamLoop) { w.teams = l }
 
 func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
@@ -145,7 +162,7 @@ func (w *Worker) run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if w.runOnce(ctx) {
+			if w.tick(ctx) {
 				failures = 0
 				continue
 			}
@@ -172,6 +189,44 @@ func workerBackoff(failures int) time.Duration {
 		delay *= 2
 	}
 	return delay
+}
+
+// tick is one tick over every served team (or one runOnce without a team loop). ONE TEAM'S FAILURE
+// NEVER STOPS THE LOOP: each team gets its runOnce, and the tick reports failure — the worker backs
+// off — only when the team list could not be read or EVERY served team failed (with one team, as in
+// teams mode off, that is exactly today's rule). A broken team DB beside healthy ones does not slow
+// the healthy ones down; runOnce has already logged and marked it.
+func (w *Worker) tick(ctx context.Context) bool {
+	if w.teams == nil {
+		return w.runOnce(ctx)
+	}
+	var served, failed int
+	err := w.teams(ctx, func(tctx context.Context) error {
+		served++
+		if !w.runTeam(tctx) {
+			failed++
+		}
+		return nil // logged by runOnce; tenant.Each must not log it a second time
+	})
+	if err != nil && served == 0 && ctx.Err() == nil {
+		return w.failed(ctx, "list teams", err)
+	}
+	return served == 0 || failed < served
+}
+
+// runTeam is runOnce for the team ctx carries, with that team's own ledger-sweep clock.
+func (w *Worker) runTeam(ctx context.Context) bool {
+	var id int64
+	if t, ok := tenant.From(ctx); ok {
+		id = t.ID
+	}
+	if w.teamSweptAt == nil {
+		w.teamSweptAt = map[int64]time.Time{}
+	}
+	w.ledgerSweptAt = w.teamSweptAt[id]
+	ok := w.runOnce(ctx)
+	w.teamSweptAt[id] = w.ledgerSweptAt
+	return ok
 }
 
 // runOnce is one tick: revive, claim, and take each claimed run through a pass.
