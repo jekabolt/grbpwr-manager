@@ -10186,6 +10186,20 @@ message UpdateTechCardRequest {
   // UUID minted when the edit screen opens. Non-empty ordinary saves coalesce their pre-images into
   // one autosave snapshot per server-side five-minute bucket; absent keeps legacy save behaviour.
   string save_session_id = 5;
+  // Name-only Workbench edit. Send without tech_card so an older server cannot execute a
+  // full document rewrite after ignoring this field.
+  GuardedZeroOperationPieceRename guarded_piece_rename = 6;
+}
+
+// Pins a display name change to a current zero-operation card and exact saved DXF row.
+message GuardedZeroOperationPieceRename {
+  string piece_line_key = 1;
+  string expected_name = 2;
+  string next_name = 3;
+  string scope_key = 4;
+  string pattern_line_key = 5;
+  uint32 expected_saved_row_revision = 6;
+  string expected_dxf_sha256 = 7;
 }
 
 message UpdateTechCardResponse {

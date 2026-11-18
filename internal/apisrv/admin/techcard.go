@@ -823,6 +823,9 @@ func (s *Server) techCardWriteError(ctx context.Context, err error) error {
 	if errors.Is(err, entity.ErrTechCardConflict) {
 		return status.Error(codes.Aborted, "tech card was modified concurrently; reload and retry")
 	}
+	if errors.Is(err, entity.ErrTechCardPieceRenameProtected) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
 	if errors.Is(err, entity.ErrTechCardReleased) {
 		return status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 	}
@@ -880,7 +883,16 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		}
 		saveSessionID = parsed.String()
 	}
-	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
+	var tc *entity.TechCardInsert
+	var err error
+	if rename := req.GetGuardedPieceRename(); rename != nil {
+		if req.GetTechCard() != nil || snapshotReason != "" || saveSessionID != "" {
+			return nil, status.Error(codes.InvalidArgument, "send a guarded rename by itself")
+		}
+		tc, err = s.prepareGuardedZeroOperationPieceRename(ctx, int(req.GetId()), int(req.GetExpectedLockVersion()), rename)
+	} else {
+		tc, err = s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
+	}
 	if err != nil {
 		return nil, err
 	}

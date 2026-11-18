@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -33,6 +34,11 @@ func compositeV5TestComponent(kind, media string, payload []byte) map[string]any
 }
 
 func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
+	t.Helper()
+	return buildCompositeV5TestFixtureWithOperation(t, 10)
+}
+
+func buildCompositeV5TestFixtureWithOperation(t *testing.T, operation int) compositeV5TestFixture {
 	t.Helper()
 	row := map[string]any{
 		"techCardId": 7, "scopeKey": "fabric:outer", "patternLineKey": patternSidecarTestKey,
@@ -64,7 +70,7 @@ func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
 		"claims":     patternProductCompositeClaimsV3,
 	})
 	selectedOperation := map[string]any{
-		"sourceOperationNumber": 10, "authoringOperationId": "op:10", "localOperationOrder": 0,
+		"sourceOperationNumber": operation, "authoringOperationId": "op:" + strconv.Itoa(operation), "localOperationOrder": 0,
 		"seamIds": []any{"seam:left"},
 	}
 	side := func(index int, piece string) map[string]any {
@@ -149,7 +155,7 @@ func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
 		Row: SavedPatternRowIdentity{TechCardID: 7, ScopeKey: "fabric:outer", PatternLineKey: patternSidecarTestKey,
 			SavedRowRevision: 4, CardLockVersion: 8, URL: "https://files.example/front.dxf", SizeBytes: 1234, SHA256: strings.Repeat("a", 64)},
 		PatternVersion: 3, PostSaveReceiptSHA256: receiptSHA, ExpectedPreviousSidecarSHA256: "",
-		ServerAssemblyRevision: assemblyRevision, AssemblyTopologySHA256: topologySHA, SelectedOperationNumber: 10,
+		ServerAssemblyRevision: assemblyRevision, AssemblyTopologySHA256: topologySHA, SelectedOperationNumber: operation,
 	}}
 }
 
