@@ -1,6 +1,6 @@
 # G4a ratchet: package-level vars (process-wide state) under internal/, app/, config/, cmd/.
 # Format: path<TAB>Name. Sentinel errors, regexp/template compiles and go:embed vars are not counted.
-# Refresh: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update
+# Shrink: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update (growth: -grow)
 app/app.go	commitHash
 cmd/assembly_clear.go	assemblyClearCmd
 cmd/assembly_clear.go	assemblyClearDryRun

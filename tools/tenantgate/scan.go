@@ -10,14 +10,16 @@
 //	                             is a finding too, except in the files of g3DynamicAllowed.
 //	G4a TestG4PackageGlobals     ratchet on package-level vars (process-wide state);
 //	                             baseline testdata/g4_globals.txt.
-//	G4b TestG4BackgroundContext  ratchet on context.Background()/TODO() per file in store,
-//	                             apisrv, app and worker packages; baseline testdata/g4_background.txt.
+//	G4b TestG4BackgroundContext  ratchet on context.Background()/TODO() per function (file +
+//	                             func) in store, apisrv, app and worker packages; baseline
+//	                             testdata/g4_background.txt.
 //
 // G2 and G3 are hard gates with no baseline. G4 fails both when the tree grew above the
-// baseline and when it shrank below it. Refresh a baseline after an intended change with
+// baseline and when it shrank below it. -update rewrites a baseline only downwards (it refuses
+// when anything grew); growth needs -grow, a deliberate second flag:
 //
 //	go test ./tools/tenantgate/ -run TestG4PackageGlobals -update
-//	go test ./tools/tenantgate/ -run TestG4BackgroundContext -update
+//	go test ./tools/tenantgate/ -run TestG4BackgroundContext -grow
 package tenantgate
 
 import (
@@ -601,19 +603,55 @@ func g4aVars(s *srcFile) []string {
 
 // ---------------------------------------------------------------- G4b
 
-func bgCount(s *srcFile) int {
+// bgCounts returns the context.Background()/TODO() calls of one file per enclosing function:
+// "Func", "Type.Method" or "(*Type).Method"; calls outside any function count under "<pkg>". A
+// function literal counts toward the declaration that holds it.
+func bgCounts(s *srcFile) map[string]int {
 	names := s.importNames("context")
 	if len(names) == 0 {
-		return 0
+		return nil
 	}
-	n := 0
-	ast.Inspect(s.File, func(x ast.Node) bool {
-		if pkg, fn, ok := pkgCall(x); ok && names[pkg] && (fn == "Background" || fn == "TODO") {
-			n++
+	out := map[string]int{}
+	count := func(n ast.Node, key string) {
+		ast.Inspect(n, func(x ast.Node) bool {
+			if pkg, fn, ok := pkgCall(x); ok && names[pkg] && (fn == "Background" || fn == "TODO") {
+				out[key]++
+			}
+			return true
+		})
+	}
+	for _, d := range s.File.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			count(fd, funcKey(fd))
+		} else {
+			count(d, "<pkg>")
 		}
-		return true
-	})
-	return n
+	}
+	return out
+}
+
+func funcKey(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	typ := fd.Recv.List[0].Type
+	star := false
+	if st, ok := typ.(*ast.StarExpr); ok {
+		typ, star = st.X, true
+	}
+	if ix, ok := typ.(*ast.IndexExpr); ok { // generic receiver T[P]
+		typ = ix.X
+	} else if ix, ok := typ.(*ast.IndexListExpr); ok {
+		typ = ix.X
+	}
+	name := "?"
+	if id, ok := typ.(*ast.Ident); ok {
+		name = id.Name
+	}
+	if star {
+		return "(*" + name + ")." + fd.Name.Name
+	}
+	return name + "." + fd.Name.Name
 }
 
 // workerDirs returns the directories under internal/ whose non-test files declare a

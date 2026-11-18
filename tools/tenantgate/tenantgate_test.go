@@ -10,7 +10,29 @@ import (
 	"testing"
 )
 
-var update = flag.Bool("update", false, "rewrite the G4 baseline files from the current scan")
+var (
+	update = flag.Bool("update", false, "rewrite a G4 baseline downwards only (refused when anything grew)")
+	grow   = flag.Bool("grow", false, "rewrite a G4 baseline even when it grows (implies -update)")
+)
+
+// rewriteBaseline writes cur when asked: always with -grow, with -update only when nothing grew.
+// It reports whether the test is done (a rewrite was asked for).
+func rewriteBaseline(t *testing.T, file, header string, cur, grown []string) bool {
+	t.Helper()
+	if !*update && !*grow {
+		return false
+	}
+	if len(grown) > 0 && !*grow {
+		for _, g := range grown {
+			t.Errorf("grew: %s", show(g))
+		}
+		t.Fatalf("-update only shrinks %s; growth needs -grow (and a reason in the commit)", filepath.Base(file))
+	}
+	if err := writeBaseline(file, header, cur); err != nil {
+		t.Fatal(err)
+	}
+	return true
+}
 
 func TestG2RawDBHandles(t *testing.T) {
 	_, files := loadRepo(t)
@@ -42,7 +64,7 @@ func TestG3NoSchemaInSQL(t *testing.T) {
 
 const g4aHeader = `G4a ratchet: package-level vars (process-wide state) under internal/, app/, config/, cmd/.
 Format: path<TAB>Name. Sentinel errors, regexp/template compiles and go:embed vars are not counted.
-Refresh: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update`
+Shrink: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update (growth: -grow)`
 
 func g4aCurrent(files []*srcFile) []string {
 	var out []string
@@ -62,17 +84,14 @@ func TestG4PackageGlobals(t *testing.T) {
 	root, files := loadRepo(t)
 	cur := g4aCurrent(files)
 	base := filepath.Join(root, "tools", "tenantgate", "testdata", "g4_globals.txt")
-	if *update {
-		if err := writeBaseline(base, g4aHeader, cur); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
 	old, err := readBaseline(base)
-	if err != nil {
-		t.Fatalf("read baseline: %v (create it with -update)", err)
+	if err != nil && !*grow {
+		t.Fatalf("read baseline: %v (create it with -grow)", err)
 	}
 	added, removed := setDiff(cur, old)
+	if rewriteBaseline(t, base, g4aHeader, cur, added) {
+		return
+	}
 	for _, e := range added {
 		t.Errorf("new package-level var %s — keep state in a per-tenant/app struct, or refresh the baseline", show(e))
 	}
@@ -80,13 +99,13 @@ func TestG4PackageGlobals(t *testing.T) {
 		t.Errorf("package-level var %s is gone — ratchet the baseline down", show(e))
 	}
 	if len(added)+len(removed) > 0 {
-		t.Errorf("refresh with: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update")
+		t.Errorf("shrink with -update; growth needs -grow: go test ./tools/tenantgate/ -run TestG4PackageGlobals -update")
 	}
 }
 
-const g4bHeader = `G4b ratchet: context.Background()/TODO() calls per file in internal/store, internal/apisrv, app and worker packages.
-Format: path<TAB>count. Files without calls are not listed.
-Refresh: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update`
+const g4bHeader = `G4b ratchet: context.Background()/TODO() calls per function in internal/store, internal/apisrv, app and worker packages.
+Format: path<TAB>function<TAB>count. Functions without calls are not listed.
+Shrink: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update (growth: -grow)`
 
 func g4bCurrent(t *testing.T, files []*srcFile) []string {
 	workers := workerDirs(files)
@@ -96,8 +115,8 @@ func g4bCurrent(t *testing.T, files []*srcFile) []string {
 		if s.Generated || !g4bInScope(s.Rel, workers) {
 			continue
 		}
-		if n := bgCount(s); n > 0 {
-			out = append(out, s.Rel+"\t"+strconv.Itoa(n))
+		for fn, n := range bgCounts(s) {
+			out = append(out, s.Rel+"\t"+fn+"\t"+strconv.Itoa(n))
 		}
 	}
 	sort.Strings(out)
@@ -108,25 +127,32 @@ func TestG4BackgroundContext(t *testing.T) {
 	root, files := loadRepo(t)
 	cur := g4bCurrent(t, files)
 	base := filepath.Join(root, "tools", "tenantgate", "testdata", "g4_background.txt")
-	if *update {
-		if err := writeBaseline(base, g4bHeader, cur); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
 	old, err := readBaseline(base)
-	if err != nil {
-		t.Fatalf("read baseline: %v (create it with -update)", err)
+	if err != nil && !*grow {
+		t.Fatalf("read baseline: %v (create it with -grow)", err)
 	}
 	toMap := func(lines []string) map[string]int {
 		m := map[string]int{}
 		for _, l := range lines {
-			k, v, _ := strings.Cut(l, "\t")
-			m[k], _ = strconv.Atoi(v)
+			i := strings.LastIndexByte(l, '\t')
+			if i < 0 {
+				continue
+			}
+			m[l[:i]], _ = strconv.Atoi(l[i+1:])
 		}
 		return m
 	}
 	cm, bm := toMap(cur), toMap(old)
+	var grown []string
+	for k, n := range cm {
+		if n > bm[k] {
+			grown = append(grown, fmt.Sprintf("%s\t%d (baseline %d)", k, n, bm[k]))
+		}
+	}
+	sort.Strings(grown)
+	if rewriteBaseline(t, base, g4bHeader, cur, grown) {
+		return
+	}
 	keys := map[string]bool{}
 	for k := range cm {
 		keys[k] = true
@@ -144,14 +170,14 @@ func TestG4BackgroundContext(t *testing.T) {
 		switch {
 		case cm[k] > bm[k]:
 			bad = true
-			t.Errorf("%s: %d context.Background()/TODO() calls, baseline %d — thread the request ctx instead", k, cm[k], bm[k])
+			t.Errorf("%s: %d context.Background()/TODO() calls, baseline %d — thread the request ctx instead", show(k), cm[k], bm[k])
 		case cm[k] < bm[k]:
 			bad = true
-			t.Errorf("%s: %d context.Background()/TODO() calls, baseline %d — ratchet the baseline down", k, cm[k], bm[k])
+			t.Errorf("%s: %d context.Background()/TODO() calls, baseline %d — ratchet the baseline down", show(k), cm[k], bm[k])
 		}
 	}
 	if bad {
-		t.Errorf("refresh with: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update")
+		t.Errorf("shrink with -update; growth needs -grow: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update")
 	}
 }
 
@@ -369,10 +395,17 @@ var (
 }
 
 func TestG4bMatcher(t *testing.T) {
-	src := "package x\nimport c \"context\"\nfunc f() { c.Background(); c.TODO(); _ = c.WithValue }\ntype Worker struct{}\n"
+	src := `package x
+import c "context"
+func f() { c.Background(); c.TODO(); _ = c.WithValue }
+func (w *Worker) Run() { go func() { _ = c.Background() }() }
+func (w Worker) Safe() {}
+var v = c.Background()
+type Worker struct{}
+`
 	s := mustParse(t, "internal/job/w.go", src)
-	if n := bgCount(s); n != 2 {
-		t.Errorf("bgCount = %d, want 2", n)
+	if got := fmt.Sprint(bgCounts(s)); got != "map[(*Worker).Run:1 <pkg>:1 f:2]" {
+		t.Errorf("bgCounts = %s", got)
 	}
 	if got := workerDirs([]*srcFile{s}); fmt.Sprint(got) != "[internal/job]" {
 		t.Errorf("workerDirs = %v", got)
