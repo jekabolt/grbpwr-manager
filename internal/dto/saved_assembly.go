@@ -43,3 +43,29 @@ func SavedAssemblyCompleteSourceV1ToPb(source *entity.SavedAssemblyCompleteSourc
 	}
 	return out
 }
+
+// SavedAssemblyAuthoredFoldSourceV1ToPb is shared by the RPC and the authored-fold seal.
+func SavedAssemblyAuthoredFoldSourceV1ToPb(source *entity.SavedAssemblyAuthoredFoldSourceV1) *pb_admin.TechCardSavedAssemblyAuthoredFoldSourceV1 {
+	out := &pb_admin.TechCardSavedAssemblyAuthoredFoldSourceV1{
+		CompleteSourceSha256: source.CompleteSourceSHA256,
+		SelectedSizeId:       int32(source.SelectedSizeID),
+		SelectedSizeToken:    source.SelectedSizeToken,
+		Folds:                make([]*pb_admin.TechCardSavedAssemblyAuthoredFoldV1, 0, len(source.Folds)),
+		SourceSha256:         source.SourceSHA256,
+		CanonicalJson:        append([]byte(nil), source.CanonicalJSON...),
+	}
+	folds := make([]entity.TechCardPieceFold, 0, len(source.Folds))
+	for _, entry := range source.Folds {
+		folds = append(folds, entry.Fold)
+	}
+	for i, fold := range TechCardPieceFoldsToPb(folds) {
+		entry := source.Folds[i]
+		out.Folds = append(out.Folds, &pb_admin.TechCardSavedAssemblyAuthoredFoldV1{
+			OperationNumber:   entry.OperationNumber,
+			OperationOrder:    int32(entry.OperationOrder),
+			Fold:              fold,
+			SourceFingerprint: entry.Fold.SourceFingerprint,
+		})
+	}
+	return out
+}

@@ -86,24 +86,33 @@ func nativeCrossRowReviewCurrentV8(
 	current := entity.PatternProductNativeCrossRowCurrentV8{
 		AnchorRow: row, Card: card, Source: source, ServerAssemblyRevision: revision,
 	}
-	if len(card.SizeIds) == 0 {
-		return current, nil
+	sizes, err := readSavedAssemblyCardSizeTokens(ctx, db, card.SizeIds)
+	if err != nil {
+		return current, fmt.Errorf("read native cross-row review size dictionary: %w", err)
+	}
+	current.SizeTokensByID = sizes
+	return current, nil
+}
+
+func readSavedAssemblyCardSizeTokens(ctx context.Context, db dependency.DB, sizeIDs []int) (map[int]string, error) {
+	if len(sizeIDs) == 0 {
+		return nil, nil
 	}
 	sizes, err := storeutil.QueryListNamed[struct {
 		ID   int    `db:"id"`
 		Name string `db:"name"`
-	}](ctx, db, `SELECT id, name FROM size WHERE id IN (:ids)`, map[string]any{"ids": card.SizeIds})
+	}](ctx, db, `SELECT id, name FROM size WHERE id IN (:ids)`, map[string]any{"ids": sizeIDs})
 	if err != nil {
-		return current, fmt.Errorf("read native cross-row review size dictionary: %w", err)
+		return nil, err
 	}
-	current.SizeTokensByID = make(map[int]string, len(sizes))
+	tokens := make(map[int]string, len(sizes))
 	for _, size := range sizes {
 		// The Workbench uses the first dictionary spelling as identity (m_32bo_m → M).
 		// A display/fallback alias is not a declared token for this profile.
 		token, _, _ := strings.Cut(strings.TrimSpace(size.Name), "_")
 		if token != "" {
-			current.SizeTokensByID[size.ID] = strings.ToUpper(token)
+			tokens[size.ID] = strings.ToUpper(token)
 		}
 	}
-	return current, nil
+	return tokens, nil
 }

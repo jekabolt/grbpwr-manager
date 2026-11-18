@@ -54,8 +54,9 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		return entity.SavedAssemblySnapshot{}, err
 	}
 	var out entity.SavedAssemblySnapshot
+	complete := in.Profile != entity.SavedAssemblySnapshotSelected
 	err := s.readTxFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
-		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+		if complete {
 			if err := validateCompleteSourcePieceInputOwnership(ctx, rep.DB(), in.ExpectedRow.TechCardID); err != nil {
 				return err
 			}
@@ -84,7 +85,7 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			return fmt.Errorf("pattern line %s has no live fabric scope: %w", pattern.LineKey, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
 		scopeKey := scope.Key
-		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+		if complete {
 			scopeKey = entity.FabricScopeIdentity(pattern.FabricPurpose.String, pattern.BomLineKey.String, lines)
 		}
 		row := entity.SavedPatternRowIdentity{
@@ -110,7 +111,7 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 		if in.ExpectedServerAssemblyRevision != "" && in.ExpectedServerAssemblyRevision != token {
 			return fmt.Errorf("assembly revision changed: %w", entity.ErrTechCardSavedAssemblyMoved)
 		}
-		if in.Profile == entity.SavedAssemblySnapshotCompleteSourceV1 {
+		if complete {
 			source, err := buildCheckedSavedAssemblyCompleteSourceV1(
 				card, row, lines, token, in.ExpectedCompleteSourceSHA256,
 			)
@@ -121,11 +122,13 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			if err != nil {
 				return err
 			}
+			var sizeTokens map[int]string
 			if sidecar != nil && isNativeCrossRowCarrier(sidecar.MediaType) {
 				current, err := nativeCrossRowReviewCurrentV8(ctx, rep.DB(), row, card, source, token)
 				if err != nil {
 					return err
 				}
+				sizeTokens = current.SizeTokensByID
 				if sidecar.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
 					err = entity.ValidateStoredPatternProductNativeCrossRowReviewV8(*sidecar, current)
 				} else {
@@ -138,9 +141,22 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 					return err
 				}
 			}
+			var folds *entity.SavedAssemblyAuthoredFoldSourceV1
+			if in.Profile == entity.SavedAssemblySnapshotCompleteSourceWithAuthoredFoldsV1 {
+				if sizeTokens == nil {
+					sizeTokens, err = readSavedAssemblyCardSizeTokens(ctx, rep.DB(), card.SizeIds)
+					if err != nil {
+						return fmt.Errorf("read authored fold size dictionary: %w", err)
+					}
+				}
+				folds, err = buildCheckedSavedAssemblyAuthoredFoldSourceV1(card, source, sizeTokens, in)
+				if err != nil {
+					return err
+				}
+			}
 			out = entity.SavedAssemblySnapshot{
 				Row: row, Card: card, ServerAssemblyRevision: token, CompleteSourceV1: source,
-				SemanticSidecar: sidecar,
+				SemanticSidecar: sidecar, AuthoredFoldSourceV1: folds,
 			}
 			return nil
 		}
@@ -211,7 +227,7 @@ func validateSavedAssemblySnapshotRequest(in entity.SavedAssemblySnapshotRequest
 		if in.ExpectedCompleteSourceSHA256 != "" {
 			return entity.NewFieldViolation("expected_complete_source_sha256", "invalid", "", "select the complete-source profile to check this digest")
 		}
-	case entity.SavedAssemblySnapshotCompleteSourceV1:
+	case entity.SavedAssemblySnapshotCompleteSourceV1, entity.SavedAssemblySnapshotCompleteSourceWithAuthoredFoldsV1:
 		if in.SelectedOperationNumber != 0 || in.ExpectedTopologySHA256 != "" {
 			return entity.NewFieldViolation("profile", "incompatible", "", "omit selected-operation fields for the complete-source profile")
 		}
@@ -226,6 +242,16 @@ func validateSavedAssemblySnapshotRequest(in entity.SavedAssemblySnapshotRequest
 		}
 	default:
 		return entity.NewFieldViolation("profile", "invalid", "", "send a supported saved Assembly snapshot profile")
+	}
+	if in.Profile == entity.SavedAssemblySnapshotCompleteSourceWithAuthoredFoldsV1 {
+		if in.SelectedSizeID <= 0 {
+			return entity.NewFieldViolation("selected_size_id", "required", "", "send the current card size ID")
+		}
+		if in.ExpectedAuthoredFoldSourceSHA256 != "" && !entity.ValidPatternSemanticSidecarSHA256(in.ExpectedAuthoredFoldSourceSHA256) {
+			return entity.NewFieldViolation("expected_authored_fold_source_sha256", "invalid", "", "send a lowercase SHA-256")
+		}
+	} else if in.SelectedSizeID != 0 || in.ExpectedAuthoredFoldSourceSHA256 != "" {
+		return entity.NewFieldViolation("profile", "incompatible", "", "select the authored-fold profile to check these fields")
 	}
 	if in.ExpectedServerAssemblyRevision != "" && !strings.HasPrefix(in.ExpectedServerAssemblyRevision, "asm:v1:") {
 		return entity.NewFieldViolation("expected_server_assembly_revision", "invalid", in.ExpectedServerAssemblyRevision, "send the opaque token returned by this RPC")

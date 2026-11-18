@@ -23,12 +23,14 @@ type SavedPatternRowIdentity struct {
 }
 
 type SavedAssemblySnapshotRequest struct {
-	ExpectedRow                    SavedPatternRowIdentity
-	SelectedOperationNumber        int
-	ExpectedServerAssemblyRevision string
-	ExpectedTopologySHA256         string
-	Profile                        SavedAssemblySnapshotProfile
-	ExpectedCompleteSourceSHA256   string
+	ExpectedRow                      SavedPatternRowIdentity
+	SelectedOperationNumber          int
+	ExpectedServerAssemblyRevision   string
+	ExpectedTopologySHA256           string
+	Profile                          SavedAssemblySnapshotProfile
+	ExpectedCompleteSourceSHA256     string
+	SelectedSizeID                   int
+	ExpectedAuthoredFoldSourceSHA256 string
 }
 
 type SavedAssemblySnapshotProfile int32
@@ -36,6 +38,7 @@ type SavedAssemblySnapshotProfile int32
 const (
 	SavedAssemblySnapshotSelected SavedAssemblySnapshotProfile = iota
 	SavedAssemblySnapshotCompleteSourceV1
+	SavedAssemblySnapshotCompleteSourceWithAuthoredFoldsV1
 )
 
 type SavedAssemblySourceAliasV1 struct {
@@ -55,6 +58,23 @@ type SavedAssemblyCompleteSourceV1 struct {
 	CanonicalJSON []byte
 }
 
+type SavedAssemblyAuthoredFoldV1 struct {
+	OperationNumber int32
+	OperationOrder  int
+	Fold            TechCardPieceFold
+}
+
+// SavedAssemblyAuthoredFoldSourceV1 attests persisted AO-owned folds and the current selected
+// size identity. It supplies source witnesses for native geometry resolution at that rank.
+type SavedAssemblyAuthoredFoldSourceV1 struct {
+	CompleteSourceSHA256 string
+	SelectedSizeID       int
+	SelectedSizeToken    string
+	Folds                []SavedAssemblyAuthoredFoldV1
+	SourceSHA256         string
+	CanonicalJSON        []byte
+}
+
 type SavedAssemblySnapshot struct {
 	Row                     SavedPatternRowIdentity
 	SelectedOperationNumber int
@@ -65,4 +85,5 @@ type SavedAssemblySnapshot struct {
 	TopologyCanonicalJSON   []byte
 	SemanticSidecar         *PatternSemanticSidecar
 	CompleteSourceV1        *SavedAssemblyCompleteSourceV1
+	AuthoredFoldSourceV1    *SavedAssemblyAuthoredFoldSourceV1
 }

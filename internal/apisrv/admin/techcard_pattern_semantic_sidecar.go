@@ -131,9 +131,11 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 			SizeBytes:        req.GetExpectedSizeBytes(),
 			SHA256:           req.GetExpectedSha256(),
 		},
-		SelectedOperationNumber:      int(req.GetSelectedOperationNumber()),
-		Profile:                      entity.SavedAssemblySnapshotProfile(req.GetProfile()),
-		ExpectedCompleteSourceSHA256: req.GetExpectedCompleteSourceSha256(),
+		SelectedOperationNumber:          int(req.GetSelectedOperationNumber()),
+		Profile:                          entity.SavedAssemblySnapshotProfile(req.GetProfile()),
+		ExpectedCompleteSourceSHA256:     req.GetExpectedCompleteSourceSha256(),
+		SelectedSizeID:                   int(req.GetSelectedSizeId()),
+		ExpectedAuthoredFoldSourceSHA256: req.GetExpectedAuthoredFoldSourceSha256(),
 	}
 	if req.ExpectedServerAssemblyRevision != nil {
 		in.ExpectedServerAssemblyRevision = req.GetExpectedServerAssemblyRevision()
@@ -160,6 +162,9 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 	if snapshot.CompleteSourceV1 != nil {
 		source := snapshot.CompleteSourceV1
 		response.CompleteSourceV1 = dto.SavedAssemblyCompleteSourceV1ToPb(source)
+		if snapshot.AuthoredFoldSourceV1 != nil {
+			response.AuthoredFoldSourceV1 = dto.SavedAssemblyAuthoredFoldSourceV1ToPb(snapshot.AuthoredFoldSourceV1)
+		}
 		response.Operations = dto.TechCardOperationsToPbForSavedAssembly(snapshot.Card.Operations)
 		patterns := make([]*pb_common.TechCardSizePattern, 0, len(source.Rows))
 		for _, row := range source.Rows {
@@ -193,6 +198,11 @@ func savedAssemblyPatternForDownload(row entity.SavedPatternRowIdentity) *pb_com
 }
 
 func savedAssemblySnapshotError(ctx context.Context, techCardID int, err error) error {
+	var violation *entity.ValidationError
+	if (errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) ||
+		errors.Is(err, entity.ErrTechCardSavedAssemblyMoved)) && errors.As(err, &violation) {
+		return apierr.FailedPrecondition(violation)
+	}
 	if st, ok := apierr.Status(err); ok {
 		return st
 	}
