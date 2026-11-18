@@ -134,59 +134,60 @@ func seedSpineStyle(ctx context.Context, t *testing.T, tag string) int {
 	return id
 }
 
-func getTableNames(db *sql.DB) ([]string, error) {
-	rows, err := db.Query("SHOW TABLES")
+// names runs a one-column query on the cleanup's connection and returns the values.
+func names(ctx context.Context, conn *sql.Conn, query string) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get tables: %v", err)
+		return nil, fmt.Errorf("failed to list (%s): %v", query, err)
 	}
 	defer rows.Close()
 
-	var tables []string
+	var out []string
 	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
-			return nil, fmt.Errorf("failed to scan table name: %v", err)
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("failed to scan name: %v", err)
 		}
-		tables = append(tables, table)
+		out = append(out, name)
 	}
-	return tables, rows.Err()
+	return out, rows.Err()
 }
 
+// cleanup drops every view and table of the test database. Everything runs on ONE connection:
+// FOREIGN_KEY_CHECKS is a session variable, and a DROP that the pool hands to another connection
+// (up to 10 open, a minute's lifetime) still checks foreign keys, fails on a parent table and
+// stops the cleanup half way — gorp_migrations already gone, `size` and the rest still there — so
+// the next package that migrates this database dies on "Table 'size' already exists" in 0001.
 func cleanup(db *sql.DB) error {
-	// Disable foreign key checks temporarily
-	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to take a cleanup connection: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return fmt.Errorf("failed to disable foreign key checks: %v", err)
 	}
-	defer db.Exec("SET FOREIGN_KEY_CHECKS = 1")
+	defer conn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1")
 
-	// Drop all views first
-	views, err := db.Query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = DATABASE()")
-	if err != nil {
-		return fmt.Errorf("failed to get views: %v", err)
-	}
-	defer views.Close()
-
-	for views.Next() {
-		var view string
-		if err := views.Scan(&view); err != nil {
-			return fmt.Errorf("failed to scan view name: %v", err)
-		}
-		if _, err := db.Exec(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", view)); err != nil {
-			return fmt.Errorf("failed to drop view %s: %v", view, err)
-		}
-	}
-	if err = views.Err(); err != nil {
-		return fmt.Errorf("error iterating views: %v", err)
-	}
-
-	// Drop all tables
-	tables, err := getTableNames(db)
+	views, err := names(ctx, conn, "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = DATABASE()")
 	if err != nil {
 		return err
 	}
+	for _, view := range views {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("DROP VIEW IF EXISTS `%s`", view)); err != nil {
+			return fmt.Errorf("failed to drop view %s: %v", view, err)
+		}
+	}
 
+	tables, err := names(ctx, conn, "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'")
+	if err != nil {
+		return err
+	}
 	for _, table := range tables {
-		if _, err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", table)); err != nil {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`", table)); err != nil {
 			return fmt.Errorf("failed to drop table %s: %v", table, err)
 		}
 	}
