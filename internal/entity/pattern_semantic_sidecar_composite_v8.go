@@ -31,16 +31,12 @@ const (
 var nativeCrossRowAssemblyRevisionV8 = regexp.MustCompile(`^asm:v1:[0-9a-f]{32}:[1-9][0-9]{0,19}$`)
 
 type patternProductCompositeSidecarV8Review struct {
-	SchemaVersion string `json:"schemaVersion"`
-	MediaType     string `json:"mediaType"`
-	Encoding      string `json:"encoding"`
-	Profile       string `json:"profile"`
-	Bindings      struct {
-		AnchorRow              nativeCrossRowReviewRowV8 `json:"anchorRow"`
-		ServerAssemblyRevision string                    `json:"serverAssemblyRevision"`
-		CompleteSourceSHA256   string                    `json:"completeSourceSha256"`
-	} `json:"bindings"`
-	WriteCAS struct {
+	SchemaVersion string                   `json:"schemaVersion"`
+	MediaType     string                   `json:"mediaType"`
+	Encoding      string                   `json:"encoding"`
+	Profile       string                   `json:"profile"`
+	Bindings      nativeCrossRowBindingsV8 `json:"bindings"`
+	WriteCAS      struct {
 		ExpectedPreviousSidecarSHA256 *string `json:"expectedPreviousSidecarSha256"`
 	} `json:"writeCas"`
 	Selection struct {
@@ -60,6 +56,12 @@ type patternProductCompositeSidecarV8Review struct {
 		GridSHA256               string `json:"gridSha256"`
 		StationCount             int    `json:"stationCount"`
 	} `json:"review"`
+}
+
+type nativeCrossRowBindingsV8 struct {
+	AnchorRow              nativeCrossRowReviewRowV8 `json:"anchorRow"`
+	ServerAssemblyRevision string                    `json:"serverAssemblyRevision"`
+	CompleteSourceSHA256   string                    `json:"completeSourceSha256"`
 }
 
 type nativeCrossRowReviewRowV8 struct {

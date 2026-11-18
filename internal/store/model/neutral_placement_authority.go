@@ -15,32 +15,15 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const NeutralPlacementPoseKindV1 = "neutral-default-direct-v9"
+const NeutralPlacementPoseKindV1 = entity.NeutralPlacementPoseKindV1
 
 var (
-	ErrNeutralPlacementModelMoved   = errors.New("neutral placement model binding moved")
+	ErrNeutralPlacementModelMoved   = entity.ErrNeutralPlacementModelMoved
 	ErrNeutralPlacementModelCorrupt = errors.New("neutral placement model inputs are invalid")
 )
 
-type NeutralPlacementPoseBindingV1 struct {
-	Kind            string `json:"kind"`
-	CanonicalSHA256 string `json:"canonicalSha256"`
-}
-
-type NeutralPlacementModelAuthorityV1 struct {
-	ModelID                   int                           `json:"modelId"`
-	ModelUpdatedAt            string                        `json:"modelUpdatedAt"`
-	ModelPhysicalInputsSHA256 string                        `json:"modelPhysicalInputsSha256"`
-	Pose                      NeutralPlacementPoseBindingV1 `json:"pose"`
-}
-
-// VerifyExpected compares the complete binding after loading current authority.
-func (current NeutralPlacementModelAuthorityV1) VerifyExpected(expected NeutralPlacementModelAuthorityV1) error {
-	if current != expected || current.ModelID <= 0 {
-		return ErrNeutralPlacementModelMoved
-	}
-	return nil
-}
+type NeutralPlacementPoseBindingV1 = entity.NeutralPlacementPoseBindingV1
+type NeutralPlacementModelAuthorityV1 = entity.NeutralPlacementModelAuthorityV1
 
 // ReadNeutralPlacementModelAuthorityV1 borrows the caller's repeatable-read
 // snapshot. The caller must encompass all other source reads in that snapshot.
@@ -104,12 +87,7 @@ func loadNeutralPlacementModelAuthorityV1(ctx context.Context, db dependency.DB,
 		return out, err
 	}
 
-	// Same linked, zero-angle neutral factory as the Workbench direct-v9 viewer.
-	neutral := entity.ModelMannequinPoseV2{
-		ArmMode: entity.ModelMannequinArmModeLinked,
-		LegMode: entity.ModelMannequinLegModeLinked,
-	}
-	neutralSHA, err := neutral.CanonicalSHA256()
+	neutralSHA, err := entity.NeutralPlacementPoseCanonicalSHA256V1()
 	if err != nil {
 		return out, err
 	}
