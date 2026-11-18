@@ -60,6 +60,8 @@ type fakeS3 struct {
 	puts int
 	// requests records every call as "METHOD key", so a test can prove a call was never made.
 	requests []string
+	// headMissing makes HEAD of an absent key answer 404 (a StatObject miss).
+	headMissing bool
 }
 
 // requestLog returns a copy of every call the store received, in order.
@@ -91,6 +93,14 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		sum := md5.Sum(body)
 		w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:])+`"`)
+	case http.MethodHead:
+		f.mu.Lock()
+		_, ok := f.objects[key]
+		f.mu.Unlock()
+		if f.headMissing && !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 	case http.MethodDelete:
 		// DeleteObjects is what compensation runs on, so the store has to actually forget.
 		f.mu.Lock()

@@ -231,3 +231,38 @@ func TestReadOnlyHostsParsing(t *testing.T) {
 	require.Empty(t, ReadOnlyHosts(&Config{}))
 	require.Empty(t, ReadOnlyHosts(nil))
 }
+
+// A copied pattern row keeps a legacy key; the object is not in our bucket. For team #1 the pattern
+// link resolves to the object's public url on the read-only host; our own pattern objects keep their
+// presigned url, and another team never gets the legacy url.
+func TestPresignPatternObjectFallsBackToReadOnlyHost(t *testing.T) {
+	b, store, _ := newProbeBucket(t)
+	store.headMissing = true
+	b.Config.ReadOnlyHosts = legacyHost
+	b.Config.TeamsMode = true
+	team1 := tenant.With(context.Background(), tenant.Team{ID: tenant.TeamOneID})
+
+	legacyKey := "grbpwr-com/tech-card-patterns/2024/may/p-legacy.pdf"
+	got, _, err := b.PresignPatternObject(team1, legacyKey, false, "")
+	require.NoError(t, err)
+	require.Equal(t, "https://"+legacyHost+"/"+legacyKey, got)
+
+	ownKey := "probe/tech-card-patterns/2026/july/p-own.pdf"
+	store.objects[ownKey] = []byte("%PDF-")
+	got, _, err = b.PresignPatternObject(team1, ownKey, false, "")
+	require.NoError(t, err)
+	require.NotContains(t, got, legacyHost)
+	require.Contains(t, got, "X-Amz-Signature")
+
+	other := tenant.With(context.Background(), tenant.Team{ID: 2})
+	got, _, err = b.PresignPatternObject(other, legacyKey, false, "")
+	require.NoError(t, err)
+	require.NotContains(t, got, legacyHost)
+
+	// Empty list: no HEAD at all, today's presign.
+	b.Config.ReadOnlyHosts = ""
+	before := len(store.requestLog())
+	_, _, err = b.PresignPatternObject(team1, "grbpwr-com/tech-card-patterns/2024/may/p-x.pdf", false, "")
+	require.NoError(t, err)
+	require.Len(t, store.requestLog(), before)
+}
