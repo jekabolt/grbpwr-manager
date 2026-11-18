@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -116,4 +117,42 @@ func httpXTeam(r *http.Request) string {
 		}
 	}
 	return ""
+}
+
+// WithStatuszAuthz guards GET /statusz (DB pool, workers, breakers, runtime: process-wide state).
+//
+// Teams mode OFF: exactly WithAuth, as before (any enabled admin; the same 401 / 503 answers).
+// Teams mode: the admin chain, read-only, Core feature — Origin lock, live session, account state —
+// and only team #1 sees it, because the numbers belong to the whole process, not to a team.
+func (s *Server) WithStatuszAuthz(next http.Handler) http.Handler {
+	modeOff := s.WithAuth(next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.teamsMode() {
+			modeOff.ServeHTTP(w, r)
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get(AuthMetadataKey), "Bearer "))
+		if token == "" {
+			writeAuthError(w, http.StatusUnauthorized)
+			return
+		}
+		ctx, err := s.adminChain(r.Context(), adminCall{
+			token:    token,
+			origin:   r.Header.Get("Origin"),
+			host:     r.Host,
+			xteam:    httpXTeam(r),
+			method:   "GET /statusz",
+			readOnly: true,
+			features: func() ([]feature.Key, bool) { return []feature.Key{feature.Core}, true },
+		})
+		if err != nil {
+			writeChainError(w, err)
+			return
+		}
+		if ws, ok := GetWorkspace(ctx); !ok || ws.Team.ID != tenant.TeamOneID {
+			writeJSONError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }

@@ -680,11 +680,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Operational status endpoint. Unlike /livez and /readyz this exposes internal
 	// state (DB pool, per-worker liveness, circuit-breaker state, runtime), so it
 	// is gated behind the same admin JWT auth the admin REST surface uses
-	// (auth.WithAuth). It is read-only and never affects readiness — a stale
+	// (auth.WithStatuszAuthz: WithAuth in mode OFF, team #1 admin chain in teams mode). It is read-only and never affects readiness — a stale
 	// worker shows up here but does NOT make /readyz fail (which would trigger
 	// restart loops). Only mounted when a health registry has been registered.
 	if s.healthRegistry != nil {
-		r.Method(http.MethodGet, "/statusz", auth.WithAuth(http.HandlerFunc(s.handleStatusz)))
+		r.Method(http.MethodGet, "/statusz", auth.WithStatuszAuthz(http.HandlerFunc(s.handleStatusz)))
 	}
 
 	// handle static swagger at root
