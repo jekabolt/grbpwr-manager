@@ -173,8 +173,9 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256,
 			}
 			var assemblyOrderContentSHA string
+			var assemblyOrderContent []byte
 			if in.MediaType == entity.PatternProductCompositeSidecarV7MediaType {
-				_, assemblyOrderContentSHA, err = savedFullAssemblyAOContent(currentSavedRow, clock.Token(), card)
+				assemblyOrderContent, assemblyOrderContentSHA, err = savedFullAssemblyAOContent(currentSavedRow, clock.Token(), card)
 				if err != nil {
 					return err
 				}
@@ -183,11 +184,13 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				entity.PatternProductCompositeSidecarExpected{
 					Row:            currentSavedRow,
 					PatternVersion: pattern.Version, PostSaveReceiptSHA256: in.ExpectedPostSaveReceiptSHA256,
-					ExpectedPreviousSidecarSHA256: *in.ExpectedPreviousSidecarSHA256,
-					ServerAssemblyRevision:        clock.Token(),
-					AssemblyTopologySHA256:        topologySHA,
-					AssemblyOrderContentSHA256:    assemblyOrderContentSHA,
-					SelectedOperationNumber:       in.SelectedOperationNumber,
+					ExpectedPreviousSidecarSHA256:     *in.ExpectedPreviousSidecarSHA256,
+					ServerAssemblyRevision:            clock.Token(),
+					AssemblyTopologySHA256:            topologySHA,
+					AssemblyOrderContentSHA256:        assemblyOrderContentSHA,
+					AssemblyOrderContentCanonicalJSON: string(assemblyOrderContent),
+					AssemblyOrderCard:                 card,
+					SelectedOperationNumber:           in.SelectedOperationNumber,
 				}); err != nil {
 				return err
 			}

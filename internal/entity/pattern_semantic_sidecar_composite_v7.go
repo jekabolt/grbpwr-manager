@@ -145,10 +145,32 @@ func validateSavedFullAssemblyPhysicalV1(
 		}
 	}
 
-	graphDocument, ok := exactJSONObject(document["graph"],
-		"schemaVersion", "profile", "row", "serverAssemblyRevision", "source", "pieces", "operations", "seams", "compile")
-	if !ok || graphDocument["schemaVersion"] != dxfExactAssemblyGraphDocumentV1 ||
-		graphDocument["profile"] != "single-saved-row-size-adjacent-native-stitch" {
+	graphDocument, ok := document["graph"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("exact Assembly graph is missing")
+	}
+	fields := []string{"schemaVersion", "profile", "row", "serverAssemblyRevision", "source", "pieces", "operations", "seams", "compile"}
+	if graphDocument["profile"] == recordedTerminalPressGraphProfile {
+		if profile != savedFullAssemblyNativeDrawnSewingProfileV1 {
+			return fmt.Errorf("recorded terminal press requires native drawn sewing")
+		}
+		fields = append(fields, "productionOrder")
+		if err := validateRecordedTerminalPressOrder(graphDocument, expected, requireAOContent); err != nil {
+			return err
+		}
+	} else if graphDocument["profile"] != "single-saved-row-size-adjacent-native-stitch" {
+		return fmt.Errorf("exact Assembly graph profile differs")
+	}
+	// The previous graph vocabulary cannot encode a pressing step. With an authoritative
+	// source present, relabeling a new graph as the legacy profile cannot drop that step.
+	if requireAOContent && expected.AssemblyOrderCard != nil && graphDocument["profile"] != recordedTerminalPressGraphProfile {
+		for _, op := range expected.AssemblyOrderCard.Operations {
+			if op.OperationType == OpTypePress || op.Work.String == "press_flat" {
+				return fmt.Errorf("legacy stitch graph cannot represent an Assembly Order press")
+			}
+		}
+	}
+	if _, ok := exactJSONObject(graphDocument, fields...); !ok || graphDocument["schemaVersion"] != dxfExactAssemblyGraphDocumentV1 {
 		return fmt.Errorf("exact Assembly graph schema differs")
 	}
 	graphRow, graphRowOK := savedFullAssemblyExactRow(graphDocument["row"])

@@ -31,14 +31,16 @@ const (
 // repeat in its outer document and exact-topology component. Row is the dedicated eight-field
 // saved-byte identity; PatternVersion remains a separate legacy semantic-V1 binding.
 type PatternProductCompositeSidecarExpected struct {
-	Row                           SavedPatternRowIdentity
-	PatternVersion                int
-	PostSaveReceiptSHA256         string
-	ExpectedPreviousSidecarSHA256 string // empty means the V3 JSON writeCas value must be null
-	ServerAssemblyRevision        string
-	AssemblyTopologySHA256        string
-	AssemblyOrderContentSHA256    string
-	SelectedOperationNumber       int
+	Row                               SavedPatternRowIdentity
+	PatternVersion                    int
+	PostSaveReceiptSHA256             string
+	ExpectedPreviousSidecarSHA256     string // empty means the V3 JSON writeCas value must be null
+	ServerAssemblyRevision            string
+	AssemblyTopologySHA256            string
+	AssemblyOrderContentSHA256        string
+	AssemblyOrderContentCanonicalJSON string
+	AssemblyOrderCard                 *TechCard // hydrated by the same locked store reader as the V7 AO digest
+	SelectedOperationNumber           int
 }
 
 type compositeSavedRowV3 struct {

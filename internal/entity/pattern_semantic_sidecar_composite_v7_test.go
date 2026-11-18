@@ -25,6 +25,11 @@ func buildCompositeV7TestFixture(t *testing.T) compositeV7TestFixture {
 
 func buildCompositeV7TestFixtureWithProfile(t *testing.T, profile string) compositeV7TestFixture {
 	t.Helper()
+	return buildCompositeV7TestFixtureWithGraph(t, profile, nil)
+}
+
+func buildCompositeV7TestFixtureWithGraph(t *testing.T, profile string, edit func(map[string]any, *PatternProductCompositeSidecarExpected)) compositeV7TestFixture {
+	t.Helper()
 	v6 := buildCompositeV6TestFixture(t)
 	expected := v6.Expected
 	expected.ExpectedPreviousSidecarSHA256 = PatternSemanticSidecarPayloadSHA256(v6.Payload)
@@ -61,6 +66,9 @@ func buildCompositeV7TestFixtureWithProfile(t *testing.T, profile string) compos
 				"provenanceKind": "untrusted-product", "corpusEntryId": nil,
 			},
 		}
+	}
+	if edit != nil {
+		edit(graph, &expected)
 	}
 	graphCanonical, err := canonicalCompositeValue(graph)
 	require.NoError(t, err)
