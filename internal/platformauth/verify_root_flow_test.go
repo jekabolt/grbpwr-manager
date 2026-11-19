@@ -368,3 +368,100 @@ func TestBrandAtCreation(t *testing.T) {
 		t.Fatal("create team with an empty brand wrote a row")
 	}
 }
+
+// TestVerifyLetterDiesWithPasswordChange: a verify letter signs in, so a password change (a reset by
+// letter, or the team #1 password write) expires every unused one: a code or link held from before
+// gets today's refusal, no token and no session on the new credential generation. A pending team
+// still waiting gets a fresh letter by the resend, which confirms and signs in.
+func TestVerifyLetterDiesWithPasswordChange(t *testing.T) {
+	e := newE1(t, false)
+	const (
+		anna = "delivered+e1ranna@resend.dev"
+		bob  = "delivered+e1rbob@resend.dev"
+	)
+	// held is an active account's second team: the right password on the sheet, a letter kept.
+	held := func(email, first, second string) (code, link string, id int64) {
+		t.Helper()
+		c, _ := e.signUp(email, first, nil)
+		if vr, err := e.svc.VerifyEmail(e.ctx(), &auth.VerifyEmailRequest{Email: email, Code: c}); err != nil || vr.GetRootToken() == "" {
+			t.Fatalf("first verify of %s = %v, %v", email, vr, err)
+		}
+		code, link = e.signUp(email, second, nil)
+		return code, link, e.userID(email)
+	}
+	refusedAfterChange := func(email, code, link string, id int64) {
+		t.Helper()
+		if n := e.count(`SELECT COUNT(*) FROM email_token WHERE user_id = ? AND purpose = 'verify' AND used_at IS NULL`, id); n != 0 {
+			t.Fatalf("%s: %d verify letters live after the password change", email, n)
+		}
+		before := e.sessions(email)
+		r, err := e.svc.VerifyEmail(e.ctx(), &auth.VerifyEmailRequest{Email: email, Code: code})
+		wantCodeRefusal(t, err, email+": code held from before the change")
+		if r.GetRootToken() != "" {
+			t.Fatalf("%s: a held code carried a token", email)
+		}
+		r, err = e.svc.VerifyEmail(e.ctx(), &auth.VerifyEmailRequest{Token: link})
+		wantCodeRefusal(t, err, email+": link held from before the change")
+		if r.GetRootToken() != "" {
+			t.Fatalf("%s: a held link carried a token", email)
+		}
+		if n := e.sessions(email); n != before {
+			t.Fatalf("%s: held letters opened %d sessions", email, n-before)
+		}
+		if n := e.count(`SELECT COUNT(*) FROM user_session WHERE user_id = ? AND revoked_at IS NULL`, id); n != 0 {
+			t.Fatalf("%s: %d live sessions after the password change", email, n)
+		}
+	}
+
+	// The team #1 password write (SetPasswordAndRevokeSessions, an admin reset: no current password).
+	bcode, blink, bobID := held(bob, "e1-rbob", "e1-rbob2")
+	var bobHandle string
+	if err := e.st.DB().Get(&bobHandle, `SELECT handle FROM platform_user WHERE id = ?`, bobID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.DB().Exec(`INSERT INTO team_member (team_id, user_id, role, status, created_at) VALUES (1, ?, 'member', 'active', ?)`,
+		bobID, e.clock); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := e.svc.d.Hasher.HashPassword("e1-password-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := e.st.SetPasswordAndRevokeSessions(context.Background(), bobHandle, hash, nil, e.clock); err != nil || c.Gen != 1 || len(c.SIDs) != 1 {
+		t.Fatalf("team #1 password write = %+v, %v", c, err)
+	}
+	refusedAfterChange(bob, bcode, blink, bobID)
+
+	// A reset by letter.
+	acode, alink, annaID := held(anna, "e1-ranna", "e1-ranna2")
+	if _, err := e.svc.RequestPasswordReset(e.ctx(), &auth.RequestPasswordResetRequest{Email: anna}); err != nil {
+		t.Fatal(err)
+	}
+	kind, rcode, _ := e.lastLetter(anna)
+	if kind != PurposeReset {
+		t.Fatalf("last letter to anna = %s", kind)
+	}
+	if _, err := e.svc.ResetPassword(e.ctx(), &auth.ResetPasswordRequest{Email: anna, Code: rcode, NewPassword: "e1-password-2"}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	refusedAfterChange(anna, acode, alink, annaID)
+
+	// The waiting team is not lost: the resend gives a fresh letter, which confirms and signs in.
+	// Last: the clock moves past the hourly letter cap (tokens are not checked after it).
+	e.clock = e.clock.Add(61 * time.Minute)
+	if _, err := e.svc.ResendVerification(e.ctx(), &auth.ResendVerificationRequest{Email: anna}); err != nil {
+		t.Fatal(err)
+	}
+	kind, ncode, _ := e.lastLetter(anna)
+	if kind != PurposeVerify || ncode == acode {
+		t.Fatalf("resent letter = %s (same code: %v)", kind, ncode == acode)
+	}
+	before := e.sessions(anna)
+	vr, err := e.svc.VerifyEmail(e.ctx(), &auth.VerifyEmailRequest{Email: anna, Code: ncode})
+	if err != nil || vr.GetTeamSlug() != "e1-ranna2" || vr.GetHandoffCode() == "" || vr.GetRootToken() == "" {
+		t.Fatalf("verify by the resent letter = %v, %v", vr, err)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM user_session WHERE user_id = ? AND aud = 'root' AND revoked_at IS NULL`, annaID); n != 1 || e.sessions(anna) != before+1 {
+		t.Fatalf("live root sessions after the resent letter = %d", n)
+	}
+}

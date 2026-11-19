@@ -193,7 +193,8 @@ type Review struct {
 // rootSID (the row the password sign-in opens, on the credential generation read under the
 // account's lock): the person is signed in by the code. An operator signs in with the password
 // only, as on the provider path. Reached only through a letter consumed in this transaction, so a
-// used, expired or wrong code or link never gets here.
+// used, expired or wrong code or link never gets here, nor a letter from before a password change
+// (changeCredentialsTx expires it).
 func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, rootSID string, review Review,
 	now time.Time) (VerifyResult, error) {
 	if u.Status == UserDisabled || !t.TeamID.Valid {
@@ -346,7 +347,7 @@ func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.
 		return ResetResult{}, fmt.Errorf("platformstore: verify email: %w", err)
 	}
 	// New hash, credential_gen + 1 (legacy team #1 tokens of the old generation die), sessions
-	// revoked, unused hand-off codes expired — one transaction.
+	// revoked, unused hand-off codes and verify letters expired — one transaction.
 	c, err := changeCredentialsTx(ctx, tx, u.ID, newHash, now)
 	if err != nil {
 		return ResetResult{}, err
