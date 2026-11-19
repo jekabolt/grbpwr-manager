@@ -1,0 +1,2 @@
+# The frontend's source IDs and saved row hashes include these exact DXF bytes.
+*.dxf binary

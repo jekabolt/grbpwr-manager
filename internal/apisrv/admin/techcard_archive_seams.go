@@ -14,13 +14,15 @@ import (
 // забирать швы»): the export cut TechCard.seams and every step's seam_keys, so an imported card
 // arrived with no seams and the assembly sheet had nothing to join its pieces along.
 //
-// NOTHING IN A SEAM IS A FOREIGN ID. seam_key is the card's own ULID (unique per card, not per
+// seam_key is the card's own ULID (unique per card, not per
 // base), every anchor names a piece by its stable line_key (which travels verbatim in card.json),
 // and a step names its seams by seam_key. So the seams travel verbatim in seams.json, the steps'
 // seam_keys stay where they are in card.json, and the imported card's new row ids follow from the
 // writes themselves. What does not travel is what belongs to the source instance: the source
 // fingerprint (a hash over the source's sheet URLs — the import stamps its own from the imported
 // sheets) and the created/updated stamps. A seam the source read as stale lands stale.
+// Native point closures retain their original authority, including the source size ID. They stay
+// stale until their destination occurrences are verified through the normal point closure writer.
 
 // seamsToArchive is the export half: the card's stored seams as seams.json rows, in store order.
 func seamsToArchive(seams []entity.TechCardSeam) []techcardarchive.SeamPayload {
@@ -69,6 +71,7 @@ func seamSideToArchive(side []entity.TechCardSeamAnchor) []techcardarchive.SeamA
 			ContourSig:   a.ContourSig,
 			Placement:    placement,
 			Layer:        string(a.Layer),
+			PointClosure: pointClosureToArchive(a.PointClosure),
 		})
 	}
 	return out
@@ -112,9 +115,44 @@ func seamSideFromArchive(side []techcardarchive.SeamAnchor) []entity.TechCardSea
 			ContourSig:   a.ContourSig,
 			Placement:    placement,
 			Layer:        entity.TechCardSeamLayer(strings.TrimSpace(a.Layer)),
+			PointClosure: pointClosureFromArchive(a.PointClosure),
 		})
 	}
 	return out
+}
+
+func pointClosureToArchive(p *entity.TechCardSeamPointClosureAnchor) *techcardarchive.SeamPointClosureAnchor {
+	if p == nil {
+		return nil
+	}
+	return &techcardarchive.SeamPointClosureAnchor{
+		PatternLineKey: p.PatternLineKey, SavedRowRevision: p.SavedRowRevision,
+		DXFSHA256: p.DXFSHA256, SizeID: p.SizeID, AliasBlockName: p.AliasBlockName, NativeBlockName: p.NativeBlockName,
+		SourceInstancePath: append([]string(nil), p.SourceInstancePath...), SourceEntityOp: copyPointClosureEntityOp(p.SourceEntityOp),
+		Role: string(p.Role), Intent: string(p.Intent),
+		ButtonholeOperationNumber: p.ButtonholeOperationNumber, ButtonOperationNumber: p.ButtonOperationNumber,
+	}
+}
+
+func pointClosureFromArchive(p *techcardarchive.SeamPointClosureAnchor) *entity.TechCardSeamPointClosureAnchor {
+	if p == nil {
+		return nil
+	}
+	return &entity.TechCardSeamPointClosureAnchor{
+		PatternLineKey: p.PatternLineKey, SavedRowRevision: p.SavedRowRevision,
+		DXFSHA256: p.DXFSHA256, SizeID: p.SizeID, AliasBlockName: p.AliasBlockName, NativeBlockName: p.NativeBlockName,
+		SourceInstancePath: append([]string(nil), p.SourceInstancePath...), SourceEntityOp: copyPointClosureEntityOp(p.SourceEntityOp),
+		Role: entity.TechCardSeamPointClosureRole(p.Role), Intent: entity.TechCardSeamPointClosureIntent(p.Intent),
+		ButtonholeOperationNumber: p.ButtonholeOperationNumber, ButtonOperationNumber: p.ButtonOperationNumber,
+	}
+}
+
+func copyPointClosureEntityOp(value *uint32) *uint32 {
+	if value == nil {
+		return nil
+	}
+	op := *value
+	return &op
 }
 
 // tcimpSeamRef names a seam in the report by its key — the one identity it has on both sides.
@@ -192,7 +230,11 @@ func (r *tcimpResolver) resolveSeams() error {
 		}
 		imported++
 		kept[seam.SeamKey] = true
-		if row.Stale {
+		if seam.Kind == entity.TechCardSeamKindPointClosure {
+			r.hole(techcardarchive.EntitySeam, ref, techcardarchive.StatusDegraded, techcardarchive.ReasonPointClosureSourceUnverified,
+				"the point closure was retained stale because the destination has not verified its native DXF occurrences")
+		}
+		if row.Stale || seam.Kind == entity.TechCardSeamKindPointClosure {
 			stale[seam.SeamKey] = true
 		}
 		plan = append(plan, seam)

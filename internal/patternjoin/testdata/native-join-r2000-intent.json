@@ -1,0 +1,32 @@
+{
+  "fixed": {
+    "pieceId": "FP",
+    "pieceLineKey": "01JABCDEFGHJKMNPQRSTVWXYZD",
+    "sourceCurveId": "dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/46505f4d/h/3436/o/0/r/0/c/0/e/h/3243/s/0/p/1",
+    "startVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/46505f4d/h/3436/o/0/r/0/c/0/e/h/3243/s/0/p/1/sample/1",
+    "endVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/46505f4d/h/3436/o/0/r/0/c/0/e/h/3243/s/0/p/2/sample/2"
+  },
+  "moving": {
+    "pieceId": "BP",
+    "pieceLineKey": "01JABCDEFGHJKMNPQRSTVWXYZE",
+    "sourceCurveId": "dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/42505f4d/h/3437/o/0/r/0/c/0/e/h/3341/s/0/p/3",
+    "startVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/42505f4d/h/3437/o/0/r/0/c/0/e/h/3341/s/0/p/3/sample/3",
+    "endVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f6f4554596c396d564b4756334d64366c4a4e584f534951366232654d6d446f79486a48506e6b7564397759/i/n/b/42505f4d/h/3437/o/0/r/0/c/0/e/h/3341/s/0/p/0/sample/0"
+  },
+  "translateMovingMm": {
+    "x": -50,
+    "y": 0
+  },
+  "newIdentity": "JN",
+  "row": {
+    "techCardId": 156,
+    "scopeKey": "main",
+    "patternLineKey": "01JABCDEFGHJKMNPQRSTVWXYZ0",
+    "revision": 4,
+    "cardLockVersion": 8,
+    "url": "https://saved-full-assembly.invalid/three.dxf",
+    "sizeBytes": 18786,
+    "sha256": "a044d897d99528657731dea524d5ce48843a6f678c983a321e31cf9e4b9df706"
+  },
+  "sizeToken": "M"
+}

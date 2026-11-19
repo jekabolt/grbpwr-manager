@@ -73,6 +73,7 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 		return nil, err
 	}
 	out := make([]entity.TechCardSeam, 0, len(rows))
+	var pointSources *pointClosureSources
 	for _, r := range rows {
 		seam := entity.TechCardSeam{
 			TechCardSeamInput: entity.TechCardSeamInput{
@@ -99,6 +100,17 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 		errB := json.Unmarshal(r.SideB, &seam.SideB)
 		seam.Stale = errA != nil || errB != nil ||
 			!src.fresh(seam.PieceLineKeys(), r.SourceFingerprint)
+		if seam.Kind == entity.TechCardSeamKindPointClosure && !seam.Stale {
+			if pointSources == nil {
+				current, err := loadPointClosureSources(ctx, db, techCardID)
+				if err != nil {
+					return nil, err
+				}
+				pointSources = &current
+			}
+			seam.Stale = entity.ValidateTechCardSeamPointClosure("seam", seam.TechCardSeamInput) != nil ||
+				pointSources.check("seam", seam.TechCardSeamInput, false) != nil
+		}
 		out = append(out, seam)
 	}
 	return out, nil
@@ -219,6 +231,13 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 	if err := entity.ValidateTechCardSeamsWrite(&in); err != nil {
 		return nil, 0, err
 	}
+	keys := make([]string, 0, len(in.Seams))
+	for _, seam := range in.Seams {
+		if seam.Kind == entity.TechCardSeamKindPointClosure {
+			return nil, 0, entity.NewFieldViolation("seams", "point_closure_requires_change", seam.SeamKey, "use ChangeTechCardSeams with the saved Assembly clock")
+		}
+		keys = append(keys, seam.SeamKey)
+	}
 	var out []entity.TechCardSeam
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -232,6 +251,9 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		// A released card is frozen content — the seams included, they feed the seam map print and
 		// the doll.
 		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
+		if err := refuseLegacyPointClosureKeys(ctx, db, in.TechCardId, keys); err != nil {
 			return err
 		}
 		if err := writeTechCardSeamsTx(ctx, db, in.TechCardId, in.Seams, in.By, seamWriteOpts{}); err != nil {
@@ -274,41 +296,34 @@ type seamWriteOpts struct {
 // reviewer re-confirms it — the restore never forges «decided on these patterns».
 const seamFingerprintStale = "restored-stale"
 
+// Pieces, cut strips and garment labels share the seam anchor key space. Each
+// source must have landed on this card. Labels and strips need no DXF alias.
+func loadCardSeamAnchorKeys(ctx context.Context, db dependency.DB, techCardID int) (map[string]bool, error) {
+	keys, err := storeutil.QueryScalarListNamed[string](ctx, db, `
+		SELECT line_key FROM tech_card_piece
+		WHERE tech_card_id = :id AND line_key IS NOT NULL
+		UNION ALL
+		SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id
+		UNION ALL
+		SELECT line_key FROM tech_card_garment_label
+		WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+	if err != nil {
+		return nil, fmt.Errorf("load seam anchor keys of tech card %d: %w", techCardID, err)
+	}
+	onCard := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		onCard[strings.ToUpper(strings.TrimSpace(key))] = true
+	}
+	return onCard, nil
+}
+
 // writeTechCardSeamsTx IS THE SEAM WRITE — UpsertTechCardSeams and the restore's sync both run it,
 // inside a transaction whose caller already holds the card row and has checked it is mutable.
 func writeTechCardSeamsTx(ctx context.Context, db dependency.DB, techCardID int, seams []entity.TechCardSeamInput, by string, opts seamWriteOpts) error {
 	if !opts.skipPieceCheck {
-		// Every anchor must name a piece of THIS card. Matched case-insensitively (ULIDs; the column
-		// collation is case-insensitive anyway).
-		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT line_key FROM tech_card_piece
-			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
+		mine, err := loadCardSeamAnchorKeys(ctx, db, techCardID)
 		if err != nil {
-			return fmt.Errorf("load piece keys of tech card %d: %w", techCardID, err)
-		}
-		mine := make(map[string]bool, len(pieces))
-		for _, p := range pieces {
-			mine[strings.ToUpper(strings.TrimSpace(p))] = true
-		}
-		// A cut strip of the same card is a legitimate end of a seam (0449). Same key space as a piece.
-		strips, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id`, map[string]any{"id": techCardID})
-		if err != nil {
-			return fmt.Errorf("load strip keys of tech card %d: %w", techCardID, err)
-		}
-		for _, k := range strips {
-			mine[strings.ToUpper(strings.TrimSpace(k))] = true
-		}
-		// A garment label of the same card is a legitimate pose anchor (0454). Like a strip it
-		// shares the piece key space but is not a fabric sheet source.
-		labels, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT line_key FROM tech_card_garment_label
-			WHERE tech_card_id = :id AND line_key IS NOT NULL`, map[string]any{"id": techCardID})
-		if err != nil {
-			return fmt.Errorf("load garment label keys of tech card %d: %w", techCardID, err)
-		}
-		for _, k := range labels {
-			mine[strings.ToUpper(strings.TrimSpace(k))] = true
+			return err
 		}
 		for i, seam := range seams {
 			for _, side := range []struct {
@@ -436,6 +451,9 @@ func (s *Store) DeleteTechCardSeams(ctx context.Context, techCardID int, seamKey
 			return err
 		}
 		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
+			return err
+		}
+		if err := refuseLegacyPointClosureKeys(ctx, db, techCardID, keys); err != nil {
 			return err
 		}
 		n, err := deleteTechCardSeamsTx(ctx, db, techCardID, keys)

@@ -823,6 +823,10 @@ func (s *Server) techCardWriteError(ctx context.Context, err error) error {
 	if errors.Is(err, entity.ErrTechCardConflict) {
 		return status.Error(codes.Aborted, "tech card was modified concurrently; reload and retry")
 	}
+	if errors.Is(err, entity.ErrTechCardPieceRenameProtected) ||
+		errors.Is(err, entity.ErrTechCardAttachedPieceRenameUnsupported) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
 	if errors.Is(err, entity.ErrTechCardReleased) {
 		return status.Error(codes.FailedPrecondition, "tech card is released and frozen; re-open to draft to edit")
 	}
@@ -880,7 +884,36 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 		}
 		saveSessionID = parsed.String()
 	}
-	tc, err := s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
+	var tc *entity.TechCardInsert
+	var err error
+	guardedPattern := req.GetGuardedAssemblyPatternUpdate()
+	if guardedPattern != nil {
+		if req.GetTechCard() != nil || req.GetGuardedPieceRename() != nil || req.GetGuardedPieceJoin() != nil || guardedPattern.GetTechCard() == nil {
+			return nil, status.Error(codes.InvalidArgument, "send one tech card document within the guarded pattern update")
+		}
+		expectedAssembly := guardedPattern.GetExpectedServerAssemblyRevision()
+		if !entity.ValidTechCardAssemblyRevision(expectedAssembly) {
+			return nil, apierr.Invalid(entity.NewFieldViolation(
+				"guarded_assembly_pattern_update.expected_server_assembly_revision", "invalid", expectedAssembly,
+				"send the saved Assembly clock used for this pattern review"))
+		}
+		tc, err = s.prepareTechCardWrite(ctx, int(req.Id), guardedPattern.GetTechCard(), snapshotReason)
+		if err == nil {
+			tc.ExpectedServerAssemblyRevision = expectedAssembly
+		}
+	} else if join := req.GetGuardedPieceJoin(); join != nil {
+		if req.GetTechCard() != nil || req.GetGuardedPieceRename() != nil || snapshotReason != "" || saveSessionID != "" {
+			return nil, status.Error(codes.InvalidArgument, "send the guarded Join by itself")
+		}
+		tc, err = s.prepareGuardedNativePieceJoin(ctx, int(req.Id), int(req.ExpectedLockVersion), join)
+	} else if rename := req.GetGuardedPieceRename(); rename != nil {
+		if req.GetTechCard() != nil || snapshotReason != "" || saveSessionID != "" {
+			return nil, status.Error(codes.InvalidArgument, "send a guarded rename by itself")
+		}
+		tc, err = s.prepareGuardedZeroOperationPieceRename(ctx, int(req.GetId()), int(req.GetExpectedLockVersion()), rename)
+	} else {
+		tc, err = s.prepareTechCardWrite(ctx, int(req.Id), req.TechCard, snapshotReason)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -892,12 +925,28 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
 	if err != nil {
+		if (guardedPattern != nil || req.GetGuardedPieceJoin() != nil) && errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+			return nil, status.Error(codes.Aborted, "saved Assembly binding changed")
+		}
+		if req.GetGuardedPieceJoin() != nil && errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
+			return nil, status.Error(codes.FailedPrecondition, "saved Join no longer matches the reviewed document and files")
+		}
+		if tc.GuardedPieceRename != nil && tc.GuardedPieceRename.Attached != nil {
+			if errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+				return nil, status.Error(codes.Aborted, "saved Assembly changed; reopen the current review")
+			}
+			if errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) ||
+				errors.Is(err, entity.ErrTechCardPatternSidecarCorrupt) {
+				return nil, status.Error(codes.FailedPrecondition, err.Error())
+			}
+		}
 		return nil, s.techCardWriteError(ctx, err)
 	}
-	s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)
-	// MOODBOARD LABELS (101): the save may have put pictures on the board or changed a purpose — the
-	// server labels them in the background (never blocks the save, never writes the form).
-	s.designBoardLabelKick(ctx, int(req.Id))
+	if tc.GuardedPieceRename == nil || tc.GuardedPieceRename.Attached == nil {
+		s.finalizeTechCardWrite(ctx, int(req.Id), int(req.ExpectedLockVersion), orphanedPatternURLs)
+		// MOODBOARD LABELS (101): a document save may have changed the board pictures or purpose.
+		s.designBoardLabelKick(ctx, int(req.Id))
+	}
 	// The header UPDATE (`WHERE lock_version = :expected_lock_version`) is the save's only bump, so
 	// the committed version is expected + 1 — the same number finalizeTechCardWrite seeds costs at.
 	return &pb_admin.UpdateTechCardResponse{LockVersion: req.ExpectedLockVersion + 1}, nil

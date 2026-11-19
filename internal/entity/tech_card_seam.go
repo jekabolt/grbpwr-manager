@@ -53,11 +53,12 @@ const (
 type TechCardSeamKind string
 
 const (
-	TechCardSeamKindEdge      TechCardSeamKind = "edge"
-	TechCardSeamKindPartial   TechCardSeamKind = "partial"
-	TechCardSeamKindComposite TechCardSeamKind = "composite"
-	TechCardSeamKindSurface   TechCardSeamKind = "surface"
-	TechCardSeamKindClosure   TechCardSeamKind = "closure"
+	TechCardSeamKindEdge         TechCardSeamKind = "edge"
+	TechCardSeamKindPartial      TechCardSeamKind = "partial"
+	TechCardSeamKindComposite    TechCardSeamKind = "composite"
+	TechCardSeamKindSurface      TechCardSeamKind = "surface"
+	TechCardSeamKindClosure      TechCardSeamKind = "closure"
+	TechCardSeamKindPointClosure TechCardSeamKind = "point_close"
 	// TechCardSeamKindPose is NOT a seam: a piece placed by hand in a step (P8). It rides this table
 	// because the anchor + placement shape already exists (no migration): side_a = the one anchor of
 	// the moved piece with its placement in the host's frame, side_b = the one anchor of the host
@@ -66,7 +67,9 @@ const (
 )
 
 // IsSeam reports whether a row of this kind is a sewn (or closure) seam — false for a pose.
-func (k TechCardSeamKind) IsSeam() bool { return k != TechCardSeamKindPose }
+func (k TechCardSeamKind) IsSeam() bool {
+	return k != TechCardSeamKindPose && k != TechCardSeamKindPointClosure
+}
 
 // TechCardSeamDirection is how the two sides walk against each other. Unknown is a legal stored
 // value: the reader then picks the pairing itself.
@@ -115,7 +118,8 @@ type TechCardSeamAnchor struct {
 	Placement *TechCardSeamPlacement `json:"placement,omitempty"`
 	// Layer is the owner's explicit under/over of this anchor's piece against the other side in the
 	// step that sews the row. "" = unset (the client's own rule); omitted from the JSON then.
-	Layer TechCardSeamLayer `json:"layer,omitempty"`
+	Layer        TechCardSeamLayer               `json:"layer,omitempty"`
+	PointClosure *TechCardSeamPointClosureAnchor `json:"point_closure,omitempty"`
 }
 
 // TechCardSeamLayer is an explicit stacking of an anchor's piece; "" is unset.
@@ -283,6 +287,7 @@ var techCardSeamStatuses = map[TechCardSeamStatus]bool{TechCardSeamConfirmed: tr
 var techCardSeamKinds = map[TechCardSeamKind]bool{
 	TechCardSeamKindEdge: true, TechCardSeamKindPartial: true, TechCardSeamKindComposite: true,
 	TechCardSeamKindSurface: true, TechCardSeamKindClosure: true, TechCardSeamKindPose: true,
+	TechCardSeamKindPointClosure: true,
 }
 
 var techCardSeamDirections = map[TechCardSeamDirection]bool{
@@ -346,7 +351,7 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 			return NewFieldViolation(f+".status", "invalid", "", "confirmed or rejected")
 		}
 		if !techCardSeamKinds[s.Kind] {
-			return NewFieldViolation(f+".kind", "invalid", "", "edge, partial, composite, surface, closure or pose")
+			return NewFieldViolation(f+".kind", "invalid", "", "edge, partial, composite, surface, closure, point closure or pose")
 		}
 		if s.Direction == "" {
 			s.Direction = TechCardSeamDirectionUnknown
@@ -370,6 +375,12 @@ func ValidateTechCardSeamsWrite(in *TechCardSeamsWrite) error {
 		if utf8.RuneCountInString(s.Note) > TechCardSeamNoteMaxRunes {
 			return NewFieldViolation(f+".note", "too_long", "",
 				fmt.Sprintf("at most %d characters", TechCardSeamNoteMaxRunes))
+		}
+		if s.Kind == TechCardSeamKindPointClosure {
+			if err := ValidateTechCardSeamPointClosure(f, *s); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := ValidateTechCardSeamSide(f+".side_a", s.SideA, TechCardSeamMaxAnchorsPerSide); err != nil {
 			return err
@@ -461,6 +472,9 @@ func ValidateTechCardSeamSide(f string, side []TechCardSeamAnchor, maxParts int)
 	for j := range side {
 		a := &side[j]
 		af := fmt.Sprintf("%s.parts[%d]", f, j)
+		if a.PointClosure != nil {
+			return NewFieldViolation(af+".point_closure", "incompatible", "", "use the point closure seam kind")
+		}
 		a.PieceLineKey = strings.TrimSpace(a.PieceLineKey)
 		if a.PieceLineKey == "" {
 			return NewFieldViolation(af+".piece_line_key", "required", "", "the piece's line_key")

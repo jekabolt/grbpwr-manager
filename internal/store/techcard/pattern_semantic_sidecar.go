@@ -109,7 +109,36 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				return fmt.Errorf("prior semantic sidecar changed: %w", entity.ErrTechCardPatternSidecarBindingMoved)
 			}
 		}
-		if isPatternProductCompositeSidecarMediaType(in.MediaType) {
+		if prior != nil && isNativeCrossRowCarrier(prior.MediaType) &&
+			in.MediaType != entity.PatternProductCompositeSidecarV10MediaType &&
+			(in.MediaType != entity.PatternProductCompositeSidecarV9MediaType || prior.MediaType == entity.PatternProductCompositeSidecarV10MediaType) {
+			return fmt.Errorf("current native cross-row carrier cannot be replaced: %w", entity.ErrTechCardPatternSidecarBindingMoved)
+		}
+		if in.ExpectedPreviousSidecarSHA256 == nil {
+			// Legacy writers may omit their prior digest. Protect the native
+			// media under the card and row lock without changing legacy CAS.
+			if err := rejectProtectedNativeCrossRowOverwrite(ctx, db, pattern.Id); err != nil {
+				return err
+			}
+		}
+		if isNativeCrossRowCarrier(in.MediaType) {
+			current, err := loadCurrentNativeCrossRowWrite(ctx, rep, in, savedPatternAuthorityRow{
+				LineKey: in.PatternLineKey, FabricPurpose: pattern.FabricPurpose, BomLineKey: pattern.BomLineKey,
+				URL: pattern.URL, SizeBytes: pattern.SizeBytes, SHA256: sql.NullString{String: pattern.SHA256, Valid: true},
+				PatternVersion: pattern.Version, SavedRowRevision: pattern.SavedRowRevision,
+			}, cardLockVersion)
+			if err != nil {
+				return err
+			}
+			if in.MediaType == entity.PatternProductCompositeSidecarV8MediaType {
+				err = entity.ValidateFirstPatternProductNativeCrossRowReviewV8(in, current)
+			} else {
+				err = validateNativePlacementWrite(ctx, db, in, prior, current)
+			}
+			if err != nil {
+				return err
+			}
+		} else if isPatternProductCompositeSidecarMediaType(in.MediaType) {
 			clock, err := readTechCardAssemblyClock(ctx, db, in.TechCardId)
 			if err != nil {
 				return err
@@ -144,8 +173,9 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				URL: pattern.URL, SizeBytes: pattern.SizeBytes.Int64, SHA256: pattern.SHA256,
 			}
 			var assemblyOrderContentSHA string
+			var assemblyOrderContent []byte
 			if in.MediaType == entity.PatternProductCompositeSidecarV7MediaType {
-				_, assemblyOrderContentSHA, err = savedFullAssemblyAOContent(currentSavedRow, clock.Token(), card)
+				assemblyOrderContent, assemblyOrderContentSHA, err = savedFullAssemblyAOContent(currentSavedRow, clock.Token(), card)
 				if err != nil {
 					return err
 				}
@@ -154,11 +184,13 @@ func (s *Store) PutTechCardPatternSemanticSidecar(ctx context.Context, in entity
 				entity.PatternProductCompositeSidecarExpected{
 					Row:            currentSavedRow,
 					PatternVersion: pattern.Version, PostSaveReceiptSHA256: in.ExpectedPostSaveReceiptSHA256,
-					ExpectedPreviousSidecarSHA256: *in.ExpectedPreviousSidecarSHA256,
-					ServerAssemblyRevision:        clock.Token(),
-					AssemblyTopologySHA256:        topologySHA,
-					AssemblyOrderContentSHA256:    assemblyOrderContentSHA,
-					SelectedOperationNumber:       in.SelectedOperationNumber,
+					ExpectedPreviousSidecarSHA256:     *in.ExpectedPreviousSidecarSHA256,
+					ServerAssemblyRevision:            clock.Token(),
+					AssemblyTopologySHA256:            topologySHA,
+					AssemblyOrderContentSHA256:        assemblyOrderContentSHA,
+					AssemblyOrderContentCanonicalJSON: string(assemblyOrderContent),
+					AssemblyOrderCard:                 card,
+					SelectedOperationNumber:           in.SelectedOperationNumber,
 				}); err != nil {
 				return err
 			}

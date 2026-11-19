@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -1615,18 +1616,9 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 ) error {
 	kept := map[string]bool{}
 	if len(seams) > 0 {
-		// A seam may join a strip of the card as well as a piece of it.
-		pieces, err := storeutil.QueryScalarListNamed[string](ctx, db, `
-			SELECT line_key FROM tech_card_piece
-			WHERE tech_card_id = :id AND line_key IS NOT NULL
-			UNION ALL
-			SELECT line_key FROM tech_card_cut_strip WHERE tech_card_id = :id`, map[string]any{"id": techCardID})
+		onCard, err := loadCardSeamAnchorKeys(ctx, db, techCardID)
 		if err != nil {
-			return fmt.Errorf("load piece keys of imported tech card %d: %w", techCardID, err)
-		}
-		onCard := make(map[string]bool, len(pieces))
-		for _, p := range pieces {
-			onCard[strings.ToUpper(strings.TrimSpace(p))] = true
+			return err
 		}
 		write := make([]entity.TechCardSeamInput, 0, len(seams))
 	seam:
@@ -1648,7 +1640,20 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 			if err := entity.ValidateTechCardSeamsWrite(&in); err != nil {
 				return fmt.Errorf("imported seams of tech card %d: %w", techCardID, err)
 			}
-			if err := writeTechCardSeamsTx(ctx, db, techCardID, in.Seams, actor, seamWriteOpts{stale: stale}); err != nil {
+			writeOpts := seamWriteOpts{stale: stale}
+			var importStale map[string]bool
+			for _, row := range in.Seams {
+				if row.Kind != entity.TechCardSeamKindPointClosure || stale[row.SeamKey] {
+					continue
+				}
+				if importStale == nil {
+					importStale = make(map[string]bool, len(stale)+1)
+					maps.Copy(importStale, stale)
+					writeOpts.stale = importStale
+				}
+				importStale[row.SeamKey] = true // import cannot prove the destination's native occurrence
+			}
+			if err := writeTechCardSeamsTx(ctx, db, techCardID, in.Seams, actor, writeOpts); err != nil {
 				return err
 			}
 			for _, s := range in.Seams {

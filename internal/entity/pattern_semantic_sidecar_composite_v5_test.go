@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -33,6 +34,11 @@ func compositeV5TestComponent(kind, media string, payload []byte) map[string]any
 }
 
 func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
+	t.Helper()
+	return buildCompositeV5TestFixtureWithOperation(t, 10)
+}
+
+func buildCompositeV5TestFixtureWithOperation(t *testing.T, operation int) compositeV5TestFixture {
 	t.Helper()
 	row := map[string]any{
 		"techCardId": 7, "scopeKey": "fabric:outer", "patternLineKey": patternSidecarTestKey,
@@ -64,7 +70,7 @@ func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
 		"claims":     patternProductCompositeClaimsV3,
 	})
 	selectedOperation := map[string]any{
-		"sourceOperationNumber": 10, "authoringOperationId": "op:10", "localOperationOrder": 0,
+		"sourceOperationNumber": operation, "authoringOperationId": "op:" + strconv.Itoa(operation), "localOperationOrder": 0,
 		"seamIds": []any{"seam:left"},
 	}
 	side := func(index int, piece string) map[string]any {
@@ -149,7 +155,7 @@ func buildCompositeV5TestFixture(t *testing.T) compositeV5TestFixture {
 		Row: SavedPatternRowIdentity{TechCardID: 7, ScopeKey: "fabric:outer", PatternLineKey: patternSidecarTestKey,
 			SavedRowRevision: 4, CardLockVersion: 8, URL: "https://files.example/front.dxf", SizeBytes: 1234, SHA256: strings.Repeat("a", 64)},
 		PatternVersion: 3, PostSaveReceiptSHA256: receiptSHA, ExpectedPreviousSidecarSHA256: "",
-		ServerAssemblyRevision: assemblyRevision, AssemblyTopologySHA256: topologySHA, SelectedOperationNumber: 10,
+		ServerAssemblyRevision: assemblyRevision, AssemblyTopologySHA256: topologySHA, SelectedOperationNumber: operation,
 	}}
 }
 
@@ -342,6 +348,65 @@ func TestPatternProductCompositeSidecarV5RejectsAnnotationBoundsNumbersAndBindin
 	negativeZero := bytes.Replace(annotations, []byte(`"x":0.000001`), []byte(`"x":-0`), 1)
 	require.NotEqual(t, annotations, negativeZero)
 	require.Error(t, validateTopologyAnnotations(negativeZero, fixture.Expected.Row, fixture.Expected))
+}
+
+func TestPatternProductCompositeSidecarV5NativeAnnotationIDs(t *testing.T) {
+	fixture := buildCompositeV5TestFixture(t)
+	var outer compositeDocumentV3
+	require.NoError(t, decodeStrictJSON(fixture.Payload, &outer))
+	annotations, err := compositeComponentBytes(outer.Components[1], "phase-e-topology-annotations-v1", patternTopologyAnnotationsMediaTypeV1)
+	require.NoError(t, err)
+	var graph map[string]any
+	require.NoError(t, json.Unmarshal(annotations, &graph))
+	measurement := graph["measurements"].([]any)[0].(map[string]any)
+	callout := graph["callouts"].([]any)[0].(map[string]any)
+	position := map[string]any{
+		"pieceId": "piece:front", "pieceLineKey": "line:front",
+		"pointMm": map[string]any{"x": 12.5, "y": 44.25},
+	}
+	measurement["kind"] = "point"
+	measurement["anchors"] = []any{position}
+	measurement["valueMm"] = nil
+	callout["anchor"] = position
+	const contour = "dxf-piece-v1/p/70696563653a66726f6e74/s/4d/g/cut"
+	const vertex = "dxf-vertex-v1/dxf-curve-v1/f/736f75726365/i/m/e/p/20/s/0/p/2/sample/2"
+	const nestedVertex = "dxf-vertex-v1/dxf-curve-v1/f/736f75726365/i/n/b/6162/p/7/o/0/r/0/c/0/x/b/6263/h/3432/o/2/r/0/c/1/e/p/20/s/0/p/3/sample/2"
+	position["contourId"] = contour
+	for _, id := range []string{vertex, nestedVertex} {
+		position["vertexId"] = id
+		encoded := canonicalV5TestJSON(t, graph)
+		require.NoError(t, validateTopologyAnnotations(encoded, fixture.Expected.Row, fixture.Expected))
+	}
+
+	position["vertexId"] = vertex
+	cases := []struct {
+		field string
+		value string
+	}{
+		{"contourId", strings.Replace(contour, "/s/", "/s//", 1)},
+		{"contourId", strings.Replace(contour, "/g/cut", "/g/../cut", 1)},
+		{"contourId", strings.Replace(contour, "dxf-piece-v1", "other-piece-v1", 1)},
+		{"contourId", strings.Replace(contour, "/g/cut", "/g/raw", 1)},
+		{"contourId", strings.Replace(contour, "/s/4d/", "/s/"+strings.Repeat("aa", 120)+"/", 1)},
+		{"contourId", "dxf-piece-v1/p/77726f6e67207069656365/s/4d/g/cut"},
+		{"vertexId", strings.Replace(vertex, "/i/m/", "/i//", 1)},
+		{"vertexId", strings.Replace(vertex, "/e/", "/e/../", 1)},
+		{"vertexId", strings.Replace(vertex, "dxf-vertex-v1", "other-vertex-v1", 1)},
+		{"vertexId", strings.Replace(vertex, "/sample/2", "/sample/9007199254740992", 1)},
+		{"vertexId", strings.Replace(vertex, "/p/20/", "/p/020/", 1)},
+		{"vertexId", strings.Replace(vertex, "736f75726365", strings.Repeat("ab", 90), 1)},
+		{"pieceId", contour},
+		{"pieceLineKey", contour},
+	}
+	for _, test := range cases {
+		prior := position[test.field]
+		position[test.field] = test.value
+		encoded := canonicalV5TestJSON(t, graph)
+		require.Error(t, validateTopologyAnnotations(encoded, fixture.Expected.Row, fixture.Expected), test.value)
+		position[test.field] = prior
+	}
+	measurement["id"] = vertex
+	require.Error(t, validateTopologyAnnotations(canonicalV5TestJSON(t, graph), fixture.Expected.Row, fixture.Expected))
 }
 
 func TestCompositeV5ECMAScriptCanonicalNumbersAndText(t *testing.T) {

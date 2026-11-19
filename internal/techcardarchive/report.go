@@ -521,6 +521,8 @@ var reasonGuide = map[Reason]reasonGuidance{
 		"A step that sewed this seam did not survive the import — automatic fusing steps are rebuilt " +
 			"from the pieces on arrival — so that step's link to the seam was dropped. The seam itself " +
 			"imported. Pick the seam on the right step again if it is still wanted."},
+	ReasonPointClosureSourceUnverified: {StatusDegraded,
+		"The point closure is retained as stale. The destination must verify the exact saved DXF points before confirming it."},
 	ReasonFoldPieceMissing: {StatusSkipped,
 		"This fold is on a piece the card does not have — on the source card it was already an orphan " +
 			"(its piece had been removed), so it was dropped together with the steps' links to it. The " +

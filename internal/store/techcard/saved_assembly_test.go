@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -125,6 +126,40 @@ func mapKeys(value map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func TestSavedFullAssemblyPhysicalProfileRejectsExplicitUnequalStitchRatio(t *testing.T) {
+	card := savedAssemblyTestCard(savedAssemblyTestSeam("S-1", "P-A", "P-B"))
+	row := entity.SavedPatternRowIdentity{
+		TechCardID: 7, ScopeKey: "fabric:main", PatternLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ0",
+		SavedRowRevision: 4, CardLockVersion: 8, URL: "patterns/main.dxf", SizeBytes: 1234,
+		SHA256: strings.Repeat("a", 64),
+	}
+	revision := "asm:v1:0123456789abcdef0123456789abcdef:9"
+	for _, ratio := range []string{"0.90", "1.00", "1.15"} {
+		t.Run(ratio, func(t *testing.T) {
+			card.Operations[0].FullnessRatio = decimal.NewNullDecimal(decimal.RequireFromString(ratio))
+			selected, err := selectSavedAssemblySeams(card, 10)
+			require.NoError(t, err, "the saved topology remains readable")
+			require.Len(t, selected, 1)
+			_, sha, err := savedFullAssemblyAOContent(row, revision, card)
+			if ratio == "1.00" {
+				require.NoError(t, err)
+				require.Len(t, sha, 64)
+				return
+			}
+			require.ErrorIs(t, err, entity.ErrTechCardSavedAssemblyUnsupported)
+			require.ErrorContains(t, err, "operation 10 has fullness ratio")
+			require.Empty(t, sha)
+		})
+	}
+	card.Operations[0].FullnessRatio = decimal.NullDecimal{}
+	card.Operations = append(card.Operations, entity.TechCardOperation{
+		OperationNumber: sql.NullInt32{Int32: 20, Valid: true},
+		FullnessRatio:   decimal.NewNullDecimal(decimal.RequireFromString("1.15")),
+	})
+	_, _, err := savedFullAssemblyAOContent(row, revision, card)
+	require.NoError(t, err, "workflow-only steps do not assert physical length mapping")
 }
 
 func TestSavedAssemblyTopologyRejectsNegativeZero(t *testing.T) {

@@ -10260,6 +10260,63 @@ message UpdateTechCardRequest {
   // UUID minted when the edit screen opens. Non-empty ordinary saves coalesce their pre-images into
   // one autosave snapshot per server-side five-minute bucket; absent keeps legacy save behaviour.
   string save_session_id = 5;
+  // Name-only Workbench edit. Send without tech_card. Linked cards require the three
+  // additional authority fields inside this message; older servers still refuse linked cards.
+  GuardedZeroOperationPieceRename guarded_piece_rename = 6;
+  GuardedNativePieceJoin guarded_piece_join = 7;
+  // Pattern edit bound to the same Assembly state used by Review. Send the document inside
+  // the guard, without tech_card, so an older handler cannot save it without the precondition.
+  GuardedAssemblyPatternUpdate guarded_assembly_pattern_update = 8;
+}
+
+message GuardedAssemblyPatternUpdate {
+  common.TechCardInsert tech_card = 1;
+  string expected_server_assembly_revision = 2;
+}
+
+// Explicit, single-size saved native boundary Join. The server constructs the document delta.
+message GuardedNativePieceJoin {
+  message Boundary {
+    string piece_line_key = 1;
+    string piece_identity = 2;
+    string curve_id = 3;
+    string start_vertex_id = 4;
+    string end_vertex_id = 5;
+  }
+  TechCardSavedPatternRowIdentity expected_row = 1;
+  string expected_assembly_revision = 2;
+  string expected_complete_source_sha256 = 3;
+  Boundary fixed = 4;
+  Boundary moving = 5;
+  string result_line_key = 6;
+  string result_identity = 7;
+  string fabric_purpose = 8;
+  string bom_line_key = 9;
+  int32 size_id = 10;
+  string size_token = 11;
+  sint64 translate_x_millionths_mm = 12;
+  sint64 translate_y_millionths_mm = 13;
+  string reviewed_url = 14;
+  int64 reviewed_size_bytes = 15;
+  string reviewed_sha256 = 16;
+  string reviewed_filename = 17;
+}
+
+// Pins a display name edit to a saved DXF row. With no attached authority fields,
+// a card must have zero operations and no protected attachments.
+message GuardedZeroOperationPieceRename {
+  string piece_line_key = 1;
+  string expected_name = 2;
+  string next_name = 3;
+  string scope_key = 4;
+  string pattern_line_key = 5;
+  uint32 expected_saved_row_revision = 6;
+  string expected_dxf_sha256 = 7;
+  // All three fields opt into an attached-card rename. The exact current V10 is
+  // retained as historical placement; the rename advances the card and Assembly clocks.
+  optional string expected_server_assembly_revision = 8;
+  optional string expected_complete_source_sha256 = 9;
+  optional string expected_current_sidecar_sha256 = 10;
 }
 
 message UpdateTechCardResponse {
@@ -12240,6 +12297,12 @@ message TechCardSavedPatternRowIdentity {
   string download_url = 10;
 }
 
+enum TechCardSavedAssemblySnapshotProfile {
+  TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_UNKNOWN = 0; // existing selected-operation read
+  TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_V1 = 1;
+  TECH_CARD_SAVED_ASSEMBLY_SNAPSHOT_PROFILE_COMPLETE_SOURCE_WITH_AUTHORED_FOLDS_V1 = 2;
+}
+
 message GetTechCardSavedAssemblySnapshotRequest {
   int32 tech_card_id = 1;
   string pattern_line_key = 2;
@@ -12252,6 +12315,71 @@ message GetTechCardSavedAssemblySnapshotRequest {
   int32 selected_operation_number = 9;
   optional string expected_server_assembly_revision = 10;
   optional string expected_assembly_topology_sha256 = 11;
+  optional TechCardSavedAssemblySnapshotProfile profile = 12;
+  optional string expected_complete_source_sha256 = 13;
+  // Required for the authored-fold profile. A current card size ID from the size dictionary.
+  optional int32 selected_size_id = 14;
+  optional string expected_authored_fold_source_sha256 = 15;
+  // Complete source only. Do not read or admit a stored placement or review carrier.
+  optional bool source_only = 16;
+}
+
+message TechCardSavedAssemblySourceAliasV1 {
+  string scope_key = 1;
+  string block_name = 2;
+  string piece_line_key = 3;
+}
+
+// Exact saved source data. Confirmed status, samples, POSE transforms, and missing anchor sizes
+// are persisted facts, not native DXF edge bindings or physical admission.
+message TechCardSavedAssemblyCompleteSourceV1 {
+  // Sorted by canonical scope and stable pattern line key. Download URLs are minted separately.
+  repeated TechCardSavedPatternRowIdentity rows = 1;
+  // Same order as the top-level operations' seam_keys concatenated in operation order.
+  repeated common.TechCardSeam owned_seams = 2;
+  // Sorted by scope and stored block name. A scope can have several sheets.
+  repeated TechCardSavedAssemblySourceAliasV1 aliases = 3;
+  // SHA-256("tech-card-saved-assembly-complete-source/1" + NUL + canonical_json).
+  string source_sha256 = 4;
+  // Sorted-key JSON of serverAssemblyRevision, rows (without downloadUrl), full AO operations,
+  // ownedSeams, aliases and garmentLabels in their response order. The wire lists use lowerCamelCase and
+  // the same EmitUnpopulated protobuf JSON projection as the production gateway.
+  bytes canonical_json = 5;
+  // Card-owned generated sources referenced by AO label keys or owned anchors, sorted by line key.
+  // The existing label wire preserves saved dimensions and fold/stitch settings. An unset dimension
+  // stays unknown here, and no label acquires DXF edge authority.
+  repeated common.TechCardGarmentLabel garment_labels = 6;
+  // Cut-to-length trim referenced by owned seam anchors. The canonical JSON includes these only
+  // when present; old strip-free sources keep exactly the same seal.
+  repeated TechCardSavedAssemblyCutStripSourceV1 cut_strips = 7;
+}
+
+message TechCardSavedAssemblyCutStripSourceV1 {
+  common.TechCardCutStrip strip = 1;
+  string bom_section = 2;
+  string bom_unit = 3;
+  optional int64 bom_material_id = 4;
+}
+
+message TechCardSavedAssemblyAuthoredFoldV1 {
+  int32 operation_number = 1;
+  int32 operation_order = 2; // zero-based index in the response's operations
+  common.TechCardPieceFold fold = 3;
+  string source_fingerprint = 4;
+}
+
+// Authored source witnesses for the selected rank. The fold coordinates and anchored_size
+// remain as stored. Native per-rank geometry resolution belongs to the compiler.
+message TechCardSavedAssemblyAuthoredFoldSourceV1 {
+  string complete_source_sha256 = 1;
+  int32 selected_size_id = 2;
+  string selected_size_token = 3;
+  // In persisted operation order, then in each operation's fold_keys order.
+  repeated TechCardSavedAssemblyAuthoredFoldV1 folds = 4;
+  // SHA-256("tech-card-saved-assembly-authored-fold-source/1" + NUL + canonical_json).
+  string source_sha256 = 5;
+  // Sorted-key protobuf JSON of the first four fields with EmitUnpopulated enabled.
+  bytes canonical_json = 6;
 }
 
 message GetTechCardSavedAssemblySnapshotResponse {
@@ -12262,7 +12390,12 @@ message GetTechCardSavedAssemblySnapshotResponse {
   string server_assembly_revision = 5;
   string assembly_topology_sha256 = 6;
   bytes topology_canonical_json = 7;
+  // Existing anchor carrier read in the same database snapshot. Its own CAS governs carrier bytes.
   optional TechCardPatternSemanticSidecar semantic_sidecar = 8;
+  // Present for both complete-source profiles, which leave selected-operation fields unset.
+  optional TechCardSavedAssemblyCompleteSourceV1 complete_source_v1 = 9;
+  // Present only for COMPLETE_SOURCE_WITH_AUTHORED_FOLDS_V1, even when no folds are linked.
+  optional TechCardSavedAssemblyAuthoredFoldSourceV1 authored_fold_source_v1 = 10;
 }
 
 message UpsertTechCardSeamsRequest {
@@ -12317,6 +12450,8 @@ message ChangeTechCardSeamsRequest {
   repeated SeamLink link = 5;
   // Links to remove; keys may name rows of this request's upsert by their sent key.
   repeated SeamLink detach = 6;
+  // Required for changes to a POINT_CLOSURE, including its operation link or intent.
+  optional string expected_server_assembly_revision = 7;
 }
 
 message ChangeTechCardSeamsResponse {

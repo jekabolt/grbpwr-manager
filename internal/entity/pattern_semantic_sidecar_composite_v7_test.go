@@ -25,6 +25,11 @@ func buildCompositeV7TestFixture(t *testing.T) compositeV7TestFixture {
 
 func buildCompositeV7TestFixtureWithProfile(t *testing.T, profile string) compositeV7TestFixture {
 	t.Helper()
+	return buildCompositeV7TestFixtureWithGraph(t, profile, nil)
+}
+
+func buildCompositeV7TestFixtureWithGraph(t *testing.T, profile string, edit func(map[string]any, *PatternProductCompositeSidecarExpected)) compositeV7TestFixture {
+	t.Helper()
 	v6 := buildCompositeV6TestFixture(t)
 	expected := v6.Expected
 	expected.ExpectedPreviousSidecarSHA256 = PatternSemanticSidecarPayloadSHA256(v6.Payload)
@@ -61,6 +66,9 @@ func buildCompositeV7TestFixtureWithProfile(t *testing.T, profile string) compos
 				"provenanceKind": "untrusted-product", "corpusEntryId": nil,
 			},
 		}
+	}
+	if edit != nil {
+		edit(graph, &expected)
 	}
 	graphCanonical, err := canonicalCompositeValue(graph)
 	require.NoError(t, err)
@@ -328,14 +336,133 @@ func TestPatternProductCompositeSidecarV7PresentationArrangementTransition(t *te
 	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(both, expected))
 	require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(both, PatternProductCompositeSidecarV7MediaType, fixture.Payload), "never both")
 
-	annotationsV6 := compositeV6TransitionPayload(t, fixture.V6,
-		PatternSemanticSidecarPayloadSHA256(fixture.V6), compositeV6TestV5WithChangedAnnotations(t, v5), arrangement)
-	expected.AssemblyOrderContentSHA256 = fixture.Expected.AssemblyOrderContentSHA256
-	annotations := wrap(annotationsV6, fixture.Physical)
-	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(annotations, expected))
-	require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(annotations, PatternProductCompositeSidecarV7MediaType, fixture.Payload), "preserve Composite V5 bytes exactly")
-
 	noncanonical := compositeV6TransitionPayload(t, fixture.V6,
 		PatternSemanticSidecarPayloadSHA256(fixture.V6), v5, append([]byte(" "), changedArrangement...))
 	require.Error(t, ValidatePatternProductCompositeSidecarV7Transition(wrap(noncanonical, fixture.Physical), PatternProductCompositeSidecarV7MediaType, fixture.Payload))
+}
+
+func TestPatternProductCompositeSidecarV7ExactAnnotationTransition(t *testing.T) {
+	fixture := buildCompositeV7TestFixture(t)
+	v5, arrangement, err := compositeV6ComponentsForTransition(fixture.V6)
+	require.NoError(t, err)
+	priorSHA := PatternSemanticSidecarPayloadSHA256(fixture.Payload)
+	priorV6SHA := PatternSemanticSidecarPayloadSHA256(fixture.V6)
+	updatedV5 := compositeV6TestV5WithChangedAnnotations(t, v5)
+	wrap := func(v5, arrangement, physical []byte) []byte {
+		t.Helper()
+		v6 := compositeV6TransitionPayload(t, fixture.V6, priorV6SHA, v5, arrangement)
+		var outer map[string]any
+		require.NoError(t, json.Unmarshal(fixture.Payload, &outer))
+		outer["writeCas"].(map[string]any)["expectedPreviousSidecarSha256"] = priorSHA
+		outer["components"] = []any{
+			compositeV5TestComponent(patternProductCompositeV7NestedKind, PatternProductCompositeSidecarV6MediaType, v6),
+			compositeV5TestComponent(patternProductCompositeV7PhysicalKind, savedFullAssemblyPhysicalMediaTypeV1, physical),
+		}
+		return canonicalV5TestJSON(t, outer)
+	}
+	next := wrap(updatedV5, arrangement, fixture.Physical)
+	expected := fixture.Expected
+	expected.ExpectedPreviousSidecarSHA256 = priorSHA
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(next, expected))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Transition(next, PatternProductCompositeSidecarV7MediaType, fixture.Payload))
+	require.NoError(t, ValidateStoredPatternProductCompositeSidecarV7Exact(next, expected.Row, expected.PatternVersion, expected.PostSaveReceiptSHA256))
+
+	nextV6, nextPhysical, err := compositeV7ComponentsForTransition(next)
+	require.NoError(t, err)
+	nextV5, nextArrangement, err := compositeV6ComponentsForTransition(nextV6)
+	require.NoError(t, err)
+	require.Equal(t, fixture.Physical, nextPhysical)
+	require.Equal(t, arrangement, nextArrangement)
+	nextV4, err := compositeV4BytesForTransition(PatternProductCompositeSidecarV5MediaType, nextV5)
+	require.NoError(t, err)
+	priorV4, err := compositeV4BytesForTransition(PatternProductCompositeSidecarV5MediaType, v5)
+	require.NoError(t, err)
+	require.Equal(t, priorV4, nextV4)
+
+	staleCAS := expected
+	staleCAS.ExpectedPreviousSidecarSHA256 = fixture.Expected.ExpectedPreviousSidecarSHA256
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(next, staleCAS))
+	staleRow := expected
+	staleRow.Row.SavedRowRevision++
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(next, staleRow))
+	staleAssembly := expected
+	staleAssembly.ServerAssemblyRevision += ":changed"
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(next, staleAssembly))
+	staleAssembly = expected
+	staleAssembly.AssemblyOrderContentSHA256 = strings.Repeat("0", 64)
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(next, staleAssembly))
+
+	for _, test := range []struct {
+		name string
+		next []byte
+		want string
+	}{
+		{"arrangement also edited", wrap(updatedV5, compositeV6TestChangedArrangement(t, arrangement), fixture.Physical), "never both"},
+		{"physical component also edited", wrap(updatedV5, arrangement, append(append([]byte(nil), fixture.Physical...), ' ')), "never both"},
+		{"changed V4", wrap(compositeV6TestV5WithChangedV4(t, updatedV5), arrangement, fixture.Physical), "preserve the current Composite V4"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(test.next, PatternProductCompositeSidecarV7MediaType, fixture.Payload), test.want)
+		})
+	}
+
+	var v5Document map[string]any
+	require.NoError(t, json.Unmarshal(updatedV5, &v5Document))
+	components := v5Document["components"].([]any)
+	annotations, err := base64.StdEncoding.Strict().DecodeString(components[1].(map[string]any)["base64"].(string))
+	require.NoError(t, err)
+	var annotationDocument map[string]any
+	require.NoError(t, json.Unmarshal(annotations, &annotationDocument))
+	annotationDocument["bindings"].(map[string]any)["source"].(map[string]any)["identity"] = "foreign-source"
+	components[1] = compositeV5TestComponent("phase-e-topology-annotations-v1", patternTopologyAnnotationsMediaTypeV1, canonicalV5TestJSON(t, annotationDocument))
+	foreign := wrap(canonicalV5TestJSON(t, v5Document), arrangement, fixture.Physical)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(foreign, expected))
+	require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(foreign, PatternProductCompositeSidecarV7MediaType, fixture.Payload), "preserve their current source")
+	require.Error(t, ValidatePatternProductCompositeSidecarV5Transition(updatedV5, PatternProductCompositeSidecarV7MediaType, fixture.Payload))
+	require.Error(t, ValidatePatternProductCompositeSidecarV6Transition(nextV6, PatternProductCompositeSidecarV7MediaType, fixture.Payload))
+}
+
+func TestPatternProductCompositeSidecarV7CarriesAuthoritativeHistoricalOperation(t *testing.T) {
+	fixture := buildCompositeV7TestFixture(t)
+	priorV5, arrangement, err := compositeV6ComponentsForTransition(fixture.V6)
+	require.NoError(t, err)
+	expected := fixture.Expected
+	expected.SelectedOperationNumber = 20
+	expected.AssemblyTopologySHA256 = strings.Repeat("9", 64)
+	wrap := func(v6 []byte, previous string) []byte {
+		t.Helper()
+		var outer map[string]any
+		require.NoError(t, json.Unmarshal(fixture.Payload, &outer))
+		outer["bindings"].(map[string]any)["assemblyTopologySha256"] = expected.AssemblyTopologySHA256
+		outer["writeCas"].(map[string]any)["expectedPreviousSidecarSha256"] = previous
+		outer["components"].([]any)[0] = compositeV5TestComponent(patternProductCompositeV7NestedKind, PatternProductCompositeSidecarV6MediaType, v6)
+		return canonicalV5TestJSON(t, outer)
+	}
+
+	first := wrap(fixture.V6, expected.ExpectedPreviousSidecarSHA256)
+	// The server supplies the outer AO binding under its lock. Inner op 10 is the exact
+	// already-authoritative V6 supplied to the same locked transition.
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(first, expected))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Transition(first, PatternProductCompositeSidecarV6MediaType, fixture.V6))
+	staleTransport := expected
+	staleTransport.AssemblyTopologySHA256 = fixture.Expected.AssemblyTopologySHA256
+	require.Error(t, ValidatePatternProductCompositeSidecarV7Binding(first, staleTransport))
+
+	replacedOperation := buildCompositeV5TestFixtureWithOperation(t, 30)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV5Binding(replacedOperation.Payload, replacedOperation.Expected))
+	replacedV6 := compositeV6TransitionPayload(t, fixture.V6, PatternSemanticSidecarPayloadSHA256(fixture.V6), replacedOperation.Payload, arrangement)
+	forgedFirst := wrap(replacedV6, expected.ExpectedPreviousSidecarSHA256)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(forgedFirst, expected), "nested structure alone cannot authorize a transition")
+	require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(forgedFirst, PatternProductCompositeSidecarV6MediaType, fixture.V6), "First Composite V7")
+
+	expected.ExpectedPreviousSidecarSHA256 = PatternSemanticSidecarPayloadSHA256(first)
+	updatedV5 := compositeV6TestV5WithChangedAnnotations(t, priorV5)
+	updatedV6 := compositeV6TransitionPayload(t, fixture.V6, PatternSemanticSidecarPayloadSHA256(fixture.V6), updatedV5, arrangement)
+	annotations := wrap(updatedV6, expected.ExpectedPreviousSidecarSHA256)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(annotations, expected))
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Transition(annotations, PatternProductCompositeSidecarV7MediaType, first))
+
+	forgedFollowUp := wrap(replacedV6, expected.ExpectedPreviousSidecarSHA256)
+	require.NoError(t, ValidatePatternProductCompositeSidecarV7Binding(forgedFollowUp, expected))
+	require.ErrorContains(t, ValidatePatternProductCompositeSidecarV7Transition(forgedFollowUp, PatternProductCompositeSidecarV7MediaType, first), "preserve the current Composite V4")
 }

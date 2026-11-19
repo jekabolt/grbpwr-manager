@@ -502,11 +502,31 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
+	if tc.ExpectedServerAssemblyRevision != "" {
+		clock, err := readTechCardAssemblyClock(ctx, rep.DB(), id)
+		if err != nil {
+			return nil, err
+		}
+		if clock.Token() != tc.ExpectedServerAssemblyRevision {
+			return nil, entity.ErrTechCardSavedAssemblyMoved
+		}
+	}
+	if rename := tc.GuardedPieceRename; rename != nil && rename.Attached != nil {
+		if cur.ApprovalState == string(entity.TechCardApprovalReleased) {
+			return nil, entity.ErrTechCardReleased
+		}
+		if tc.GuardedPieceJoin != nil || tc.SnapshotReason != "" || tc.SnapshotSaveSessionId != "" || tc.RestoreSeams != nil {
+			return nil, entity.ErrTechCardAttachedPieceRenameUnsupported
+		}
+		return nil, renameAttachedPieceUnderLock(ctx, rep, id, expectedLockVersion, tc.UpdatedBy, rename)
+	}
 	// The handler's first read is still needed for gates and carries, but it is not a safe snapshot:
 	// seams can commit without changing lock_version. Re-read the complete card now that their writers
 	// cannot pass the card-row lock, and build the blob from this transaction's state. Direct store
 	// callers that supplied SnapshotJSON keep their existing path and version validation below.
-	if tc.BuildSnapshotFromLockedCard != nil {
+	var guardedRenameBefore *entity.TechCard
+	var join *lockedNativeJoin
+	if tc.BuildSnapshotFromLockedCard != nil || tc.GuardedPieceRename != nil || tc.GuardedPieceJoin != nil {
 		locked, err := rep.TechCards().GetTechCardById(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload locked tech card for snapshot: %w", err)
@@ -514,12 +534,31 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 		if locked == nil {
 			return nil, fmt.Errorf("locked tech card %d snapshot reload returned nil", id)
 		}
-		blob, err := tc.BuildSnapshotFromLockedCard(locked)
-		if err != nil {
-			return nil, fmt.Errorf("failed to build locked tech card snapshot: %w", err)
+		if tc.GuardedPieceJoin != nil {
+			join, err = prepareLockedNativeJoin(ctx, rep, locked, tc)
+			if err != nil {
+				return nil, err
+			}
 		}
-		tc.SnapshotJSON = blob
-		tc.SnapshotLockVersion = cur.LockVersion
+		if tc.GuardedPieceRename != nil {
+			if err := verifyGuardedPieceRenameUnderLock(ctx, rep.DB(), id, locked, tc.GuardedPieceRename); err != nil {
+				return nil, err
+			}
+			guardedRenameBefore = locked
+		}
+		if tc.BuildSnapshotFromLockedCard != nil {
+			blob, err := tc.BuildSnapshotFromLockedCard(locked)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build locked tech card snapshot: %w", err)
+			}
+			tc.SnapshotJSON = blob
+			tc.SnapshotLockVersion = cur.LockVersion
+		}
+	}
+	if tc.RestoreSeams == nil {
+		if err := guardPointClosureLinksOnDocumentUpdate(ctx, rep.DB(), id, tc.Operations); err != nil {
+			return nil, err
+		}
 	}
 	// A client-requested snapshot keeps its existing eager semantics: it is an explicit journalled
 	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
@@ -906,6 +945,19 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	// the clock, which invalidates stale receipts without making an unsafe receipt current.
 	if err := bumpTechCardAssemblyClock(ctx, rep.DB(), id); err != nil {
 		return nil, err
+	}
+	if guardedRenameBefore != nil || join != nil {
+		after, err := rep.TechCards().GetTechCardById(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("verify guarded piece rename before commit: %w", err)
+		}
+		if join != nil {
+			if err := join.verify(after); err != nil {
+				return nil, err
+			}
+		} else if !matchesGuardedPieceRenameResult(guardedRenameBefore, after, tc.GuardedPieceRename) {
+			return nil, entity.ErrTechCardPieceRenameProtected
+		}
 	}
 	// Q1: stamp the auto-journal — an approve/release transition is recorded as such, else `updated`.
 	action, section, summary := revisionActionForUpdate(entity.TechCardApprovalState(cur.ApprovalState), tc.ApprovalState)

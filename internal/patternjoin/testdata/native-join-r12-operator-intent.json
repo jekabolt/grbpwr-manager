@@ -1,0 +1,16 @@
+{
+  "fixed": {
+    "pieceId": "FP",
+    "pieceLineKey": "01JABCDEFGHJKMNPQRSTVWXYZD",
+    "sourceCurveId": "dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/46505f4d/p/28/o/0/r/0/c/0/e/p/0/s/0/p/1",
+    "startVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/46505f4d/p/28/o/0/r/0/c/0/e/p/0/s/0/p/1/sample/1",
+    "endVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/46505f4d/p/28/o/0/r/0/c/0/e/p/0/s/0/p/2/sample/2"
+  },
+  "moving": {
+    "pieceId": "BP",
+    "pieceLineKey": "01JABCDEFGHJKMNPQRSTVWXYZE",
+    "sourceCurveId": "dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/42505f4d/p/29/o/0/r/0/c/0/e/p/14/s/0/p/3",
+    "startVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/42505f4d/p/29/o/0/r/0/c/0/e/p/14/s/0/p/3/sample/3",
+    "endVertexId": "dxf-vertex-v1/dxf-curve-v1/f/732f34632f694a467665395749475f77735a76582d4a6d4f5361336c396c4e61396b5469437a4f70313475646d6f2d77/i/n/b/42505f4d/p/29/o/0/r/0/c/0/e/p/14/s/0/p/0/sample/0"
+  }
+}

@@ -608,6 +608,14 @@ being `{piece_line_key, samples: [{u, v}] ×5, perim_share, len_mm, notches, tur
 range_to, edge_hint, contour_sig, placement?: {x_mm, y_mm, rot_deg, flip}}` — the column's own JSON
 format. Written only when the card has seams; `contents.seams` counts the rows.
 
+A `point_close` row uses one anchor on each side, with no sewing samples. Its optional
+`point_closure` object records the exact pattern line, saved row revision, DXF SHA, size ID,
+alias block, native block, INSERT instance path, source entity operation, and point role.
+The buttonhole side also records the open or closed intent and both operation numbers.
+Import preserves these source descriptors and marks the row stale with
+`point_closure_source_unverified`. The destination must verify its native points before
+applying them. Legacy rows omit `point_closure`.
+
 Nothing here is a foreign id: `seam_key` is the card's own ULID and `piece_line_key` is the piece's
 stable key, which travels verbatim in `card.json`. The steps' links to the seams are
 `TechCardOperation.seam_keys` inside `card.json`, by the same `seam_key`. Not carried: the source
@@ -892,6 +900,7 @@ explanation and the report action text.
 | `language_unknown` | a colourway name's translation is keyed by a language this base does not have — that translation is dropped (EXPORT side: a translation whose language the dictionary could not name) |
 | `seam_piece_missing` | a seam decision (`seams.json`, 1.3) names a cut piece the imported card does not have — the seam and the steps' links to it are dropped, every other seam imports |
 | `seam_step_missing` | a step that sewed a seam did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the seam imports |
+| `point_closure_source_unverified` | the native point closure retains its exact source descriptors and imports stale because the destination has not verified those DXF occurrences |
 | `fold_piece_missing` | a piece fold (`card.json` `pieceFolds`) is on a cut piece the imported card does not have — the fold and the steps' links to it are dropped, every other fold imports |
 | `fold_step_missing` | a step that closed a fold did not survive the import (the FUSING reconciliation rebuilt it) — that step's link is dropped, never moved to another step; the fold imports |
 | `fold_step_conflict` | the archive's steps break the rule of fold steps (one fold on two steps, a piece's folds in reverse order, or a key no row of `pieceFolds` names) — that link is dropped; every fold `card.json` carries imports |

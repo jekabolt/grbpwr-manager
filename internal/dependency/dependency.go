@@ -1216,9 +1216,9 @@ type (
 		// stored digest/revision drift as corruption.
 		PutTechCardPatternSemanticSidecar(ctx context.Context, in entity.PatternSemanticSidecarWrite) (entity.PatternSemanticSidecar, error)
 		GetTechCardPatternSemanticSidecar(ctx context.Context, techCardID int, patternLineKey string) (entity.PatternSemanticSidecar, error)
-		// GetTechCardSavedAssemblySnapshot exact-matches all eight saved-row fields and returns the
-		// selected two-seam Assembly topology, its monotonic clock and optional exact sidecar from one
-		// REPEATABLE READ transaction.
+		// GetTechCardSavedAssemblySnapshot exact-matches all eight saved-row fields in one REPEATABLE
+		// READ transaction. The default reads selected topology and its sidecar. Complete-source V1
+		// reads the live saved source rows and ordered Assembly inputs without physical admission.
 		GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.SavedAssemblySnapshotRequest) (entity.SavedAssemblySnapshot, error)
 		// GetTechCardSeams returns a card's seam decisions (tech_card_seam) with staleness resolved
 		// against today's sheets + block links of each seam's pieces' fabric scopes.
