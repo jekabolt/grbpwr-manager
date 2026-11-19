@@ -225,6 +225,9 @@ var methodOverrides = map[string][]Key{
 	"ResendTeamInvite":  {Core},
 	"RemoveTeamMember":  {Core},
 	"SetTeamMemberRole": {Core},
+	// workspace screen (W0): brand data and per-member section rights.
+	"SetTeamBrand":        {Core},
+	"SetTeamMemberAccess": {Core},
 
 	// Paid AI calls: the domain feature and the ai capability must both be on.
 	"AutoTranslateEmailCampaign":  {EmailCampaigns, AI},

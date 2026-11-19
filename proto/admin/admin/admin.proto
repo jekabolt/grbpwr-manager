@@ -4682,6 +4682,22 @@ service AdminService {
       body: "*"
     };
   }
+
+  // SetTeamBrand replaces the calling team's brand data and answers the stored (normalised) values.
+  rpc SetTeamBrand(SetTeamBrandRequest) returns (SetTeamBrandResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/brand"
+      body: "*"
+    };
+  }
+
+  // SetTeamMemberAccess replaces a member's section rights with the full set sent; a section left out gets none.
+  rpc SetTeamMemberAccess(SetTeamMemberAccessRequest) returns (SetTeamMemberAccessResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/members/{username}/access"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -12958,6 +12974,22 @@ message Workspace {
   bool read_only = 5;
   // logo_url is the absolute URL of the team's logo (changes when the logo does); empty when there is none.
   string logo_url = 6;
+  // brand is the team's brand data; set only in teams mode, null otherwise.
+  TeamBrand brand = 7;
+}
+
+// TeamBrand is the calling team's brand data; only in teams mode.
+message TeamBrand {
+  string brand_name = 1;
+  string legal_entity = 2;
+  // legal_address is up to three address lines.
+  repeated string legal_address = 3;
+  string contact_email = 4;
+  string website = 5;
+  // first_team is true for team #1: the house vector mark and the build's VAT id are this team's.
+  bool first_team = 6;
+  // unavailable is true when the control plane could not be read: values are empty, nothing may print or save.
+  bool unavailable = 7;
 }
 
 message ListAccountSectionsRequest {}
@@ -15474,6 +15506,8 @@ message TeamMember {
   google.protobuf.Timestamp last_seen_at = 4;
   // you is true for the calling account.
   bool you = 5;
+  // permissions are the member's grants inside the grantable set; empty for an owner (full access).
+  repeated AdminPermission permissions = 6;
 }
 
 // TeamInvite is one invite of the calling team.
@@ -15493,11 +15527,15 @@ message ListTeamMembersRequest {}
 message ListTeamMembersResponse {
   repeated TeamMember members = 1;
   repeated TeamInvite invites = 2;
+  // sections are the sections a member can be given, in screen order (key, title = screen word).
+  repeated AdminSectionInfo sections = 3;
 }
 
 message InviteTeamMemberRequest {
   string email = 1;
   string role = 2;
+  // permissions are the rights the invited person gets on joining; empty = the team's default.
+  repeated AdminPermission permissions = 3;
 }
 
 message InviteTeamMemberResponse {
@@ -15528,6 +15566,29 @@ message SetTeamMemberRoleRequest {
 }
 
 message SetTeamMemberRoleResponse {}
+
+message SetTeamBrandRequest {
+  string brand_name = 1;
+  string legal_entity = 2;
+  // legal_address is up to three address lines.
+  repeated string legal_address = 3;
+  string contact_email = 4;
+  string website = 5;
+}
+
+message SetTeamBrandResponse {
+  TeamBrand brand = 1;
+}
+
+message SetTeamMemberAccessRequest {
+  string username = 1;
+  // permissions is the full set of the member's grants; a section left out gets none.
+  repeated AdminPermission permissions = 2;
+}
+
+message SetTeamMemberAccessResponse {
+  TeamMember member = 1;
+}
 
 // TranslateFieldsRequest — the admin client's /api/translate body
 // ({source:{langName, fields}, targets:[{code, langName}], constraints}).
