@@ -474,6 +474,7 @@ func (s *Service) verifiedRootToken(ctx context.Context, res platformstore.Verif
 	}
 	tok, err := s.mint(ctx, platformstore.User{ID: res.UserID, Handle: res.Handle}, sid, 0, jwt.AudRoot, RootSessionTTL, false, nil, now)
 	if err != nil {
+		s.log(ctx, "verify root token", err)
 		return ""
 	}
 	s.audit(ctx, res.UserID, 0, "signin", map[string]string{"target": "root", "by": "verify"})
