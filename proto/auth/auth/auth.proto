@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package auth;
 
+import "admin/admin.proto";
 import "google/api/annotations.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth";
@@ -272,6 +273,9 @@ message SignUpRequest {
   // logo is an optional team logo, PNG or JPEG, at most 1 MB (JSON: base64); a bad image refuses
   // the whole request with bad_logo.
   bytes logo = 6;
+  // brand is optional brand data of the new team; empty = nothing is stored; a bad value refuses the
+  // whole request with the same keys as SetTeamBrand.
+  admin.TeamBrand brand = 7;
 }
 
 message SignUpResponse {}
@@ -297,6 +301,9 @@ message VerifyEmailResponse {
   string handoff_code = 2;
   // awaiting_approval is true when the team waits for an operator's approval; handoff_code is empty then.
   bool awaiting_approval = 3;
+  // root_token is a root token, valid for 30 days: the person is signed in on the root site after
+  // confirming the email; set also while the team awaits approval.
+  string root_token = 4;
 }
 
 message ResendVerificationRequest {
@@ -398,6 +405,9 @@ message CreateTeamRequest {
   // logo is an optional team logo, PNG or JPEG, at most 1 MB (JSON: base64); a bad image refuses
   // the whole request with bad_logo.
   bytes logo = 4;
+  // brand is optional brand data of the new team; empty = nothing is stored; a bad value refuses the
+  // whole request with the same keys as SetTeamBrand.
+  admin.TeamBrand brand = 5;
 }
 
 message CreateTeamResponse {
