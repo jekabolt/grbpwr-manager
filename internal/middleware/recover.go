@@ -15,11 +15,18 @@ import (
 
 // Recover recovers panics in non-gRPC HTTP handlers, logs the stack via slog, and returns 500
 // instead of letting net/http drop the connection silently. With Sentry on, the panic is also
-// sent there (once: the log line below is marked as already reported).
+// sent there (once: the log line below is marked as already reported). http.ErrAbortHandler passes
+// through untouched.
 func Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// http.ErrAbortHandler is a handler's deliberate abort of a response already under
+				// way (a stream that failed half-way): net/http drops the connection quietly, so the
+				// client sees a broken body instead of a short one passing as whole. Not a crash.
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
 				observability.CapturePanic(r.Context(), rec, httpRoute(r))
 				slog.Default().ErrorContext(observability.MarkReported(r.Context()), "recovered panic in http handler",
 					slog.Any("panic", rec),
