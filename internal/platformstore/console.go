@@ -394,7 +394,7 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 		if err := consumeTx(ctx, tx, t.ID, now); err != nil {
 			return err
 		}
-		if err := createSession(ctx, tx, sid, u.ID, teamID, SessionTeam, now); err != nil {
+		if err := createSession(ctx, tx, sid, u.ID, teamID, SessionTeam, u.CredGen, now); err != nil {
 			return err
 		}
 		res = OperatorHandoff{User: u, Team: tr.team()}

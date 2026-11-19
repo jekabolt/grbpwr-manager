@@ -71,6 +71,7 @@ func freshStore(t *testing.T) *platformstore.Store {
 	}
 	exec(t, st, `INSERT INTO platform_user (id, email, handle, password_hash, status, is_operator) VALUES
  (101, 'ann@x.io', 'ann', 'h', 'active', 0), (103, 'op@x.io', 'op', 'h', 'active', 1)`)
+	exec(t, st, `INSERT INTO user_session (sid, user_id, team_id, aud) VALUES (?, 103, NULL, 'console')`, opSID)
 	return st
 }
 
@@ -91,8 +92,11 @@ VALUES (?, ?, ?, ?, 'active', 'v1', ?)`, i, fmt.Sprintf("team%d", i), fmt.Sprint
 	}
 }
 
+// opSID is the operator's live console session.
+const opSID = "sopconsole0000000000000000000000"
+
 func opCtx() context.Context {
-	return auth.PutPlatformCaller(context.Background(), auth.PlatformCaller{UserID: 103, Handle: "op"})
+	return auth.PutPlatformCaller(context.Background(), auth.PlatformCaller{UserID: 103, Handle: "op", SessionID: opSID})
 }
 
 func newSrv(st *platformstore.Store) *Server {
@@ -218,6 +222,11 @@ func TestPlatformTeamSwitches(t *testing.T) {
 	}
 	if c, _ := code(func() error { _, err := s.EnterTeam(ctx, &pb_admin.EnterTeamRequest{TeamSlug: "wait"}); return err }()); c != codes.FailedPrecondition {
 		t.Fatalf("enter a review team: %v", c)
+	}
+	// A console session revoked since (password change) issues no entry code.
+	exec(t, st, `UPDATE user_session SET revoked_at = NOW() WHERE sid = ?`, opSID)
+	if c, _ := code(func() error { _, err := s.EnterTeam(ctx, &pb_admin.EnterTeamRequest{TeamSlug: "acme"}); return err }()); c != codes.Unauthenticated {
+		t.Fatalf("enter on a revoked console session: %v", c)
 	}
 	if _, err := s.ListTeams(context.Background(), &pb_admin.ListTeamsRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("no caller: %v", err)

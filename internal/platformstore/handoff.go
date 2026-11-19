@@ -25,19 +25,28 @@ type MemberTeam struct {
 	Status string `db:"status"`
 }
 
-// CreateSession inserts a user_session row. teamID 0 = none (root, console).
-func (s *Store) CreateSession(ctx context.Context, sid string, userID, teamID int64, aud string, now time.Time) error {
-	return createSession(ctx, s.db, sid, userID, teamID, aud, now)
+// CreateSession inserts a user_session row. teamID 0 = none (root, console). credGen is the
+// account's credential_gen as the caller read it with the password it checked: the row is
+// inserted only while it is unchanged, so a sign-in that checked the old password cannot open a
+// session after a password change committed (ErrCredentialsChanged).
+func (s *Store) CreateSession(ctx context.Context, sid string, userID, teamID int64, aud string, credGen int64, now time.Time) error {
+	return createSession(ctx, s.db, sid, userID, teamID, aud, credGen, now)
 }
 
-func createSession(ctx context.Context, e sqlx.ExecerContext, sid string, userID, teamID int64, aud string, now time.Time) error {
+func createSession(ctx context.Context, e sqlx.ExecerContext, sid string, userID, teamID int64, aud string, credGen int64, now time.Time) error {
 	var team any
 	if teamID > 0 {
 		team = teamID
 	}
-	if _, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at)
-VALUES (?, ?, ?, ?, ?, ?)`, sid, userID, team, aud, now, now); err != nil {
+	r, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at)
+SELECT ?, id, ?, ?, ?, ? FROM platform_user WHERE id = ? AND credential_gen = ?`, sid, team, aud, now, now, userID, credGen)
+	if err != nil {
 		return fmt.Errorf("platformstore: create session: %w", err)
+	}
+	if n, err := r.RowsAffected(); err != nil {
+		return fmt.Errorf("platformstore: create session: %w", err)
+	} else if n == 0 {
+		return ErrCredentialsChanged
 	}
 	return nil
 }
@@ -81,14 +90,27 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' AND t.status IN ('
 	return m, true, nil
 }
 
-// IssueHandoff inserts a hand-off row (purpose handoff, no code) for the user into the team.
-func (s *Store) IssueHandoff(ctx context.Context, userID int64, t NewToken, now time.Time) error {
+// IssueHandoff inserts a hand-off row (purpose handoff, no code) for the user into the team, only
+// while the root session rootSID that asked for it is still live: the session row is locked, so a
+// password change (which revokes the session and expires unused hand-offs in one transaction)
+// either sees the new row and expires it, or has revoked the session first (ErrTokenInvalid).
+func (s *Store) IssueHandoff(ctx context.Context, userID int64, rootSID string, t NewToken, now time.Time) error {
 	t.Purpose = "handoff"
 	t.CodeHash = ""
 	if t.TeamID <= 0 {
 		return errors.New("platformstore: a hand-off needs a team")
 	}
-	return s.inTx(ctx, func(tx *sqlx.Tx) error { return insertTokenTx(ctx, tx, userID, t, now) })
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		var n int
+		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM user_session
+WHERE sid = ? AND user_id = ? AND revoked_at IS NULL FOR SHARE`, rootSID, userID); err != nil {
+			return fmt.Errorf("platformstore: hand-off session: %w", err)
+		}
+		if n == 0 {
+			return ErrTokenInvalid
+		}
+		return insertTokenTx(ctx, tx, userID, t, now)
+	})
 }
 
 // HandoffResult is an exchanged hand-off: the account and its membership in the team.
@@ -145,7 +167,7 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, 
 		if err := consumeTx(ctx, tx, t.ID, now); err != nil {
 			return err
 		}
-		if err := createSession(ctx, tx, sid, u.ID, teamID, SessionTeam, now); err != nil {
+		if err := createSession(ctx, tx, sid, u.ID, teamID, SessionTeam, u.CredGen, now); err != nil {
 			return err
 		}
 		res = HandoffResult{User: u, Member: m}

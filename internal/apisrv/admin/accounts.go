@@ -165,6 +165,23 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 		slog.Default().ErrorContext(ctx, "failed to hash password", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to create account")
 	}
+	// Teams mode, team #1: the control-plane account first (created, or linked when team #1 already
+	// has it; refused when the handle is someone else's on the platform). An existing admins row is
+	// refused before that, so creating a duplicate never resets the existing account's password.
+	if creds := s.teamOneCredentials(ctx); creds != nil {
+		_, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
+		switch {
+		case err == nil:
+			return nil, status.Errorf(codes.AlreadyExists, "account %q already exists", username)
+		case !errors.Is(err, sql.ErrNoRows):
+			slog.Default().ErrorContext(ctx, "failed to look up admin account",
+				slog.String("username", username), slog.String("err", err.Error()))
+			return nil, status.Error(codes.Internal, "failed to create account")
+		}
+		if _, err := creds.LinkTeamOneAccount(ctx, username, pwHash, req.IsSuper); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.repo.Admin().AddAccount(ctx, username, pwHash, req.IsSuper, perms); err != nil {
 		slog.Default().ErrorContext(ctx, "failed to add admin account",
 			slog.String("username", username), slog.String("err", err.Error()))
@@ -277,6 +294,16 @@ func (s *Server) ResetAccountPassword(ctx context.Context, req *pb_admin.ResetAc
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to hash password", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to reset password")
+	}
+	// Teams mode, team #1: the control plane's transaction (hash, credential generation, session
+	// revoke), then the mirror — the same write as a password change, so old sessions, the platform
+	// password and old legacy tokens all die.
+	if creds := s.teamOneCredentials(ctx); creds != nil {
+		if err := creds.ResetTeamOnePassword(ctx, username, pwHash); err != nil {
+			return nil, err
+		}
+		s.invalidateAccountAuth(username)
+		return &pb_admin.ResetAccountPasswordResponse{}, nil
 	}
 	if err := s.repo.Admin().ChangePassword(ctx, username, pwHash); err != nil {
 		slog.Default().ErrorContext(ctx, "failed to reset password",

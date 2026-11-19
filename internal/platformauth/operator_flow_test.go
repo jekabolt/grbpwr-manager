@@ -2,6 +2,7 @@ package platformauth
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,11 @@ func TestOperatorEntryExchange(t *testing.T) {
 		if err != nil || !strings.HasPrefix(code, OperatorCodePrefix) {
 			t.Fatalf("code %q %v", code, err)
 		}
-		if err := f.st.IssueHandoff(ctx, uid, platformstore.NewToken{TeamID: 50, TokenHash: hash, ExpiresAt: f.clock.Add(10 * time.Minute)}, f.clock); err != nil {
+		root := fmt.Sprintf("sroot%027d", uid)
+		if _, err := f.st.DB().Exec(`INSERT IGNORE INTO user_session (sid, user_id, team_id, aud) VALUES (?, ?, NULL, 'console')`, root, uid); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.IssueHandoff(ctx, uid, root, platformstore.NewToken{TeamID: 50, TokenHash: hash, ExpiresAt: f.clock.Add(10 * time.Minute)}, f.clock); err != nil {
 			t.Fatal(err)
 		}
 		return code

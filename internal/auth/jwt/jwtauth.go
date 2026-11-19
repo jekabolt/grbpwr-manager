@@ -96,9 +96,13 @@ func checkExpectations(t jwt.Token, exp *Expectations) error {
 
 // IssueOpts holds optional issuer/audience/jti for minting.
 type IssueOpts struct {
-	Issuer    string
-	Audience  string
+	Issuer     string
+	Audience   string
 	IncludeJti bool
+	// CredGen (admin tokens only) is the credential generation of the team #1 admin the token is
+	// minted for, written as claim "cg" when above 0. The edge in teams mode refuses a legacy token
+	// whose generation is not the account's current one; a token without the claim is generation 0.
+	CredGen int64
 }
 
 func NewToken(jwtAuth *jwtauth.JWTAuth, ttl time.Duration) (string, error) {

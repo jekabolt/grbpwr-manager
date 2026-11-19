@@ -354,7 +354,7 @@ WHERE user_id = ? AND team_id = ? AND revoked_at IS NULL`, now.UTC(), userID, te
 // CreateTeamSession opens a team session only while the user is an active member of the team. The
 // membership row is locked: a removal or role change either runs first (ok=false, nothing written)
 // or waits for this commit and then sees and revokes the new session.
-func (s *Store) CreateTeamSession(ctx context.Context, sid string, userID, teamID int64, now time.Time) (bool, error) {
+func (s *Store) CreateTeamSession(ctx context.Context, sid string, userID, teamID, credGen int64, now time.Time) (bool, error) {
 	if teamID <= 0 {
 		return false, errors.New("platformstore: a team session needs a team")
 	}
@@ -368,7 +368,7 @@ WHERE team_id = ? AND user_id = ? AND status = 'active' FOR UPDATE`, teamID, use
 		if len(rows) == 0 {
 			return nil
 		}
-		if err := createSession(ctx, tx, sid, userID, teamID, SessionTeam, now); err != nil {
+		if err := createSession(ctx, tx, sid, userID, teamID, SessionTeam, credGen, now); err != nil {
 			return err
 		}
 		ok = true

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,6 +74,40 @@ type Config struct {
 	ProvisionPerHour int `mapstructure:"provision_per_hour"`
 	// AllowedOriginRegex: CORS origins of team hosts (HTTP_ALLOWED_ORIGIN_REGEX).
 	AllowedOriginRegex string `mapstructure:"allowed_origin_regex"`
+	// SignupApproval (PLATFORM_SIGNUP_APPROVAL, §21): kept as text so an unreadable value never
+	// stops a boot; read through SignupApprovalOn. Optional, read only in teams mode.
+	SignupApproval string `mapstructure:"signup_approval"`
+	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
+	// read through Terms. Optional, read only in teams mode.
+	TermsVersion string `mapstructure:"terms_version"`
+}
+
+// DefaultTermsVersion is the terms version stored when PLATFORM_TERMS_VERSION is not set.
+const DefaultTermsVersion = "2026-11"
+
+// maxTermsVersion is the width of platform_user.terms_version.
+const maxTermsVersion = 32
+
+// SignupApprovalOn reads SignupApproval: on unless it parses as false ("false", "0", "off", "no");
+// unset or unreadable keeps approval on.
+func (c Config) SignupApprovalOn() bool {
+	v := strings.ToLower(strings.TrimSpace(c.SignupApproval))
+	switch v {
+	case "off", "no":
+		return false
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	return true
+}
+
+// Terms reads TermsVersion: DefaultTermsVersion when empty or wider than the column.
+func (c Config) Terms() string {
+	if v := strings.TrimSpace(c.TermsVersion); v != "" && len(v) <= maxTermsVersion {
+		return v
+	}
+	return DefaultTermsVersion
 }
 
 // Enabled reports teams mode: a control-plane DSN is configured.
@@ -198,20 +233,22 @@ func (s *Store) Directory() tenant.Directory { return s.dir }
 // Close closes the pool.
 func (s *Store) Close() error { return s.db.Close() }
 
-// SetPasswordHashByHandle mirrors a password change of a team-1 admin onto its platform user.
+// SetPasswordHashByHandle mirrors a password change of a team-1 admin onto its platform user, found
+// through team #1 membership: a platform user who only shares the handle is ErrUserNotFound.
 func (s *Store) SetPasswordHashByHandle(ctx context.Context, handle, hash string) error {
 	if strings.TrimSpace(hash) == "" {
 		return errors.New("platformstore: empty password hash")
 	}
 	var id int64
-	err := s.db.GetContext(ctx, &id, `SELECT id FROM platform_user WHERE handle = ?`, handle)
+	err := s.db.GetContext(ctx, &id, `SELECT u.id FROM platform_user u
+JOIN team_member m ON m.user_id = u.id AND m.team_id = 1 WHERE u.handle = ?`, handle)
 	if err != nil {
 		if isNoRows(err) {
 			return ErrUserNotFound
 		}
 		return fmt.Errorf("platformstore: find user: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, hash, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1 WHERE id = ?`, hash, id); err != nil {
 		return fmt.Errorf("platformstore: set password: %w", err)
 	}
 	return nil

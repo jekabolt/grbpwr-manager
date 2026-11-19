@@ -277,9 +277,15 @@ func (s *Server) EnterTeam(ctx context.Context, req *pb_admin.EnterTeamRequest) 
 		return nil, storeErr(ctx, "operator code", err)
 	}
 	now := s.nowUTC()
-	if err := s.st.IssueHandoff(ctx, c.UserID, platformstore.NewToken{
+	// Issued only while the operator's console session is live (a password change revokes it and
+	// expires unused hand-offs in one transaction).
+	err = s.st.IssueHandoff(ctx, c.UserID, c.SessionID, platformstore.NewToken{
 		TeamID: t.ID, TokenHash: hash, ExpiresAt: now.Add(platformauth.HandoffLongTTL),
-	}, now); err != nil {
+	}, now)
+	if errors.Is(err, platformstore.ErrTokenInvalid) {
+		return nil, status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	if err != nil {
 		return nil, storeErr(ctx, "operator hand-off", err)
 	}
 	s.audit(ctx, c.UserID, t.ID, "operator_enter", map[string]string{"slug": t.Slug})

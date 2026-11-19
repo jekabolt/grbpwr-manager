@@ -3,6 +3,7 @@ package platformstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -286,14 +287,18 @@ func TestTeamSessionNeedsActiveMembership(t *testing.T) {
 	ctx := context.Background()
 	ann, bob, _ := seedConsole(t, st)
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	if ok, err := st.CreateTeamSession(ctx, "sann1000000000000000000000000000", ann, 2, now); err != nil || !ok {
+	// A password changed since the sign-in read it (generation moved on) opens nothing either.
+	if _, err := st.CreateTeamSession(ctx, "sann1000000000000000000000000000", ann, 2, 1, now); !errors.Is(err, platformstore.ErrCredentialsChanged) {
+		t.Fatalf("stale credential generation: %v", err)
+	}
+	if ok, err := st.CreateTeamSession(ctx, "sann1000000000000000000000000000", ann, 2, 0, now); err != nil || !ok {
 		t.Fatalf("active member: %v %v", ok, err)
 	}
 	if _, err := st.RemoveMember(ctx, platformstore.MemberChangeParams{TeamID: 2, UserID: bob, Actor: platformstore.Actor{UserID: ann}, Now: now}); err != nil {
 		t.Fatal(err)
 	}
 	// A sign-in that read the membership before the removal now tries to open its session.
-	if ok, err := st.CreateTeamSession(ctx, "sbob2000000000000000000000000000", bob, 2, now); err != nil || ok {
+	if ok, err := st.CreateTeamSession(ctx, "sbob2000000000000000000000000000", bob, 2, 0, now); err != nil || ok {
 		t.Fatalf("removed member got a session: %v %v", ok, err)
 	}
 	var n int
@@ -302,7 +307,7 @@ func TestTeamSessionNeedsActiveMembership(t *testing.T) {
 	}
 	// A hand-off issued before the removal is refused too.
 	h := func(c string) string { return strings.Repeat(c, 64) }
-	if err := st.IssueHandoff(ctx, bob, platformstore.NewToken{TeamID: 2, TokenHash: h("h"), ExpiresAt: now.Add(time.Minute)}, now); err != nil {
+	if err := st.IssueHandoff(ctx, bob, "sbob1000000000000000000000000000", platformstore.NewToken{TeamID: 2, TokenHash: h("h"), ExpiresAt: now.Add(time.Minute)}, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.ExchangeHandoff(ctx, h("h"), 2, "sbob3000000000000000000000000000", now); !errors.Is(err, platformstore.ErrTokenInvalid) {
@@ -431,7 +436,11 @@ func TestOperatorHandoff(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	issue := func(uid, team int64, hash string) {
 		t.Helper()
-		if err := st.IssueHandoff(ctx, uid, platformstore.NewToken{TeamID: team, TokenHash: hash, ExpiresAt: now.Add(10 * time.Minute)}, now); err != nil {
+		root := fmt.Sprintf("sroot%027d", uid)
+		if _, err := st.DB().Exec(`INSERT IGNORE INTO user_session (sid, user_id, team_id, aud) VALUES (?, ?, NULL, 'console')`, root, uid); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.IssueHandoff(ctx, uid, root, platformstore.NewToken{TeamID: team, TokenHash: hash, ExpiresAt: now.Add(10 * time.Minute)}, now); err != nil {
 			t.Fatal(err)
 		}
 	}
