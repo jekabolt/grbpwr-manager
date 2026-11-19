@@ -318,32 +318,46 @@ func grantsPB(sections []rbac.SectionInfo, perms []entity.AdminPermission) []*pb
 	return out
 }
 
-// outsideGrants are the stored grants on sections outside the grantable set (a switched-off feature's
-// section): an access write keeps them, so they come back with the feature.
-func outsideGrants(sections []rbac.SectionInfo, perms []entity.AdminPermission) []entity.AdminPermission {
-	in := make(map[string]bool, len(sections))
-	for _, sec := range sections {
-		in[sec.Key] = true
+// keptGrants are the only stored grants an access write keeps besides the request: a valid level on a
+// catalog section that is outside the grantable set solely because its feature is off for the team,
+// so it comes back with the feature. Never accounts, never a core section, never a section the
+// catalog does not know, never one twice; the write is never super. For every other section the
+// owner's request is the whole truth. on is the team's switched-on features.
+func keptGrants(on []feature.Key, perms []entity.AdminPermission) []entity.AdminPermission {
+	enabled := make(map[feature.Key]bool, len(on))
+	for _, k := range on {
+		enabled[k] = true
 	}
+	known := make(map[string]bool)
+	for _, sec := range rbac.Sections() {
+		known[sec.Key] = true
+	}
+	seen := make(map[string]bool, len(perms))
 	var out []entity.AdminPermission
 	for _, p := range perms {
-		if !in[p.Section] {
-			out = append(out, p)
+		if p.Section == rbac.SectionAccounts || !known[p.Section] || seen[p.Section] || !p.Access.Valid() {
+			continue
 		}
+		k, ok := feature.SectionFeature(p.Section)
+		if !ok || k == feature.Core || enabled[k] {
+			continue
+		}
+		seen[p.Section] = true
+		out = append(out, entity.AdminPermission{Section: p.Section, Access: p.Access})
 	}
 	return out
 }
 
-// storedGrants reads a member's admins row: its grants, and whether the row exists.
-func (s *Server) storedGrants(ctx context.Context, handle string) ([]entity.AdminPermission, bool, error) {
+// storedGrants reads a member's admins row's grants (none when there is no row).
+func (s *Server) storedGrants(ctx context.Context, handle string) ([]entity.AdminPermission, error) {
 	acc, err := s.repo.Admin().GetAccountWithPermissions(ctx, handle)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && acc == nil) {
-		return nil, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return acc.Permissions, true, nil
+	return acc.Permissions, nil
 }
 
 func grantsDetail(perms []entity.AdminPermission) string {
@@ -355,17 +369,15 @@ func grantsDetail(perms []entity.AdminPermission) string {
 }
 
 // SetTeamMemberAccess replaces a member's section rights (owner or entered operator; an owner target
-// is refused, an owner has everything). The request is the full set inside the grantable set; grants
-// on sections outside it are kept.
+// is refused, an owner has everything). The request is the full set inside the grantable set; the
+// only stored grants kept besides it are those keptGrants names.
 //
-// Order, on purpose the reverse of SetTeamMemberRole: (1) the team database's admins row gets the
-// new rights, (2) the control plane revokes the member's team sessions, (3) the edge cache drops
-// them. Claims are minted from the admins row at sign-in. Revoking first would leave the whole admins
-// write (a call to another database) as a window in which a re-entry mints the OLD rights into a
-// token that then lives its full term; written first, a re-entry after (1) reads the new rights, and
-// a session opened before (2) commits is revoked by (2). What stays is a sign-in already in flight
-// that read the row before (1) and opens its session after (2) — milliseconds, as for a role change.
-// A retry repeats both steps (idempotent). A refusal at (2) puts the admins row back.
+// Claims are minted from the admins row at sign-in and the edge refuses a disabled row on every
+// call, so the write is staged fail-closed (applyAccess): the row is disabled with the new rights,
+// the control plane revokes the member's team sessions, then the row is enabled. A failure at any
+// step leaves the row disabled and returns the error: the member is locked out until a retry, never
+// left with live tokens of the old rights. A retry repeats every step and ends enabled. Nothing is
+// ever put back from a value read before the write: two concurrent writes end last-writer-wins.
 func (s *Server) SetTeamMemberAccess(ctx context.Context, req *pb_admin.SetTeamMemberAccessRequest) (*pb_admin.SetTeamMemberAccessResponse, error) {
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
@@ -391,26 +403,33 @@ func (s *Server) SetTeamMemberAccess(ctx context.Context, req *pb_admin.SetTeamM
 	if err != nil {
 		return nil, err
 	}
-	prior, hadRow, err := s.storedGrants(ctx, m.Handle)
+	prior, err := s.storedGrants(ctx, m.Handle)
 	if err != nil {
 		return nil, peopleErr(ctx, "read grants", err)
 	}
-	perms := append(append([]entity.AdminPermission{}, grants...), outsideGrants(sections, prior)...)
-	// (1) the admins row.
-	if err := teamsync.EnsureAdmin(ctx, s.repo.Admin(), m.Handle, false, perms); err != nil {
-		slog.Default().ErrorContext(ctx, "team members: ensure admin", slog.String("err", err.Error()))
-		return nil, status.Error(codes.Internal, "internal error")
-	}
-	// (2) the sessions, re-checking team status, actor and target under lock.
-	ch, err := s.platform.store.RevokeMemberSessions(ctx, platformstore.MemberChangeParams{
-		TeamID: p.w.Team.ID, UserID: m.UserID, Actor: p.actor(), Now: time.Now().UTC(),
+	perms := append(append([]entity.AdminPermission{}, grants...), keptGrants(p.w.Features, prior)...)
+	ch, err := s.applyAccess(ctx, m.Handle, perms, accessPlane{
+		revoke: func() (platformstore.MemberChange, error) {
+			return s.platform.store.RevokeMemberSessions(ctx, platformstore.MemberChangeParams{
+				TeamID: p.w.Team.ID, UserID: m.UserID, Actor: p.actor(), Now: time.Now().UTC(),
+			})
+		},
+		role: func() (string, bool, error) {
+			members, err := s.platform.store.TeamMembers(ctx, p.w.Team.ID)
+			if err != nil {
+				return "", false, err
+			}
+			for _, x := range members {
+				if x.UserID == m.UserID {
+					return x.Role, true, nil
+				}
+			}
+			return "", false, nil
+		},
 	})
 	if err != nil {
-		s.undoAccess(ctx, m.Handle, err, prior, hadRow)
-		return nil, peopleErr(ctx, "revoke sessions", err)
+		return nil, err
 	}
-	// (3) the edge cache.
-	s.dropSessions(ch.RevokedSessions)
 	s.peopleAudit(ctx, p, "member_access", map[string]string{"handle": ch.Handle, "grants": grantsDetail(grants)})
 	tm := &pb_admin.TeamMember{
 		Username:    m.Handle,
@@ -425,20 +444,89 @@ func (s *Server) SetTeamMemberAccess(ctx context.Context, req *pb_admin.SetTeamM
 	return &pb_admin.SetTeamMemberAccessResponse{Member: tm}, nil
 }
 
-// undoAccess puts the admins row back after step (2) refused: a target who became an owner meanwhile
-// is super again, one who left is disabled, otherwise the rights it held before return. Best effort,
-// logged: the refusal is the answer either way.
-func (s *Server) undoAccess(ctx context.Context, handle string, cause error, prior []entity.AdminPermission, hadRow bool) {
-	var err error
-	switch {
-	case errors.Is(cause, platformstore.ErrOwnerTarget):
-		err = teamsync.EnsureAdmin(ctx, s.repo.Admin(), handle, true, nil)
-	case errors.Is(cause, platformstore.ErrNotMember) || !hadRow:
-		err = teamsync.DisableAdmin(ctx, s.repo.Admin(), handle)
-	default:
-		err = teamsync.EnsureAdmin(ctx, s.repo.Admin(), handle, false, prior)
+// accessPlane is the control-plane half of an access write, cut out so the staging order is tested
+// without a database.
+type accessPlane struct {
+	// revoke kills the target's team sessions, re-checking team status, actor and target under lock.
+	revoke func() (platformstore.MemberChange, error)
+	// role reads the target's membership afresh: member=false when it is no longer active.
+	role func() (role string, member bool, err error)
+}
+
+// applyAccess writes a member's new rights to the ctx team's admins row, fail-closed:
+//
+//  1. StageAdmin: the row DISABLED with the new rights. From here every live token of the member is
+//     refused (this instance at once, other instances within the edge's account-state TTL) and so
+//     is every sign-in.
+//  2. The control plane revokes the member's team sessions (team status, actor, target re-checked).
+//  3. The row is enabled: a sign-in now mints the new rights only.
+//  4. The membership is read again: a removal that committed after (2) may have disabled the row
+//     before (3) enabled it, so a member gone by now is disabled again.
+//
+// Any failure returns its refusal with the row left disabled; a retry repeats 1–4 (each idempotent)
+// and ends enabled. The one write that is not «leave it disabled»: (2) found the target an owner — a
+// promotion committed after the caller read the member and its own mirror write (super, enabled) may
+// have landed before (1) — so the row is written as SetTeamMemberRole writes an owner's, from a
+// control-plane read made after (1). No path writes back a value read before (1).
+//
+// What stays: a sign-in already in flight that read the row before (1) and opens its session after
+// (2) — milliseconds, as for a role change.
+func (s *Server) applyAccess(ctx context.Context, handle string, perms []entity.AdminPermission, plane accessPlane) (platformstore.MemberChange, error) {
+	admins := s.repo.Admin()
+	internal := func(op string, err error) error {
+		slog.Default().ErrorContext(ctx, "team members: access "+op, slog.String("err", err.Error()))
+		return status.Error(codes.Internal, "internal error")
 	}
+	// (1) A partial stage may have disabled the row already: drop the cached state either way.
+	err := teamsync.StageAdmin(ctx, admins, handle, perms)
+	s.invalidateAccountAuth(handle)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "team members: undo access", slog.String("err", err.Error()))
+		return platformstore.MemberChange{}, internal("stage", err)
 	}
+	// (2)
+	ch, err := plane.revoke()
+	if err != nil {
+		if errors.Is(err, platformstore.ErrOwnerTarget) {
+			s.restoreOwner(ctx, handle, plane)
+		}
+		return platformstore.MemberChange{}, peopleErr(ctx, "revoke sessions", err)
+	}
+	s.dropSessions(ch.RevokedSessions)
+	// (3)
+	err = teamsync.EnableAdmin(ctx, admins, handle)
+	s.invalidateAccountAuth(handle)
+	if err != nil {
+		return platformstore.MemberChange{}, internal("enable", err)
+	}
+	// (4)
+	_, member, err := plane.role()
+	if err != nil || !member {
+		if derr := teamsync.DisableAdmin(ctx, admins, handle); derr != nil {
+			slog.Default().ErrorContext(ctx, "team members: access re-disable", slog.String("err", derr.Error()))
+		}
+		s.invalidateAccountAuth(handle)
+		if err != nil {
+			return platformstore.MemberChange{}, internal("membership", err)
+		}
+		return platformstore.MemberChange{}, status.Error(codes.NotFound, "not_member")
+	}
+	return ch, nil
+}
+
+// restoreOwner writes an owner's admins row (super, enabled) when the control plane, read now, still
+// has the target as an owner; otherwise the staged row stays disabled. Best effort, logged: the
+// refusal (owner_full) is the answer either way.
+func (s *Server) restoreOwner(ctx context.Context, handle string, plane accessPlane) {
+	role, member, err := plane.role()
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "team members: access owner re-read", slog.String("err", err.Error()))
+		return
+	}
+	if !member || role != roleOwner {
+		return
+	}
+	if err := teamsync.EnsureAdmin(ctx, s.repo.Admin(), handle, true, nil); err != nil {
+		slog.Default().ErrorContext(ctx, "team members: access owner mirror", slog.String("err", err.Error()))
+	}
+	s.invalidateAccountAuth(handle)
 }

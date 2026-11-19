@@ -233,6 +233,13 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	if err != nil {
 		return nil, peopleErr(ctx, "members", err)
 	}
+	// The list is on the allowlist, so the caller must be an active member of this team by the
+	// identity the write handlers use (people: the token's user, or for a legacy team #1 token the
+	// platform user of its handle) unless an entered operator. A legacy admin whose handle belongs to
+	// a platform user outside the team is no member: the edge ran no membership check for it.
+	if !p.w.Operator && !hasMember(members, p.userID) {
+		return nil, status.Error(codes.PermissionDenied, "not_member")
+	}
 	invites, err := s.platform.store.OpenInvites(ctx, p.w.Team.ID)
 	if err != nil {
 		return nil, peopleErr(ctx, "invites", err)
@@ -399,6 +406,16 @@ func (s *Server) ResendTeamInvite(ctx context.Context, req *pb_admin.ResendTeamI
 	}
 	s.peopleAudit(ctx, p, "member_invite_resend", map[string]string{"email": inv.Email})
 	return &pb_admin.ResendTeamInviteResponse{}, nil
+}
+
+// hasMember reports whether the platform user uid is among the team's active members.
+func hasMember(members []platformstore.ConsoleMember, uid int64) bool {
+	for _, m := range members {
+		if uid > 0 && m.UserID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // member finds an active member of the caller's team by handle.

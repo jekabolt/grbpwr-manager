@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -200,8 +202,236 @@ func TestUnitTeamGrants(t *testing.T) {
 	require.Equal(t, rbac.SectionTasks, shown[0].Section)
 	require.Equal(t, write, shown[0].Access)
 	require.Equal(t, rbac.SectionDictionaries, shown[1].Section)
-	require.Equal(t, []entity.AdminPermission{{Section: rbac.SectionOrders, Access: entity.AccessWrite}}, outsideGrants(secs, stored),
+	require.Equal(t, []entity.AdminPermission{{Section: rbac.SectionOrders, Access: entity.AccessWrite}}, keptGrants(feature.DefaultOn(), stored),
 		"a switched-off feature's grant is kept by an access write")
+}
+
+// TestUnitKeptGrants: an access write keeps only grants on sections hidden because their feature is
+// off. accounts (an adopted team #1 admin may hold it), core, unknown, visible, invalid and repeated
+// grants all go: the owner's request is the whole truth for them.
+func TestUnitKeptGrants(t *testing.T) {
+	on := feature.DefaultOn()
+	stored := []entity.AdminPermission{
+		{Section: rbac.SectionAccounts, Access: entity.AccessWrite},
+		{Section: rbac.SectionOrders, Access: entity.AccessWrite},
+		{Section: rbac.SectionOrders, Access: entity.AccessRead},
+		{Section: rbac.SectionTasks, Access: entity.AccessWrite},
+		{Section: rbac.SectionDictionaries, Access: entity.AccessRead},
+		{Section: "nope", Access: entity.AccessWrite},
+		{Section: rbac.SectionPromo, Access: "admin"},
+		{Section: rbac.SectionAnalytics, Access: entity.AccessRead},
+	}
+	require.Equal(t, []entity.AdminPermission{
+		{Section: rbac.SectionOrders, Access: entity.AccessWrite},
+		{Section: rbac.SectionAnalytics, Access: entity.AccessRead},
+	}, keptGrants(on, stored))
+	// The feature back on: its section is in the request's hands again.
+	require.Equal(t, []entity.AdminPermission{{Section: rbac.SectionAnalytics, Access: entity.AccessRead}},
+		keptGrants(append(append([]feature.Key{}, on...), feature.Orders), stored))
+	require.Empty(t, keptGrants(on, []entity.AdminPermission{{Section: rbac.SectionAccounts, Access: entity.AccessWrite}}),
+		"accounts is never kept")
+}
+
+// adminRow is one admins row behind a MockAdmin, so the staging order is checked against state.
+type adminRow struct {
+	exists, disabled, joinPending, super bool
+	perms                                []entity.AdminPermission
+	log                                  []string
+	failPerms, failEnable                error
+}
+
+func (r *adminRow) wire(adm *mocks.MockAdmin) {
+	adm.EXPECT().GetAdminByUsername(mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, h string) (*entity.Admin, error) {
+		r.log = append(r.log, "read")
+		if !r.exists {
+			return nil, sql.ErrNoRows
+		}
+		return &entity.Admin{Username: h, Disabled: r.disabled, JoinPending: r.joinPending, IsSuper: r.super}, nil
+	}).Maybe()
+	adm.EXPECT().SetAccountDisabled(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(_ context.Context, _ string, d bool) error {
+		if d {
+			r.log = append(r.log, "disable")
+		} else {
+			r.log = append(r.log, "enable")
+			if r.failEnable != nil {
+				return r.failEnable
+			}
+		}
+		r.disabled, r.joinPending = d, false
+		return nil
+	}).Maybe()
+	adm.EXPECT().SetAccountPermissions(mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, _ string, super bool, perms []entity.AdminPermission) error {
+			r.log = append(r.log, "rights")
+			if r.failPerms != nil {
+				return r.failPerms
+			}
+			r.super, r.perms = super, perms
+			return nil
+		}).Maybe()
+	adm.EXPECT().AddAccount(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).RunAndReturn(
+		func(_ context.Context, _ string, _ string, super bool, perms []entity.AdminPermission) error {
+			r.log = append(r.log, "add")
+			r.exists, r.super, r.perms = true, super, perms
+			return nil
+		}).Maybe()
+}
+
+// TestUnitApplyAccess: the access write is staged fail-closed — disabled with the new rights, sessions
+// revoked, enabled — and a failure anywhere leaves the row disabled; nothing is ever put back from a
+// value read before the write, and a retry ends enabled.
+func TestUnitApplyAccess(t *testing.T) {
+	newRights := []entity.AdminPermission{{Section: rbac.SectionTasks, Access: entity.AccessRead}}
+	broad := []entity.AdminPermission{{Section: rbac.SectionAccounts, Access: entity.AccessWrite}, {Section: rbac.SectionTasks, Access: entity.AccessWrite}}
+	type world struct {
+		s       *Server
+		row     *adminRow
+		ctx     context.Context
+		dropped []string
+		evicted int
+	}
+	newWorld := func(t *testing.T, row *adminRow) *world {
+		adm := mocks.NewMockAdmin(t)
+		repo := mocks.NewMockRepository(t)
+		repo.EXPECT().Admin().Return(adm).Maybe()
+		row.wire(adm)
+		w := &world{s: &Server{repo: repo}, row: row}
+		w.s.SetSessionInvalidator(func(sid string) { w.dropped = append(w.dropped, sid) })
+		w.s.SetAdminAuthInvalidator(func(string) { w.evicted++ })
+		team := tenant.Team{ID: 2, Slug: "acme", DBName: "lk_t_acme0001", Status: tenant.StatusActive}
+		w.ctx = tenant.With(context.Background(), team)
+		return w
+	}
+	revoked := func(log *[]string) func() (platformstore.MemberChange, error) {
+		return func() (platformstore.MemberChange, error) {
+			*log = append(*log, "revoke")
+			return platformstore.MemberChange{Handle: "bob", RevokedSessions: []string{"s1"}}, nil
+		}
+	}
+	refused := func(log *[]string, err error) func() (platformstore.MemberChange, error) {
+		return func() (platformstore.MemberChange, error) {
+			*log = append(*log, "revoke")
+			return platformstore.MemberChange{}, err
+		}
+	}
+	isMember := func(role string) func() (string, bool, error) {
+		return func() (string, bool, error) { return role, true, nil }
+	}
+
+	t.Run("staged order, the old rights gone", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad})
+		ch, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+		require.NoError(t, err)
+		require.Equal(t, "bob", ch.Handle)
+		require.Equal(t, []string{"read", "disable", "rights", "revoke", "read", "enable"}, w.row.log)
+		require.False(t, w.row.disabled)
+		require.False(t, w.row.super)
+		require.Equal(t, newRights, w.row.perms, "no accounts grant survives")
+		require.Equal(t, []string{"s1"}, w.dropped)
+		require.GreaterOrEqual(t, w.evicted, 2, "the staged disable and the enable are seen here at once")
+	})
+
+	t.Run("revoke refused: left disabled, then a retry ends enabled", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: refused(&w.row.log, platformstore.ErrTeamReadOnly), role: isMember(roleMember)})
+		require.Equal(t, "FailedPrecondition team_read_only", refusal(err))
+		require.Equal(t, []string{"read", "disable", "rights", "revoke"}, w.row.log)
+		require.True(t, w.row.disabled, "fail closed: no live token of the old rights")
+		require.Equal(t, newRights, w.row.perms, "never put back")
+		require.Empty(t, w.dropped)
+
+		w.row.log = nil
+		_, err = w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+		require.NoError(t, err)
+		require.Equal(t, []string{"read", "rights", "revoke", "read", "enable"}, w.row.log)
+		require.False(t, w.row.disabled)
+		require.Equal(t, newRights, w.row.perms)
+	})
+
+	t.Run("an internal revoke error is the same", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: refused(&w.row.log, errors.New("boom")), role: isMember(roleMember)})
+		require.Equal(t, "Internal internal error", refusal(err))
+		require.True(t, w.row.disabled)
+	})
+
+	t.Run("stage fails: no revoke, left disabled", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad, failPerms: errors.New("boom")})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+		require.Equal(t, "Internal internal error", refusal(err))
+		require.Equal(t, []string{"read", "disable", "rights"}, w.row.log)
+		require.True(t, w.row.disabled)
+		require.Equal(t, broad, w.row.perms)
+		require.GreaterOrEqual(t, w.evicted, 1, "the disable that landed is seen at once")
+	})
+
+	t.Run("enable fails: left disabled, sessions already gone", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad, failEnable: errors.New("boom")})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+		require.Equal(t, "Internal internal error", refusal(err))
+		require.True(t, w.row.disabled)
+		require.Equal(t, []string{"s1"}, w.dropped)
+	})
+
+	t.Run("removed after the revoke: disabled again", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log),
+			role: func() (string, bool, error) { return "", false, nil }})
+		require.Equal(t, "NotFound not_member", refusal(err))
+		require.True(t, w.row.disabled)
+		w2 := newWorld(t, &adminRow{exists: true, perms: broad})
+		_, err = w2.s.applyAccess(w2.ctx, "bob", newRights, accessPlane{revoke: revoked(&w2.row.log),
+			role: func() (string, bool, error) { return "", false, errors.New("boom") }})
+		require.Equal(t, "Internal internal error", refusal(err))
+		require.True(t, w2.row.disabled, "membership unconfirmed: fail closed")
+	})
+
+	t.Run("target became an owner: written as an owner from a fresh read", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, super: true})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: refused(&w.row.log, platformstore.ErrOwnerTarget), role: isMember(roleOwner)})
+		require.Equal(t, "FailedPrecondition owner_full", refusal(err))
+		require.True(t, w.row.super)
+		require.False(t, w.row.disabled)
+		w2 := newWorld(t, &adminRow{exists: true, super: true})
+		_, err = w2.s.applyAccess(w2.ctx, "bob", newRights, accessPlane{revoke: refused(&w2.row.log, platformstore.ErrOwnerTarget),
+			role: func() (string, bool, error) { return "", false, errors.New("boom") }})
+		require.Equal(t, "FailedPrecondition owner_full", refusal(err))
+		require.True(t, w2.row.disabled, "not confirmed an owner: stays disabled")
+	})
+
+	t.Run("no row: created with the rights, enabled only at the end", func(t *testing.T) {
+		w := newWorld(t, &adminRow{})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+		require.NoError(t, err)
+		require.Equal(t, []string{"read", "add", "disable", "revoke", "read", "enable"}, w.row.log)
+		require.False(t, w.row.disabled)
+		require.Equal(t, newRights, w.row.perms)
+	})
+
+	t.Run("an unfinished join cannot enable the row mid-change", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, disabled: true, joinPending: true})
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: func() (platformstore.MemberChange, error) {
+			require.False(t, w.row.joinPending, "join_pending cleared before the revoke")
+			return platformstore.MemberChange{Handle: "bob"}, nil
+		}, role: isMember(roleMember)})
+		require.NoError(t, err)
+		require.False(t, w.row.disabled)
+	})
+
+	t.Run("concurrent edits: last writer wins, no older state restored", func(t *testing.T) {
+		w := newWorld(t, &adminRow{exists: true, perms: broad})
+		narrow := []entity.AdminPermission{}
+		// A stages; B runs whole while A waits on the control plane; then A's revoke fails.
+		_, err := w.s.applyAccess(w.ctx, "bob", newRights, accessPlane{revoke: func() (platformstore.MemberChange, error) {
+			_, berr := w.s.applyAccess(w.ctx, "bob", narrow, accessPlane{revoke: revoked(&w.row.log), role: isMember(roleMember)})
+			require.NoError(t, berr)
+			return platformstore.MemberChange{}, errors.New("boom")
+		}, role: isMember(roleMember)})
+		require.Error(t, err)
+		require.Equal(t, narrow, w.row.perms, "B's downgrade stands")
+		require.NotContains(t, w.row.perms, broad[0])
+		require.False(t, w.row.disabled)
+	})
 }
 
 // TestUnitWorkspaceRefusalsCarryNoIDs: every refusal of the workspace handlers is a fixed key.

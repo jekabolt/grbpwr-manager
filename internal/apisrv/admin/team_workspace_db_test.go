@@ -168,18 +168,23 @@ func TestTeamMemberAccessFlow(t *testing.T) {
 		Permissions: []*pb_admin.AdminPermission{grant(rbac.SectionTasks, pb_admin.AccessLevel_ACCESS_LEVEL_UNSPECIFIED)}})
 	require.Equal(t, "InvalidArgument bad_access", refusal(err))
 
-	// bob: the admins row first (the switched-off orders grant kept), then his session dies.
+	// bob holds accounts write (an adopted team #1 admin can): staged — disabled with the new rights,
+	// session revoked, enabled. The switched-off orders grant is kept, the accounts grant is not.
 	ctx := context.Background()
 	_, live, err := w.b.TeamSession(ctx, "sbob0000000000000000000000000000", 102, 2)
 	require.NoError(t, err)
 	require.True(t, live)
 	w.adm.EXPECT().GetAccountWithPermissions(mock.Anything, "bob").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "bob"},
-		Permissions: []entity.AdminPermission{{Section: rbac.SectionOrders, Access: entity.AccessWrite}, {Section: rbac.SectionTasks, Access: entity.AccessRead}}}, nil).Once()
+		Permissions: []entity.AdminPermission{{Section: rbac.SectionAccounts, Access: entity.AccessWrite},
+			{Section: rbac.SectionOrders, Access: entity.AccessWrite}, {Section: rbac.SectionTasks, Access: entity.AccessRead}}}, nil).Once()
 	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "bob").Return(&entity.Admin{Username: "bob"}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "bob", true).Return(nil).Once()
 	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "bob", false, []entity.AdminPermission{
 		{Section: rbac.SectionTasks, Access: entity.AccessWrite}, {Section: rbac.SectionDictionaries, Access: entity.AccessRead},
 		{Section: rbac.SectionOrders, Access: entity.AccessWrite},
 	}).Return(nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "bob").Return(&entity.Admin{Username: "bob", Disabled: true}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "bob", false).Return(nil).Once()
 	res, err := w.s.SetTeamMemberAccess(ann, &pb_admin.SetTeamMemberAccessRequest{Username: "bob",
 		Permissions: []*pb_admin.AdminPermission{grant(rbac.SectionDictionaries, read), grant(rbac.SectionTasks, write)}})
 	require.NoError(t, err)
@@ -191,26 +196,87 @@ func TestTeamMemberAccessFlow(t *testing.T) {
 	require.False(t, live, "the member's token must be refused at once, re-entry mints the new rights")
 	require.Equal(t, 1, w.count(t, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action = 'member_access'`))
 
+	// The owner sets nothing: the row holds no accounts grant, only the switched-off orders one.
+	w.adm.EXPECT().GetAccountWithPermissions(mock.Anything, "bob").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "bob"},
+		Permissions: []entity.AdminPermission{{Section: rbac.SectionAccounts, Access: entity.AccessWrite},
+			{Section: rbac.SectionOrders, Access: entity.AccessWrite}}}, nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "bob").Return(&entity.Admin{Username: "bob"}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "bob", true).Return(nil).Once()
+	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "bob", false, []entity.AdminPermission{
+		{Section: rbac.SectionOrders, Access: entity.AccessWrite},
+	}).Return(nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "bob").Return(&entity.Admin{Username: "bob", Disabled: true}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "bob", false).Return(nil).Once()
+	res, err = w.s.SetTeamMemberAccess(ann, &pb_admin.SetTeamMemberAccessRequest{Username: "bob"})
+	require.NoError(t, err)
+	require.Empty(t, res.Member.Permissions)
+
 	// A paused workspace (as the edge resolved it) refuses before any write.
 	paused := authsrv.PutWorkspace(ann, authsrv.Workspace{Team: tenant.Team{ID: 2, Slug: "acme", Status: tenant.StatusSuspended},
 		Role: "owner", UserID: 101, Features: feature.DefaultOn(), ReadOnly: true})
 	_, err = w.s.SetTeamMemberAccess(paused, &pb_admin.SetTeamMemberAccessRequest{Username: "carl"})
 	require.Equal(t, "FailedPrecondition team_read_only", refusal(err))
 
-	// Paused between the edge and the store: step (2) refuses, the admins row gets its old rights back,
-	// carl's session lives on.
+	// Paused between the edge and the store: step (2) refuses, the row stays disabled with the new
+	// rights (nothing put back), carl's session lives on but his token is refused by the disabled row.
 	_, err = w.st.DB().Exec(`UPDATE team SET status = 'suspended' WHERE id = 2`)
 	require.NoError(t, err)
-	prior := []entity.AdminPermission{{Section: rbac.SectionFiles, Access: entity.AccessWrite}}
-	w.adm.EXPECT().GetAccountWithPermissions(mock.Anything, "carl").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "carl"}, Permissions: prior}, nil).Once()
-	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl"}, nil).Twice()
-	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "carl", false, []entity.AdminPermission{{Section: rbac.SectionTasks, Access: entity.AccessRead}}).Return(nil).Once()
-	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "carl", false, prior).Return(nil).Once()
+	newRights := []entity.AdminPermission{{Section: rbac.SectionTasks, Access: entity.AccessRead}}
+	w.adm.EXPECT().GetAccountWithPermissions(mock.Anything, "carl").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "carl"},
+		Permissions: []entity.AdminPermission{{Section: rbac.SectionFiles, Access: entity.AccessWrite}}}, nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl"}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "carl", true).Return(nil).Once()
+	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "carl", false, newRights).Return(nil).Once()
 	_, err = w.s.SetTeamMemberAccess(ann, &pb_admin.SetTeamMemberAccessRequest{Username: "carl",
 		Permissions: []*pb_admin.AdminPermission{grant(rbac.SectionTasks, read)}})
 	require.Equal(t, "FailedPrecondition team_read_only", refusal(err))
 	require.Equal(t, 1, w.count(t, `SELECT COUNT(*) FROM user_session WHERE sid = 'scarl000000000000000000000000000' AND revoked_at IS NULL`))
-	require.Equal(t, 1, w.count(t, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action = 'member_access'`))
+	require.Equal(t, 2, w.count(t, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action = 'member_access'`))
+
+	// The retry once the team is active again: same rights, the session revoked, the row enabled.
+	_, err = w.st.DB().Exec(`UPDATE team SET status = 'active' WHERE id = 2`)
+	require.NoError(t, err)
+	w.adm.EXPECT().GetAccountWithPermissions(mock.Anything, "carl").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "carl", Disabled: true},
+		Permissions: newRights}, nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl", Disabled: true}, nil).Once()
+	w.adm.EXPECT().SetAccountPermissions(mock.Anything, "carl", false, newRights).Return(nil).Once()
+	w.adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl", Disabled: true}, nil).Once()
+	w.adm.EXPECT().SetAccountDisabled(mock.Anything, "carl", false).Return(nil).Once()
+	_, err = w.s.SetTeamMemberAccess(ann, &pb_admin.SetTeamMemberAccessRequest{Username: "carl",
+		Permissions: []*pb_admin.AdminPermission{grant(rbac.SectionTasks, read)}})
+	require.NoError(t, err)
+	require.Equal(t, 0, w.count(t, `SELECT COUNT(*) FROM user_session WHERE sid = 'scarl000000000000000000000000000' AND revoked_at IS NULL`))
+	require.Equal(t, 3, w.count(t, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action = 'member_access'`))
+}
+
+// TestTeamMembersListNeedsMembership: in teams mode the list answers only an active member of the
+// calling team (or an entered operator). A legacy team #1 admin whose handle belongs to a platform
+// user outside team #1 (EnsureTeamOne does not adopt it) gets no membership from the edge; the
+// handler refuses it with a fixed key and reads nothing.
+func TestTeamMembersListNeedsMembership(t *testing.T) {
+	w := newWorkspaceWorld(t)
+	one := tenant.Team{ID: tenant.TeamOneID, Slug: tenant.TeamOneSlug, Name: tenant.TeamOneName, DBName: "grbpwr_test", Status: tenant.StatusActive}
+	call := func(handle string, uid int64, role string, operator bool) context.Context {
+		ctx := authsrv.PutAdminUsername(context.Background(), handle)
+		ctx = authsrv.PutWorkspace(ctx, authsrv.Workspace{Team: one, Role: role, UserID: uid, Operator: operator, Features: feature.DefaultOn()})
+		return tenant.With(ctx, one)
+	}
+	// ann (platform user 101, acme only) as a legacy team #1 token, member and super alike.
+	for _, role := range []string{"member", "owner"} {
+		_, err := w.s.ListTeamMembers(call("ann", 0, role, false), &pb_admin.ListTeamMembersRequest{})
+		require.Equal(t, "PermissionDenied not_member", refusal(err), role)
+	}
+	// A team token of a non-member is refused the same way.
+	_, err := w.s.ListTeamMembers(call("ann", 101, "member", false), &pb_admin.ListTeamMembersRequest{})
+	require.Equal(t, "PermissionDenied not_member", refusal(err))
+
+	// boss (adopted, owner of team #1) by a legacy token, and an entered operator, are answered.
+	w.adm.EXPECT().ListAccounts(mock.Anything).Return([]entity.AdminAccount{{Admin: entity.Admin{Username: "boss", IsSuper: true}}}, nil).Twice()
+	list, err := w.s.ListTeamMembers(call("boss", 0, "owner", false), &pb_admin.ListTeamMembersRequest{})
+	require.NoError(t, err)
+	require.Len(t, list.Members, 1)
+	_, err = w.s.ListTeamMembers(call("op", 101, "owner", true), &pb_admin.ListTeamMembersRequest{})
+	require.NoError(t, err)
 }
 
 func TestTeamInviteRights(t *testing.T) {
