@@ -164,14 +164,20 @@ func TestPlatformTeamSwitches(t *testing.T) {
 	ctx := opCtx()
 	code := func(err error) (codes.Code, string) { st, _ := status.FromError(err); return st.Code(), st.Message() }
 
-	if c, m := code(func() error { _, err := s.SetTeamStatus(ctx, &pb_admin.SetTeamStatusRequest{TeamSlug: "grbpwr", ReadOnly: true}); return err }()); c != codes.FailedPrecondition || m != "team_one" {
+	if c, m := code(func() error {
+		_, err := s.SetTeamStatus(ctx, &pb_admin.SetTeamStatusRequest{TeamSlug: "grbpwr", ReadOnly: true})
+		return err
+	}()); c != codes.FailedPrecondition || m != "team_one" {
 		t.Fatalf("team #1 read-only: %v %s", c, m)
 	}
 	res, err := s.SetTeamStatus(ctx, &pb_admin.SetTeamStatusRequest{TeamSlug: "team2", ReadOnly: true})
 	if err != nil || res.Team.Status != "read_only" {
 		t.Fatalf("pause: %+v %v", res, err)
 	}
-	if c, _ := code(func() error { _, err := s.SetTeamStatus(ctx, &pb_admin.SetTeamStatusRequest{TeamSlug: "wait", ReadOnly: true}); return err }()); c != codes.FailedPrecondition {
+	if c, _ := code(func() error {
+		_, err := s.SetTeamStatus(ctx, &pb_admin.SetTeamStatusRequest{TeamSlug: "wait", ReadOnly: true})
+		return err
+	}()); c != codes.FailedPrecondition {
 		t.Fatalf("review team pause: %v", c)
 	}
 
@@ -195,7 +201,10 @@ func TestPlatformTeamSwitches(t *testing.T) {
 		t.Fatalf("unknown feature: %v", c)
 	}
 
-	if c, m := code(func() error { _, err := s.RenameTeam(ctx, &pb_admin.RenameTeamRequest{TeamSlug: "grbpwr", NewSlug: "other"}); return err }()); c != codes.FailedPrecondition || m != "team_one" {
+	if c, m := code(func() error {
+		_, err := s.RenameTeam(ctx, &pb_admin.RenameTeamRequest{TeamSlug: "grbpwr", NewSlug: "other"})
+		return err
+	}()); c != codes.FailedPrecondition || m != "team_one" {
 		t.Fatalf("team #1 slug: %v %s", c, m)
 	}
 	rn, err := s.RenameTeam(ctx, &pb_admin.RenameTeamRequest{TeamSlug: "team2", NewSlug: " Acme ", NewName: "Acme"})
