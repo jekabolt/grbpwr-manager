@@ -15,7 +15,7 @@ func TestSignedLineageNeedsBothCurrentFilesAndExactDocument(t *testing.T) {
 	for _, typ := range []string{"r12", "r2000"} {
 		t.Run(typ, func(t *testing.T) {
 			o, c, a, b, s := fixture(t, typ)
-			d := Document{entity.SavedPatternRowIdentity{TechCardID: 156, ScopeKey: "main", PatternLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ0", SavedRowRevision: 4, CardLockVersion: 8, URL: a.URL, SizeBytes: a.Size, SHA256: a.SHA256}, "asm:v1:0123456789abcdef0123456789abcdef:19", digest([]byte("complete source")), "01JABCDEFGHJKMNPQRSTVWXYZD", "01JABCDEFGHJKMNPQRSTVWXYZE", "01JABCDEFGHJKMNPQRSTVWXYZB"}
+			d := Document{Row: entity.SavedPatternRowIdentity{TechCardID: 156, ScopeKey: "main", PatternLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ0", SavedRowRevision: 4, CardLockVersion: 8, URL: a.URL, SizeBytes: a.Size, SHA256: a.SHA256}, AssemblyRevision: "asm:v1:0123456789abcdef0123456789abcdef:19", CompleteSourceSHA256: digest([]byte("complete source")), FixedLineKey: "01JABCDEFGHJKMNPQRSTVWXYZD", MovingLineKey: "01JABCDEFGHJKMNPQRSTVWXYZE", ResultLineKey: "01JABCDEFGHJKMNPQRSTVWXYZB"}
 			check := func(_ context.Context, doc Document, selection Selection) error {
 				if doc != d || selection != s {
 					return invalid
