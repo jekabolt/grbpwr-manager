@@ -27,9 +27,13 @@ func lockConflict(err error) error {
 // CreateTeamParams is a `new team` from a root session (teams O §7, §12). The caller checked the
 // root session, validated the name and the address, and processed the logo.
 type CreateTeamParams struct {
-	UserID     int64
-	Name, Slug string
-	Now        time.Time
+	UserID int64
+	// RootSID and RootNotBefore bind creation to the root session the service authenticated before
+	// processing the request. The transaction re-checks it after locking the account.
+	RootSID       string
+	RootNotBefore time.Time
+	Name, Slug    string
+	Now           time.Time
 	// Review is the approval switch: on → the team waits in review and every active operator gets a
 	// team_request letter; off → it goes straight to provisioning.
 	Review Review
@@ -51,18 +55,21 @@ type CreatedTeam struct {
 // CreateTeam creates one more team owned by an active account, in one transaction: the address
 // first, as SignUp does (an expired pending team that holds it goes, with its logo; a held address
 // is ErrSlugTaken whoever holds it), then the account FOR UPDATE (not active or gone:
-// ErrTokenInvalid; terms not accepted and not carried: ErrTermsRequired), then the new team row
-// (review while approval is on, else provisioning — the verified sign-up's transition), the owner
+// ErrTokenInvalid) and the root session (not live or too old: ErrTokenInvalid), then the new team
+// row (terms not accepted and not carried: ErrTermsRequired; review while approval is on, else
+// provisioning — the verified sign-up's transition), the owner
 // membership, the logo, the accepted terms, and under review the operators' team_request letters.
 // No letter goes to the person. There is no cap on own teams. A lost lock race is ErrTryAgain.
 //
 // It locks no team row other than the expired pending one it clears and the row it inserts, and no
-// session, invite or token: a DeleteTeam of another team of the same person never waits for it and
-// it never waits for one (lock order at DeleteTeam).
+// invite or token. It locks the one root session after the account (the global order), so a root
+// sign-out or password reset either commits first and refuses creation or waits and revokes it
+// afterwards. A DeleteTeam of another team of the same person still never shares a team lock.
 func (s *Store) CreateTeam(ctx context.Context, p CreateTeamParams) (CreatedTeam, error) {
 	p.Now = p.Now.UTC()
-	if p.UserID <= 0 || p.Name == "" || p.Slug == "" {
-		return CreatedTeam{}, errors.New("platformstore: create team needs an account, a name and an address")
+	p.RootNotBefore = p.RootNotBefore.UTC()
+	if p.UserID <= 0 || p.RootSID == "" || p.Name == "" || p.Slug == "" {
+		return CreatedTeam{}, errors.New("platformstore: create team needs an account, a root session, a name and an address")
 	}
 	var res CreatedTeam
 	var swept []int64
@@ -90,6 +97,15 @@ func (s *Store) CreateTeam(ctx context.Context, p CreateTeamParams) (CreatedTeam
 			return err
 		}
 		if u.Status != UserActive {
+			return ErrTokenInvalid
+		}
+		var rootSIDs []string
+		if err := tx.SelectContext(ctx, &rootSIDs, `SELECT sid FROM user_session
+WHERE sid = ? AND user_id = ? AND aud = 'root' AND revoked_at IS NULL AND created_at > ? FOR UPDATE`,
+			p.RootSID, u.ID, p.RootNotBefore); err != nil {
+			return fmt.Errorf("platformstore: lock root session: %w", err)
+		}
+		if len(rootSIDs) != 1 || rootSIDs[0] != p.RootSID {
 			return ErrTokenInvalid
 		}
 		var accepted sql.NullString

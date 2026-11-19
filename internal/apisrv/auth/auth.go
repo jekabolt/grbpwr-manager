@@ -50,6 +50,9 @@ const (
 	// authMaxPerUser caps auth attempts per targeted username per window
 	// (tighter, since a single account should never see this many attempts).
 	authMaxPerUser = 5
+	// teamLogoMaxPerIP is generous enough for several large team lists and browser retries while
+	// bounding cache-busting metadata/BLOB reads on the public logo route.
+	teamLogoMaxPerIP = 300
 )
 
 // Server implements the heartbeat service.
@@ -130,14 +133,16 @@ type adminAccountStateEntry struct {
 // service uses (ratelimit.MultiKeyLimiter is built from these), keyed per IP
 // and per targeted username.
 type authRateLimiter struct {
-	ip   *ratelimit.Limiter
-	user *ratelimit.Limiter
+	ip     *ratelimit.Limiter
+	user   *ratelimit.Limiter
+	logoIP *ratelimit.Limiter
 }
 
 func newAuthRateLimiter() *authRateLimiter {
 	return &authRateLimiter{
-		ip:   ratelimit.NewLimiter(authRateWindow, authMaxPerIP),
-		user: ratelimit.NewLimiter(authRateWindow, authMaxPerUser),
+		ip:     ratelimit.NewLimiter(authRateWindow, authMaxPerIP),
+		user:   ratelimit.NewLimiter(authRateWindow, authMaxPerUser),
+		logoIP: ratelimit.NewLimiter(authRateWindow, teamLogoMaxPerIP),
 	}
 }
 
@@ -145,6 +150,7 @@ func newAuthRateLimiter() *authRateLimiter {
 func (l *authRateLimiter) stop() {
 	l.ip.Stop()
 	l.user.Stop()
+	l.logoIP.Stop()
 }
 
 // check applies the per-IP limit always and, when a username is supplied, the

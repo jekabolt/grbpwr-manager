@@ -154,12 +154,27 @@ func TestCodeStateCaps(t *testing.T) {
 }
 
 func TestValidation(t *testing.T) {
-	if e, err := NormalizeEmail("  Anna@Example.COM "); err != nil || e != "anna@example.com" {
-		t.Fatalf("NormalizeEmail = %q %v", e, err)
-	}
-	for _, bad := range []string{"", "no-at", "a@", "@b.c", "a b@c.d"} {
-		if _, err := NormalizeEmail(bad); err == nil {
-			t.Errorf("NormalizeEmail(%q) accepted", bad)
+	for _, tc := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{in: "  Anna@Example.COM ", want: "anna@example.com", ok: true},
+		{in: ""},
+		{in: "no-at"},
+		{in: "a@"},
+		{in: "@b.c"},
+		{in: "a b@c.d"},
+		{in: "é@example.com"},
+		{in: "straße@example.com"},
+		{in: "anna＠example.com"},
+		{in: "anna@bränd.example"},
+	} {
+		got, err := NormalizeEmail(tc.in)
+		if tc.ok && (err != nil || got != tc.want) {
+			t.Errorf("NormalizeEmail(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("NormalizeEmail(%q) accepted as %q", tc.in, got)
 		}
 	}
 	if CheckPassword("short") == nil || CheckPassword(strings.Repeat("x", MaxPasswordLen+1)) == nil || CheckPassword("long enough") != nil {

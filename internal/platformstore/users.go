@@ -114,7 +114,11 @@ type MakeLetter func(userID int64, team *TeamBrief) (NewToken, Letter, error)
 
 // UserByEmail returns the user with this (lowercase) email.
 func (s *Store) UserByEmail(ctx context.Context, email string) (User, error) {
-	return s.userWhere(ctx, s.db, `email = ?`, email)
+	u, err := s.userWhere(ctx, s.db, `email = ?`, email)
+	if err == nil && (!u.Email.Valid || u.Email.String != email) {
+		return User{}, ErrUserNotFound
+	}
+	return u, err
 }
 
 // UserByHandle returns the user with this handle.
@@ -145,6 +149,9 @@ func lockUserByEmail(ctx context.Context, tx *sqlx.Tx, email string) (User, erro
 			return User{}, ErrUserNotFound
 		}
 		return User{}, fmt.Errorf("platformstore: lock user: %w", err)
+	}
+	if !u.Email.Valid || u.Email.String != email {
+		return User{}, ErrUserNotFound
 	}
 	return u, nil
 }
@@ -339,11 +346,14 @@ WHERE to_email = ? AND template IN ('verify','invite','reset') AND created_at > 
 	return n, nil
 }
 
-func sendLetterTx(ctx context.Context, tx *sqlx.Tx, userID int64, team *TeamBrief, mk MakeLetter, now time.Time) error {
+func sendLetterTx(ctx context.Context, tx *sqlx.Tx, userID int64, team *TeamBrief, to string, mk MakeLetter, now time.Time) error {
 	tok, l, err := mk(userID, team)
 	if err != nil {
 		return err
 	}
+	// The token belongs to the locked account, so its letter always goes to that account's stored
+	// address, never a lookup spelling supplied by the request.
+	l.To = to
 	if err := insertTokenTx(ctx, tx, userID, tok, now); err != nil {
 		return err
 	}
@@ -415,13 +425,16 @@ func (s *Store) SignUp(ctx context.Context, p SignUpParams) (SignUpResult, error
 			// A pending user re-signing up for its own pending address, with its password, gets it back
 			// below. Everyone else — the same email with another password included — hears "taken",
 			// after the same password check, so the answer and its cost never single the email out.
-			var ownHash string
-			err := tx.GetContext(ctx, &ownHash, `SELECT u.password_hash FROM team t JOIN platform_user u ON u.id = t.created_by
+			var own struct {
+				Email string `db:"email"`
+				Hash  string `db:"password_hash"`
+			}
+			err := tx.GetContext(ctx, &own, `SELECT u.email, u.password_hash FROM team t JOIN platform_user u ON u.id = t.created_by
 WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pending' LIMIT 1`, p.Slug, p.Email)
 			if err != nil && !isNoRows(err) {
 				return fmt.Errorf("platformstore: slug owner: %w", err)
 			}
-			if p.PasswordMatches == nil || !p.PasswordMatches(ownHash) {
+			if own.Email != p.Email || p.PasswordMatches == nil || !p.PasswordMatches(own.Hash) {
 				return ErrSlugTaken
 			}
 		}
@@ -496,7 +509,11 @@ VALUES (?, ?, 'pending', ?, ?, ?)`, p.Slug, p.TeamName, p.Now.Add(p.PendingTTL),
 			return err
 		}
 		team := &TeamBrief{ID: tid, Slug: p.Slug, Name: p.TeamName, Status: "pending", CreatedBy: uid}
-		if err := sendLetterTx(ctx, tx, uid, team, p.Letter, p.Now); err != nil {
+		to := p.Email
+		if u.Email.Valid {
+			to = u.Email.String
+		}
+		if err := sendLetterTx(ctx, tx, uid, team, to, p.Letter, p.Now); err != nil {
 			return err
 		}
 		res = SignUpResult{Created: true, UserID: uid, TeamID: tid}
@@ -537,7 +554,7 @@ WHERE created_by = ? AND status = 'pending' AND pending_expires_at > ? ORDER BY 
 		if n >= maxPerHour {
 			return nil
 		}
-		if err := sendLetterTx(ctx, tx, u.ID, &team, mk, now); err != nil {
+		if err := sendLetterTx(ctx, tx, u.ID, &team, u.Email.String, mk, now); err != nil {
 			return err
 		}
 		sent = true
@@ -567,7 +584,7 @@ func (s *Store) RequestPasswordReset(ctx context.Context, email string, now time
 		if n >= maxPerHour {
 			return nil
 		}
-		if err := sendLetterTx(ctx, tx, u.ID, nil, mk, now); err != nil {
+		if err := sendLetterTx(ctx, tx, u.ID, nil, u.Email.String, mk, now); err != nil {
 			return err
 		}
 		sent = true

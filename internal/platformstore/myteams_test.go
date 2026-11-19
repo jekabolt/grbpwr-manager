@@ -24,14 +24,26 @@ func countRows(t *testing.T, st *platformstore.Store, q string, args ...any) int
 }
 
 func newTeam(user int64, slug string, now time.Time) platformstore.CreateTeamParams {
-	return platformstore.CreateTeamParams{UserID: user, Name: strings.ToUpper(slug[:1]) + slug[1:], Slug: slug, Now: now,
+	return platformstore.CreateTeamParams{UserID: user, RootSID: rootSID(user), RootNotBefore: now.Add(-30 * 24 * time.Hour),
+		Name: strings.ToUpper(slug[:1]) + slug[1:], Slug: slug, Now: now,
 		TermsVersion: "2026-11", TermsAccepted: true}
+}
+
+func rootSID(user int64) string { return fmt.Sprintf("r%031d", user) }
+
+func seedCreateTeamSessions(t *testing.T, st *platformstore.Store) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO user_session (sid, user_id, team_id, aud) VALUES
+ (?, 101, NULL, 'root'), (?, 102, NULL, 'root')`, rootSID(101), rootSID(102)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCreateTeam(t *testing.T) {
 	st := openFresh(t)
 	ctx := context.Background()
 	seedConsole(t, st)
+	seedCreateTeamSessions(t, st)
 	db := st.DB()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	snapshot := func() string {
@@ -147,6 +159,27 @@ func TestCreateTeam(t *testing.T) {
 	}
 }
 
+func TestCreateTeamRechecksRootSession(t *testing.T) {
+	st := openFresh(t)
+	ctx := context.Background()
+	seedConsole(t, st)
+	seedCreateTeamSessions(t, st)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sid := rootSID(101)
+	if live, err := st.RootSessionLive(ctx, sid, 101, now.Add(-30*24*time.Hour)); err != nil || !live {
+		t.Fatalf("preflight root session = %v, %v", live, err)
+	}
+	if _, err := st.SignOutRoot(ctx, sid, 101, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateTeam(ctx, newTeam(101, "after-signout", now)); !errors.Is(err, platformstore.ErrTokenInvalid) {
+		t.Fatalf("CreateTeam after root sign-out = %v, want ErrTokenInvalid", err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM team WHERE slug = 'after-signout'`); n != 0 {
+		t.Fatalf("CreateTeam after root sign-out wrote %d team rows", n)
+	}
+}
+
 // The root list: review, provisioning, active and suspended teams with an active membership, each
 // with its logo; never a deleted or pending team, never a removed membership.
 func TestListMyTeams(t *testing.T) {
@@ -200,6 +233,9 @@ func TestTeamLogo(t *testing.T) {
 	ctx := context.Background()
 	seedConsole(t, st)
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	set := func(teamID, userID int64, sid string, logo *platformstore.TeamLogo) error {
+		return st.SetTeamLogo(ctx, platformstore.SetTeamLogoParams{TeamID: teamID, UserID: userID, SID: sid, Logo: logo})
+	}
 	read := func(slug string) (string, string, bool) {
 		t.Helper()
 		l, _, ok, err := st.TeamLogoBySlug(ctx, slug)
@@ -211,13 +247,38 @@ func TestTeamLogo(t *testing.T) {
 	if _, _, ok := read("acme"); ok {
 		t.Fatal("logo before any was set")
 	}
-	if err := st.SetTeamLogo(ctx, 2, &platformstore.TeamLogo{PNG: []byte("one"), SHA256: hex64('1')}); err != nil {
+	if err := set(2, 102, "sbob0000000000000000000000000000", nil); !errors.Is(err, platformstore.ErrNotOwner) {
+		t.Fatalf("member logo write: %v, want ErrNotOwner", err)
+	}
+	if err := set(2, 101, "revoked-or-unknown", nil); !errors.Is(err, platformstore.ErrTokenInvalid) {
+		t.Fatalf("dead-session logo write: %v, want ErrTokenInvalid", err)
+	}
+	if err := st.SetTeamReadOnly(ctx, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := set(2, 101, "sann0000000000000000000000000000", nil); !errors.Is(err, platformstore.ErrTeamReadOnly) {
+		t.Fatalf("suspended-team logo write: %v, want ErrTeamReadOnly", err)
+	}
+	if err := st.SetTeamReadOnly(ctx, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := set(2, 101, "sann0000000000000000000000000000", &platformstore.TeamLogo{PNG: []byte("one"), SHA256: hex64('1')}); err != nil {
 		t.Fatal(err)
 	}
 	if png, sha, ok := read("acme"); !ok || png != "one" || sha != hex64('1') {
 		t.Fatalf("set: %q %q %v", png, sha, ok)
 	}
-	if err := st.SetTeamLogo(ctx, 2, &platformstore.TeamLogo{PNG: []byte("two"), SHA256: hex64('2')}); err != nil {
+	meta, ok, err := st.TeamLogoMetaBySlug(ctx, "acme")
+	if err != nil || !ok || meta.SHA256 != hex64('1') || meta.Size != int64(len("one")) {
+		t.Fatalf("logo metadata = %+v, %v, %v", meta, ok, err)
+	}
+	if png, ok, err := st.TeamLogoPNGBySlug(ctx, "acme", meta.SHA256); err != nil || !ok || string(png) != "one" {
+		t.Fatalf("logo content = %q, %v, %v", png, ok, err)
+	}
+	if _, ok, err := st.TeamLogoPNGBySlug(ctx, "acme", hex64('f')); err != nil || ok {
+		t.Fatalf("stale logo content = %v, %v", ok, err)
+	}
+	if err := set(2, 101, "sann0000000000000000000000000000", &platformstore.TeamLogo{PNG: []byte("two"), SHA256: hex64('2')}); err != nil {
 		t.Fatal(err)
 	}
 	if png, sha, ok := read("acme"); !ok || png != "two" || sha != hex64('2') {
@@ -229,7 +290,7 @@ func TestTeamLogo(t *testing.T) {
 	if countRows(t, st, `SELECT COUNT(*) FROM team_logo`) != 1 {
 		t.Fatal("replace kept two rows")
 	}
-	if err := st.SetTeamLogo(ctx, 2, nil); err != nil {
+	if err := set(2, 101, "sann0000000000000000000000000000", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, ok := read("acme"); ok {
@@ -239,10 +300,15 @@ func TestTeamLogo(t *testing.T) {
 		t.Fatalf("removed logo sha %q %v", sha, err)
 	}
 
-	// A team in review and a provisioning one have a usable logo.
+	// Logos created with a team remain public in review and provisioning, but cannot be mutated by a
+	// team session before the team is active.
+	if _, err := st.DB().Exec(`INSERT INTO team_logo (team_id, png, sha256) VALUES
+ (3, 'x', ?), (4, 'x', ?)`, hex64('3'), hex64('3')); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []int64{3, 4} {
-		if err := st.SetTeamLogo(ctx, id, &platformstore.TeamLogo{PNG: []byte("x"), SHA256: hex64('3')}); err != nil {
-			t.Fatalf("team %d: %v", id, err)
+		if err := set(id, 101, "sann0000000000000000000000000000", nil); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+			t.Fatalf("team %d logo mutation: %v, want ErrWrongTeamStatus", id, err)
 		}
 	}
 	if _, _, ok := read("wait"); !ok {
@@ -250,7 +316,7 @@ func TestTeamLogo(t *testing.T) {
 	}
 
 	// Deleted: not served, not settable; the row waits for the wipe and is back on restore.
-	if err := st.SetTeamLogo(ctx, 2, &platformstore.TeamLogo{PNG: []byte("three"), SHA256: hex64('4')}); err != nil {
+	if err := set(2, 101, "sann0000000000000000000000000000", &platformstore.TeamLogo{PNG: []byte("three"), SHA256: hex64('4')}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DeleteTeam(ctx, 2, now, platformstore.DeleteRetention); err != nil {
@@ -259,7 +325,7 @@ func TestTeamLogo(t *testing.T) {
 	if _, _, ok := read("acme"); ok {
 		t.Fatal("a deleted team's logo is served")
 	}
-	if err := st.SetTeamLogo(ctx, 2, nil); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+	if err := set(2, 101, "sann0000000000000000000000000000", nil); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
 		t.Fatalf("logo of a deleted team: %v, want ErrWrongTeamStatus", err)
 	}
 	if _, err := st.RestoreTeam(ctx, 2, now); err != nil {
@@ -280,10 +346,10 @@ func TestTeamLogo(t *testing.T) {
 	if _, _, ok := read("pend"); ok {
 		t.Fatal("a pending team's logo is served")
 	}
-	if err := st.SetTeamLogo(ctx, 8, &platformstore.TeamLogo{PNG: []byte("x"), SHA256: hex64('5')}); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+	if err := set(8, 101, "sann0000000000000000000000000000", &platformstore.TeamLogo{PNG: []byte("x"), SHA256: hex64('5')}); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
 		t.Fatalf("logo of a pending team: %v, want ErrWrongTeamStatus", err)
 	}
-	if err := st.SetTeamLogo(ctx, 999, nil); !errors.Is(err, platformstore.ErrTeamNotFound) {
+	if err := set(999, 101, "sann0000000000000000000000000000", nil); !errors.Is(err, platformstore.ErrTeamNotFound) {
 		t.Fatalf("logo of no team: %v, want ErrTeamNotFound", err)
 	}
 	if n, err := st.SweepPendingTeams(ctx, now, 10); err != nil || n != 1 {
@@ -351,6 +417,7 @@ func within(t *testing.T, d time.Duration, what string, f func(ctx context.Conte
 func TestCreateTeamDoesNotWaitForDeleteTeam(t *testing.T) {
 	st := openFresh(t)
 	seedDelete(t, st)
+	seedCreateTeamSessions(t, st)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	// DeleteTeam(acme) as far as its last statement, held open.
@@ -393,6 +460,7 @@ func TestCreateTeamDoesNotWaitForDeleteTeam(t *testing.T) {
 func TestCreateTeamRacesDeleteTeam(t *testing.T) {
 	st := openFresh(t)
 	seedDelete(t, st)
+	seedCreateTeamSessions(t, st)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	const rounds = 25

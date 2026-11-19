@@ -472,6 +472,11 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 		err error
 	)
 	if strings.Contains(login, "@") {
+		login, err = NormalizeEmail(login)
+		if err != nil {
+			_ = s.passwordOK(req.GetPassword(), "")
+			return nil, errAuth()
+		}
 		u, err = s.d.Store.UserByEmail(ctx, login)
 	} else {
 		u, err = s.d.Store.UserByHandle(ctx, login)
