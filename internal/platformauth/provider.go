@@ -64,6 +64,9 @@ func (s *Service) CompleteProviderSignIn(ctx context.Context, in platformstore.P
 	if err != nil {
 		email = ""
 	}
+	// Store only the exact address that passed the account-identity rule. A provider may still
+	// authenticate an already-linked subject without a usable current email.
+	in.Email = email
 	now := s.now()
 	raw, hash, err := NewToken()
 	if err != nil {

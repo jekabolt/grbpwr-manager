@@ -126,7 +126,7 @@ func (s *Service) CreateTeam(ctx context.Context, rootToken string, req *auth.Cr
 	if err := s.usable(); err != nil {
 		return nil, err
 	}
-	u, _, err := s.rootCaller(ctx, rootToken)
+	u, rootSID, err := s.rootCaller(ctx, rootToken)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,8 @@ func (s *Service) CreateTeam(ctx context.Context, rootToken string, req *auth.Cr
 	}
 	now := s.now()
 	res, err := s.d.Store.CreateTeam(ctx, platformstore.CreateTeamParams{
-		UserID: u.ID, Name: name, Slug: slug, Now: now, Review: s.review(),
+		UserID: u.ID, RootSID: rootSID, RootNotBefore: now.Add(-RootSessionTTL),
+		Name: name, Slug: slug, Now: now, Review: s.review(),
 		TermsVersion: s.d.TermsVersion, TermsAccepted: req.GetTermsAccepted(), Logo: logo,
 	})
 	switch {
@@ -218,8 +219,16 @@ func (s *Service) SetTeamLogo(ctx context.Context, teamToken string, req *auth.S
 	if err != nil {
 		return nil, err
 	}
-	err = s.d.Store.SetTeamLogo(ctx, team.ID, logo)
+	err = s.d.Store.SetTeamLogo(ctx, platformstore.SetTeamLogoParams{
+		TeamID: claims.TeamID, UserID: claims.UserID, SID: claims.SessionID, Logo: logo,
+	})
 	switch {
+	case errors.Is(err, platformstore.ErrTokenInvalid):
+		return nil, errAuth()
+	case errors.Is(err, platformstore.ErrNotOwner):
+		return nil, errNoAccess()
+	case errors.Is(err, platformstore.ErrTeamReadOnly):
+		return nil, status.Error(codes.FailedPrecondition, "team is read-only")
 	case errors.Is(err, platformstore.ErrTeamNotFound), errors.Is(err, platformstore.ErrWrongTeamStatus):
 		return nil, errNoAccess()
 	case err != nil:

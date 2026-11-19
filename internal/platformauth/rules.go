@@ -66,8 +66,15 @@ var (
 // handlePattern: what a person may choose as a handle (the join form's «name»).
 var handlePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,62}$`)
 
-// NormalizeEmail lowercases and validates an address; only a bare local@domain is accepted.
+// NormalizeEmail lowercases and validates an ASCII address; only a bare local@domain is accepted.
+// Internationalised domains must be supplied in their ASCII (punycode) form. Keeping identity
+// input byte-exact also prevents a database collation from equating different mailboxes.
 func NormalizeEmail(s string) (string, error) {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return "", errBadEmail
+		}
+	}
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" || len(s) > maxEmailLen {
 		return "", errBadEmail

@@ -88,14 +88,52 @@ func openFresh(t *testing.T) *platformstore.Store {
 	var n int
 	// 0001 control plane + 0002 team_review (B3, columns only) + 0003 provision_lease (B4, one table)
 	// + 0004 credential_gen (I1, one column) + 0005 team_delete (D1, columns and keys only)
-	// + 0006 oauth (O0: platform_identity, oauth_state, team_logo + columns).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 6 {
+	// + 0006 oauth (O0: platform_identity, oauth_state, team_logo + columns)
+	// + 0007 exact identity collations (column changes only).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 7 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 17 {
 		t.Fatalf("tables = %d (want 16 + platform_migrations), %v", n, err)
 	}
 	return st
+}
+
+func TestIdentityColumnsUseBinaryCollation(t *testing.T) {
+	st := openFresh(t)
+	type column struct {
+		Table     string         `db:"TABLE_NAME"`
+		Name      string         `db:"COLUMN_NAME"`
+		Type      string         `db:"COLUMN_TYPE"`
+		Nullable  string         `db:"IS_NULLABLE"`
+		Collation sql.NullString `db:"COLLATION_NAME"`
+	}
+	var got []column
+	if err := st.DB().Select(&got, `SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLLATION_NAME
+FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND (
+  (TABLE_NAME = 'platform_user' AND COLUMN_NAME = 'email') OR
+  (TABLE_NAME = 'team_invite' AND COLUMN_NAME = 'email') OR
+  (TABLE_NAME = 'platform_identity' AND COLUMN_NAME IN ('subject', 'email')) OR
+  (TABLE_NAME = 'platform_email' AND COLUMN_NAME = 'to_email'))
+ORDER BY TABLE_NAME, COLUMN_NAME`); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("identity columns = %d, want 5: %+v", len(got), got)
+	}
+	want := map[string]string{
+		"platform_email.to_email":   "varchar(254):NO",
+		"platform_identity.email":   "varchar(254):YES",
+		"platform_identity.subject": "varchar(255):NO",
+		"platform_user.email":       "varchar(254):YES",
+		"team_invite.email":         "varchar(254):NO",
+	}
+	for _, c := range got {
+		key := c.Table + "." + c.Name
+		if c.Collation.String != "utf8mb4_bin" || c.Type+":"+c.Nullable != want[key] {
+			t.Errorf("%s = %s %s %s, want utf8mb4_bin %s", key, c.Type, c.Nullable, c.Collation.String, want[key])
+		}
+	}
 }
 
 func TestEnsureTeamOne(t *testing.T) {

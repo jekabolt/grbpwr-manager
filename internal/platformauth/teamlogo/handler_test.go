@@ -12,18 +12,26 @@ import (
 
 const testSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-func testReader(calls *int) Reader {
-	return func(_ context.Context, slug string) ([]byte, string, time.Time, bool, error) {
-		*calls++
+func testReaders(metaCalls, contentCalls *int) (MetadataReader, ContentReader) {
+	meta := func(_ context.Context, slug string) (string, int64, time.Time, bool, error) {
+		*metaCalls++
 		switch slug {
 		case "acme":
-			return []byte("\x89PNG-bytes"), testSHA, time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC), true, nil
+			return testSHA, int64(len("\x89PNG-bytes")), time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC), true, nil
 		case "broken":
-			return nil, "", time.Time{}, false, errors.New("db down")
+			return "", 0, time.Time{}, false, errors.New("db down")
 		}
 		// none, pending, deleted, unknown: the store answers the same.
-		return nil, "", time.Time{}, false, nil
+		return "", 0, time.Time{}, false, nil
 	}
+	content := func(_ context.Context, slug, sha string) ([]byte, bool, error) {
+		*contentCalls++
+		if slug == "acme" && sha == testSHA {
+			return []byte("\x89PNG-bytes"), true, nil
+		}
+		return nil, false, nil
+	}
+	return meta, content
 }
 
 func serve(t *testing.T, h http.Handler, method, target string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -38,8 +46,9 @@ func serve(t *testing.T, h http.Handler, method, target string, hdr map[string]s
 }
 
 func TestHandlerServesTheLogo(t *testing.T) {
-	calls := 0
-	h := Handler(testReader(&calls))
+	metaCalls, contentCalls := 0, 0
+	meta, content := testReaders(&metaCalls, &contentCalls)
+	h := Handler(meta, content)
 	w := serve(t, h, http.MethodGet, Path+"acme", nil)
 	if w.Code != http.StatusOK || w.Body.String() != "\x89PNG-bytes" {
 		t.Fatalf("GET = %d %q", w.Code, w.Body.String())
@@ -62,8 +71,8 @@ func TestHandlerServesTheLogo(t *testing.T) {
 		t.Errorf("versioned URL Cache-Control = %q, want %q", got, cacheVersioned)
 	}
 	w = serve(t, h, http.MethodGet, Path+"acme?v=ffffffffffff", nil)
-	if got := w.Header().Get("Cache-Control"); got != cacheBare {
-		t.Errorf("stale version Cache-Control = %q, want the bare one", got)
+	if w.Code != http.StatusNotFound || w.Body.Len() != 0 || w.Header().Get("ETag") != "" {
+		t.Errorf("stale version = %d, body %d, ETag %q; want the common bodyless 404", w.Code, w.Body.Len(), w.Header().Get("ETag"))
 	}
 
 	w = serve(t, h, http.MethodGet, Path+"acme", map[string]string{"If-None-Match": `"` + testSHA + `"`})
@@ -74,13 +83,24 @@ func TestHandlerServesTheLogo(t *testing.T) {
 	if w.Code != http.StatusOK || w.Header().Get("ETag") == "" {
 		t.Errorf("HEAD = %d, ETag %q", w.Code, w.Header().Get("ETag"))
 	}
+	if w.Body.Len() != 0 || w.Header().Get("Content-Length") != "10" {
+		t.Errorf("HEAD body=%d Content-Length=%q", w.Body.Len(), w.Header().Get("Content-Length"))
+	}
+	w = serve(t, h, http.MethodHead, Path+"acme", map[string]string{"If-Modified-Since": "Thu, 19 Nov 2026 12:00:00 GMT"})
+	if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+		t.Errorf("HEAD If-Modified-Since = %d, body %d", w.Code, w.Body.Len())
+	}
+	if metaCalls != 6 || contentCalls != 2 {
+		t.Errorf("reads = metadata %d, content %d; HEAD, 304 and stale v must skip content", metaCalls, contentCalls)
+	}
 }
 
 // No logo, a pending or deleted team (the reader's found=false), an unknown slug and a malformed
 // one all get the same 404; a malformed one never reaches the store.
 func TestHandlerOneNotFound(t *testing.T) {
-	calls := 0
-	h := Handler(testReader(&calls))
+	metaCalls, contentCalls := 0, 0
+	meta, content := testReaders(&metaCalls, &contentCalls)
+	h := Handler(meta, content)
 	var first *httptest.ResponseRecorder
 	for _, target := range []string{Path + "nologo", Path + "deleted-team", Path + "UPPER", Path + "a/b", Path + "", Path + strings.Repeat("a", 64), "/api/auth/other/acme"} {
 		w := serve(t, h, http.MethodGet, target, nil)
@@ -97,8 +117,8 @@ func TestHandlerOneNotFound(t *testing.T) {
 			t.Errorf("%s: 404 differs from the first one", target)
 		}
 	}
-	if calls != 2 {
-		t.Errorf("store read %d times, want 2 (only the well-formed slugs)", calls)
+	if metaCalls != 2 || contentCalls != 0 {
+		t.Errorf("store reads metadata=%d content=%d, want 2/0 (only well-formed slugs)", metaCalls, contentCalls)
 	}
 	if w := serve(t, h, http.MethodGet, Path+"broken", nil); w.Code != http.StatusInternalServerError {
 		t.Errorf("store error = %d, want 500", w.Code)
