@@ -24,7 +24,8 @@ type DeletedTeam struct {
 //
 //  1. the team row, always first. FOR UPDATE where the team itself changes (DeleteTeam,
 //     RestoreTeam, SetTeamReadOnly, RenameTeam, ApproveTeam, DeclineTeam, UpsertInvite, ClaimSpare,
-//     the pending sweep, EnsureTeamOne); FOR SHARE where something is created that lives only
+//     the pending sweep, EnsureTeamOne, SetTeamLogo, SetTeamBrand) or where a status read must hold
+//     until commit (RevokeMemberSessions: a member's rights changed); FOR SHARE where something is created that lives only
 //     while the team is usable (CreateTeamSession, IssueHandoff — member and operator entry —,
 //     ExchangeHandoff, ExchangeOperatorHandoff, both commits of AcceptInvite), so sign-ins of one
 //     team do not queue behind each other, but none of them can start or finish across a status
@@ -36,6 +37,9 @@ type DeletedTeam struct {
 //     holds that row: SetTeamLogo (FOR UPDATE), the team-creating transactions (the row they
 //     inserted), every delete of a team row (the pending sweep, SignUp's pending replace,
 //     DeclineTeam, the provider claim of a pending account) deletes the logo first;
+//     1b. the team's brand (team_brand), right after the logo, by the same rule: SetTeamBrand (FOR
+//     UPDATE), EnsureTeamOne (the team #1 seed, a no-op upsert), and every delete of a team row deletes
+//     it beside the logo (DeleteTeam is soft and keeps it; removing a logo never touches it);
 //  2. the account (platform_user);
 //     2a. its provider identities (platform_identity), right after the account: the provider
 //     completion holds the account before it writes an identity (FOR UPDATE before it inserts one,

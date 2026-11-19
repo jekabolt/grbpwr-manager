@@ -89,12 +89,12 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// 0001 control plane + 0002 team_review (B3, columns only) + 0003 provision_lease (B4, one table)
 	// + 0004 credential_gen (I1, one column) + 0005 team_delete (D1, columns and keys only)
 	// + 0006 oauth (O0: platform_identity, oauth_state, team_logo + columns)
-	// + 0007 exact identity collations (column changes only).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 7 {
+	// + 0007 exact identity collations (column changes only) + 0008 team_brand (W1, one table).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 8 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 17 {
-		t.Fatalf("tables = %d (want 16 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 18 {
+		t.Fatalf("tables = %d (want 17 + platform_migrations), %v", n, err)
 	}
 	return st
 }

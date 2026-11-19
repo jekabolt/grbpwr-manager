@@ -87,7 +87,9 @@ type TeamOneAdmin struct {
 //     with the same username must not hand them grbpwr. Boot goes on — a stranger's sign-up must
 //     never stop the store;
 //   - the profile (Team1ProfilePlan) is applied on every boot, not only when the row is created;
-//     a team_feature row an operator wrote (updated_by set) is never overwritten or removed.
+//     a team_feature row an operator wrote (updated_by set) is never overwritten or removed;
+//   - the team's brand (team_brand: today's papers' GRBPWR data) is inserted when it has none and
+//     never updated: an owner's edit survives every later boot.
 func (s *Store) EnsureTeamOneProfile(ctx context.Context, dbName string, admins []TeamOneAdmin, profile string) error {
 	if strings.TrimSpace(dbName) == "" {
 		return fmt.Errorf("platformstore: team #1 needs its database name")
@@ -121,6 +123,10 @@ VALUES (?, ?, ?, ?, NULL, ?, 'active', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
 		}
 	default:
 		return fmt.Errorf("platformstore: ensure team #1: read team: %w", err)
+	}
+	// The brand row (1b, right after its team row): written once, never updated by a boot.
+	if err := seedTeamOneBrandTx(ctx, tx); err != nil {
+		return err
 	}
 	if err := applyTeamOneProfile(ctx, tx, dbProfile, systemOn, managed); err != nil {
 		return err

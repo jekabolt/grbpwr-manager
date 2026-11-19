@@ -89,8 +89,11 @@ type InviteParams struct {
 	Email       string
 	Role        string
 	Permissions []byte // JSON [{"section":"…","access":"read|write"}]
-	TokenHash   string
-	ExpiresAt   time.Time
+	// KeepPermissions: a re-invite of an open invite keeps the permissions it already holds (the
+	// request named none); Permissions are written only by a new invite then.
+	KeepPermissions bool
+	TokenHash       string
+	ExpiresAt       time.Time
 	// Actor invites (re-checked under lock); a member actor is recorded as the sender.
 	Actor  Actor
 	Letter Letter
@@ -100,9 +103,10 @@ type InviteParams struct {
 }
 
 // UpsertInvite invites an email into a team and queues the letter in one transaction. An active
-// member with that email → ErrAlreadyMember. An open invite for the email is re-used: its role,
-// permissions, token (the old link dies), expiry and sender are replaced. ErrLetterCap when the
-// address already got MaxPerHour letters in the last hour.
+// member with that email → ErrAlreadyMember. An open invite for the email (an expired one included)
+// is re-used: its role, permissions (kept with KeepPermissions), token (the old link dies), expiry
+// and sender are replaced. ErrLetterCap when the address already got MaxPerHour letters in the last
+// hour.
 func (s *Store) UpsertInvite(ctx context.Context, p InviteParams) (TeamInvite, error) {
 	var out TeamInvite
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -155,6 +159,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, p.TeamID, p.Email, p.Role, string(p.Permission
 			}
 		case err != nil:
 			return fmt.Errorf("platformstore: open invite: %w", err)
+		case p.KeepPermissions:
+			if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET role = ?, token_hash = ?, invited_by = ?,
+expires_at = ?, created_at = ? WHERE id = ?`, p.Role, p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, id); err != nil {
+				return fmt.Errorf("platformstore: update invite: %w", err)
+			}
 		default:
 			if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET role = ?, permissions = ?, token_hash = ?, invited_by = ?,
 expires_at = ?, created_at = ? WHERE id = ?`, p.Role, string(p.Permissions), p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, id); err != nil {
