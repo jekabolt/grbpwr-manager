@@ -375,6 +375,60 @@ func TestEdgeUploadRoutes(t *testing.T) {
 	}
 }
 
+// The file proxy is a read behind the same chain: no token is refused, a foreign team is refused, a
+// suspended team still reads (GET), and it is not gated by the files feature (Core).
+func TestEdgeFileProxyRoute(t *testing.T) {
+	e := newEdge()
+	srv := newEdgeServer(t, e)
+	tok := teamToken(t, srv, authjwt.TeamClaims{TeamID: 7, Audience: authjwt.AudTeam, Super: true})
+
+	var reached bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true; w.WriteHeader(http.StatusOK) })
+	r := chi.NewRouter()
+	r.Route("/api", func(r chi.Router) {
+		r.Method(http.MethodGet, "/files/proxy", srv.WithAdminAuthz(next))
+	})
+	get := func(token, xteam string) (int, string) {
+		reached = false
+		req := httptest.NewRequest(http.MethodGet, "/api/files/proxy?url=https%3A%2F%2Fcdn.example%2Fa", nil)
+		if token != "" {
+			req.Header.Set(AuthMetadataKey, "Bearer "+token)
+		}
+		if xteam != "" {
+			req.Header.Set("X-Team", xteam)
+		}
+		req.Header.Set("Origin", acmeOrigin)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	if code, body := get("", ""); code != http.StatusUnauthorized || reached {
+		t.Fatalf("no token: %d %s", code, body)
+	}
+	if code, body := get(tok, ""); code != http.StatusOK || !reached {
+		t.Fatalf("own team: %d %s", code, body)
+	}
+	if code, body := get(tok, "grbpwr"); code != http.StatusForbidden || reached {
+		t.Fatalf("foreign X-Team: %d %s", code, body)
+	}
+
+	a := edgeAcme
+	a.Status = tenant.StatusSuspended
+	e.teams[7] = a
+	if code, body := get(tok, ""); code != http.StatusOK || !reached {
+		t.Fatalf("suspended team read: %d %s", code, body)
+	}
+
+	e.teams[7] = edgeAcme
+	eff := feature.Effective(7, tenant.ProfileAll, nil)
+	eff[feature.Files] = false
+	e.features[7] = eff
+	if code, body := get(tok, ""); code != http.StatusOK || !reached {
+		t.Fatalf("files off still reads a url it holds: %d %s", code, body)
+	}
+}
+
 // Team #1 with teams mode off is today's admin: legacy token, every feature, no origin lock.
 func TestEdgeTeamOneUnchangedModeOff(t *testing.T) {
 	// edge_ext_test.go runs the same with the real binder (tenantbind imports store, which imports

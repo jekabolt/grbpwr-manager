@@ -217,6 +217,7 @@ func TestForRoute(t *testing.T) {
 	}{
 		{method: "POST", pattern: "/api/files/upload", want: Files},
 		{method: "POST", pattern: "/api/files/{id}/preview", want: Files},
+		{method: "GET", pattern: "/api/files/proxy", want: Core},
 		{method: "POST", pattern: "/api/techcard-archive/upload", want: TechCards},
 		{method: "GET", pattern: "/api/p/{token}", want: Core},
 		{method: "HEAD", pattern: "/api/p/{token}", want: Core},

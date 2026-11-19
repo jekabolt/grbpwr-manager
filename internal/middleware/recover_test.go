@@ -200,3 +200,17 @@ func TestRecoverReportsToSentry(t *testing.T) {
 	exc := grpcEv["exception"].([]any)[0].(map[string]any)
 	require.Contains(t, exc["value"], "nil map")
 }
+
+// A deliberate abort (http.ErrAbortHandler) is not a crash: it passes through to net/http, which drops
+// the connection, and nothing is logged as a recovered panic.
+func TestRecoverPassesAbortHandlerThrough(t *testing.T) {
+	observability.Disable()
+	logs := captureLog(t)
+	h := middleware.Recover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	})
+	require.NotContains(t, logs.String(), "recovered panic in http handler")
+}

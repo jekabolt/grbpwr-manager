@@ -183,6 +183,7 @@ type Server struct {
 	runPackHandler          http.Handler
 	fileUploadHandler       http.Handler
 	filePreviewHandler      http.Handler
+	fileProxyHandler        http.Handler
 	tcArchiveUploadHandler  http.Handler
 	fileLinkHandler         http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
@@ -286,6 +287,14 @@ func (s *Server) SetFileUploadHandler(h http.Handler) {
 // carries a thumbnail, not a file.
 func (s *Server) SetFilePreviewHandler(h http.Handler) {
 	s.filePreviewHandler = h
+}
+
+// SetFileProxyHandler registers the authenticated file proxy (GET /api/files/proxy?url=…): the
+// bytes of a managed file for the admin client (the CDN sends no CORS headers). Already wrapped in
+// admin authorization by the caller, like the upload above; which urls it reads is decided in
+// bucket.OpenProxyObject (managed hosts, the caller's team prefix).
+func (s *Server) SetFileProxyHandler(h http.Handler) {
+	s.fileProxyHandler = h
 }
 
 // SetTechCardArchiveUploadHandler registers the tech-card archive import endpoint
@@ -809,6 +818,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.filePreviewHandler != nil {
 			r.With(limitBody(maxFilePreviewBodyBytes)).
 				Method(http.MethodPost, "/files/{id}/preview", s.filePreviewHandler)
+		}
+		// Authenticated file proxy (lane V1): a GET with no body; the response is capped in the
+		// bucket (MaxProxyObjectBytes), not here.
+		if s.fileProxyHandler != nil {
+			r.With(limitBody(maxFilePreviewBodyBytes)).
+				Method(http.MethodGet, "/files/proxy", s.fileProxyHandler)
 		}
 		// Tech-card archive import. Its own body cap and DELIBERATELY NOT the files-library
 		// one: 95 MiB is a guess about a platform ceiling, while 256 MiB is a number the

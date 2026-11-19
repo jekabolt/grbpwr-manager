@@ -1174,6 +1174,13 @@ func (a *App) Start(ctx context.Context) error {
 	// остальных методов, простого HTTP-маршрута не видит вовсе. Сам маршрут дополнительно
 	// требует tech_cards:write внутри хендлера — обёртка аутентифицирует, секцию решает он.
 	a.hs.SetTechCardArchiveUploadHandler(authS.WithAdminAuthz(a.adminS.TechCardArchiveUploadHandler()))
+	// Authenticated file proxy (GET /api/files/proxy, lane V1): replaces the Vercel function
+	// media-proxy for installations without functions. Same admin chain as the uploads; the bucket
+	// decides which urls (managed hosts, the caller's team prefix). Not mounted when the file store is
+	// not a *bucket.Bucket.
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		a.hs.SetFileProxyHandler(authS.WithAdminAuthz(admin.FileProxyHandler(bk.OpenProxyObject)))
+	}
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
 	// When a signing secret is configured for a processor it delivers the fastest
