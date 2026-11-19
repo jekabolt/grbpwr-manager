@@ -360,6 +360,9 @@ func (s *Store) DeclineTeam(ctx context.Context, teamID int64) error {
 		if err := deleteTeamLogoTx(ctx, tx, teamID); err != nil {
 			return err
 		}
+		if err := deleteTeamBrandTx(ctx, tx, teamID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM team_member WHERE team_id = ?`, teamID); err != nil {
 			return fmt.Errorf("platformstore: decline members: %w", err)
 		}

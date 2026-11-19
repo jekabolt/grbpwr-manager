@@ -56,8 +56,9 @@ func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAc
 // workspaceToProto is the team the call runs in, as the admin chain resolved it (teams §6): slug,
 // name, role, the feature keys that are on, read-only when the team is suspended, and the team's
 // logo URL (teams O §11, §14: filled, though the top bar does not draw it; "" without a logo, with
-// teams mode off, or when the control plane cannot be read). nil outside the chain (an in-process
-// caller).
+// teams mode off, or when the control plane cannot be read), and its brand data (teams W: nil with
+// teams mode off, {first_team, unavailable} when the control plane cannot be read, empty values when
+// the team has none). nil outside the chain (an in-process caller).
 func (s *Server) workspaceToProto(ctx context.Context) *pb_admin.Workspace {
 	w, ok := authsrv.GetWorkspace(ctx)
 	if !ok {
@@ -74,6 +75,7 @@ func (s *Server) workspaceToProto(ctx context.Context) *pb_admin.Workspace {
 		Features: features,
 		ReadOnly: w.ReadOnly,
 		LogoUrl:  s.teamLogoURL(ctx, w.Team.ID, w.Team.Slug),
+		Brand:    s.teamBrand(ctx, w.Team.ID),
 	}
 }
 

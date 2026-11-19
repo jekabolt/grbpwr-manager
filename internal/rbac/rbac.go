@@ -931,8 +931,8 @@ var methodRequirements = map[string]Requirement{
 	"SetAccountDisabled":       wr(SectionAccounts),
 	"DeleteAccount":            wr(SectionAccounts),
 	"ResetAccountPassword":     wr(SectionAccounts),
-	// team members (multi-tenant): people and invites of the calling team
-	"ListTeamMembers":   rd(SectionAccounts),
+	// team members (multi-tenant): people and invites of the calling team (ListTeamMembers is on the
+	// allowlist: every member opens the workspace screen)
 	"InviteTeamMember":  wr(SectionAccounts),
 	"RevokeTeamInvite":  wr(SectionAccounts),
 	"ResendTeamInvite":  wr(SectionAccounts),
@@ -1057,6 +1057,15 @@ var allowlist = map[string]entity.AccessLevel{
 	// nothing; what it can do is spend the AI key, so it is WRITE class (a suspended team cannot) and
 	// the feature gate asks for `ai`. The per-admin hourly window in the handler bounds the spend.
 	"TranslateFields": entity.AccessWrite,
+	// ListTeamMembers (teams W) — the workspace screen's people block: every member of a team opens
+	// it and sees the team's people, their roles and section rights (W spec Q3, default (a): members
+	// see each other's sections). Moved here from rd(SectionAccounts), which a team member is never
+	// granted, so the screen was refused to all but owners. The answer is the calling team's own people (the edge
+	// resolves the team; no request field picks one): emails, roles, grants — nothing a member could
+	// use to act, every change stays owner-only (wr(SectionAccounts) + the handler's owner rule).
+	// Teams mode OFF keeps the old gate inside the handler — a legacy token, a super or accounts
+	// read, else the edge's exact refusal text — so prod answers byte for byte as before.
+	"ListTeamMembers": entity.AccessRead,
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings

@@ -47,8 +47,9 @@ func deleteTeamLogoTx(ctx context.Context, tx *sqlx.Tx, teamID int64) error {
 }
 
 // deletePendingTeamsTx deletes the teams matched by where (a condition on team that must keep
-// status = 'pending') together with their logos and returns their ids: the rows are locked FOR
-// UPDATE by the same condition the plain DELETE used, then each logo and team goes by id.
+// status = 'pending') together with their logos and brands and returns their ids: the rows are
+// locked FOR UPDATE by the same condition the plain DELETE used, then each logo, brand and team goes
+// by id.
 func deletePendingTeamsTx(ctx context.Context, tx *sqlx.Tx, where string, args ...any) ([]int64, error) {
 	var ids []int64
 	if err := tx.SelectContext(ctx, &ids, `SELECT id FROM team WHERE `+where+` FOR UPDATE`, args...); err != nil {
@@ -56,6 +57,9 @@ func deletePendingTeamsTx(ctx context.Context, tx *sqlx.Tx, where string, args .
 	}
 	for _, id := range ids {
 		if err := deleteTeamLogoTx(ctx, tx, id); err != nil {
+			return nil, err
+		}
+		if err := deleteTeamBrandTx(ctx, tx, id); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM team WHERE id = ? AND status = 'pending'`, id); err != nil {
