@@ -12,6 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
@@ -228,7 +230,7 @@ func (s *Server) EnhanceText(ctx context.Context, req *pb_admin.EnhanceTextReque
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the text assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the text assistant %d times in the last hour; the limit is there because every call spends the AI key — try again later",
 			enhancePerAdminCalls)

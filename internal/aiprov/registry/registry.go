@@ -157,6 +157,7 @@ type Registry struct {
 	ring  *keyring.Ring
 	env   EnvKeys
 	log   *slog.Logger
+	pin   func(context.Context) (context.Context, error) // every store call's ctx (pin.go); nil = identity
 
 	snap     atomic.Pointer[snapshot]
 	reloadMu sync.Mutex // serialises Reload: two reloads finishing out of order must not swap an older snapshot over a newer one
@@ -214,7 +215,11 @@ func (r *Registry) Reload(ctx context.Context) error {
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
 
-	cfg, err := r.store.GetConfig(ctx)
+	pctx, err := r.pinned(ctx) // team #1's config whoever asks (pin.go)
+	var cfg *entity.AIConfig
+	if err == nil {
+		cfg, err = r.store.GetConfig(pctx)
+	}
 	if err == nil && cfg == nil {
 		err = errors.New("the store returned no configuration")
 	}
@@ -364,7 +369,11 @@ func (r *Registry) ImportEnvKeys(ctx context.Context) (imported []string, err er
 			"set it and save the keys in admin → AI providers")
 		return nil, nil
 	}
-	cfg, err := r.store.GetConfig(ctx)
+	pctx, err := r.pinned(ctx) // the import writes team #1's slots only (pin.go)
+	if err != nil {
+		return nil, fmt.Errorf("ai registry: env import: %w", err)
+	}
+	cfg, err := r.store.GetConfig(pctx)
 	if err == nil && cfg == nil {
 		err = errors.New("the store returned no configuration")
 	}
@@ -394,7 +403,7 @@ func (r *Registry) ImportEnvKeys(ctx context.Context) (imported []string, err er
 		if err != nil {
 			return imported, fmt.Errorf("ai registry: env import: seal %s key: %w", imp.provider, err)
 		}
-		if err := r.store.SetProviderKey(ctx, imp.provider, entity.AIKeyAPI, enc, last4, EnvImportedBy); err != nil {
+		if err := r.store.SetProviderKey(pctx, imp.provider, entity.AIKeyAPI, enc, last4, EnvImportedBy); err != nil {
 			return imported, fmt.Errorf("ai registry: env import: store %s key: %w", imp.provider, err)
 		}
 		r.log.InfoContext(ctx, fmt.Sprintf("ai provider %s: env key imported into the panel (last4 %s) — delete %s from the app spec",
@@ -883,7 +892,11 @@ func (r *Registry) pollOnce(ctx context.Context) (ok bool) {
 	ctx, cancel := context.WithTimeout(ctx, pollTimeout)
 	defer cancel()
 
-	v, err := r.store.ConfigVersion(ctx)
+	pctx, err := r.pinned(ctx) // team #1's config_version (pin.go)
+	var v uint64
+	if err == nil {
+		v, err = r.store.ConfigVersion(pctx)
+	}
 	if err != nil {
 		r.tracker.MarkError(err)
 		r.log.ErrorContext(ctx, "ai registry: config version read failed", slog.String("err", err.Error()))

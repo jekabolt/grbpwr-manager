@@ -29,9 +29,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -481,9 +484,9 @@ type designBoardLabeller struct {
 	// test) never starts a goroutine that would outlive its test and touch its mocks.
 	live     bool
 	mu       sync.Mutex
-	running  map[int]bool
-	again    map[int]bool
-	lastSync map[int]time.Time
+	running  map[string]bool // by tenant.Key(card): two teams may both own card 42
+	again    map[string]bool
+	lastSync map[string]time.Time
 }
 
 // kick starts a sync of the card unless one is running (then it runs once more after it). Never blocks.
@@ -494,18 +497,19 @@ func (s *Server) designBoardLabelKick(ctx context.Context, cardID int) {
 	if !s.boardLabels.live || cardID <= 0 || s.repo == nil || s.ai == nil {
 		return
 	}
+	slot := tenant.Key(ctx, strconv.Itoa(cardID))
 	l := &s.boardLabels
 	l.mu.Lock()
 	if l.running == nil {
-		l.running, l.again, l.lastSync = map[int]bool{}, map[int]bool{}, map[int]time.Time{}
+		l.running, l.again, l.lastSync = map[string]bool{}, map[string]bool{}, map[string]time.Time{}
 	}
-	if l.running[cardID] {
-		l.again[cardID] = true
+	if l.running[slot] {
+		l.again[slot] = true
 		l.mu.Unlock()
 		return
 	}
-	l.running[cardID] = true
-	l.lastSync[cardID] = time.Now()
+	l.running[slot] = true
+	l.lastSync[slot] = time.Now()
 	l.mu.Unlock()
 
 	base := context.WithoutCancel(ctx)
@@ -515,13 +519,13 @@ func (s *Server) designBoardLabelKick(ctx context.Context, cardID int) {
 		finish := func() bool {
 			l.mu.Lock()
 			defer l.mu.Unlock()
-			if l.again[cardID] {
-				l.again[cardID] = false
-				l.lastSync[cardID] = time.Now()
+			if l.again[slot] {
+				l.again[slot] = false
+				l.lastSync[slot] = time.Now()
 				return false
 			}
-			delete(l.running, cardID)
-			delete(l.again, cardID)
+			delete(l.running, slot)
+			delete(l.again, slot)
 			return true
 		}
 		defer func() {
@@ -531,8 +535,8 @@ func (s *Server) designBoardLabelKick(ctx context.Context, cardID int) {
 				// No other goroutine of this card can exist while `running` is set, so the release is
 				// ours to make.
 				l.mu.Lock()
-				delete(l.running, cardID)
-				delete(l.again, cardID)
+				delete(l.running, slot)
+				delete(l.again, slot)
 				l.mu.Unlock()
 			}
 		}()
@@ -562,7 +566,7 @@ func (s *Server) designBoardLabelLazy(ctx context.Context, cardID int, refs []en
 	}
 	l := &s.boardLabels
 	l.mu.Lock()
-	last, seen := l.lastSync[cardID]
+	last, seen := l.lastSync[tenant.Key(ctx, strconv.Itoa(cardID))]
 	l.mu.Unlock()
 	if stale || !seen || time.Since(last) > designBoardResyncEvery {
 		s.designBoardLabelKick(ctx, cardID)
@@ -644,7 +648,7 @@ func (s *Server) designBoardLabelSync(ctx context.Context, cardID int) error {
 		// taken BEFORE that batch's first claim. Refused → the rest stays unclaimed; the next save or
 		// band read tries again.
 		if t.CallsModel {
-			if paid%designBoardLabelPerToken == 0 && !s.enhanceRuns.allow(admin) {
+			if paid%designBoardLabelPerToken == 0 && !s.enhanceRuns.allow(tenant.Key(ctx, admin)) {
 				slog.Default().WarnContext(ctx, "design board labels: the hourly window is full; labels wait",
 					slog.Int("tech_card_id", cardID))
 				return nil

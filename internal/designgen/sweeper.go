@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
+	"go.uber.org/atomic"
 )
 
 // ПОДМЕТАЛЬЩИК РЕЗЕРВОВ — ОРГАН, РАБОТАЮЩИЙ ИМЕННО ТОГДА, КОГДА ГЕНЕРАЦИЯ ВЫКЛЮЧЕНА.
@@ -46,6 +47,13 @@ type Sweeper struct {
 	// this one sweeps; a shorter cut-off here would call its live row `unknown`, and its Finish (which
 	// moves only `dispatching`) would then drop the real price.
 	ledgerAge time.Duration
+
+	// teams walks the teams one sweep serves (SetTeamLoop); nil = one sweepOnce on the ctx as given.
+	teams TeamLoop
+	// gate keeps the per-team backoff of the teams-mode sweep (teams.go).
+	gate teamGate
+	// teamTimeout bounds one team's sweep in teams mode; 0 = teamQueueTimeout. Tests shorten it.
+	teamTimeout time.Duration
 
 	ctx     context.Context
 	stop    context.CancelFunc
@@ -103,6 +111,11 @@ func newSweeper(store reserveSweeperStore, interval time.Duration) *Sweeper {
 
 func (s *Sweeper) Name() string { return sweeperName }
 
+// SetTeamLoop makes every sweep run per team. The app hands it EVERY listed team, suspended ones
+// included: releasing a stranded reserve and closing a dead ledger row is cleanup of work already
+// done, not new work, so a read-only team is swept like any other (02-DESIGN §7). Call before Start.
+func (s *Sweeper) SetTeamLoop(l TeamLoop) { s.teams = l }
+
 func (s *Sweeper) LastSuccess() time.Time { return s.tracker.LastSuccess() }
 
 // Start запускает цикл. Повторный запуск отвергается — по тому же правилу, что и у воркера.
@@ -137,12 +150,46 @@ func (s *Sweeper) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sweepOnce(ctx)
+			s.tick(ctx)
 		}
 	}
 }
 
-func (s *Sweeper) sweepOnce(ctx context.Context) {
+// tick sweeps every served team in turn; one team's failure is logged by sweepOnce and the next team
+// is swept anyway.
+func (s *Sweeper) tick(ctx context.Context) {
+	if s.teams == nil {
+		_ = s.sweepOnce(ctx)
+		return
+	}
+	// Each team under teamQueueTimeout, and a failing team backs off alone (teamGate): one locked
+	// team database neither stalls the sweep of the others nor is hammered every minute.
+	var served atomic.Int32
+	now := time.Now()
+	err := s.teams(ctx, func(tctx context.Context) error {
+		served.Add(1)
+		id, _ := teamIDOf(tctx)
+		if !s.gate.due(id, now) {
+			return nil
+		}
+		limit := s.teamTimeout
+		if limit <= 0 {
+			limit = teamQueueTimeout
+		}
+		sctx, cancel := context.WithTimeout(tctx, limit)
+		defer cancel()
+		s.gate.record(id, s.sweepOnce(sctx), now)
+		return nil
+	})
+	if err != nil && served.Load() == 0 && ctx.Err() == nil {
+		s.tracker.MarkError(err)
+		slog.Default().ErrorContext(ctx, "design reserve sweeper: the team list could not be read",
+			slog.String("err", err.Error()))
+	}
+}
+
+// sweepOnce sweeps the team ctx carries; false = the reserve sweep failed (logged here).
+func (s *Sweeper) sweepOnce(ctx context.Context) bool {
 	// The ledger half first and on its own: its failure is logged inside and must neither skip the
 	// reserve sweep below nor mark this organ unhealthy — the reserve is what it is responsible for.
 	sweepLedger(ctx, s.ledger, s.ledgerAge, sweeperName)
@@ -154,11 +201,12 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 		s.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "design reserve sweeper: the sweep failed",
 			slog.String("err", err.Error()))
-		return
+		return false
 	}
 	s.tracker.MarkSuccess()
 	if n > 0 {
 		slog.Default().InfoContext(ctx, "design reserve sweeper: stranded runs released their reservation",
 			slog.Int("runs", n))
 	}
+	return true
 }

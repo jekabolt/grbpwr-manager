@@ -59,6 +59,18 @@ type Worker struct {
 	ledger        callLedger
 	ledgerSweptAt time.Time
 
+	// teams / cleanupTeams walk the teams a tick serves (SetTeamLoops): cleanupTeams every listed
+	// team (suspended and `ai`-off included), teams only those that may claim and spend. nil teams =
+	// one runOnce on the ctx as given — the tests' seam and the pre-teams behaviour (teams mode off).
+	// slots bounds the claimed batches executing at once; gate keeps per-team backoff, the busy
+	// flag and the ledger-sweep clock (teams.go).
+	teams        TeamLoop
+	cleanupTeams TeamLoop
+	slots        chan struct{}
+	gate         teamGate
+	// runBatch replaces executeBatch in the teams-mode tick; nil = executeBatch. Tests only.
+	runBatch func(ctx context.Context, runs []entity.DesignRun, token string) error
+
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -100,6 +112,23 @@ func newWorker(c *Config, store runStore, media mediaResolver, sink MediaSink, p
 }
 
 func (w *Worker) Name() string { return workerName }
+
+// TeamLoop walks the teams one tick serves: fn runs once per team with ctx bound to that team
+// (tenant.With). The app builds it on tenant.Each and decides who is served — the worker skips
+// suspended teams and teams with `ai` off, the sweeper serves every listed team. A non-nil error
+// with no team served means the list itself failed. Teams mode off: the directory lists team #1
+// only, so a tick is exactly one runOnce on team #1, as before teams.
+type TeamLoop func(ctx context.Context, fn func(ctx context.Context) error) error
+
+// SetTeamLoops makes every tick run per team (teams wave, 02-DESIGN §10): cleanup over every team
+// cleanup serves, claims over the teams work serves, and at most parallel claimed batches
+// executing at once, outside the walk. Call before Start.
+func (w *Worker) SetTeamLoops(cleanup, work TeamLoop, parallel int) {
+	if parallel < 1 {
+		parallel = 1
+	}
+	w.cleanupTeams, w.teams, w.slots = cleanup, work, make(chan struct{}, parallel)
+}
 
 func (w *Worker) LastSuccess() time.Time { return w.tracker.LastSuccess() }
 
@@ -145,7 +174,7 @@ func (w *Worker) run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if w.runOnce(ctx) {
+			if w.tick(ctx) {
 				failures = 0
 				continue
 			}
@@ -174,6 +203,15 @@ func workerBackoff(failures int) time.Duration {
 	return delay
 }
 
+// tick is one tick: runOnce without team loops (teams mode off, exactly as before teams), otherwise
+// teamsTick (teams.go).
+func (w *Worker) tick(ctx context.Context) bool {
+	if w.teams == nil {
+		return w.runOnce(ctx)
+	}
+	return w.teamsTick(ctx)
+}
+
 // runOnce is one tick: revive, claim, and take each claimed run through a pass.
 //
 // THE TWO PHASES HAVE DIFFERENT CLOCKS, AND THEY HAVE TO. The queue verbs are short and get a
@@ -191,12 +229,39 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	w.maybeSweepLedger(ctx)
 
 	qctx, qcancel := context.WithTimeout(ctx, queueTimeout)
+	err := w.reviveAndClose(qctx)
+	qcancel()
+	if err != nil {
+		return w.failed(ctx, err.action, err.err)
+	}
+	runs, token, cerr := w.claimBatch(ctx)
+	if cerr != nil {
+		return w.failed(ctx, "claim design runs", cerr)
+	}
+	if len(runs) == 0 {
+		w.tracker.MarkSuccess()
+		return true
+	}
+	if err := w.executeBatch(ctx, runs, token); err != nil {
+		return w.failed(ctx, "execute design run", err)
+	}
+	w.tracker.MarkSuccess()
+	return true
+}
+
+// queueError names the queue verb that failed, for failed's log line.
+type queueError struct {
+	action string
+	err    error
+}
+
+// reviveAndClose is the cleanup half of a tick: no claim, no money.
+func (w *Worker) reviveAndClose(qctx context.Context) *queueError {
 	// Leases die with the workers that held them — a redeploy in the middle of a generation is the
 	// ordinary case, not the exception. Without this sweep such a run stays `running` forever,
 	// because the claim predicate only looks at `pending`.
 	if _, err := w.store.ReviveExpiredRuns(qctx); err != nil {
-		qcancel()
-		return w.failed(ctx, "revive expired design runs", err)
+		return &queueError{"revive expired design runs", err}
 	}
 	// THE WALL-CLOCK CAP (owner 05.10): a capped image run past its cap is closed `timed_out` here
 	// instead of spinning for its lease. Grace of one tick-ish minute over the cap, because a live
@@ -204,21 +269,23 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	if _, err := w.store.CloseOverdueRuns(qctx, entity.DesignOverdueSweep{
 		Kinds: entity.DesignCappedRunKinds(), Cap: w.imageRunCap() + overdueGrace,
 	}); err != nil {
-		qcancel()
-		return w.failed(ctx, "close overdue design runs", err)
+		return &queueError{"close overdue design runs", err}
 	}
+	return nil
+}
+
+// claimBatch claims up to BatchSize pending runs under a fresh token and shortens the lease of the
+// capped ones. No provider call.
+func (w *Worker) claimBatch(ctx context.Context) ([]entity.DesignRun, string, error) {
+	qctx, qcancel := context.WithTimeout(ctx, queueTimeout)
 	// A FRESH TOKEN PER TICK. It is the identity of this batch of claims, and it is what every
 	// closing write is checked against; a token shared between two processes, or reused after a
 	// lease was swept, would let one worker close a run another one is running.
 	token := uuid.NewString()
 	runs, err := w.store.ClaimRuns(qctx, w.c.BatchSize, w.c.ClaimLease, token)
 	qcancel()
-	if err != nil {
-		return w.failed(ctx, "claim design runs", err)
-	}
-	if len(runs) == 0 {
-		w.tracker.MarkSuccess()
-		return true
+	if err != nil || len(runs) == 0 {
+		return nil, token, err
 	}
 	// A capped run's lease ends shortly after its cap (claimTailAfterCap), so a worker that died
 	// holding it is swept in minutes; a failed shortening only keeps the full lease.
@@ -232,12 +299,17 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 			ccancel()
 		}
 	}
+	return runs, token, nil
+}
 
+// executeBatch takes each claimed run through a pass, one after another (the lease invariant of
+// applyDefaults is per batch). The first failing pass ends the batch.
+func (w *Worker) executeBatch(ctx context.Context, runs []entity.DesignRun, token string) error {
 	for _, run := range runs {
 		if ctx.Err() != nil {
 			// Shutting down. The runs still claimed keep their lease and are revived by whichever
 			// instance comes up next; nothing has been paid for them.
-			return true
+			return nil
 		}
 		rctx, rcancel := context.WithTimeout(ctx, w.c.RunTimeout)
 		// A capped run's provider phase ends at its wall-clock cap; the settle that follows runs on
@@ -251,11 +323,10 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 		err := w.execute(rctx, run, token)
 		rcancel()
 		if err != nil {
-			return w.failed(ctx, "execute design run", err)
+			return err
 		}
 	}
-	w.tracker.MarkSuccess()
-	return true
+	return nil
 }
 
 func (w *Worker) failed(ctx context.Context, action string, err error) bool {

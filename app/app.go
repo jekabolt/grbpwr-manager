@@ -155,9 +155,10 @@ type App struct {
 	teamOne tenant.Team
 	// platform is the control plane; nil with teams mode off (PLATFORM_MYSQL_DSN empty).
 	platform *platformstore.Store
-	// stopTeamsMail / stopProvisioner stop the teams-mode workers; nil with teams mode off.
+	// stopTeamsMail / stopProvisioner / stopAIRollup stop the teams-mode workers; nil with teams mode off.
 	stopTeamsMail   func()
 	stopProvisioner func()
+	stopAIRollup    func()
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
 }
@@ -222,7 +223,7 @@ func (a *App) Start(ctx context.Context) error {
 		OpenRouter:       a.c.OpenRouter.APIKey,
 		OpenRouterImages: a.c.OpenRouterImages.APIKey,
 		Fal:              a.c.Fal.APIKey,
-	})
+	}, registry.WithPin(a.aiConfigPin())) // teams mode on: team #1's AI config whatever ctx asks (teams_ai.go); off: identity
 	// B-33: a key still living in an env variable is moved into the panel here, ONCE, BEFORE the
 	// first Reload — a value whose panel slot is empty is sealed and stored as if an admin had
 	// pasted it, so the boot snapshot already carries it and a deployment that kept its keys in env
@@ -264,6 +265,9 @@ func (a *App) Start(ctx context.Context) error {
 		// enabled-gated KeyFunc result for openrouter. reconcile documents why they differ. It is
 		// also the zone (design_settings.budget_timezone) whose midnights close OpenRouter's days,
 		// and the store keeps both their numbers and OpenRouter's base across restarts (B-30).
+		// Teams: aiRecon stays on the root ctx = team #1. The provider's daily number is ACCOUNT-WIDE
+		// (every team spends on the owner's keys), while team #1's ledger is only team #1's share; the
+		// other teams' shares are in their own databases and in the console's spend rollup.
 		a.aiRecon = reconcile.New(a.c.AIReconcile, a.db.AI(), a.db.AI(), a.aireg)
 		reconcileAfterAdminKeySave = func(ctx context.Context, provider string) {
 			if err := a.aiRecon.RunNow(ctx, provider); err != nil {
@@ -954,6 +958,7 @@ func (a *App) Start(ctx context.Context) error {
 			)
 			return err
 		}
+		a.wireDesignTeams() // teams mode on: one tick per active team with `ai` on (teams_ai.go)
 		if err = a.dgw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
 				slog.String("err", err.Error()),
@@ -979,6 +984,7 @@ func (a *App) Start(ctx context.Context) error {
 			)
 			return err
 		}
+		a.wireDesignTeams() // teams mode on: every listed team is swept, suspended included (teams_ai.go)
 		if err = a.dgs.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design reserve sweeper",
 				slog.String("err", err.Error()),
@@ -1395,6 +1401,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
 	// failed before store.New assigned a.db.
+	if a.stopAIRollup != nil {
+		a.stopAIRollup()
+	}
 	if a.stopProvisioner != nil {
 		a.stopProvisioner()
 	}
@@ -1631,15 +1640,19 @@ func (a *App) startTeamsWorkers(ctx context.Context) error {
 	if a.platform == nil {
 		return nil
 	}
-	stop, err := a.startTeamsMail(ctx)
+	stop, err := a.startTeamsMail(ctx) // B3 HOOK: platform mail is wired inside app/teams_mail.go
 	if err != nil {
 		return fmt.Errorf("teams mail: %w", err)
 	}
 	a.stopTeamsMail = stop
-	if stop, err = a.startProvisioner(ctx); err != nil {
+	if stop, err = a.startProvisioner(ctx); err != nil { // B4 HOOK: provisioning worker is wired inside app/teams_provision.go
 		return fmt.Errorf("provisioner: %w", err)
 	}
 	a.stopProvisioner = stop
+	if stop, err = a.startAIRollup(ctx); err != nil { // A1: per-team AI spend → control plane (teams_ai.go)
+		return fmt.Errorf("ai spend rollup: %w", err)
+	}
+	a.stopAIRollup = stop
 	return nil
 }
 
