@@ -17,7 +17,7 @@ const (
 	retainedNativeCrossRowKindV10              = "retained-native-cross-row-carrier"
 	nativeWholeWorldPlacementKindV10           = "native-whole-world-placement-v1"
 	maxNativeWholePlacementBytesV10            = 131072
-	maxNativeWholePlacementVerticesV10         = 2000
+	maxNativeWholePlacementVerticesV10         = 2304
 	maxNativeWholePlacementTrianglesV10        = 5000
 )
 
@@ -29,6 +29,7 @@ type nativeWholePlacementDocumentV10 struct {
 	Bindings      nativeCrossRowBindingsV8 `json:"bindings"`
 	WriteCAS      struct {
 		ExpectedPreviousSidecarSHA256 string `json:"expectedPreviousSidecarSha256"`
+		RebuildStaleComplete          bool   `json:"rebuildStaleComplete,omitempty"`
 	} `json:"writeCas"`
 	Components [2]compositeComponentV3 `json:"components"`
 }
@@ -218,6 +219,10 @@ func CheckPatternProductNativeWholePlacementTransitionV10(in PatternSemanticSide
 	}
 
 	retained := parsed.document.Components[0]
+	rebuild := parsed.document.WriteCAS.RebuildStaleComplete
+	if rebuild && (prior.MediaType != PatternProductCompositeSidecarV10MediaType || retained.MediaType != PatternProductCompositeSidecarV8MediaType) {
+		return NeutralPlacementModelAuthorityV1{}, nativeWholePlacementViolationV10("rebuilding stale Assembly requires the saved V10 and a fresh V8 review")
+	}
 	switch prior.MediaType {
 	case PatternProductCompositeSidecarV8MediaType, PatternProductCompositeSidecarV9MediaType:
 		if prior.ByteLength != len(prior.Payload) || prior.SidecarSHA256 != PatternSemanticSidecarPayloadSHA256(prior.Payload) {
@@ -236,7 +241,19 @@ func CheckPatternProductNativeWholePlacementTransitionV10(in PatternSemanticSide
 		if err != nil {
 			return NeutralPlacementModelAuthorityV1{}, err
 		}
-		if retained != before.document.Components[0] {
+		if rebuild {
+			previous := before.document.Bindings
+			current := parsed.document.Bindings
+			previousRow := previous.AnchorRow
+			previousRow.CardLockVersion = current.AnchorRow.CardLockVersion
+			if previousRow != current.AnchorRow ||
+				previous.AnchorRow.CardLockVersion >= current.AnchorRow.CardLockVersion ||
+				previous.ServerAssemblyRevision == current.ServerAssemblyRevision ||
+				previous.CompleteSourceSHA256 == current.CompleteSourceSHA256 ||
+				retained == before.document.Components[0] {
+				return NeutralPlacementModelAuthorityV1{}, nativeWholePlacementViolationV10("rebuild requires a newer Assembly source for the same saved DXF")
+			}
+		} else if retained != before.document.Components[0] {
 			return NeutralPlacementModelAuthorityV1{}, nativeWholePlacementViolationV10("whole placement edits must retain the same original carrier bytes")
 		}
 	default:

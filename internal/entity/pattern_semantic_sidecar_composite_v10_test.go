@@ -133,6 +133,41 @@ func TestNativeWholePlacementV10LockedTransitionsAndColdRead(t *testing.T) {
 	}
 }
 
+func TestNativeWholePlacementV10VertexCapacity(t *testing.T) {
+	_, v9world, template, v8, current := nativePlacementFixtureV9(t)
+	for _, test := range []struct {
+		name        string
+		vertexCount int
+	}{
+		{"continuous candidate", 2082},
+		{"maximum", 2304},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, world := nativeWholePlacementFixtureV10(t, v8, v8, v9world.Body)
+			last := &world.Layout.PieceRanges[1]
+			last.VertexCount = test.vertexCount - last.VertexOffset
+			xyz := make([]byte, test.vertexCount*3*4)
+			for vertex := range test.vertexCount {
+				offset := vertex * 3 * 4
+				binary.LittleEndian.PutUint32(xyz[offset:], math.Float32bits(float32(vertex)/1024))
+			}
+			nativeWholePositionFixtureV10(&world.Layout, xyz)
+			write := nativeWholePlacementWriteV10(t, document, world, template)
+			require.NoError(t, ValidatePatternSemanticSidecarWrite(&write))
+
+			model, err := CheckPatternProductNativeWholePlacementTransitionV10(write, v8)
+			require.NoError(t, err)
+			require.NoError(t, ValidatePatternProductNativeWholePlacementWriteCurrentV10(write, current.Source, model))
+
+			stored := nativePlacementStoredV9(write, v8)
+			require.NoError(t, ValidateStoredPatternProductNativeWholePlacementV10(stored, current.Source, model))
+			decoded, err := readNativeWholePlacementBindingV10(stored)
+			require.NoError(t, err)
+			require.Equal(t, world.Layout, decoded.world.Layout)
+		})
+	}
+}
+
 func TestNativeWholePlacementV10RejectsNonExactLayout(t *testing.T) {
 	_, v9world, template, v8, _ := nativePlacementFixtureV9(t)
 	tests := []struct {
@@ -159,7 +194,10 @@ func TestNativeWholePlacementV10RejectsNonExactLayout(t *testing.T) {
 			w.Layout.PieceRanges[1].VertexCount = -1
 		}, "positive"},
 		{"vertex bound", func(_ *nativeWholePlacementDocumentV10, w *nativeWholeWorldPlacementV1) {
-			w.Layout.PieceRanges[1].VertexCount = 1998
+			const vertices = 2305
+			last := &w.Layout.PieceRanges[1]
+			last.VertexCount = vertices - last.VertexOffset
+			nativeWholePositionFixtureV10(&w.Layout, make([]byte, vertices*3*4))
 		}, "bounded"},
 		{"triangle bound", func(_ *nativeWholePlacementDocumentV10, w *nativeWholeWorldPlacementV1) {
 			w.Layout.PieceRanges[1].TriangleCount = 5000
@@ -219,4 +257,64 @@ func TestNativeWholePlacementV10RejectsNonExactLayout(t *testing.T) {
 	wrongReceipt := in
 	wrongReceipt.ExpectedPostSaveReceiptSHA256 = PatternProductNativeCrossRowPlacementReceiptV9(in.Payload)
 	require.ErrorContains(t, ValidatePatternSemanticSidecarWrite(&wrongReceipt), "receipt differs")
+}
+
+func TestNativeWholePlacementV10RebuildsFromOlderComplete(t *testing.T) {
+	_, v9world, template, v8, current := nativePlacementFixtureV9(t)
+	initialDoc, initialWorld := nativeWholePlacementFixtureV10(t, v8, v8, v9world.Body)
+	initial := nativeWholePlacementWriteV10(t, initialDoc, initialWorld, template)
+	prior := nativePlacementStoredV9(initial, v8)
+
+	same, sameWorld := nativeWholePlacementFixtureV10(t, v8, prior, v9world.Body)
+	same.WriteCAS.RebuildStaleComplete = true
+	_, err := CheckPatternProductNativeWholePlacementTransitionV10(nativeWholePlacementWriteV10(t, same, sameWorld, template), prior)
+	require.ErrorContains(t, err, "newer Assembly source")
+
+	review, err := decodeNativeCrossRowReviewV8(v8.Payload)
+	require.NoError(t, err)
+	review.Bindings.AnchorRow.CardLockVersion++
+	review.Bindings.ServerAssemblyRevision = strings.TrimSuffix(review.Bindings.ServerAssemblyRevision, ":3") + ":4"
+	review.Bindings.CompleteSourceSHA256 = strings.Repeat("e", 64)
+	for i := range review.Selection.Members {
+		review.Selection.Members[i].Row.CardLockVersion++
+	}
+	newTemplate := nativeCrossRowWriteFixtureV8(t, review)
+	reviewBytes := newTemplate.Payload
+	freshV8 := nativePlacementStoredV9(newTemplate, v8)
+	freshV8.CardLockVersion++
+	require.NotEqual(t, v8.Payload, reviewBytes)
+	fresh := current.Source
+	fresh.AnchorRow.CardLockVersion++
+	fresh.ServerAssemblyRevision = review.Bindings.ServerAssemblyRevision
+	card := *fresh.Card
+	card.LockVersion++
+	fresh.Card = &card
+	source := *fresh.Source
+	source.SourceSHA256 = review.Bindings.CompleteSourceSHA256
+	source.Rows = append([]SavedPatternRowIdentity(nil), source.Rows...)
+	for i := range source.Rows {
+		source.Rows[i].CardLockVersion++
+	}
+	fresh.Source = &source
+
+	doc, world := nativeWholePlacementFixtureV10(t, freshV8, prior, v9world.Body)
+	implicit := nativeWholePlacementWriteV10(t, doc, world, newTemplate)
+	_, err = CheckPatternProductNativeWholePlacementTransitionV10(implicit, prior)
+	require.ErrorContains(t, err, "same original carrier bytes")
+	doc.WriteCAS.RebuildStaleComplete = true
+	explicit := nativeWholePlacementWriteV10(t, doc, world, newTemplate)
+	model, err := CheckPatternProductNativeWholePlacementTransitionV10(explicit, prior)
+	require.NoError(t, err)
+	require.NoError(t, ValidatePatternProductNativeWholePlacementWriteCurrentV10(explicit, fresh, model))
+	require.ErrorIs(t, ValidatePatternProductNativeWholePlacementWriteCurrentV10(explicit, current.Source, model), ErrTechCardPatternSidecarBindingMoved)
+	saved := nativePlacementStoredV9(explicit, freshV8)
+	require.NoError(t, ValidateStoredPatternProductNativeWholePlacementV10(saved, fresh, model))
+	_, err = CheckPatternProductNativeWholePlacementTransitionV10(explicit, saved)
+	require.ErrorIs(t, err, ErrTechCardPatternSidecarBindingMoved)
+
+	// A normal position edit can still wrap the exact rebuilt review once it is current.
+	doc.WriteCAS.RebuildStaleComplete = false
+	doc.WriteCAS.ExpectedPreviousSidecarSHA256 = saved.SidecarSHA256
+	_, err = CheckPatternProductNativeWholePlacementTransitionV10(nativeWholePlacementWriteV10(t, doc, world, newTemplate), saved)
+	require.NoError(t, err)
 }
