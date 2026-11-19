@@ -4,9 +4,12 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // A SAVE ANSWERS WITH THE VERSION IT COMMITTED. The store's header UPDATE is guarded by
@@ -32,4 +35,30 @@ func TestUpdateTechCardAnswersTheCommittedLockVersion(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, int32(4), resp.GetLockVersion())
+}
+
+func TestGuardedAssemblyPatternUpdatePassesClockToDocumentWrite(t *testing.T) {
+	restoreHosts(t)
+	rig := newRestoreRig(t)
+	stored := restoreCardAtV6()
+	stored.LockVersion = 3
+	const reviewed = "asm:v1:0123456789abcdef0123456789abcdef:2"
+	rig.cards.EXPECT().GetTechCardByIdConsistent(mock.Anything, restoreCardID).Return(stored, nil)
+	rig.cards.EXPECT().UpdateTechCardAndListOrphanedPatternURLs(mock.Anything, restoreCardID,
+		mock.MatchedBy(func(in *entity.TechCardInsert) bool {
+			return in.ExpectedServerAssemblyRevision == reviewed
+		}), 3).Return(nil, entity.ErrTechCardSavedAssemblyMoved)
+	payload := dto.ConvertEntityTechCardToPb(restoreCardNow(), dto.CostingFx{}).GetTechCard()
+	payload.OperationReviewAware = true
+	payload.MachineFieldsAware = true
+	payload.LabelsAware = true
+	_, err := rig.srv.UpdateTechCard(restoreCtx(), &pb_admin.UpdateTechCardRequest{
+		Id: restoreCardID, ExpectedLockVersion: 3,
+		GuardedAssemblyPatternUpdate: &pb_admin.GuardedAssemblyPatternUpdate{
+			TechCard:                       payload,
+			ExpectedServerAssemblyRevision: reviewed,
+		},
+	})
+	require.Equal(t, codes.Aborted, status.Code(err))
+	require.Equal(t, "saved Assembly binding changed", status.Convert(err).Message())
 }

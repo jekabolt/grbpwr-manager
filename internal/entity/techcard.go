@@ -4981,8 +4981,9 @@ type GuardedZeroOperationPieceRename struct {
 var ErrTechCardPieceRenameProtected = errors.New("piece rename requires the unchanged saved pattern and a card without assembly attachments")
 
 type TechCardInsert struct {
-	GuardedPieceJoin   *GuardedNativePieceJoin          `db:"-" json:"-"`
-	GuardedPieceRename *GuardedZeroOperationPieceRename `db:"-" json:"-"`
+	GuardedPieceJoin               *GuardedNativePieceJoin          `db:"-" json:"-"`
+	GuardedPieceRename             *GuardedZeroOperationPieceRename `db:"-" json:"-"`
+	ExpectedServerAssemblyRevision string                           `db:"-" json:"-"`
 	// StyleNumber is NULL for an `idea` draft (NF-03) and required from `proto` onward.
 	StyleNumber sql.NullString `db:"style_number"`
 	// StyleNumberSource is the provenance of StyleNumber (Q1): `generated` (server-proposed) or

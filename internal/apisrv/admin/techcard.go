@@ -885,7 +885,22 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	}
 	var tc *entity.TechCardInsert
 	var err error
-	if join := req.GetGuardedPieceJoin(); join != nil {
+	guardedPattern := req.GetGuardedAssemblyPatternUpdate()
+	if guardedPattern != nil {
+		if req.GetTechCard() != nil || req.GetGuardedPieceRename() != nil || req.GetGuardedPieceJoin() != nil || guardedPattern.GetTechCard() == nil {
+			return nil, status.Error(codes.InvalidArgument, "send one tech card document within the guarded pattern update")
+		}
+		expectedAssembly := guardedPattern.GetExpectedServerAssemblyRevision()
+		if !entity.ValidTechCardAssemblyRevision(expectedAssembly) {
+			return nil, apierr.Invalid(entity.NewFieldViolation(
+				"guarded_assembly_pattern_update.expected_server_assembly_revision", "invalid", expectedAssembly,
+				"send the saved Assembly clock used for this pattern review"))
+		}
+		tc, err = s.prepareTechCardWrite(ctx, int(req.Id), guardedPattern.GetTechCard(), snapshotReason)
+		if err == nil {
+			tc.ExpectedServerAssemblyRevision = expectedAssembly
+		}
+	} else if join := req.GetGuardedPieceJoin(); join != nil {
 		if req.GetTechCard() != nil || req.GetGuardedPieceRename() != nil || snapshotReason != "" || saveSessionID != "" {
 			return nil, status.Error(codes.InvalidArgument, "send the guarded Join by itself")
 		}
@@ -909,13 +924,11 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	orphanedPatternURLs, err := s.repo.TechCards().UpdateTechCardAndListOrphanedPatternURLs(
 		ctx, int(req.Id), tc, int(req.ExpectedLockVersion))
 	if err != nil {
-		if req.GetGuardedPieceJoin() != nil {
-			if errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
-				return nil, status.Error(codes.Aborted, "saved Assembly binding changed")
-			}
-			if errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
-				return nil, status.Error(codes.FailedPrecondition, "saved Join no longer matches the reviewed document and files")
-			}
+		if (guardedPattern != nil || req.GetGuardedPieceJoin() != nil) && errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+			return nil, status.Error(codes.Aborted, "saved Assembly binding changed")
+		}
+		if req.GetGuardedPieceJoin() != nil && errors.Is(err, entity.ErrTechCardSavedAssemblyUnsupported) {
+			return nil, status.Error(codes.FailedPrecondition, "saved Join no longer matches the reviewed document and files")
 		}
 		return nil, s.techCardWriteError(ctx, err)
 	}

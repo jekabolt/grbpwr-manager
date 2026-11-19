@@ -10190,6 +10190,14 @@ message UpdateTechCardRequest {
   // full document rewrite after ignoring this field.
   GuardedZeroOperationPieceRename guarded_piece_rename = 6;
   GuardedNativePieceJoin guarded_piece_join = 7;
+  // Pattern edit bound to the same Assembly state used by Review. Send the document inside
+  // the guard, without tech_card, so an older handler cannot save it without the precondition.
+  GuardedAssemblyPatternUpdate guarded_assembly_pattern_update = 8;
+}
+
+message GuardedAssemblyPatternUpdate {
+  common.TechCardInsert tech_card = 1;
+  string expected_server_assembly_revision = 2;
 }
 
 // Pins a display name change to a current zero-operation card and exact saved DXF row.

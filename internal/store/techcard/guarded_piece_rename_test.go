@@ -34,10 +34,11 @@ func (r guardedRenameCardReader) GetTechCardById(context.Context, int) (*entity.
 
 type guardedRenameSQL struct {
 	fakeConn
-	t            *testing.T
-	cardLock     sync.Mutex
-	firstAttempt chan struct{}
-	attachment   bool
+	t                *testing.T
+	cardLock         sync.Mutex
+	firstAttempt     chan struct{}
+	attachment       bool
+	assemblyRevision uint64
 }
 
 type guardedRenameSQLConnector struct {
@@ -59,6 +60,11 @@ func (c *guardedRenameSQL) QueryContext(_ context.Context, q string, args []driv
 		}, nil
 	case strings.Contains(q, "tech_card_pattern_semantic_sidecar"):
 		return &fakeRows{cols: []string{"attached"}, vals: [][]driver.Value{{c.attachment}}}, nil
+	case strings.Contains(q, "FROM tech_card_assembly_clock"):
+		return &fakeRows{
+			cols: []string{"lineage_id", "revision"},
+			vals: [][]driver.Value{{"0123456789abcdef0123456789abcdef", int64(c.assemblyRevision)}},
+		}, nil
 	default:
 		c.t.Errorf("unexpected SQL during protected update: %s", q)
 		return nil, errors.New("unexpected query")
@@ -96,6 +102,38 @@ func TestGuardedZeroOperationPieceRenameRefusesV1AttachmentWinningSameLock(t *te
 	}
 	if len(conn.queries) != 2 || len(conn.execs) != 0 || snapshotCalled || !conn.attachment {
 		t.Fatalf("refusal must preserve the new attachment, card and snapshot; queries=%d writes=%d snapshot=%v", len(conn.queries), len(conn.execs), snapshotCalled)
+	}
+}
+
+// Legacy seam and fold writes hold the same card lock and can advance the Assembly clock
+// without changing the card lock. The guarded pattern save must see that new clock.
+func TestGuardedAssemblyPatternUpdateRefusesVersionlessAssemblyChange(t *testing.T) {
+	ctx := context.Background()
+	conn := &guardedRenameSQL{t: t, firstAttempt: make(chan struct{}), assemblyRevision: 1}
+	conn.cardLock.Lock()
+	go func() {
+		<-conn.firstAttempt
+		conn.assemblyRevision++
+		conn.cardLock.Unlock()
+	}()
+	db := sqlx.NewDb(sql.OpenDB(guardedRenameSQLConnector{conn}), "mysql")
+	defer db.Close()
+	rep := guardedRenameRepo{db: db}
+	snapshotCalled := false
+	card := &entity.TechCardInsert{
+		ExpectedServerAssemblyRevision: "asm:v1:0123456789abcdef0123456789abcdef:1",
+		BuildSnapshotFromLockedCard: func(*entity.TechCard) (string, error) {
+			snapshotCalled = true
+			return "{}", nil
+		},
+	}
+	_, err := (&Store{}).UpdateTechCardTx(ctx, rep, 12, card, 14)
+	conn.cardLock.Unlock()
+	if !errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+		t.Fatalf("expected saved Assembly conflict without a card lock change, got %v", err)
+	}
+	if len(conn.queries) != 2 || len(conn.execs) != 0 || snapshotCalled || conn.assemblyRevision != 2 {
+		t.Fatalf("refusal must leave the winning clock and card untouched; queries=%d writes=%d snapshot=%v clock=%d", len(conn.queries), len(conn.execs), snapshotCalled, conn.assemblyRevision)
 	}
 }
 

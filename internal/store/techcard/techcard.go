@@ -502,6 +502,15 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 	if cur.LockVersion != expectedLockVersion {
 		return nil, entity.ErrTechCardConflict
 	}
+	if tc.ExpectedServerAssemblyRevision != "" {
+		clock, err := readTechCardAssemblyClock(ctx, rep.DB(), id)
+		if err != nil {
+			return nil, err
+		}
+		if clock.Token() != tc.ExpectedServerAssemblyRevision {
+			return nil, entity.ErrTechCardSavedAssemblyMoved
+		}
+	}
 	// The handler's first read is still needed for gates and carries, but it is not a safe snapshot:
 	// seams can commit without changing lock_version. Re-read the complete card now that their writers
 	// cannot pass the card-row lock, and build the blob from this transaction's state. Direct store
