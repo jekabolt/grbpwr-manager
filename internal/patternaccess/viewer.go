@@ -24,7 +24,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
-	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
 )
 
 // unboundGroupKey is the pseudo-group for sheets whose binding resolves to nothing —
@@ -36,7 +35,7 @@ const unboundGroupKey = "_unbound"
 // FillTechCardPatternURLs: a viewer-token failure must never fail a GetTechCard read —
 // the response simply carries no token and the печать falls back to per-sheet QR codes.
 func (s *Service) MintCardViewerToken(ctx context.Context, techCardID int) string {
-	if s == nil || techCardID <= 0 {
+	if s == nil || techCardID <= 0 || refusePublicLinks(ctx, "card viewer token") {
 		return ""
 	}
 	row, err := s.objects.EnsureCardViewer(ctx, techCardID)
@@ -137,8 +136,8 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 	// per-sheet ensures would put a query behind every sheet of every scan.
 	refs := make([]entity.PatternObjectRef, 0, len(card.Sheets))
 	for _, sh := range card.Sheets {
-		if k, ok := storeutil.PatternObjectKey(sh.URL); ok {
-			refs = append(refs, entity.PatternObjectRef{Key: k, Filename: sh.Filename})
+		if ref, ok := s.patternRef(ctx, sh.URL, sh.Filename); ok {
+			refs = append(refs, ref)
 		}
 	}
 	objectRows, err := s.objects.EnsureByKeys(ctx, refs)
@@ -148,12 +147,12 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m := s.buildManifest(card, objectRows)
+	m := s.buildManifest(ctx, card, objectRows)
 
 	slog.Default().InfoContext(ctx, "pattern viewer access",
 		slog.Int("tech_card_id", techCardID), slog.String("ip", ip),
 		slog.String("ua", r.UserAgent()))
-	s.noteCardAccess(techCardID)
+	s.noteCardAccess(ctx, techCardID)
 
 	// The token url is stable; the manifest behind it must not be cached by shared
 	// caches (it embeds freshly minted per-file urls and reflects current revocation).
@@ -208,7 +207,7 @@ type ManifestSheet struct {
 
 // buildManifest assembles the payload: display-resolved groups, sheets in card order,
 // per-file ScopePrint urls from the ensured object rows.
-func (s *Service) buildManifest(card *entity.PatternViewerCard, objectRows map[string]entity.PatternObjectAccess) Manifest {
+func (s *Service) buildManifest(ctx context.Context, card *entity.PatternViewerCard, objectRows map[entity.PatternObjectID]entity.PatternObjectAccess) Manifest {
 	// sizes[] is the card's RANGE — the viewer builds its graded-DXF block tokens from these
 	// names, so a size the grade dropped must not appear here (it would invent a token the
 	// files do not carry). A sheet still filed under such a size is named from its own joined
@@ -240,8 +239,8 @@ func (s *Service) buildManifest(card *entity.PatternViewerCard, objectRows map[s
 			g = byKey[unboundGroupKey]
 		}
 		var viewURL, downloadURL string
-		if k, ok := storeutil.PatternObjectKey(sh.URL); ok {
-			if row, ok := objectRows[k]; ok {
+		if ref, ok := s.patternRef(ctx, sh.URL, ""); ok {
+			if row, ok := objectRows[ref.ID()]; ok {
 				tok := s.minter.Mint(patterntoken.ScopePrint, row.Id, row.Epoch)
 				viewURL = s.viewerBaseURL + "/api/p/" + tok
 				downloadURL = viewURL + "?dl=1"

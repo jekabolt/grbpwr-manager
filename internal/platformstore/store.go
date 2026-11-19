@@ -112,6 +112,9 @@ type Store struct {
 // ErrUserNotFound: no platform user with that handle.
 var ErrUserNotFound = errors.New("platformstore: user not found")
 
+// ErrPasswordMismatch: the current password does not match the platform user's hash.
+var ErrPasswordMismatch = errors.New("platformstore: current password mismatch")
+
 // Open connects to the control plane, applies its migrations and returns the store.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := mysql.ParseDSN(dsn)

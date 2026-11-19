@@ -153,16 +153,15 @@ func TestAiMethodsAreSuperOnly(t *testing.T) {
 		everySectionWrite[s.Key] = entity.AccessWrite
 	}
 	callers := []struct {
-		name   string
-		legacy bool
-		super  bool
-		perms  map[string]entity.AccessLevel
-		want   bool
+		name  string
+		super bool
+		perms map[string]entity.AccessLevel
+		want  bool
 	}{
-		{"legacy full-access token", true, false, nil, false},
-		{"scoped settings:write", false, false, map[string]entity.AccessLevel{SectionSettings: entity.AccessWrite}, false},
-		{"scoped every section at write", false, false, everySectionWrite, false},
-		{"super", false, true, nil, true},
+		{"token without super claim", false, nil, false},
+		{"scoped settings:write", false, map[string]entity.AccessLevel{SectionSettings: entity.AccessWrite}, false},
+		{"scoped every section at write", false, everySectionWrite, false},
+		{"super", true, nil, true},
 	}
 	for _, m := range aiProviderMethods {
 		full := MethodPrefix + m
@@ -178,7 +177,7 @@ func TestAiMethodsAreSuperOnly(t *testing.T) {
 		}
 		for _, c := range callers {
 			t.Run(m+"/"+c.name, func(t *testing.T) {
-				if got := Authorize(full, c.legacy, c.super, c.perms); got != c.want {
+				if got := Allow(full, c.super, c.perms); got != c.want {
 					t.Errorf("Authorize(%s) for %s = %v, want %v", m, c.name, got, c.want)
 				}
 			})
@@ -229,5 +228,116 @@ func TestProjectTasksStayUnderTaskRights(t *testing.T) {
 				"files:read would learn titles, assignees and deadlines of tasks they cannot see "+
 				"anywhere else", name, SectionFiles)
 		}
+	}
+}
+
+// TestNoSuperClaimMeansNoAccess pins the removal of the pre-RBAC rule (teams §3): a token without
+// the super claim and without perms reaches the allowlist and nothing else.
+func TestNoSuperClaimMeansNoAccess(t *testing.T) {
+	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
+		full := MethodPrefix + m.MethodName
+		_, allowlisted, _ := Lookup(full)
+		if got := Allow(full, false, nil); got != allowlisted {
+			t.Errorf("Allow(%s, no super, no perms) = %v, want %v", m.MethodName, got, allowlisted)
+		}
+		if got := Authorize(full, true, false, nil); got != allowlisted {
+			t.Errorf("Authorize(%s, legacy, no super) = %v, want %v: legacy is ignored", m.MethodName, got, allowlisted)
+		}
+	}
+}
+
+// TestEveryAdminMethodHasAccessClass is G6: every AdminService method has an access class, so the
+// read-only (suspended team) gate never meets an unclassified method.
+func TestEveryAdminMethodHasAccessClass(t *testing.T) {
+	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
+		lvl, ok := Access(MethodPrefix + m.MethodName)
+		if !ok || !lvl.Valid() {
+			t.Errorf("admin method %s has no access class", m.MethodName)
+		}
+	}
+	for _, s := range pb_admin.AdminService_ServiceDesc.Streams {
+		lvl, ok := Access(MethodPrefix + s.StreamName)
+		if !ok || !lvl.Valid() {
+			t.Errorf("admin stream %s has no access class", s.StreamName)
+		}
+	}
+	if _, ok := Access("/admin.AdminService/NoSuchMethod"); ok {
+		t.Error("unknown method has an access class")
+	}
+	if _, ok := Access("/frontend.FrontendService/GetHero"); ok {
+		t.Error("non-admin method has an access class")
+	}
+}
+
+func TestAllowlistClasses(t *testing.T) {
+	want := map[string]entity.AccessLevel{
+		"GetDictionary":         entity.AccessRead,
+		"GetCurrentAccount":     entity.AccessRead,
+		"ListAccountSections":   entity.AccessRead,
+		"GetWorkshopSettings":   entity.AccessRead,
+		"ListAdmins":            entity.AccessRead,
+		"SetAccountSpecialties": entity.AccessWrite,
+	}
+	if len(allowlist) != len(want) {
+		t.Errorf("allowlist has %d entries, want %d", len(allowlist), len(want))
+	}
+	for name, lvl := range want {
+		if got, ok := Access(MethodPrefix + name); !ok || got != lvl {
+			t.Errorf("Access(%s) = %q, %v; want %q", name, got, ok, lvl)
+		}
+	}
+	for _, m := range aiProviderMethods {
+		if got, _ := Access(MethodPrefix + m); got != entity.AccessWrite {
+			t.Errorf("SuperOnly %s must be write on a read-only team, got %q", m, got)
+		}
+	}
+}
+
+// mutatingPrefixes name methods that change state. None of them may be classed read, or a
+// suspended team could call it.
+var mutatingPrefixes = []string{
+	"Create", "Update", "Delete", "Set", "Add", "Remove", "Upsert", "Import",
+	"Generate", "Run", "Start", "Cancel",
+}
+
+// readByDesign are mutating-prefix names that really are reads, each with its reason.
+var readByDesign = map[string]string{}
+
+func TestNoMutatingMethodIsRead(t *testing.T) {
+	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
+		name := m.MethodName
+		mutating := false
+		for _, p := range mutatingPrefixes {
+			if strings.HasPrefix(name, p) {
+				mutating = true
+				break
+			}
+		}
+		if !mutating {
+			continue
+		}
+		lvl, _ := Access(MethodPrefix + name)
+		if lvl == entity.AccessRead {
+			if _, ok := readByDesign[name]; !ok {
+				t.Errorf("%s looks mutating but is classed read", name)
+			}
+		}
+	}
+	for name := range readByDesign {
+		if lvl, _ := Access(MethodPrefix + name); lvl != entity.AccessRead {
+			t.Errorf("readByDesign %s is no longer read (%q); drop the exception", name, lvl)
+		}
+	}
+}
+
+func TestAllowPreRBAC(t *testing.T) {
+	if !AllowPreRBAC(MethodPrefix + "ListOrders") {
+		t.Error("a pre-RBAC token must keep a scoped read")
+	}
+	if !AllowPreRBAC(MethodPrefix + "UpdateColorway") {
+		t.Error("a pre-RBAC token must keep a scoped write")
+	}
+	if AllowPreRBAC(MethodPrefix + "UpdateAiProvider") {
+		t.Error("a pre-RBAC token is not super: super-only methods stay closed")
 	}
 }
