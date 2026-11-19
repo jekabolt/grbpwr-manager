@@ -700,6 +700,10 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 		if errors.Is(err, platformstore.ErrTokenInvalid) {
 			return nil, errAuth()
 		}
+		if errors.Is(err, platformstore.ErrWrongTeamStatus) {
+			// The team stopped being usable (deleted) after the membership read above.
+			return nil, errNoAccess()
+		}
 		s.log(ctx, "issue hand-off", err)
 		return nil, errInternal()
 	}

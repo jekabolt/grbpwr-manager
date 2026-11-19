@@ -146,6 +146,10 @@ func TestPlatformDeleteAndRestoreTeam(t *testing.T) {
 			return err
 		},
 		"delete": func() error { _, err := del("team2", deletePassword); return err },
+		"decline": func() error {
+			_, err := s.DeclineTeam(ctx, &pb_admin.DeclineTeamRequest{TeamSlug: "team2"})
+			return err
+		},
 	} {
 		if c, m := code(call()); c != codes.FailedPrecondition || m != "wrong_status" {
 			t.Fatalf("%s on a deleted team: %v %s", name, c, m)

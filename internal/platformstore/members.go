@@ -351,15 +351,28 @@ WHERE user_id = ? AND team_id = ? AND revoked_at IS NULL`, now.UTC(), userID, te
 	return sids, nil
 }
 
-// CreateTeamSession opens a team session only while the user is an active member of the team. The
-// membership row is locked: a removal or role change either runs first (ok=false, nothing written)
-// or waits for this commit and then sees and revokes the new session.
+// CreateTeamSession opens a team session only while the team is active or read-only and the user
+// is an active member of it. The team row (FOR SHARE), the account and the membership row are
+// locked in that order (lock order at DeleteTeam): a delete, removal or role change either runs
+// first (ok=false, nothing written) or waits for this commit and then sees and revokes the new
+// session.
 func (s *Store) CreateTeamSession(ctx context.Context, sid string, userID, teamID, credGen int64, now time.Time) (bool, error) {
 	if teamID <= 0 {
 		return false, errors.New("platformstore: a team session needs a team")
 	}
 	ok := false
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		st, err := shareTeamTx(ctx, tx, teamID)
+		if err != nil {
+			return err
+		}
+		if st != "active" && st != "suspended" {
+			return nil
+		}
+		var users []int64
+		if err := tx.SelectContext(ctx, &users, `SELECT id FROM platform_user WHERE id = ? FOR SHARE`, userID); err != nil {
+			return fmt.Errorf("platformstore: share user: %w", err)
+		}
 		var rows []int64
 		if err := tx.SelectContext(ctx, &rows, `SELECT user_id FROM team_member
 WHERE team_id = ? AND user_id = ? AND status = 'active' FOR UPDATE`, teamID, userID); err != nil {
