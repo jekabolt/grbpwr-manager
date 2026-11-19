@@ -124,7 +124,7 @@ func (h *actorHarness) call(t *testing.T, ctx context.Context, username, method 
 	return seen, called
 }
 
-const adminMethod = "/admin.AdminService/GetProduct"
+const adminMethod = "/admin.AdminService/GetColorwayByID"
 
 // TestInterceptorPutsTheAIActor — an admin RPC carries the AI actor: the JWT username and the
 // admins.id, looked up ONCE per username per five minutes.

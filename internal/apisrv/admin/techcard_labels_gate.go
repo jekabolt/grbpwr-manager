@@ -218,7 +218,7 @@ func (s *Server) dropMissingGarmentLabelFiles(ctx context.Context, tc *entity.Te
 // fillGarmentLabelFileLinks mints the public link of each label file on a card read for a RESPONSE.
 // It is the only place that sets PublicURL: the snapshot and the archive convert the entity without it
 // and stay token-free. A file with no live link stays empty, so nothing prints a QR to nowhere.
-func (s *Server) fillGarmentLabelFileLinks(tc *entity.TechCard) {
+func (s *Server) fillGarmentLabelFileLinks(ctx context.Context, tc *entity.TechCard) {
 	if tc == nil {
 		return
 	}
@@ -226,7 +226,7 @@ func (s *Server) fillGarmentLabelFileLinks(tc *entity.TechCard) {
 		files := tc.GarmentLabels[i].Files
 		for j := range files {
 			if files[j].LinkEpoch > 0 {
-				files[j].PublicURL = s.fileLinks.LinkURL(files[j].LibraryFileId, files[j].LinkEpoch)
+				files[j].PublicURL = s.fileLinks.LinkURLContext(ctx, files[j].LibraryFileId, files[j].LinkEpoch)
 			}
 		}
 	}

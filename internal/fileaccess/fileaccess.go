@@ -129,10 +129,11 @@ type Service struct {
 	// Отложенная статистика: маршрут публичный, и запись строки в базу на каждый заход — это
 	// способ уронить базу чужими руками. Аудит — это строка slog на попадание, а счётчики
 	// сворачиваются пачкой раз в минуту.
-	statsMu    sync.Mutex
-	statsCount map[int]int64
-	statsLast  map[int]time.Time
-	stopCh     chan struct{}
+	// Пачки ключуются командой, под которой записано обращение (teams.go): сброс пишет каждую
+	// пачку со своей командой в ctx, а не прибивает всё к команде №1.
+	statsMu sync.Mutex
+	stats   teamStats
+	stopCh  chan struct{}
 	// flushDone закрывается тикером при выходе; Stop ЖДЁТ его прежде чем досбросить остаток,
 	// иначе сброс по тику продолжал бы писать в базу, которую App.Stop закрывает следом.
 	flushDone chan struct{}
@@ -157,8 +158,7 @@ func New(files Files, presign Presigner, reader Reader, pepper, baseURL string) 
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		tokenLimiter: ratelimit.NewLimiter(perTokenWindow, perTokenMax),
 		ipLimiter:    ratelimit.NewLimiter(perIPWindow, perIPMax),
-		statsCount:   map[int]int64{},
-		statsLast:    map[int]time.Time{},
+		stats:        teamStats{},
 		stopCh:       make(chan struct{}),
 		flushDone:    make(chan struct{}),
 	}
@@ -213,20 +213,22 @@ func (s *Service) flushLoop() {
 // и молча потерянная минута читается как «не пользуются».
 func (s *Service) flushStats() {
 	s.statsMu.Lock()
-	counts := s.statsCount
-	last := s.statsLast
-	s.statsCount = map[int]int64{}
-	s.statsLast = map[int]time.Time{}
+	batches := s.stats
+	s.stats = teamStats{}
 	s.statsMu.Unlock()
-	if len(counts) == 0 {
-		return
+	for _, b := range batches {
+		s.flushBatch(b)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// flushBatch пишет пачку одной команды с этой командой в ctx (без команды — как раньше, голый ctx).
+func (s *Service) flushBatch(b *statsBatch) {
+	ctx, cancel := context.WithTimeout(b.ctx(context.Background()), 10*time.Second)
 	defer cancel()
-	if err := s.files.RecordPublicAccess(ctx, counts, last); err != nil {
+	if err := s.files.RecordPublicAccess(ctx, b.count, b.last); err != nil {
 		slog.Default().ErrorContext(ctx, "library file public access stats flush failed",
 			slog.String("err", err.Error()))
-		s.returnUnflushed(counts, last)
+		s.returnUnflushed(b)
 	}
 }
 
@@ -234,32 +236,19 @@ func (s *Service) flushStats() {
 // присваивает: пока шла запись, noteAccess уже клал новые попадания в свежие карты, и
 // присвоение затёрло бы их ровно так же, как их затирала бы потерянная пачка. Время последнего
 // обращения берётся МАКСИМУМОМ по той же причине.
-func (s *Service) returnUnflushed(counts map[int]int64, last map[int]time.Time) {
+// Потолок maxPendingFiles — на процесс, суммарно по всем командам.
+func (s *Service) returnUnflushed(b *statsBatch) {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
-	dropped := 0
-	for id, n := range counts {
-		if _, ok := s.statsCount[id]; !ok && len(s.statsCount) >= maxPendingFiles {
-			dropped++
-			continue
-		}
-		s.statsCount[id] += n
-		if t, ok := last[id]; ok {
-			if cur, seen := s.statsLast[id]; !seen || t.After(cur) {
-				s.statsLast[id] = t
-			}
-		}
-	}
-	if dropped > 0 {
+	if dropped := s.stats.merge(b, maxPendingFiles); dropped > 0 {
 		slog.Default().Error("library file public access stats pending overflow, counters dropped",
-			slog.Int("dropped_files", dropped), slog.Int("pending_files", len(s.statsCount)))
+			slog.Int("dropped_files", dropped), slog.Int("pending_files", s.stats.size()))
 	}
 }
 
-func (s *Service) noteAccess(fileID int) {
+func (s *Service) noteAccess(ctx context.Context, fileID int) {
 	s.statsMu.Lock()
-	s.statsCount[fileID]++
-	s.statsLast[fileID] = time.Now().UTC()
+	s.stats.note(ctx, fileID, time.Now().UTC())
 	s.statsMu.Unlock()
 }
 
@@ -366,7 +355,7 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 	slog.Default().InfoContext(ctx, "library file link access",
 		slog.Int("file_id", fileID), slog.String("ip", ip),
 		slog.String("ua", r.UserAgent()), slog.Bool("dl", download))
-	s.noteAccess(fileID)
+	s.noteAccess(ctx, fileID)
 
 	// Адрес токена стабилен, а то, что за ним, — нет: файл отзывают, переключают уровень и
 	// пересоздают ссылку. Общим кэшам его хранить нельзя.

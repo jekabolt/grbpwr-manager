@@ -92,10 +92,11 @@ type Service struct {
 
 	// Отложенная статистика доступа: аудит — это строка slog на каждый запрос, а счётчики нужны
 	// админскому экрану, поэтому они сворачиваются пачкой, а не пишутся по строке на запрос.
-	statsMu    sync.Mutex
-	statsCount map[int]int64
-	statsLast  map[int]time.Time
-	stopCh     chan struct{}
+	// Пачки ключуются командой, под которой записано обращение (teams.go): сброс пишет каждую
+	// пачку со своей командой в ctx, а не прибивает всё к команде №1.
+	statsMu sync.Mutex
+	stats   teamStats
+	stopCh  chan struct{}
 	// flushDone закрывается тикером при выходе. Stop ЖДЁТ его прежде чем досбросить остаток:
 	// иначе сброс, начавшийся по тику за миг до остановки, продолжал бы писать в базу, которую
 	// App.Stop уже закрывает следом (порядок «воркеры раньше БД» держится только если остановка
@@ -120,8 +121,7 @@ func New(runs Runs, cards Cards, pepper string) (*Service, error) {
 		minter:       minter,
 		tokenLimiter: ratelimit.NewLimiter(perTokenWindow, perTokenMax),
 		ipLimiter:    ratelimit.NewLimiter(perIPWindow, perIPMax),
-		statsCount:   map[int]int64{},
-		statsLast:    map[int]time.Time{},
+		stats:        teamStats{},
 		stopCh:       make(chan struct{}),
 		flushDone:    make(chan struct{}),
 	}
@@ -169,19 +169,21 @@ func (s *Service) flushLoop() {
 // Лог об ошибке этого не чинит — на админском экране остаётся неверное число, а не пометка.
 func (s *Service) flushStats() {
 	s.statsMu.Lock()
-	counts := s.statsCount
-	last := s.statsLast
-	s.statsCount = map[int]int64{}
-	s.statsLast = map[int]time.Time{}
+	batches := s.stats
+	s.stats = teamStats{}
 	s.statsMu.Unlock()
-	if len(counts) == 0 {
-		return
+	for _, b := range batches {
+		s.flushBatch(b)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// flushBatch пишет пачку одной команды с этой командой в ctx (без команды — как раньше, голый ctx).
+func (s *Service) flushBatch(b *statsBatch) {
+	ctx, cancel := context.WithTimeout(b.ctx(context.Background()), 10*time.Second)
 	defer cancel()
-	if err := s.runs.RecordRunPackAccess(ctx, counts, last); err != nil {
+	if err := s.runs.RecordRunPackAccess(ctx, b.count, b.last); err != nil {
 		slog.Default().ErrorContext(ctx, "run pack stats flush failed", slog.String("err", err.Error()))
-		s.returnUnflushed(counts, last)
+		s.returnUnflushed(b)
 	}
 }
 
@@ -207,32 +209,20 @@ const maxPendingRuns = 4096
 // живом наряде: по второму ответу ссылку отзывают и печатают заново. Точный возврат требует, чтобы
 // запись была всё-или-ничего, — это правка store, а не этой функции, и делать её надо вместе с
 // близнецом в patternaccess.
-func (s *Service) returnUnflushed(counts map[int]int64, last map[int]time.Time) {
+//
+// Потолок maxPendingRuns — на процесс, суммарно по всем командам.
+func (s *Service) returnUnflushed(b *statsBatch) {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
-	dropped := 0
-	for id, n := range counts {
-		if _, ok := s.statsCount[id]; !ok && len(s.statsCount) >= maxPendingRuns {
-			dropped++
-			continue
-		}
-		s.statsCount[id] += n
-		if t, ok := last[id]; ok {
-			if cur, seen := s.statsLast[id]; !seen || t.After(cur) {
-				s.statsLast[id] = t
-			}
-		}
-	}
-	if dropped > 0 {
+	if dropped := s.stats.merge(b, maxPendingRuns); dropped > 0 {
 		slog.Default().Error("run pack stats pending overflow, counters dropped",
-			slog.Int("dropped_runs", dropped), slog.Int("pending_runs", len(s.statsCount)))
+			slog.Int("dropped_runs", dropped), slog.Int("pending_runs", s.stats.size()))
 	}
 }
 
-func (s *Service) noteAccess(runID int) {
+func (s *Service) noteAccess(ctx context.Context, runID int) {
 	s.statsMu.Lock()
-	s.statsCount[runID]++
-	s.statsLast[runID] = time.Now().UTC()
+	s.stats.note(ctx, runID, time.Now().UTC())
 	s.statsMu.Unlock()
 }
 
@@ -242,6 +232,13 @@ func (s *Service) noteAccess(runID int) {
 // без токена, а печать наряда останется без QR.
 func (s *Service) MintRunPackToken(ctx context.Context, runID int) string {
 	if s == nil || runID <= 0 {
+		return ""
+	}
+	// Ответ без токена — тот же best effort, что и при любом сбое минта: v1-токен без команды
+	// открылся бы в команде №1 (PublicLinksAllowed).
+	if err := PublicLinksAllowed(ctx); err != nil {
+		slog.Default().InfoContext(ctx, "run pack token mint refused",
+			slog.Int("run_id", runID), slog.String("err", err.Error()))
 		return ""
 	}
 	row, err := s.runs.EnsureRunPackAccess(ctx, runID)
@@ -339,7 +336,7 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 
 	slog.Default().InfoContext(ctx, "run pack access",
 		slog.Int("run_id", runID), slog.String("ip", ip), slog.String("ua", r.UserAgent()))
-	s.noteAccess(runID)
+	s.noteAccess(ctx, runID)
 
 	// Адрес токена стабилен, а содержимое за ним — нет: наряд живой (количества берутся из прогона,
 	// а прогон правят) и отражает текущий отзыв. Общим кэшам его хранить нельзя.

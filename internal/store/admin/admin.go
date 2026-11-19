@@ -3,6 +3,8 @@ package admin
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -68,11 +70,13 @@ func (s *Store) SetAccountPermissions(ctx context.Context, username string, isSu
 	})
 }
 
-// SetAccountDisabled toggles whether an account may authenticate or use existing tokens.
+// SetAccountDisabled toggles whether an account may authenticate or use existing tokens. It also
+// clears join_pending in the same write: an explicit decision about the row ends any unfinished
+// team join, so that join can never enable it later.
 func (s *Store) SetAccountDisabled(ctx context.Context, username string, disabled bool) error {
 	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		res, err := rep.DB().ExecContext(ctx,
-			`UPDATE admins SET disabled = ? WHERE username = ?`, disabled, username)
+			`UPDATE admins SET disabled = ?, join_pending = FALSE WHERE username = ?`, disabled, username)
 		if err != nil {
 			return fmt.Errorf("failed to set admin disabled flag: %w", err)
 		}
@@ -85,6 +89,60 @@ func (s *Store) SetAccountDisabled(ctx context.Context, username string, disable
 		}
 		return nil
 	})
+}
+
+// StageJoin writes a team invite's admins row DISABLED with join_pending set and these rights,
+// in one transaction: an existing row is locked, disabled and re-granted; a missing one is created
+// with pwHash (a hash nobody can match). Only FinishJoin turns the row on.
+func (s *Store) StageJoin(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error {
+	return s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
+		var id int
+		err := rep.DB().QueryRowxContext(ctx, `SELECT id FROM admins WHERE username = ? FOR UPDATE`, username).Scan(&id)
+		switch {
+		case err == nil:
+			if _, err := rep.DB().ExecContext(ctx,
+				`UPDATE admins SET disabled = TRUE, join_pending = TRUE, is_super = ? WHERE id = ?`, isSuper, id); err != nil {
+				return fmt.Errorf("failed to stage admin join: %w", err)
+			}
+			if _, err := rep.DB().ExecContext(ctx, `DELETE FROM admin_permission WHERE admin_id = ?`, id); err != nil {
+				return fmt.Errorf("failed to clear admin permissions: %w", err)
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			res, err := rep.DB().ExecContext(ctx, `
+				INSERT INTO admins (username, password_hash, is_super, disabled, join_pending)
+				VALUES (?, ?, ?, TRUE, TRUE)`, username, pwHash, isSuper)
+			if err != nil {
+				return fmt.Errorf("can't stage admin account: %w", err)
+			}
+			id64, err := res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("can't read new admin id: %w", err)
+			}
+			id = int(id64)
+		default:
+			return fmt.Errorf("failed to lock admin: %w", err)
+		}
+		if isSuper {
+			return nil
+		}
+		return insertPermissions(ctx, rep, id, perms)
+	})
+}
+
+// FinishJoin enables a row staged by StageJoin, atomically: only while join_pending is still set.
+// false = nothing to finish (already finished, or disabled / re-decided since; the row is left
+// exactly as it is).
+func (s *Store) FinishJoin(ctx context.Context, username string) (bool, error) {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE admins SET disabled = FALSE, join_pending = FALSE WHERE username = ? AND join_pending = TRUE`, username)
+	if err != nil {
+		return false, fmt.Errorf("failed to finish admin join: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to get affected rows: %w", err)
+	}
+	return n == 1, nil
 }
 
 // insertPermissions bulk-inserts the (valid) permission rows for an admin id.
@@ -170,7 +228,7 @@ func (s *Store) PasswordHashByUsername(ctx context.Context, un string) (string, 
 
 // GetAdminByUsername returns an admin user by username (without permissions).
 func (s *Store) GetAdminByUsername(ctx context.Context, un string) (*entity.Admin, error) {
-	query := `SELECT id, username, password_hash, is_super, disabled, created_at, updated_at
+	query := `SELECT id, username, password_hash, is_super, disabled, join_pending, created_at, updated_at
 		FROM admins WHERE username = :username`
 	admin, err := storeutil.QueryNamedOne[entity.Admin](ctx, s.DB, query, map[string]any{"username": un})
 	if err != nil {

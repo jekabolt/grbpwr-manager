@@ -172,6 +172,7 @@ internal/apisrv/admin/techcard_operation_kinds_gate.go	wavePressClothsPb
 internal/apisrv/admin/techcard_operation_kinds_gate.go	waveTopstitchModeTokens
 internal/apisrv/admin/techcard_operation_kinds_gate.go	waveTopstitchModesPb
 internal/apisrv/admin/techcard_readiness.go	readinessStageOrder
+internal/apisrv/auth/platform_service.go	platformServices
 internal/archivecleanup/archivecleanup.go	cleanableSegments
 internal/betaseed/client.go	jsonMarshal
 internal/betaseed/client.go	jsonUnmarshal

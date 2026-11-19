@@ -8,13 +8,16 @@ import (
 
 // Admin represents a row of the admins table.
 type Admin struct {
-	Id           int       `db:"id"`
-	Username     string    `db:"username"`
-	PasswordHash string    `db:"password_hash"`
-	IsSuper      bool      `db:"is_super"`
-	Disabled     bool      `db:"disabled"`
-	CreatedAt    time.Time `db:"created_at"`
-	UpdatedAt    time.Time `db:"updated_at"`
+	Id           int    `db:"id"`
+	Username     string `db:"username"`
+	PasswordHash string `db:"password_hash"`
+	IsSuper      bool   `db:"is_super"`
+	Disabled     bool   `db:"disabled"`
+	// JoinPending: staged by a team invite that is not finished; the row stays disabled until the
+	// join's compare-and-set enables it (FinishJoin). Any explicit disable clears it.
+	JoinPending bool      `db:"join_pending"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // AccessLevel is the level of access an account has to an admin-panel section.

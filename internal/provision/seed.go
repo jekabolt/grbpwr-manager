@@ -19,9 +19,10 @@ const workshopDefaults = `INSERT IGNORE INTO workshop_settings (id) VALUES (1)`
 
 // ownerUpsert makes the owner's admins row a super, enabled, with a password hash nothing can match
 // (the owner signs in through the platform, never with a team password). The same row
-// teamsync.EnsureAdmin(super) leaves; written here on the lock's session so it is fenced too.
+// teamsync.EnsureAdmin(super) leaves — enabling clears an unfinished invite's join_pending, as
+// SetAccountDisabled does; written here on the lock's session so it is fenced too.
 const ownerUpsert = `INSERT INTO admins (username, password_hash, is_super) VALUES (?, ?, TRUE)
-	ON DUPLICATE KEY UPDATE is_super = TRUE, disabled = FALSE`
+	ON DUPLICATE KEY UPDATE is_super = TRUE, disabled = FALSE, join_pending = FALSE`
 
 // ownerPerms: a super has no per-section rows (teamsync.EnsureAdmin clears them the same way).
 const ownerPerms = `DELETE FROM admin_permission WHERE admin_id IN (SELECT id FROM admins WHERE username = ?)`

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	goruntime "runtime"
 	"strings"
 	"text/template"
@@ -31,10 +32,12 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/apisrv/platform"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/observability"
 	"github.com/jekabolt/grbpwr-manager/internal/techcardarchive"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 	"github.com/jekabolt/grbpwr-manager/log"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -80,6 +83,10 @@ type Config struct {
 	Port           string   `mapstructure:"port"`
 	Address        string   `mapstructure:"address"`
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
+	// AllowedOriginRegex (HTTP_ALLOWED_ORIGIN_REGEX) additionally admits origins matching one
+	// anchored regular expression — the team hosts https://<slug>.lekalo.studio. Empty = off.
+	// A regex that does not compile or is not anchored (^…$) refuses boot.
+	AllowedOriginRegex string `mapstructure:"allowed_origin_regex"`
 	// AllowDevOrigins, when true, additionally permits localhost/127.0.0.1 CORS
 	// origins. It must stay false (unset) in prod/beta since CORS allows
 	// credentials; enable it only for local development.
@@ -182,6 +189,8 @@ type Server struct {
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
 	tenantBinder            TenantBinder
+	// platformOn: PlatformService is registered (teams mode); /api/platform is mounted.
+	platformOn bool
 }
 
 // TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
@@ -212,6 +221,16 @@ func (s *Server) tenantStream() grpc.StreamServerInterceptor {
 		}
 	}
 	return s.tenantBinder.Stream()
+}
+
+// stripForwardedHost drops a client X-Forwarded-Host. The grpc-gateway forwards that header (over
+// r.Host) as x-forwarded-host, which the admin chain reads as the Host the request came to; left
+// in, a client could present itself on another team's host. The upload routes read r.Host already.
+func stripForwardedHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del("X-Forwarded-Host")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) tenantMiddleware(next http.Handler) http.Handler {
@@ -476,6 +495,47 @@ func isLocalDevURL(rawURL string) bool {
 }
 
 func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Handler) http.Handler {
+	mw, err := buildCORS(allowedOrigins, allowDevOrigins, "")
+	if err != nil {
+		// Unreachable: only a regex can fail and none is given.
+		panic(err)
+	}
+	return mw
+}
+
+// corsAllowedHeaders: Grpc-Metadata-X-Team carries the team slug of the sign-in / account calls
+// from a team host (teams §6). A function, not a package var (tenantgate G4).
+func corsAllowedHeaders() []string {
+	return []string{"Content-Type", "Authorization", "X-Requested-With", "Accept",
+		"Grpc-Metadata-Authorization", "Grpc-Metadata-X-Team", "Origin"}
+}
+
+// compileOriginRegex checks HTTP_ALLOWED_ORIGIN_REGEX: empty is off; otherwise it must be anchored
+// at both ends (an unanchored pattern such as lekalo\.studio would admit lekalo.studio.evil.com)
+// and compile.
+func compileOriginRegex(expr string) (*regexp.Regexp, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, nil
+	}
+	if !strings.HasPrefix(expr, "^") || !strings.HasSuffix(expr, "$") {
+		return nil, fmt.Errorf("http: allowed origin regex %q must be anchored with ^ and $", expr)
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, fmt.Errorf("http: allowed origin regex %q: %w", expr, err)
+	}
+	return re, nil
+}
+
+// buildCORS builds the CORS handler. With no regex it is exactly the allowlist handler it always
+// was. With a regex one AllowOriginFunc answers — go-chi/cors ignores AllowedOrigins once a func is
+// set — as the exact list (with its wildcards) OR the dev prefixes OR the regex.
+func buildCORS(allowedOrigins []string, allowDevOrigins bool, originRegex string) (func(http.Handler) http.Handler, error) {
+	re, err := compileOriginRegex(originRegex)
+	if err != nil {
+		return nil, err
+	}
 	origins := make([]string, 0, len(allowedOrigins)+len(corsDevOrigins))
 
 	// Configured prod/beta frontends (HTTP_ALLOWED_ORIGINS) are the source of truth.
@@ -488,12 +548,19 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 	opts := cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-Requested-With", "Accept", "Grpc-Metadata-Authorization", "Origin"},
+		AllowedHeaders:   corsAllowedHeaders(),
 		ExposedHeaders:   []string{"Content-Length", "X-Request-Id"},
 		AllowCredentials: true,
 		MaxAge:           3600,
 	}
-	if len(origins) == 0 {
+	switch {
+	case re != nil:
+		list := originMatcher(origins)
+		opts.AllowedOrigins = nil
+		opts.AllowOriginFunc = func(_ *http.Request, origin string) bool {
+			return list(origin) || re.MatchString(strings.ToLower(origin))
+		}
+	case len(origins) == 0:
 		// Fail closed. go-chi treats an empty AllowedOrigins as "allow all", which
 		// with AllowCredentials=true degrades a strict credentialed allowlist to
 		// allow-all when HTTP_ALLOWED_ORIGINS is empty/typo'd and dev origins are off.
@@ -501,7 +568,42 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 		opts.AllowedOrigins = nil
 		opts.AllowOriginFunc = func(_ *http.Request, _ string) bool { return false }
 	}
-	return cors.Handler(opts)
+	return cors.Handler(opts), nil
+}
+
+// originMatcher matches an origin against an AllowedOrigins list the way go-chi/cors does: case
+// insensitive, "*" = any, one "*" inside an entry = prefix + suffix.
+func originMatcher(list []string) func(string) bool {
+	type wildcard struct{ prefix, suffix string }
+	exact := map[string]bool{}
+	var wild []wildcard
+	all := false
+	for _, o := range list {
+		o = strings.ToLower(o)
+		switch i := strings.IndexByte(o, '*'); {
+		case o == "*":
+			all = true
+		case i >= 0:
+			wild = append(wild, wildcard{o[:i], o[i+1:]})
+		default:
+			exact[o] = true
+		}
+	}
+	return func(origin string) bool {
+		if all {
+			return true
+		}
+		origin = strings.ToLower(origin)
+		if exact[origin] {
+			return true
+		}
+		for _, w := range wild {
+			if len(origin) >= len(w.prefix)+len(w.suffix) && strings.HasPrefix(origin, w.prefix) && strings.HasSuffix(origin, w.suffix) {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Handler, error) {
@@ -516,6 +618,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.Use(observability.HTTPMiddleware)
 	}
 	r.Use(middleware.Recover)
+	r.Use(stripForwardedHost)
 	// Team of the request (wave 1: team #1 on everything) before any handler touches the store.
 	r.Use(s.tenantMiddleware)
 
@@ -530,6 +633,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	authHandler, err := s.authJSONGateway(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var platformHandler http.Handler
+	if s.platformOn {
+		if platformHandler, err = s.platformJSONGateway(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	// Liveness probe - indicates the container is running
@@ -582,11 +691,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// Operational status endpoint. Unlike /livez and /readyz this exposes internal
 	// state (DB pool, per-worker liveness, circuit-breaker state, runtime), so it
 	// is gated behind the same admin JWT auth the admin REST surface uses
-	// (auth.WithAuth). It is read-only and never affects readiness — a stale
+	// (auth.WithStatuszAuthz: WithAuth in mode OFF, team #1 admin chain in teams mode). It is read-only and never affects readiness — a stale
 	// worker shows up here but does NOT make /readyz fail (which would trigger
 	// restart loops). Only mounted when a health registry has been registered.
 	if s.healthRegistry != nil {
-		r.Method(http.MethodGet, "/statusz", auth.WithAuth(http.HandlerFunc(s.handleStatusz)))
+		r.Method(http.MethodGet, "/statusz", auth.WithStatuszAuthz(http.HandlerFunc(s.handleStatusz)))
 	}
 
 	// handle static swagger at root
@@ -621,7 +730,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 
 	// Apply CORS middleware only to API routes
 	r.Route("/api", func(r chi.Router) {
-		r.Use(corsMiddleware(s.c.AllowedOrigins, s.c.AllowDevOrigins))
+		corsMW, err := buildCORS(s.c.AllowedOrigins, s.c.AllowDevOrigins, s.c.AllowedOriginRegex)
+		if err != nil {
+			// Start validated the regex before listening; this cannot fail there.
+			panic(err)
+		}
+		r.Use(corsMW)
 		if s.c.BlockLocalOriginWrites && !s.c.AllowDevOrigins {
 			r.Use(localDevWriteGuard)
 		}
@@ -631,6 +745,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.With(limitBody(maxAdminJSONBodyBytes)).Mount("/admin", auth.WithAuth(adminHandler))
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
+		// The operator console (teams mode only): PlatformService over the gateway; the gRPC
+		// interceptor checks the console token on the loopback hop.
+		if platformHandler != nil {
+			r.With(limitBody(maxJSONBodyBytes)).Mount("/platform", platformHandler)
+		}
 		// Tokenized pattern reads: the token IS the credential (rate-limited, audited,
 		// epoch-revocable server-side), so no auth wrapper — QR codes and <object>
 		// embeds cannot send Authorization headers.
@@ -836,6 +955,17 @@ func (s *Server) adminJSONGateway(ctx context.Context) (http.Handler, error) {
 	return mux, nil
 }
 
+// platformJSONGateway is the REST face of PlatformService (/api/platform/…), teams mode only.
+// Same header matcher as admin: the console token and the Origin reach the interceptor.
+func (s *Server) platformJSONGateway(ctx context.Context) (http.Handler, error) {
+	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	mux := newAdminServeMux()
+	if err := pb_admin.RegisterPlatformServiceHandlerFromEndpoint(ctx, mux, fmt.Sprintf("%s:%s", s.c.Address, s.c.Port), grpcDialOpts); err != nil {
+		return nil, err
+	}
+	return mux, nil
+}
+
 func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) {
 	grpcDialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
@@ -1014,6 +1144,18 @@ func (s *Server) Start(ctx context.Context,
 	frontendServer *frontend.Server,
 	authServer *auth.Server,
 ) error {
+	// Refuse boot on a bad HTTP_ALLOWED_ORIGIN_REGEX before anything listens.
+	if _, err := compileOriginRegex(s.c.AllowedOriginRegex); err != nil {
+		return err
+	}
+	// The tenant binder learns the control plane from the auth server (teams mode), and the
+	// admin chain gets the binder. Teams mode off the binder stays static (team #1 only).
+	if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
+		if st, cfg, on := authServer.PlatformStore(); on {
+			b.UsePlatform(st, cfg)
+		}
+		authServer.SetEdge(b)
+	}
 
 	opts := []grpcSlog.Option{
 		grpcSlog.WithLogOnEvents(grpcSlog.StartCall, grpcSlog.FinishCall),
@@ -1063,11 +1205,21 @@ func (s *Server) Start(ctx context.Context,
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
 			s.tenantStream(),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
+			authServer.StreamAdminAuthInterceptor(),
 		),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
 	pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
+	// PlatformService exists only in teams mode (a control plane is set).
+	if st, _, ok := authServer.PlatformStore(); ok {
+		ps := platform.New(st)
+		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
+			ps.SetInvalidator(b.InvalidateTeam)
+		}
+		pb_admin.RegisterPlatformServiceServer(s.gs, ps)
+		s.platformOn = true
+	}
 
 	var clientHTTPHandler http.Handler
 	handler := middleware.ClientIdentifier(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

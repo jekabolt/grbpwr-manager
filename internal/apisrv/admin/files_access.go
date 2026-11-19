@@ -9,6 +9,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -45,12 +46,13 @@ const (
 // Строка публичной ссылки переживает уровень (возврат в `team` её не удаляет и epoch не двигает),
 // поэтому url, собранный по одному лишь наличию строки, был бы копируемой ссылкой, которая
 // гарантированно отвечает 404. Пустой url — это и есть «ссылки сейчас нет».
-func (s *Server) linkURL(level entity.LibraryFileAccessLevel, link *entity.LibraryFilePublicAccess) string {
+func (s *Server) linkURL(ctx context.Context, level entity.LibraryFileAccessLevel, link *entity.LibraryFilePublicAccess) string {
 	if level != entity.LibraryFileAccessLink || link == nil {
 		return ""
 	}
-	// LinkURL безопасен на nil-сервисе: сборка без сервиса отдаёт блок доступа без url.
-	return s.fileLinks.LinkURL(link.FileId, link.Epoch)
+	// LinkURLContext безопасен на nil-сервисе: сборка без сервиса отдаёт блок доступа без url.
+	// Вне команды №1 url тоже пуст: токен v1 без команды открылся бы в команде №1.
+	return s.fileLinks.LinkURLContext(ctx, link.FileId, link.Epoch)
 }
 
 // GetLibraryFileAccess returns the access block of one file (точка 12 предиката).
@@ -81,7 +83,7 @@ func (s *Server) GetLibraryFileAccess(ctx context.Context, req *pb_admin.GetLibr
 		return nil, status.Error(codes.Internal, "can't get file access")
 	}
 	return &pb_admin.GetLibraryFileAccessResponse{
-		Access: dto.ConvertEntityLibraryFileAccessToPb(access, s.linkURL(access.Level, access.Link)),
+		Access: dto.ConvertEntityLibraryFileAccessToPb(access, s.linkURL(ctx, access.Level, access.Link)),
 		Events: dto.ConvertEntityLibraryFileAccessEventsToPb(events),
 	}, nil
 }
@@ -94,6 +96,11 @@ func (s *Server) SetLibraryFileAccess(ctx context.Context, req *pb_admin.SetLibr
 	level, err := dto.ParseLibraryFileAccessLevel(req.GetLevel())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if level == entity.LibraryFileAccessLink {
+		if err := fileaccess.PublicLinksAllowed(ctx); err != nil {
+			return nil, err
+		}
 	}
 	ttl, err := dto.ValidateLibraryFileLinkTTL(req.GetLinkTtl())
 	if err != nil {
@@ -156,7 +163,7 @@ func (s *Server) SetLibraryFileAccess(ctx context.Context, req *pb_admin.SetLibr
 		return nil, status.Error(codes.Internal, "can't set file access")
 	}
 	return &pb_admin.SetLibraryFileAccessResponse{
-		Access: dto.ConvertEntityLibraryFileAccessToPb(access, s.linkURL(access.Level, access.Link)),
+		Access: dto.ConvertEntityLibraryFileAccessToPb(access, s.linkURL(ctx, access.Level, access.Link)),
 	}, nil
 }
 
@@ -164,6 +171,9 @@ func (s *Server) SetLibraryFileAccess(ctx context.Context, req *pb_admin.SetLibr
 func (s *Server) RotateLibraryFileLink(ctx context.Context, req *pb_admin.RotateLibraryFileLinkRequest) (*pb_admin.RotateLibraryFileLinkResponse, error) {
 	if req.GetFileId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "file id is required")
+	}
+	if err := fileaccess.PublicLinksAllowed(ctx); err != nil {
+		return nil, err
 	}
 	fileID := int(req.GetFileId())
 	current, err := s.repo.Files().GetFileById(ctx, fileID)
@@ -189,7 +199,7 @@ func (s *Server) RotateLibraryFileLink(ctx context.Context, req *pb_admin.Rotate
 	// законно (поколение сдвинулось, старые токены мертвы), но url в ответе тогда пуст —
 	// показывать копируемую строку, которая отвечает 404, нельзя.
 	return &pb_admin.RotateLibraryFileLinkResponse{
-		Link: dto.ConvertEntityLibraryFilePublicLinkToPb(row, s.linkURL(current.AccessLevel, row)),
+		Link: dto.ConvertEntityLibraryFilePublicLinkToPb(row, s.linkURL(ctx, current.AccessLevel, row)),
 	}, nil
 }
 
@@ -223,7 +233,7 @@ func (s *Server) ListSharedLibraryFiles(ctx context.Context, req *pb_admin.ListS
 		// о том, какому типу можно отдавать view_url.
 		pbFile := s.withLibraryURLs(ctx, &rows[i].File, dto.ConvertEntityLibraryFileToPb(&rows[i].File))
 		out = append(out, dto.ConvertEntitySharedLibraryFileToPb(rows[i], pbFile,
-			s.linkURL(rows[i].File.AccessLevel, rows[i].Link)))
+			s.linkURL(ctx, rows[i].File.AccessLevel, rows[i].Link)))
 	}
 	return &pb_admin.ListSharedLibraryFilesResponse{Files: out, Total: int32(total)}, nil
 }
