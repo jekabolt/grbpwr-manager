@@ -32,7 +32,7 @@ func fixture(t *testing.T, dialect string) (objectStore, *bucket.Config, Asset, 
 		}
 		key := "tech-card-patterns/" + part + ".dxf"
 		o[key] = b
-		as = append(as, Asset{"https://patterns.example/" + key, int64(len(b)), digest(b)})
+		as = append(as, Asset{URL: "https://patterns.example/" + key, Size: int64(len(b)), SHA256: digest(b)})
 	}
 	raw, err := os.ReadFile("testdata/native-join-" + dialect + "-intent.json")
 	if err != nil {
@@ -44,7 +44,7 @@ func fixture(t *testing.T, dialect string) (objectStore, *bucket.Config, Asset, 
 	if err = json.Unmarshal(raw, &intent); err != nil {
 		t.Fatal(err)
 	}
-	return o, &bucket.Config{SubdomainEndpoint: "https://patterns.example"}, as[0], as[1], Selection{FixedInterval: DirectedEdge{intent.Fixed.SourceCurveID, intent.Fixed.StartVertexID, intent.Fixed.EndVertexID}, MovingInterval: DirectedEdge{intent.Moving.SourceCurveID, intent.Moving.StartVertexID, intent.Moving.EndVertexID}, CardID: 156, FabricPurpose: "main", BOMLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ8", SizeToken: "M", SizeID: 4, Fixed: "FP", Moving: "BP", Result: "JN", FixedEdge: 1, MovingEdge: 3, TranslateX: -50000000}
+	return o, &bucket.Config{SubdomainEndpoint: "https://patterns.example"}, as[0], as[1], Selection{FixedInterval: DirectedEdge{Curve: intent.Fixed.SourceCurveID, Start: intent.Fixed.StartVertexID, End: intent.Fixed.EndVertexID}, MovingInterval: DirectedEdge{Curve: intent.Moving.SourceCurveID, Start: intent.Moving.StartVertexID, End: intent.Moving.EndVertexID}, CardID: 156, FabricPurpose: "main", BOMLineKey: "01JABCDEFGHJKMNPQRSTVWXYZ8", SizeToken: "M", SizeID: 4, Fixed: "FP", Moving: "BP", Result: "JN", FixedEdge: 1, MovingEdge: 3, TranslateX: -50000000}
 }
 func TestManagedReviewedNativeJoin(t *testing.T) {
 	for _, d := range []string{"r12", "r2000"} {

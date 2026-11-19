@@ -466,7 +466,7 @@ func checkNativeJoin(before, after *nativeFile, s Selection, assetSHA string) er
 		prefix := "dxf-curve-v1/f/" + hex.EncodeToString([]byte(fileID)) + "/i/n/b/" + hex.EncodeToString([]byte(id+"_"+s.SizeToken)) + "/" + b.insertRef + "/o/0/r/0/c/0/e/" + b.primitiveRef + "/s/0/p/"
 		curve := prefix + strconv.Itoa(edge)
 		v := func(k int) string { return "dxf-vertex-v1/" + prefix + strconv.Itoa(k) + "/sample/" + strconv.Itoa(k) }
-		return DirectedEdge{curve, v(edge), v((edge + 1) % 4)}
+		return DirectedEdge{Curve: curve, Start: v(edge), End: v((edge + 1) % 4)}
 	}
 	if s.FixedInterval != exact(a, s.Fixed, s.FixedEdge) || s.MovingInterval != exact(b, s.Moving, s.MovingEdge) {
 		return invalid
