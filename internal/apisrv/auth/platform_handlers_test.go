@@ -1,12 +1,16 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"reflect"
 	"testing"
 
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // With teams mode off (no control plane) every platform RPC answers Unimplemented, as before.
@@ -35,6 +39,76 @@ func TestPlatformRPCsOffWithoutControlPlane(t *testing.T) {
 	for name, call := range calls {
 		if c := status.Code(call()); c != codes.Unimplemented {
 			t.Errorf("%s with teams mode off = %v, want Unimplemented", name, c)
+		}
+	}
+}
+
+// TestTeamsOffEntryAnswersByteForByte: with teams mode off (prod) the entry RPCs E1 changed answer
+// exactly as before, whatever the request carries (a brand, a bad brand, a code, a link): no
+// response, and the error's wire status is the same bytes {code 12, "teams mode is off"}.
+func TestTeamsOffEntryAnswersByteForByte(t *testing.T) {
+	want := []byte("\x08\x0c\x12\x11teams mode is off")
+	s := &Server{}
+	ctx := context.Background()
+	brand := &pb_admin.TeamBrand{BrandName: "Acme", LegalAddress: []string{"1 Road"}, ContactEmail: "a@acme.io", Website: "acme.io"}
+	badBrand := &pb_admin.TeamBrand{BrandName: "a\nb", Website: "localhost"}
+	type answer struct {
+		resp proto.Message
+		err  error
+	}
+	calls := map[string]func() answer{
+		"SignUp": func() answer {
+			r, err := s.SignUp(ctx, &auth.SignUpRequest{})
+			return answer{r, err}
+		},
+		"SignUp with a brand": func() answer {
+			r, err := s.SignUp(ctx, &auth.SignUpRequest{Email: "a@acme.io", Password: "pw-123456789", TeamName: "Acme",
+				TeamSlug: "acme", TermsAccepted: true, Brand: brand})
+			return answer{r, err}
+		},
+		"SignUp with a bad brand": func() answer {
+			r, err := s.SignUp(ctx, &auth.SignUpRequest{TeamSlug: "acme", Brand: badBrand})
+			return answer{r, err}
+		},
+		"VerifyEmail": func() answer {
+			r, err := s.VerifyEmail(ctx, &auth.VerifyEmailRequest{})
+			return answer{r, err}
+		},
+		"VerifyEmail by code": func() answer {
+			r, err := s.VerifyEmail(ctx, &auth.VerifyEmailRequest{Email: "a@acme.io", Code: "123456"})
+			return answer{r, err}
+		},
+		"VerifyEmail by link": func() answer {
+			r, err := s.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: "abc"})
+			return answer{r, err}
+		},
+		"CreateTeam with a brand": func() answer {
+			r, err := s.CreateTeam(ctx, &auth.CreateTeamRequest{TeamName: "Acme", TeamSlug: "acme", Brand: brand})
+			return answer{r, err}
+		},
+		"CreateTeam with a bad brand": func() answer {
+			r, err := s.CreateTeam(ctx, &auth.CreateTeamRequest{Brand: badBrand})
+			return answer{r, err}
+		},
+	}
+	for name, call := range calls {
+		a := call()
+		if a.resp != nil && !reflect.ValueOf(a.resp).IsNil() {
+			t.Errorf("%s: response %v, want none", name, a.resp)
+		}
+		st, ok := status.FromError(a.err)
+		if !ok {
+			t.Fatalf("%s: %v is not a status error", name, a.err)
+		}
+		got, err := proto.MarshalOptions{Deterministic: true}.Marshal(st.Proto())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s: wire status %q, want %q", name, got, want)
+		}
+		if a.err.Error() != "rpc error: code = Unimplemented desc = teams mode is off" {
+			t.Errorf("%s: error text %q", name, a.err.Error())
 		}
 	}
 }

@@ -387,6 +387,9 @@ type SignUpParams struct {
 	TermsVersion string
 	// Logo is the new team's logo, already processed (nil = none); stored with the team.
 	Logo *TeamLogo
+	// Brand is the new team's brand, already normalised (nil or empty = no row); stored with the team,
+	// updated_by = the person signing up.
+	Brand *TeamBrand
 }
 
 // SignUpResult says what happened; the client sees the same empty answer either way.
@@ -404,7 +407,7 @@ type SignUpResult struct {
 // in progress). An active account gets a new team only when the typed password is its password
 // (there is no cap on own teams: only the operator's approval limits); otherwise nothing happens.
 // ErrSlugTaken when the address is held — also for the pending owner of that address unless the
-// typed password is its password. A replaced or expired pending team goes with its logo.
+// typed password is its password. A replaced or expired pending team goes with its logo and brand.
 func (s *Store) SignUp(ctx context.Context, p SignUpParams) (SignUpResult, error) {
 	var res SignUpResult
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
@@ -506,6 +509,9 @@ VALUES (?, ?, 'pending', ?, ?, ?)`, p.Slug, p.TeamName, p.Now.Add(p.PendingTTL),
 			return fmt.Errorf("platformstore: team id: %w", err)
 		}
 		if err := putTeamLogoTx(ctx, tx, tid, p.Logo); err != nil {
+			return err
+		}
+		if err := putTeamBrandTx(ctx, tx, tid, p.Brand, uid); err != nil {
 			return err
 		}
 		team := &TeamBrief{ID: tid, Slug: p.Slug, Name: p.TeamName, Status: "pending", CreatedBy: uid}

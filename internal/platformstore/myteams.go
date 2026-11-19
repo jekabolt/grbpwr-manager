@@ -44,6 +44,8 @@ type CreateTeamParams struct {
 	TermsAccepted bool
 	// Logo is the new team's logo, already processed (nil = none).
 	Logo *TeamLogo
+	// Brand is the new team's brand, already normalised (nil or empty = no row); updated_by = UserID.
+	Brand *TeamBrand
 }
 
 // CreatedTeam is a committed CreateTeam.
@@ -58,7 +60,8 @@ type CreatedTeam struct {
 // ErrTokenInvalid) and the root session (not live or too old: ErrTokenInvalid), then the new team
 // row (terms not accepted and not carried: ErrTermsRequired; review while approval is on, else
 // provisioning — the verified sign-up's transition), the owner
-// membership, the logo, the accepted terms, and under review the operators' team_request letters.
+// membership, the logo and the brand (an empty brand writes no row), the accepted terms, and under
+// review the operators' team_request letters.
 // No letter goes to the person. There is no cap on own teams. A lost lock race is ErrTryAgain.
 //
 // It locks no team row other than the expired pending one it clears and the row it inserts, and no
@@ -133,6 +136,9 @@ WHERE sid = ? AND user_id = ? AND aud = 'root' AND revoked_at IS NULL AND create
 			return fmt.Errorf("platformstore: team id: %w", err)
 		}
 		if err := putTeamLogoTx(ctx, tx, tid, p.Logo); err != nil {
+			return err
+		}
+		if err := putTeamBrandTx(ctx, tx, tid, p.Brand, u.ID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
