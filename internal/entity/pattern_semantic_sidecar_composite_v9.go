@@ -154,6 +154,9 @@ func decodeNativeCrossRowPlacementV9(payload []byte) (*decodedNativeCrossRowPlac
 	if err != nil || parsed.review.Bindings != document.Bindings {
 		return nil, nativeCrossRowPlacementViolationV9("retained V8 review or Complete Source binding differs")
 	}
+	if len(parsed.review.Selection.OwnedSeamKeys) != 2 {
+		return nil, nativeCrossRowPlacementViolationV9("placement requires a retained EDGE and linked POSE review")
+	}
 	worldBytes, err := compositeComponentBytes(worldComponent, "native-cross-row-world-placement-v1", nativeCrossRowWorldPlacementMediaTypeV1)
 	if err != nil {
 		return nil, nativeCrossRowPlacementViolationV9("world placement component bytes differ")

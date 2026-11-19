@@ -115,6 +115,9 @@ func decodeNativeWholePlacementV10(payload []byte) (*decodedNativeWholePlacement
 	if err != nil || parsed.review.Bindings != doc.Bindings {
 		return nil, nativeWholePlacementViolationV10("retained V8 review or Complete Source binding differs")
 	}
+	if len(parsed.review.Selection.OwnedSeamKeys) != 2 {
+		return nil, nativeWholePlacementViolationV10("placement requires a retained EDGE and linked POSE review")
+	}
 	worldBytes, err := compositeComponentBytes(world, nativeWholeWorldPlacementKindV10, nativeWholeWorldPlacementMediaTypeV1)
 	if err != nil {
 		return nil, nativeWholePlacementViolationV10("whole placement component bytes differ")

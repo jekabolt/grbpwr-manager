@@ -186,6 +186,7 @@ func decodeNativeCrossRowReviewV8(payload []byte) (*patternProductCompositeSidec
 		return nil, nativeCrossRowViolationV8("review must have the exact canonical V8 shape")
 	}
 	selection := review.Selection
+	seamCount := len(selection.OwnedSeamKeys)
 	if review.SchemaVersion != patternProductCompositeSidecarDocumentV8 || review.MediaType != PatternProductCompositeSidecarV8MediaType ||
 		review.Encoding != patternSemanticSidecarEncoding || review.Profile != nativeCrossRowReviewProfileV8 ||
 		review.WriteCAS.ExpectedPreviousSidecarSHA256 != nil {
@@ -198,13 +199,13 @@ func decodeNativeCrossRowReviewV8(payload []byte) (*patternProductCompositeSidec
 	}
 	if selection.OperationNumber <= 0 || selection.OperationNumber > math.MaxInt32 ||
 		selection.OperationOrdinal < 0 || selection.OperationOrdinal > math.MaxInt32 ||
-		len(selection.OwnedSeamKeys) != 2 || selection.OwnedSeamKeys[0] == selection.OwnedSeamKeys[1] ||
+		seamCount < 1 || seamCount > 2 || (seamCount == 2 && selection.OwnedSeamKeys[0] == selection.OwnedSeamKeys[1]) ||
 		(selection.SavedDirection != TechCardSeamSame && selection.SavedDirection != TechCardSeamReversed) ||
 		selection.SizeID <= 0 || selection.SizeID > math.MaxInt32 || len(selection.SizeToken) > 32 ||
 		!exactNStableID.MatchString(selection.SizeToken) || selection.SizeBasis != nativeCrossRowReviewSizeBasisV8 ||
 		(selection.SavedAnchoredSize != "" && selection.SavedAnchoredSize != selection.SizeToken) ||
 		len(selection.Members) != 2 {
-		return nil, nativeCrossRowViolationV8("ordered operation, physical seam, POSE or confirmed size is invalid")
+		return nil, nativeCrossRowViolationV8("ordered operation, physical seam, optional POSE or confirmed size is invalid")
 	}
 	for _, key := range selection.OwnedSeamKeys {
 		if !ValidTechCardSeamKey(key) || key != NormalizeTechCardSeamKey(key) {
@@ -321,20 +322,37 @@ func verifyNativeCrossRowReviewCurrentV8(review *patternProductCompositeSidecarV
 		return nativeCrossRowMovedV8("selected structural operation, seam order or ordered inputs differ")
 	}
 
-	ownedIndex := 0
-	for _, previous := range card.Operations[:selection.OperationOrdinal] {
-		ownedIndex += len(previous.SeamKeys)
+	// Complete Source flattens the exact saved operation order. Do not let a shorter submitted
+	// selection hide an owned seam or reinterpret a seam from another operation as its POSE.
+	ownedIndex, ownedCount := 0, 0
+	for ordinal, operation := range card.Operations {
+		if ordinal == selection.OperationOrdinal {
+			ownedIndex = ownedCount
+		}
+		for _, key := range operation.SeamKeys {
+			if ownedCount >= len(source.OwnedSeams) || source.OwnedSeams[ownedCount].SeamKey != key {
+				return nativeCrossRowMovedV8("Complete Source seams differ from the saved operation order")
+			}
+			ownedCount++
+		}
 	}
-	if ownedIndex > len(source.OwnedSeams)-2 {
-		return nativeCrossRowMovedV8("current owned physical seam and POSE are absent")
+	if ownedCount != len(source.OwnedSeams) {
+		return nativeCrossRowMovedV8("Complete Source has seams outside the saved operation order")
 	}
-	stitch, pose := source.OwnedSeams[ownedIndex], source.OwnedSeams[ownedIndex+1]
-	if stitch.SeamKey != selection.OwnedSeamKeys[0] || stitch.Kind != TechCardSeamKindEdge ||
+	stitch := source.OwnedSeams[ownedIndex]
+	if stitch.Kind != TechCardSeamKindEdge ||
 		stitch.Stale || stitch.Status != TechCardSeamConfirmed || stitch.Source != TechCardSeamSourceManual ||
-		stitch.Direction != selection.SavedDirection || stitch.AnchoredSize != selection.SavedAnchoredSize ||
-		pose.SeamKey != selection.OwnedSeamKeys[1] || pose.Kind != TechCardSeamKindPose ||
-		pose.Stale || pose.Status != TechCardSeamConfirmed {
-		return nativeCrossRowMovedV8("current physical seam or unchanged POSE differs")
+		stitch.Direction != selection.SavedDirection || stitch.AnchoredSize != selection.SavedAnchoredSize {
+		return nativeCrossRowMovedV8("current physical seam differs")
+	}
+	hasPose := len(selection.OwnedSeamKeys) == 2
+	var poseSides [2][]TechCardSeamAnchor
+	if hasPose {
+		pose := source.OwnedSeams[ownedIndex+1]
+		if pose.Kind != TechCardSeamKindPose || pose.Stale || pose.Status != TechCardSeamConfirmed {
+			return nativeCrossRowMovedV8("current linked POSE differs")
+		}
+		poseSides = [2][]TechCardSeamAnchor{pose.SideA, pose.SideB}
 	}
 
 	anchorSHA, err := readNativeCrossRowAnchorSHAsV8(source.CanonicalJSON, ownedIndex, stitch.SeamKey)
@@ -342,7 +360,6 @@ func verifyNativeCrossRowReviewCurrentV8(review *patternProductCompositeSidecarV
 		return nativeCrossRowMovedV8("current canonical saved anchors are unavailable")
 	}
 	stitchSides := [2][]TechCardSeamAnchor{stitch.SideA, stitch.SideB}
-	poseSides := [2][]TechCardSeamAnchor{pose.SideA, pose.SideB}
 	for index, member := range selection.Members {
 		if !slices.ContainsFunc(source.Rows, func(row SavedPatternRowIdentity) bool {
 			return nativeCrossRowMatchesRowV8(member.Row, row)
@@ -351,13 +368,15 @@ func verifyNativeCrossRowReviewCurrentV8(review *patternProductCompositeSidecarV
 		}) {
 			return nativeCrossRowMovedV8("a member row or scoped alias differs")
 		}
-		side, poseSide := stitchSides[index], poseSides[index]
-		if len(side) != 1 || len(poseSide) != 1 || side[0].PieceLineKey != member.PieceLineKey ||
-			poseSide[0].PieceLineKey != member.PieceLineKey ||
+		side := stitchSides[index]
+		if len(side) != 1 || side[0].PieceLineKey != member.PieceLineKey ||
 			len(side[0].Samples) != TechCardSeamSamplesPerAnchor || side[0].LenMm <= 0 ||
 			side[0].RangeFrom != 0 || side[0].RangeTo != 0 || side[0].Placement != nil ||
 			anchorSHA[index] != member.CapturedSavedAnchorSHA256 {
-			return nativeCrossRowMovedV8("a saved physical anchor or linked POSE does not match the ordered member")
+			return nativeCrossRowMovedV8("a saved physical anchor does not match the ordered member")
+		}
+		if poseSide := poseSides[index]; hasPose && (len(poseSide) != 1 || poseSide[0].PieceLineKey != member.PieceLineKey) {
+			return nativeCrossRowMovedV8("the linked POSE does not match the ordered member")
 		}
 	}
 	return nil

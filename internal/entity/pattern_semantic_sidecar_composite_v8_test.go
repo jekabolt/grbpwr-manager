@@ -123,6 +123,15 @@ func nativeCrossRowWriteFixtureV8(t *testing.T, review *patternProductCompositeS
 	}
 }
 
+func nativeCrossRowStoredFixtureV8(first PatternSemanticSidecarWrite, row SavedPatternRowIdentity) PatternSemanticSidecar {
+	return PatternSemanticSidecar{
+		TechCardId: row.TechCardID, PatternLineKey: row.PatternLineKey, CardLockVersion: row.CardLockVersion,
+		DxfSHA256: row.SHA256, PatternVersion: row.PatternVersion, SavedRowRevision: row.SavedRowRevision,
+		MediaType: first.MediaType, SidecarSHA256: first.SidecarSHA256, ByteLength: len(first.Payload),
+		PostSaveReceiptSHA256: first.ExpectedPostSaveReceiptSHA256, Payload: bytes.Clone(first.Payload),
+	}
+}
+
 func TestPatternProductNativeCrossRowReviewV8FirstAndFreshRead(t *testing.T) {
 	review, current := nativeCrossRowReviewFixtureV8(t)
 	first := nativeCrossRowWriteFixtureV8(t, review)
@@ -131,19 +140,97 @@ func TestPatternProductNativeCrossRowReviewV8FirstAndFreshRead(t *testing.T) {
 	existingWriter.By = "local-review-test"
 	require.NoError(t, ValidatePatternSemanticSidecarWrite(&existingWriter))
 
-	row := current.AnchorRow
-	stored := PatternSemanticSidecar{
-		TechCardId: row.TechCardID, PatternLineKey: row.PatternLineKey, CardLockVersion: row.CardLockVersion,
-		DxfSHA256: row.SHA256, PatternVersion: row.PatternVersion, SavedRowRevision: row.SavedRowRevision,
-		MediaType: first.MediaType, SidecarSHA256: first.SidecarSHA256, ByteLength: len(first.Payload),
-		PostSaveReceiptSHA256: first.ExpectedPostSaveReceiptSHA256, Payload: bytes.Clone(first.Payload),
-	}
+	stored := nativeCrossRowStoredFixtureV8(first, current.AnchorRow)
 	require.NoError(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current))
 	current.Source.Rows[1].SavedRowRevision++
 	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current), ErrTechCardPatternSidecarBindingMoved)
 	current.Source.Rows[1].SavedRowRevision--
 	stored.Payload[0] = '['
 	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current), ErrTechCardPatternSidecarCorrupt)
+}
+
+func TestPatternProductNativeCrossRowReviewV8AcceptsSoleOwnedEdge(t *testing.T) {
+	review, current := nativeCrossRowReviewFixtureV8(t)
+	review.Selection.OwnedSeamKeys = review.Selection.OwnedSeamKeys[:1]
+	// Two operator registrations can constrain a larger grid along the unchanged native runs.
+	review.Review.StationCount = 41
+	first := nativeCrossRowWriteFixtureV8(t, review)
+	first.By = "local-review-test"
+	require.NoError(t, ValidatePatternSemanticSidecarWrite(&first))
+	stored := nativeCrossRowStoredFixtureV8(first, current.AnchorRow)
+	// A shorter review must never be allowed to omit the same operation's stored POSE.
+	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current), ErrTechCardPatternSidecarBindingMoved)
+	require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current), ErrTechCardPatternSidecarBindingMoved)
+
+	pose := current.Source.OwnedSeams[1]
+	current.Card.Operations[0].SeamKeys = review.Selection.OwnedSeamKeys
+	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current), ErrTechCardPatternSidecarBindingMoved,
+		"a POSE left in the checked source cannot be discarded by shortening an operation")
+	current.Source.OwnedSeams = current.Source.OwnedSeams[:1]
+	require.NoError(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current))
+	require.NoError(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current))
+
+	// A POSE genuinely owned by a different operation is not the selected edge's companion.
+	current.Card.Operations = append(current.Card.Operations, TechCardOperation{
+		OperationNumber: sql.NullInt32{Int32: 180, Valid: true},
+		SeamKeys:        []string{pose.SeamKey},
+	})
+	current.Source.OwnedSeams = append(current.Source.OwnedSeams, pose)
+	require.NoError(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current))
+	require.NoError(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current))
+	slices.Reverse(current.Source.OwnedSeams)
+	require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current), ErrTechCardPatternSidecarBindingMoved)
+}
+
+func TestPatternProductNativeCrossRowReviewV8SoleEdgeMustStillMatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*PatternProductNativeCrossRowCurrentV8)
+	}{
+		{"stale EDGE", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams[0].Stale = true }},
+		{"sole POSE", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams[0].Kind = TechCardSeamKindPose }},
+		{"unknown direction", func(c *PatternProductNativeCrossRowCurrentV8) {
+			c.Source.OwnedSeams[0].Direction = TechCardSeamDirectionUnknown
+		}},
+		{"moved pocket row", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.Rows[1].SavedRowRevision++ }},
+		{"foreign alias", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.Aliases[1].BlockName = "OTHER" }},
+		{"moved seal", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.SourceSHA256 = strings.Repeat("a", 64) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			review, current := nativeCrossRowReviewFixtureV8(t)
+			review.Selection.OwnedSeamKeys = review.Selection.OwnedSeamKeys[:1]
+			current.Card.Operations[0].SeamKeys = review.Selection.OwnedSeamKeys
+			current.Source.OwnedSeams = current.Source.OwnedSeams[:1]
+			first := nativeCrossRowWriteFixtureV8(t, review)
+			stored := nativeCrossRowStoredFixtureV8(first, current.AnchorRow)
+			tc.edit(&current)
+			require.ErrorIs(t, ValidateFirstPatternProductNativeCrossRowReviewV8(first, current), ErrTechCardPatternSidecarBindingMoved)
+			require.ErrorIs(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current), ErrTechCardPatternSidecarBindingMoved)
+		})
+	}
+}
+
+func TestNativePlacementV9V10RefusesEdgeOnlyReviewV8(t *testing.T) {
+	v9, world, _, _, current := nativePlacementFixtureV9(t)
+	review, _ := nativeCrossRowReviewFixtureV8(t)
+	review.Selection.OwnedSeamKeys = review.Selection.OwnedSeamKeys[:1]
+	current.Source.Card.Operations[0].SeamKeys = review.Selection.OwnedSeamKeys
+	current.Source.Source.OwnedSeams = current.Source.Source.OwnedSeams[:1]
+	first := nativeCrossRowWriteFixtureV8(t, review)
+	stored := nativeCrossRowStoredFixtureV8(first, current.Source.AnchorRow)
+	require.NoError(t, ValidateStoredPatternProductNativeCrossRowReviewV8(stored, current.Source))
+
+	v9.WriteCAS.ExpectedPreviousSidecarSHA256 = stored.SidecarSHA256
+	v9.Components[0] = nativePlacementComponentV9("native-cross-row-review-v8", stored.MediaType, stored.Payload)
+	world.ReviewSHA256 = stored.SidecarSHA256
+	v9.Components[1] = nativePlacementWorldComponentV9(t, world)
+	v9Write := nativePlacementWriteV9(t, v9, first)
+	_, err := CheckPatternProductNativeCrossRowPlacementTransitionV9(v9Write, stored)
+	require.ErrorContains(t, err, "retained EDGE and linked POSE")
+
+	v10, whole := nativeWholePlacementFixtureV10(t, stored, stored, world.Body)
+	_, err = CheckPatternProductNativeWholePlacementTransitionV10(nativeWholePlacementWriteV10(t, v10, whole, first), stored)
+	require.ErrorContains(t, err, "retained EDGE and linked POSE")
 }
 
 func TestPatternProductNativeCrossRowReviewV8RefusesBadRequestCAS(t *testing.T) {
@@ -175,6 +262,13 @@ func TestPatternProductNativeCrossRowReviewV8RefusesInvalidReview(t *testing.T) 
 		edit func(*patternProductCompositeSidecarV8Review)
 	}{
 		{"unsupported profile", func(d *patternProductCompositeSidecarV8Review) { d.Profile = "unverified" }},
+		{"no owned seams", func(d *patternProductCompositeSidecarV8Review) { d.Selection.OwnedSeamKeys = nil }},
+		{"too many seams", func(d *patternProductCompositeSidecarV8Review) {
+			d.Selection.OwnedSeamKeys = append(d.Selection.OwnedSeamKeys, d.Selection.Members[0].PieceLineKey)
+		}},
+		{"duplicate owned seams", func(d *patternProductCompositeSidecarV8Review) {
+			d.Selection.OwnedSeamKeys[1] = d.Selection.OwnedSeamKeys[0]
+		}},
 		{"payload has non-null prior", func(d *patternProductCompositeSidecarV8Review) {
 			prior := ""
 			d.WriteCAS.ExpectedPreviousSidecarSHA256 = &prior
@@ -249,6 +343,7 @@ func TestPatternProductNativeCrossRowReviewV8RefusesMovedCompleteBinding(t *test
 		{"physical status changes", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams[0].Stale = true }},
 		{"saved size differs", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams[0].AnchoredSize = "M" }},
 		{"POSE removed", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams = c.Source.OwnedSeams[:1] }},
+		{"POSE stale", func(c *PatternProductNativeCrossRowCurrentV8) { c.Source.OwnedSeams[1].Stale = true }},
 		{"captured anchor changes", func(c *PatternProductNativeCrossRowCurrentV8) {
 			c.Source.CanonicalJSON = bytes.Replace(c.Source.CanonicalJSON, []byte(`"parts":[{`), []byte(`"parts":[{"lenMm":80,`), 1)
 		}},
