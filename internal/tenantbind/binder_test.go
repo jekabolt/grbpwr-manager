@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
