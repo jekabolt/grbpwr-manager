@@ -2,6 +2,7 @@ package platformstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -119,20 +120,29 @@ func (s *Store) UpsertInvite(ctx context.Context, p InviteParams) (TeamInvite, e
 		if err := checkActorTx(ctx, tx, p.TeamID, p.Actor); err != nil {
 			return err
 		}
-		var active int
-		if err := tx.GetContext(ctx, &active, `SELECT COUNT(*) FROM team_member m JOIN platform_user u ON u.id = m.user_id
-WHERE m.team_id = ? AND m.status = 'active' AND u.email = ?`, p.TeamID, p.Email); err != nil {
+		var memberEmails []string
+		if err := tx.SelectContext(ctx, &memberEmails, `SELECT u.email FROM team_member m JOIN platform_user u ON u.id = m.user_id
+	WHERE m.team_id = ? AND m.status = 'active' AND u.email = ?`, p.TeamID, p.Email); err != nil {
 			return fmt.Errorf("platformstore: invite membership: %w", err)
 		}
-		if active > 0 {
-			return ErrAlreadyMember
+		for _, email := range memberEmails {
+			if email == p.Email {
+				return ErrAlreadyMember
+			}
 		}
 		if err := letterCapTx(ctx, tx, p.Email, p.Now, p.MaxPerHour); err != nil {
 			return err
 		}
-		var id int64
-		err := tx.GetContext(ctx, &id, `SELECT id FROM team_invite
-WHERE team_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE`, p.TeamID, p.Email)
+		var existing struct {
+			ID    int64  `db:"id"`
+			Email string `db:"email"`
+		}
+		err := tx.GetContext(ctx, &existing, `SELECT id, email FROM team_invite
+	WHERE team_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL ORDER BY id DESC LIMIT 1 FOR UPDATE`, p.TeamID, p.Email)
+		if err == nil && existing.Email != p.Email {
+			err = sql.ErrNoRows
+		}
+		id := existing.ID
 		switch {
 		case isNoRows(err):
 			r, err := tx.ExecContext(ctx, `INSERT INTO team_invite (team_id, email, role, permissions, token_hash, invited_by, expires_at, created_at)

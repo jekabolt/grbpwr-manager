@@ -40,11 +40,16 @@ func (s *Store) InviteByToken(ctx context.Context, tokenHash string, now time.Ti
 		}
 		return Invite{}, fmt.Errorf("platformstore: read invite: %w", err)
 	}
-	var n int
-	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM platform_user WHERE email = ? AND status <> 'pending'`, inv.Email); err != nil {
+	var emails []string
+	if err := s.db.SelectContext(ctx, &emails, `SELECT email FROM platform_user WHERE email = ? AND status <> 'pending'`, inv.Email); err != nil {
 		return Invite{}, fmt.Errorf("platformstore: invite account: %w", err)
 	}
-	inv.AccountExists = n > 0
+	for _, email := range emails {
+		if email == inv.Email {
+			inv.AccountExists = true
+			break
+		}
+	}
 	return inv, nil
 }
 

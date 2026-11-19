@@ -198,7 +198,6 @@ type ProviderResult struct {
 // within its 60 s). Every refusal writes nothing. A concurrent first sign-in of the same identity
 // is retried once and then lands on the known-identity path.
 func (s *Store) CompleteProviderSignIn(ctx context.Context, in ProviderSignIn, p ProviderParams) (ProviderResult, error) {
-	in.Subject = strings.TrimSpace(in.Subject)
 	if (in.Provider != ProviderGoogle && in.Provider != ProviderApple) || in.Subject == "" || len(in.Subject) > 255 {
 		return ProviderResult{}, fmt.Errorf("platformstore: provider sign-in needs a provider and a subject")
 	}
@@ -220,13 +219,18 @@ func (s *Store) CompleteProviderSignIn(ctx context.Context, in ProviderSignIn, p
 }
 
 func (s *Store) completeProvider(ctx context.Context, in ProviderSignIn, p ProviderParams) (ProviderResult, error) {
-	var known []int64
-	if err := s.db.SelectContext(ctx, &known, `SELECT user_id FROM platform_identity WHERE provider = ? AND subject = ?`,
+	var known []struct {
+		UserID  int64  `db:"user_id"`
+		Subject string `db:"subject"`
+	}
+	if err := s.db.SelectContext(ctx, &known, `SELECT user_id, subject FROM platform_identity WHERE provider = ? AND subject = ?`,
 		in.Provider, in.Subject); err != nil {
 		return ProviderResult{}, fmt.Errorf("platformstore: find identity: %w", err)
 	}
-	if len(known) > 0 {
-		return s.signInKnownIdentity(ctx, in, known[0], p)
+	for _, identity := range known {
+		if identity.Subject == in.Subject {
+			return s.signInKnownIdentity(ctx, in, identity.UserID, p)
+		}
 	}
 	if p.Email == "" || strings.TrimSpace(in.Email) == "" || !in.EmailVerified || !in.EmailAuthoritative {
 		return ProviderResult{}, ErrProviderUnverified
