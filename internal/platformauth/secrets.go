@@ -29,6 +29,7 @@ const (
 	PurposeVerify  = "verify"
 	PurposeReset   = "reset"
 	PurposeHandoff = "handoff"
+	PurposeSignIn  = "signin"
 )
 
 // tokenBytes is the entropy of a link token and of a hand-off code (256 bits).

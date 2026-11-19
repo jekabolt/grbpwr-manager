@@ -14,11 +14,15 @@ import (
 
 // Lifetimes (02-DESIGN §4, §5, §8).
 const (
-	VerifyTTL         = 24 * time.Hour
-	ResetTTL          = time.Hour
-	HandoffTTL        = 60 * time.Second
-	HandoffLongTTL    = 10 * time.Minute // issued by VerifyEmail / AcceptInvite
-	RootTokenTTL      = 10 * time.Minute
+	VerifyTTL      = 24 * time.Hour
+	ResetTTL       = time.Hour
+	HandoffTTL     = 60 * time.Second
+	HandoffLongTTL = 10 * time.Minute // issued by VerifyEmail / AcceptInvite
+	// RootSessionTTL is the root session's absolute lifetime from sign-in (password or provider); it
+	// is never renewed (teams O §5).
+	RootSessionTTL = 30 * 24 * time.Hour
+	// SignInCodeTTL is the provider sign-in code's lifetime (single use, hashed).
+	SignInCodeTTL     = 60 * time.Second
 	PendingTeamTTL    = 48 * time.Hour
 	InviteLetterTTL   = 7 * 24 * time.Hour
 	CodeFailureWindow = 24 * time.Hour
@@ -31,7 +35,13 @@ const (
 	MaxCodeTriesPerIPHr  = 30
 	MaxLettersPerEmailHr = 3
 	MaxSignUpsPerIPHr    = 5
-	MaxOwnedTeams        = 3
+	// MaxCreateTeamsPerHr bounds CreateTeam per account (abuse, not a product cap: own teams have
+	// none, only the operator's approval limits them).
+	MaxCreateTeamsPerHr = 5
+	// MaxLogoSetsPerHr bounds SetTeamLogo per account; MaxLogoDecodes bounds the logos decoded at
+	// once across the process (memory).
+	MaxLogoSetsPerHr = 30
+	MaxLogoDecodes   = 2
 )
 
 // Field limits.

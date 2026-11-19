@@ -186,6 +186,7 @@ type Server struct {
 	fileProxyHandler        http.Handler
 	tcArchiveUploadHandler  http.Handler
 	fileLinkHandler         http.Handler
+	teamLogoHandler         http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -331,6 +332,14 @@ func (s *Server) SetRunPackHandler(h http.Handler) {
 // вернули в `team`, обязан быть мёртв — см. internal/fileaccess.
 func (s *Server) SetFileLinkHandler(h http.Handler) {
 	s.fileLinkHandler = h
+}
+
+// SetTeamLogoHandler registers the public team logo route (GET / HEAD /api/auth/team-logo/{slug},
+// teams mode only): a plain handler next to the AuthService gateway mount, chi prefers its static
+// segment over the mount's catch-all. Public like the address check; its body is a GET, so the
+// /api/auth body limit does not concern it.
+func (s *Server) SetTeamLogoHandler(h http.Handler) {
+	s.teamLogoHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -767,6 +776,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		r.With(limitBody(maxAdminJSONBodyBytes)).Mount("/admin", auth.WithAuth(adminHandler))
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/frontend", frontendHandler)
 		r.With(limitBody(maxJSONBodyBytes)).Mount("/auth", authHandler)
+		// The public team logo (teams mode): HEAD too, so a probe gets the same 404 as GET.
+		if s.teamLogoHandler != nil {
+			r.Method(http.MethodGet, "/auth/team-logo/{slug}", s.teamLogoHandler)
+			r.Method(http.MethodHead, "/auth/team-logo/{slug}", s.teamLogoHandler)
+		}
 		// The operator console (teams mode only): PlatformService over the gateway; the gRPC
 		// interceptor checks the console token on the loopback hop.
 		if platformHandler != nil {

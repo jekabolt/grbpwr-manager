@@ -127,3 +127,43 @@ func (s *Server) AcceptInvite(ctx context.Context, req *auth.AcceptInviteRequest
 	}
 	return svc.AcceptInvite(ctx, req)
 }
+
+func (s *Server) ListMyTeams(ctx context.Context, req *auth.ListMyTeamsRequest) (*auth.ListMyTeamsResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ListMyTeams(ctx, bearer(ctx), req)
+}
+
+func (s *Server) CreateTeam(ctx context.Context, req *auth.CreateTeamRequest) (*auth.CreateTeamResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.CreateTeam(ctx, bearer(ctx), req)
+}
+
+func (s *Server) GetSignInOptions(ctx context.Context, req *auth.GetSignInOptionsRequest) (*auth.GetSignInOptionsResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.GetSignInOptions(ctx, req)
+}
+
+func (s *Server) ExchangeSignInCode(ctx context.Context, req *auth.ExchangeSignInCodeRequest) (*auth.ExchangeSignInCodeResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ExchangeSignInCode(ctx, req)
+}
+
+func (s *Server) SetTeamLogo(ctx context.Context, req *auth.SetTeamLogoRequest) (*auth.SetTeamLogoResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.SetTeamLogo(ctx, bearer(ctx), req)
+}

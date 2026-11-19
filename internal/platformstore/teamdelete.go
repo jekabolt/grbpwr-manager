@@ -29,16 +29,37 @@ type DeletedTeam struct {
 //     ExchangeHandoff, ExchangeOperatorHandoff, both commits of AcceptInvite), so sign-ins of one
 //     team do not queue behind each other, but none of them can start or finish across a status
 //     change: a session, code or membership made after a delete committed sees status deleted
-//     and is refused, and DeleteTeam revokes whatever committed before it;
+//     and is refused, and DeleteTeam revokes whatever committed before it; CreateTeam (root
+//     session) and SignUp lock only an expired pending team that holds the address they want (FOR
+//     UPDATE, first, to delete it), then insert a new row, which is theirs alone until they commit;
+//     1a. the team's logo (team_logo), right after its own team row and only by a transaction that
+//     holds that row: SetTeamLogo (FOR UPDATE), the team-creating transactions (the row they
+//     inserted), every delete of a team row (the pending sweep, SignUp's pending replace,
+//     DeclineTeam, the provider claim of a pending account) deletes the logo first;
 //  2. the account (platform_user);
+//     2a. its provider identities (platform_identity), right after the account: the provider
+//     completion holds the account before it writes an identity (FOR UPDATE before it inserts one,
+//     FOR SHARE before it stamps a known one); it reads an identity without a lock only to learn
+//     which account to take, and a concurrent first insert of the same identity starts it over;
 //  3. the membership (team_member);
 //  4. sessions (user_session);
 //  5. invites (team_invite);
 //  6. tokens and hand-off codes (email_token).
 //
+// oauth_state stands outside the order: it is created and consumed each in its own single-statement
+// transaction, never while any other lock is held, and nothing else ever locks it.
+//
 // For one team the team row serialises every pair of team-locking transactions, so what follows
 // it cannot close a cycle between them. Transactions that never lock the team row (member change,
-// password change, invite resend / revoke, sign-out) keep 2–6. Two known exceptions, both safe:
+// password change, invite resend / revoke, sign-out, the provider completion of an active or new
+// account, the sign-in code exchange) keep 2–6. The provider claim of a pending account locks the
+// account and then that account's pending teams (2 before 1), as SignUp's pending replace already
+// does, and deletes them before it touches any session or token of the account, so it never holds
+// a token the pending sweep (team, then that team's tokens) waits for. A pending team has no
+// member, session, invite or hand-off: the sweep never reaches an account through it, and the only
+// other path from a pending team row to an account is SignUp's address check — the shape two
+// sign-ups of one email already have today (InnoDB picks a victim; the claim answers try_again).
+// Two known exceptions, both safe:
 // AcceptInvite locks its invite right after the team row, before the account and the membership
 // (it learns the account from the invite; nothing that holds an account, membership or session
 // asks for an invite after it); the sign-up confirm locks its token before its team, which is

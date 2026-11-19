@@ -19,9 +19,11 @@ type tokenRow struct {
 	CodeAttempts int            `db:"code_attempts"`
 	ExpiresAt    time.Time      `db:"expires_at"`
 	UsedAt       sql.NullTime   `db:"used_at"`
+	// ParentSID is the root session a hand-off code was issued from (NULL = none).
+	ParentSID sql.NullString `db:"parent_sid"`
 }
 
-const tokenColumns = `id, user_id, team_id, purpose, code_hash, code_attempts, expires_at, used_at`
+const tokenColumns = `id, user_id, team_id, purpose, code_hash, code_attempts, expires_at, used_at, parent_sid`
 
 // CodeAttempt is one typed (email, code) pair against a letter of Purpose.
 type CodeAttempt struct {

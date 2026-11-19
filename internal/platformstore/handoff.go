@@ -23,6 +23,8 @@ type MemberTeam struct {
 	Name   string `db:"name"`
 	Role   string `db:"role"`
 	Status string `db:"status"`
+	// LogoSHA is the sha256 of the team's logo, "" when it has none.
+	LogoSHA string `db:"logo_sha"`
 }
 
 // CreateSession inserts a user_session row. teamID 0 = none (root, console). credGen is the
@@ -34,12 +36,22 @@ func (s *Store) CreateSession(ctx context.Context, sid string, userID, teamID in
 }
 
 func createSession(ctx context.Context, e sqlx.ExecerContext, sid string, userID, teamID int64, aud string, credGen int64, now time.Time) error {
-	var team any
+	return createSessionTx(ctx, e, sid, userID, teamID, aud, "", credGen, now)
+}
+
+// createSessionTx is createSession with the root session the new one was opened from (parentSID,
+// "" = none): a root sign-out revokes every session that names it.
+func createSessionTx(ctx context.Context, e sqlx.ExecerContext, sid string, userID, teamID int64, aud, parentSID string,
+	credGen int64, now time.Time) error {
+	var team, parent any
 	if teamID > 0 {
 		team = teamID
 	}
-	r, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at)
-SELECT ?, id, ?, ?, ?, ? FROM platform_user WHERE id = ? AND credential_gen = ?`, sid, team, aud, now, now, userID, credGen)
+	if parentSID != "" {
+		parent = parentSID
+	}
+	r, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at, parent_sid)
+SELECT ?, id, ?, ?, ?, ?, ? FROM platform_user WHERE id = ? AND credential_gen = ?`, sid, team, aud, now, now, parent, userID, credGen)
 	if err != nil {
 		return fmt.Errorf("platformstore: create session: %w", err)
 	}
@@ -63,8 +75,8 @@ func (s *Store) RevokeSession(ctx context.Context, sid string, now time.Time) er
 // a team waiting for approval (review) included — the root list shows it marked.
 func (s *Store) MemberTeams(ctx context.Context, userID int64) ([]MemberTeam, error) {
 	var out []MemberTeam
-	if err := s.db.SelectContext(ctx, &out, `SELECT m.team_id, t.slug, t.name, m.role, t.status
-FROM team_member m JOIN team t ON t.id = m.team_id
+	if err := s.db.SelectContext(ctx, &out, `SELECT m.team_id, t.slug, t.name, m.role, t.status, COALESCE(l.sha256, '') AS logo_sha
+FROM team_member m JOIN team t ON t.id = m.team_id LEFT JOIN team_logo l ON l.team_id = t.id
 WHERE m.user_id = ? AND m.status = 'active' AND t.status IN ('review', 'provisioning', 'active', 'suspended')
 ORDER BY t.name, t.id`, userID); err != nil {
 		return nil, fmt.Errorf("platformstore: member teams: %w", err)
@@ -77,8 +89,8 @@ ORDER BY t.name, t.id`, userID); err != nil {
 // in review, which has no workspace yet and is never entered.
 func (s *Store) Membership(ctx context.Context, userID, teamID int64) (MemberTeam, bool, error) {
 	var m MemberTeam
-	err := s.db.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
-FROM team_member m JOIN team t ON t.id = m.team_id
+	err := s.db.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status, COALESCE(l.sha256, '') AS logo_sha
+FROM team_member m JOIN team t ON t.id = m.team_id LEFT JOIN team_logo l ON l.team_id = t.id
 WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' AND t.status IN ('provisioning', 'active', 'suspended')`,
 		userID, teamID)
 	if isNoRows(err) {
@@ -96,7 +108,9 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' AND t.status IN ('
 // either sees the new row and expires it, or has revoked the session first (ErrTokenInvalid). The
 // team row is taken FOR SHARE first (lock order at DeleteTeam): a team that is not provisioning,
 // active or suspended — deleted a moment ago included — gets no code (ErrWrongTeamStatus), and a
-// delete waiting on the team row sees the new code and consumes it.
+// delete waiting on the team row sees the new code and consumes it. When rootSID is a root session
+// the code carries it as parent_sid (ExchangeHandoff copies it to the team session; the root's
+// sign-out expires the code if it is still unused); an operator's console session gives none.
 func (s *Store) IssueHandoff(ctx context.Context, userID int64, rootSID string, t NewToken, now time.Time) error {
 	t.Purpose = "handoff"
 	t.CodeHash = ""
@@ -113,13 +127,17 @@ func (s *Store) IssueHandoff(ctx context.Context, userID int64, rootSID string, 
 		default:
 			return ErrWrongTeamStatus
 		}
-		var n int
-		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM user_session
+		var auds []string
+		if err := tx.SelectContext(ctx, &auds, `SELECT aud FROM user_session
 WHERE sid = ? AND user_id = ? AND revoked_at IS NULL FOR SHARE`, rootSID, userID); err != nil {
 			return fmt.Errorf("platformstore: hand-off session: %w", err)
 		}
-		if n == 0 {
+		if len(auds) == 0 {
 			return ErrTokenInvalid
+		}
+		t.ParentSID = ""
+		if auds[0] == SessionRoot {
+			t.ParentSID = rootSID
 		}
 		return insertTokenTx(ctx, tx, userID, t, now)
 	})
@@ -190,7 +208,7 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, 
 		if err := consumeTx(ctx, tx, t.ID, now); err != nil {
 			return err
 		}
-		if err := createSession(ctx, tx, sid, u.ID, teamID, SessionTeam, u.CredGen, now); err != nil {
+		if err := createSessionTx(ctx, tx, sid, u.ID, teamID, SessionTeam, t.ParentSID.String, u.CredGen, now); err != nil {
 			return err
 		}
 		res = HandoffResult{User: u, Member: m}

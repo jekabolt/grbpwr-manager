@@ -26,6 +26,11 @@ func TestPlatformRPCsOffWithoutControlPlane(t *testing.T) {
 		"ResetPassword":        func() error { _, err := s.ResetPassword(ctx, &auth.ResetPasswordRequest{}); return err },
 		"GetInvite":            func() error { _, err := s.GetInvite(ctx, &auth.GetInviteRequest{}); return err },
 		"AcceptInvite":         func() error { _, err := s.AcceptInvite(ctx, &auth.AcceptInviteRequest{}); return err },
+		"ListMyTeams":          func() error { _, err := s.ListMyTeams(ctx, &auth.ListMyTeamsRequest{}); return err },
+		"CreateTeam":           func() error { _, err := s.CreateTeam(ctx, &auth.CreateTeamRequest{}); return err },
+		"GetSignInOptions":     func() error { _, err := s.GetSignInOptions(ctx, &auth.GetSignInOptionsRequest{}); return err },
+		"ExchangeSignInCode":   func() error { _, err := s.ExchangeSignInCode(ctx, &auth.ExchangeSignInCodeRequest{}); return err },
+		"SetTeamLogo":          func() error { _, err := s.SetTeamLogo(ctx, &auth.SetTeamLogoRequest{}); return err },
 	}
 	for name, call := range calls {
 		if c := status.Code(call()); c != codes.Unimplemented {
