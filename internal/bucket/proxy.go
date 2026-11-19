@@ -27,8 +27,8 @@ import (
 //   - the url is https, has no userinfo, and its host is not an IP literal;
 //   - our own host (CDN subdomain / bucket origin): the object is read BY KEY from our bucket with
 //     our credentials — no request ever goes to the host written in the url, so there is nothing to
-//     redirect and no address to aim at; the key must be in a media / pattern segment (never the
-//     files library, archives or imports) and, in teams mode, inside the caller's team prefix;
+//     redirect and no address to aim at; the key must sit in a folder on proxyFolders (an allow-list,
+//     not a deny-list) and, in teams mode, inside the caller's team prefix;
 //   - a read-only host (BUCKET_S3_READONLY_HOSTS, team #1 / mode off only): an https GET to that
 //     configured host, redirects refused, the dial refused when the name resolves to a loopback /
 //     private / link-local address;
@@ -113,14 +113,60 @@ func validFileKey(k string) bool {
 	return true
 }
 
-// proxyReadSegments: media lives under the base folder, patterns in their own segment. No archives,
-// no imports; the files library is refused by isAllowedManagedReadKey itself.
-func (b *Bucket) proxyReadSegments() []string {
-	segments := make([]string, 0, 2)
-	if base := strings.Trim(strings.TrimSpace(b.BaseFolder), "/"); base != "" {
-		segments = append(segments, base)
+// designFolder is where AI design media is written (designgen.designMediaFolder, and the band
+// render in apisrv/admin/design_band.go).
+const designFolder = "design"
+
+// proxyDeniedSegments may not appear ANYWHERE in a proxied key, even under an allowed folder: the
+// files library (its own capped reader), shipping labels, tech-card archives and imports. These are
+// private objects handed out as short-lived signed links behind their own permissions; the proxy
+// reads with OUR credentials, so letting one through would turn an expired signature or a missing
+// permission into a read.
+func proxyDeniedSegment(segment string) bool {
+	switch segment {
+	case libraryFolder, labelFolder, ArchiveSegment, ImportSegment:
+		return true
 	}
-	return append(segments, patternFolder)
+	return false
+}
+
+// proxyKeyAllowed is the allow-list: the key is {base}/{folder}/… for team #1 (and mode off) or
+// {base}/t/{file_key}/{folder}/… for another team, where {folder} is one the SPA really reads through
+// the proxy: card media (the base folder itself — constructFullPath is called with it as folder), AI
+// design media, pattern files (DXF quick view, markers). Everything else — an unknown folder, a key
+// straight under the base, a denied segment anywhere, an empty or dot segment — is refused. Which
+// team the prefix belongs to is TeamOwnsKey's question, asked after this one.
+func (b *Bucket) proxyKeyAllowed(key string) bool {
+	base := strings.Trim(strings.TrimSpace(b.BaseFolder), "/")
+	segs := strings.Split(key, "/")
+	for _, s := range segs {
+		if s == "" || s == "." || s == ".." || proxyDeniedSegment(s) {
+			return false
+		}
+	}
+	rest := segs
+	if base != "" {
+		if rest[0] != base {
+			return false
+		}
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && rest[0] == teamSegment {
+		if len(rest) < 2 {
+			return false
+		}
+		rest = rest[2:]
+	}
+	if len(rest) < 2 { // a folder and at least an object name
+		return false
+	}
+	switch rest[0] {
+	case designFolder, patternFolder:
+		return true
+	case base:
+		return base != ""
+	}
+	return false
 }
 
 // parseProxyURL is the first gate: https, a host that is a name (not an IP literal), no userinfo.
@@ -158,8 +204,8 @@ func (b *Bucket) OpenProxyObject(ctx context.Context, rawURL string) (ProxyObjec
 		return ProxyObject{}, fmt.Errorf("%w: %v", ErrProxyRefused, err)
 	}
 	key = strings.Trim(key, "/")
-	if !isAllowedManagedReadKey(key, b.proxyReadSegments()) {
-		return ProxyObject{}, fmt.Errorf("%w: key %q is not a media or pattern object", ErrProxyRefused, key)
+	if !b.proxyKeyAllowed(key) {
+		return ProxyObject{}, fmt.Errorf("%w: key %q is not in a proxied folder", ErrProxyRefused, key)
 	}
 	if !TeamOwnsKey(ctx, b.Config, key) {
 		return ProxyObject{}, fmt.Errorf("%w: key %q is outside the team's prefix", ErrProxyRefused, key)
@@ -224,27 +270,38 @@ func (b *Bucket) openProxyReadOnly(ctx context.Context, u *url.URL) (ProxyObject
 	}, nil
 }
 
-// proxyClient: redirects refused (a redirect would be a fetch of a host nobody configured) and, on
-// the real transport, a dial to a non-public address refused. Tests inject legacyHTTP (a loopback
-// TLS server), which keeps the redirect rule; the dial guard is proven on its own.
+// proxyClient is the ONE client of read-only proxy reads, built on first use and kept on the Bucket:
+// a transport per request would hold its idle connections until IdleConnTimeout, so repeated small
+// reads would pile up file descriptors. Redirects are refused (a redirect would be a fetch of a host
+// nobody configured) and, on the real transport, a dial to a non-public address is refused. Tests
+// inject legacyHTTP (a loopback TLS server), which keeps the redirect rule; the dial guard is proven
+// on its own.
 func (b *Bucket) proxyClient() *http.Client {
-	c := &http.Client{Timeout: 2 * time.Minute, Transport: publicOnlyTransport()}
-	if b.legacyHTTP != nil {
-		cp := *b.legacyHTTP
-		c = &cp
-	}
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return c
+	b.proxyOnce.Do(func() {
+		c := &http.Client{Timeout: 2 * time.Minute, Transport: publicOnlyTransport()}
+		if b.legacyHTTP != nil {
+			cp := *b.legacyHTTP
+			c = &cp
+		}
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		b.proxyHTTP = c
+	})
+	return b.proxyHTTP
 }
 
 // publicOnlyTransport is the default transport with a dialer that refuses loopback, private,
 // link-local, multicast and unspecified addresses AFTER name resolution (so a DNS answer cannot
-// point the proxy inside the network) and refuses any proxy from the environment.
+// point the proxy inside the network), refuses any proxy from the environment, and caps the
+// connections per host (a burst of reads queues instead of opening sockets without bound).
 func publicOnlyTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Proxy = nil
 	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second, Control: refuseNonPublicDial}
 	t.DialContext = d.DialContext
+	t.MaxConnsPerHost = 16
+	t.MaxIdleConnsPerHost = 4
+	t.MaxIdleConns = 16
+	t.IdleConnTimeout = 90 * time.Second
 	return t
 }
 

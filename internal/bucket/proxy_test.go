@@ -129,8 +129,8 @@ func TestProxyServesOwnTeamFile(t *testing.T) {
 
 func TestProxyRefusesAnotherTeamsKey(t *testing.T) {
 	b, store := newProxyBucket(t, true)
-	keyB := "probe/t/" + fileKeyB + "/2026/july/b.webp"
-	legacy := "probe/2026/july/one.webp"
+	keyB := "probe/t/" + fileKeyB + "/probe/2026/july/b.webp"
+	legacy := "probe/probe/2026/july/one.webp"
 	store.objects[keyB] = proxyObj{body: []byte("b"), contentType: "image/webp"}
 	store.objects[legacy] = proxyObj{body: []byte("1"), contentType: "image/webp"}
 
@@ -174,6 +174,52 @@ func TestProxyRefusesPrivateSegments(t *testing.T) {
 	require.Empty(t, store.log())
 }
 
+// Only the folders the SPA really reads through the proxy pass: card media ({base}/{base}/…), AI
+// design media ({base}/design/…) and pattern files ({base}/tech-card-patterns/…), for team #1 under
+// {base}/ and for another team under {base}/t/{file_key}/. Private folders inside a team's own prefix
+// (a stale signed link to a tech-card ZIP, an import, a shipping label, a library file) and any folder
+// nobody listed are refused before S3 is asked — the proxy reads with OUR credentials, so it must not
+// turn an expired signature or a missing permission into a read.
+func TestProxyAllowsOnlyListedFolders(t *testing.T) {
+	b, store := newProxyBucket(t, true)
+	own := "probe/t/" + fileKeyA + "/"
+	refused := map[string]context.Context{}
+	for _, rest := range []string{
+		ArchiveSegment + "/abc/techcard-1.zip",
+		ImportSegment + "/abc/in.zip",
+		"probe/" + ArchiveSegment + "/abc/techcard-1.zip",
+		"shipping-labels/2026/july/label.pdf",
+		"files-library/2026/july/secret.pdf",
+		"files-library/previews/2026/july/p.webp",
+		"other/2026/july/x.webp",
+		"2026/july/x.webp",
+		"probe",
+	} {
+		refused[own+rest] = teamCtx(2, fileKeyA)
+		refused["probe/"+rest] = teamCtx(1, "")
+	}
+	refused[ArchiveSegment+"/probe/a.zip"] = teamCtx(1, "")
+	for key, ctx := range refused {
+		_, err := b.OpenProxyObject(ctx, cdnURL(key))
+		require.ErrorIsf(t, err, ErrProxyRefused, "%s", key)
+	}
+	require.Empty(t, store.log(), "a refused key never reaches S3")
+
+	for key, ctx := range map[string]context.Context{
+		own + "probe/2026/july/a.webp":             teamCtx(2, fileKeyA),
+		own + "design/2026/july/d.webp":            teamCtx(2, fileKeyA),
+		own + "tech-card-patterns/2026/july/p.dxf": teamCtx(2, fileKeyA),
+		"probe/probe/2026/july/a.webp":             teamCtx(1, ""),
+		"probe/design/2026/july/d.webp":            teamCtx(1, ""),
+		"probe/tech-card-patterns/2026/july/p.dxf": teamCtx(1, ""),
+	} {
+		store.objects[key] = proxyObj{body: []byte("ok"), contentType: "image/webp"}
+		o, err := b.OpenProxyObject(ctx, cdnURL(key))
+		require.NoErrorf(t, err, "%s", key)
+		o.Body.Close()
+	}
+}
+
 func TestProxyRefusesForeignHostHTTPAndIPLiterals(t *testing.T) {
 	b, store := newProxyBucket(t, false)
 	for raw, want := range map[string]error{
@@ -203,7 +249,7 @@ func TestProxyRefusesForeignHostHTTPAndIPLiterals(t *testing.T) {
 func TestProxyOversizedOwnObjectRefusedBeforeBody(t *testing.T) {
 	b, store := newProxyBucket(t, false)
 	b.proxyMax = 16
-	key := "probe/2026/july/big.glb"
+	key := "probe/probe/2026/july/big.glb"
 	store.objects[key] = proxyObj{body: []byte(strings.Repeat("x", 17)), contentType: "model/gltf-binary"}
 	_, err := b.OpenProxyObject(context.Background(), cdnURL(key))
 	require.ErrorIs(t, err, ErrProxyTooLarge)
@@ -216,7 +262,7 @@ func TestProxyOversizedOwnObjectRefusedBeforeBody(t *testing.T) {
 
 func TestProxyMissingObjectIsNotFound(t *testing.T) {
 	b, _ := newProxyBucket(t, false)
-	_, err := b.OpenProxyObject(context.Background(), cdnURL("probe/2026/july/gone.webp"))
+	_, err := b.OpenProxyObject(context.Background(), cdnURL("probe/probe/2026/july/gone.webp"))
 	require.ErrorIs(t, err, ErrProxyNotFound)
 }
 
@@ -354,4 +400,30 @@ func TestTeamOwnsKeyModeOff(t *testing.T) {
 	require.True(t, TeamOwnsKey(teamCtx(2, fileKeyA), c, "probe/t/"+fileKeyA+"/a.webp"))
 	require.False(t, TeamOwnsKey(teamCtx(2, fileKeyA), c, "probe/t/"+fileKeyA))
 	require.False(t, TeamOwnsKey(context.Background(), nil, "x"))
+}
+
+// Every read-only read goes through ONE client and transport per Bucket: a fresh transport per request
+// would keep its idle connections until IdleConnTimeout, so repeated small reads would pile up file
+// descriptors. The shared transport keeps the dial guard and a finite per-host connection cap.
+func TestProxyClientIsSharedAndBounded(t *testing.T) {
+	b, _ := newProxyBucket(t, false)
+	first, second := b.proxyClient(), b.proxyClient()
+	require.Same(t, first, second)
+	require.Same(t, first.Transport, second.Transport)
+	tr, ok := first.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Positive(t, tr.MaxConnsPerHost)
+	require.Positive(t, tr.MaxIdleConnsPerHost)
+	require.Nil(t, tr.Proxy)
+	require.NotNil(t, first.CheckRedirect)
+
+	// Two reads in a row (both refused at the guarded dial: the name resolves to loopback) leave the
+	// same client in place.
+	b.Config.ReadOnlyHosts = "localhost:1"
+	for i := 0; i < 2; i++ {
+		_, err := b.OpenProxyObject(context.Background(), "https://localhost:1/grbpwr-com/2024/may/a.webp")
+		require.Error(t, err)
+		require.ErrorIs(t, err, errNonPublicAddress)
+	}
+	require.Same(t, first, b.proxyClient())
 }

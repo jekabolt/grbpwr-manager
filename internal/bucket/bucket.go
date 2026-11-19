@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -65,6 +66,9 @@ type Bucket struct {
 	legacyHTTP *http.Client
 	// proxyMax caps one proxied object; 0 = MaxProxyObjectBytes (tests lower it).
 	proxyMax int64
+	// proxyOnce/proxyHTTP: the one guarded client of read-only proxy reads (proxyClient).
+	proxyOnce sync.Once
+	proxyHTTP *http.Client
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
