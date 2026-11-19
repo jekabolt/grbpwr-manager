@@ -1,6 +1,12 @@
 version: v1
 managed:
   enabled: true
+  # Generated Go lives in this module under proto/gen/<dir>; auth imports admin (TeamBrand), so every
+  # package needs its real import path whatever go_package its file declares.
+  go_package_prefix:
+    default: github.com/jekabolt/grbpwr-manager/proto/gen
+    except:
+      - buf.build/googleapis/googleapis
 plugins:
   - plugin: buf.build/protocolbuffers/go:v1.36.12
     out: proto/gen
