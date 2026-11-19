@@ -51,7 +51,9 @@ func dsn(t *testing.T, db string) string {
 	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), host, port, db)
 }
 
-func openFresh(t *testing.T) *platformstore.Store {
+// freshDSN recreates the package's control-plane database empty (dropped again at cleanup) and
+// returns its DSN; nothing is migrated yet.
+func freshDSN(t *testing.T) string {
 	t.Helper()
 	d := dsn(t, cpDB)
 	if err := testdbguard.CheckMySQLDSN(d); err != nil {
@@ -73,6 +75,12 @@ func openFresh(t *testing.T) *platformstore.Store {
 			r.Close()
 		}
 	})
+	return d
+}
+
+func openFresh(t *testing.T) *platformstore.Store {
+	t.Helper()
+	d := freshDSN(t)
 	ctx := context.Background()
 	st, err := platformstore.Open(ctx, d)
 	if err != nil {
@@ -89,12 +97,13 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// 0001 control plane + 0002 team_review (B3, columns only) + 0003 provision_lease (B4, one table)
 	// + 0004 credential_gen (I1, one column) + 0005 team_delete (D1, columns and keys only)
 	// + 0006 oauth (O0: platform_identity, oauth_state, team_logo + columns)
-	// + 0007 exact identity collations (column changes only) + 0008 team_brand (W1, one table).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 8 {
+	// + 0007 exact identity collations (column changes only) + 0008 team_brand (W1, one table)
+	// + 0009 profile (P0: account_avatar, oauth_link_ticket + columns, keys and ENUM members).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 9 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 18 {
-		t.Fatalf("tables = %d (want 17 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 20 {
+		t.Fatalf("tables = %d (want 19 + platform_migrations), %v", n, err)
 	}
 	return st
 }
