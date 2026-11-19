@@ -10,7 +10,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 )
 
-// MigrateFleetOnce brings every active / suspended team and every ready spare whose schema_version
+// MigrateFleetOnce brings every active / suspended team (and every deleted one whose wipe is still
+// ahead, so a restore finds it current) and every ready spare whose schema_version
 // is not the binary's latest forward, one database at a time, then checks its fingerprint against
 // the reference (G8). Team #1 is never migrated here (store.New does it at boot); it is only
 // fingerprinted and compared. Each database is migrated under its lease (DBLeaseKey, scheduling)

@@ -52,6 +52,20 @@ func (s *Server) platformService() (*platformauth.Service, error) {
 	return s.platform.svc, s.platform.svcErr
 }
 
+// CheckOperatorPassword checks the console operator's own password through the identity service
+// (PlatformService.DeleteTeam's confirmation; the sign-in limiters guard it). Teams mode off or an
+// unbuilt service: an error that is neither platformauth answer (the caller answers it as internal).
+func (s *Server) CheckOperatorPassword(ctx context.Context, userID int64, password string) error {
+	svc, err := s.platformService()
+	if err != nil {
+		return err
+	}
+	if svc == nil {
+		return errors.New("auth: teams mode is off")
+	}
+	return svc.CheckOperatorPassword(ctx, userID, password)
+}
+
 // closePlatformService stops the service's limiters (StopRateLimiter calls it; idempotent).
 func (s *Server) closePlatformService() {
 	if s.platform.svc != nil {

@@ -118,6 +118,11 @@ func (d *directory) BySlug(ctx context.Context, slug string) (tenant.Team, error
 	c, ok := d.bySlug[slug]
 	d.mu.Unlock()
 	if ok && d.now().Sub(c.at) <= directoryTTL {
+		// ByID caches a team under its slug in any status: a deleted one read by id (the edge
+		// does on every token) must still not resolve by slug.
+		if c.team.Status == tenant.StatusDeleted {
+			return tenant.Team{}, tenant.ErrNotFound
+		}
 		return c.team, nil
 	}
 

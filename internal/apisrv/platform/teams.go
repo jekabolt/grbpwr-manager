@@ -27,6 +27,7 @@ const (
 	statusProvisioning = "provisioning"
 	statusPending      = "pending"
 	statusReview       = "review"
+	statusDeleted      = "deleted"
 )
 
 // SetConfig hands the server the platform config (team addresses for letters). Called once at boot.
@@ -82,9 +83,18 @@ func storeErr(ctx context.Context, op string, err error) error {
 	return status.Error(codes.Internal, "internal error")
 }
 
-// team reads one team by slug for a console call.
+// team reads one team by slug for a console action: a deleted team answers wrong_status.
 func (s *Server) team(ctx context.Context, slug string) (platformstore.ConsoleTeam, error) {
 	t, err := s.st.ConsoleTeam(ctx, slug)
+	if err != nil {
+		return platformstore.ConsoleTeam{}, storeErr(ctx, "read team", err)
+	}
+	return t, nil
+}
+
+// teamWithDeleted is team that also reads a deleted team (GetTeam, DeleteTeam, RestoreTeam).
+func (s *Server) teamWithDeleted(ctx context.Context, slug string) (platformstore.ConsoleTeam, error) {
+	t, err := s.st.ConsoleTeamWithDeleted(ctx, slug)
 	if err != nil {
 		return platformstore.ConsoleTeam{}, storeErr(ctx, "read team", err)
 	}
@@ -102,6 +112,9 @@ func teamPB(t platformstore.ConsoleTeam, spend map[int64]platformstore.AISpend) 
 		Features:        []string{},
 		AiSpendMonthUsd: decimal.Zero.StringFixed(2),
 		SchemaOk:        t.SchemaOK,
+	}
+	if t.Status == string(tenant.StatusDeleted) && t.PurgeAt.Valid {
+		out.PurgeAt = timestamppb.New(t.PurgeAt.Time)
 	}
 	if t.Status == string(tenant.StatusReview) {
 		// A team waiting for approval has no workspace: its creator, nothing switched, no spend.
@@ -131,13 +144,16 @@ func consoleStatus(st string) string {
 		return statusProvisioning
 	case tenant.StatusReview:
 		return statusReview
+	case tenant.StatusDeleted:
+		return statusDeleted
 	default:
 		return statusPending
 	}
 }
 
-// ListTeams is the console matrix: every team that is not deleted, with people, switched-on
-// features, this month's AI spend and schema health. A fixed number of control-plane queries.
+// ListTeams is the console matrix: every team that is not deleted, then the deleted ones whose
+// data is not wiped yet (status deleted, purge_at), with people, switched-on features, this month's
+// AI spend and schema health. A fixed number of control-plane queries.
 func (s *Server) ListTeams(ctx context.Context, req *pb_admin.ListTeamsRequest) (*pb_admin.ListTeamsResponse, error) {
 	if _, err := caller(ctx); err != nil {
 		return nil, err
@@ -166,12 +182,12 @@ func (s *Server) ListTeams(ctx context.Context, req *pb_admin.ListTeamsRequest) 
 	return out, nil
 }
 
-// GetTeam is one team with its active members.
+// GetTeam is one team with its active members; a deleted team whose data is not wiped yet too.
 func (s *Server) GetTeam(ctx context.Context, req *pb_admin.GetTeamRequest) (*pb_admin.GetTeamResponse, error) {
 	if _, err := caller(ctx); err != nil {
 		return nil, err
 	}
-	t, err := s.team(ctx, req.GetTeamSlug())
+	t, err := s.teamWithDeleted(ctx, req.GetTeamSlug())
 	if err != nil {
 		return nil, err
 	}
@@ -194,9 +210,9 @@ func (s *Server) GetTeam(ctx context.Context, req *pb_admin.GetTeamRequest) (*pb
 	return out, nil
 }
 
-// refreshed re-reads a team after a change and builds its console row.
+// refreshed re-reads a team after a change and builds its console row (a deleted team included).
 func (s *Server) refreshed(ctx context.Context, slug string) (*pb_admin.PlatformTeam, error) {
-	t, err := s.team(ctx, slug)
+	t, err := s.teamWithDeleted(ctx, slug)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@
 package platform
 
 import (
+	"context"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
@@ -19,6 +20,12 @@ type Server struct {
 	// invalidate drops a team's cached directory row and feature switches after an operator
 	// changes them (tenantbind.Binder.InvalidateTeam). nil = nothing to drop.
 	invalidate func(teamID int64)
+	// dropSession drops a revoked session from the edge's in-process cache
+	// (tenantbind.Binder.InvalidateSession). nil = nothing to drop.
+	dropSession func(sid string)
+	// checkPassword checks the calling operator's own console password under the sign-in limiters
+	// (platformauth.Service.CheckOperatorPassword). nil = DeleteTeam answers UNAVAILABLE.
+	checkPassword func(ctx context.Context, userID int64, password string) error
 	// cfg is the platform config (team addresses); budgetZone the owner's budget zone; now the
 	// clock (tests). Set by SetConfig / SetBudgetZone (teams.go).
 	cfg        platformstore.Config
@@ -34,4 +41,14 @@ func New(st *platformstore.Store) *Server {
 // SetInvalidator wires the team cache invalidation (called once at boot).
 func (s *Server) SetInvalidator(fn func(teamID int64)) {
 	s.invalidate = fn
+}
+
+// SetSessionInvalidator wires the edge's session cache drop (called once at boot).
+func (s *Server) SetSessionInvalidator(fn func(sid string)) {
+	s.dropSession = fn
+}
+
+// SetPasswordCheck wires the operator password check DeleteTeam confirms with (called once at boot).
+func (s *Server) SetPasswordCheck(fn func(ctx context.Context, userID int64, password string) error) {
+	s.checkPassword = fn
 }

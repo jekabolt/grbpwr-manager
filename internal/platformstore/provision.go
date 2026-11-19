@@ -427,11 +427,14 @@ WHERE lease_key = ? AND token = ? AND token <> '' AND expires_at > UTC_TIMESTAMP
 }
 
 // SchemaTeams lists active and suspended teams other than team #1 that have a database: team #1 is
-// migrated synchronously at boot, the rest by the fleet migrator.
+// migrated synchronously at boot, the rest by the fleet migrator. A deleted team whose wipe is still
+// ahead is listed too: RestoreTeam brings it back in one action, and it must not come back with a
+// schema behind the binary (every call would answer «team is being updated» until the next pass).
 func (s *Store) SchemaTeams(ctx context.Context) ([]SchemaTeam, error) {
 	var out []SchemaTeam
 	if err := s.db.SelectContext(ctx, &out, `SELECT id, slug, db_name, status, schema_version FROM team
-WHERE status IN ('active','suspended') AND id <> ? AND db_name IS NOT NULL ORDER BY id`, tenant.TeamOneID); err != nil {
+WHERE (status IN ('active','suspended') OR (status = 'deleted' AND purge_at > UTC_TIMESTAMP(3)))
+  AND id <> ? AND db_name IS NOT NULL ORDER BY id`, tenant.TeamOneID); err != nil {
 		return nil, fmt.Errorf("platformstore: schema teams: %w", err)
 	}
 	return out, nil
