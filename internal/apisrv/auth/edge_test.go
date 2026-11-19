@@ -473,6 +473,31 @@ func TestEdgeTeamOneLegacyInTeamsMode(t *testing.T) {
 	}
 }
 
+// Team #1 with a stored profile standard (TENANT_TEAM1_PROFILE=production): the edge gates it on
+// the set the binder computes from that row, never on the boot-time profile all.
+func TestEdgeTeamOneStandardProfileGatesPromo(t *testing.T) {
+	e := newEdge()
+	e.features[1] = feature.Effective(1, tenant.ProfileStandard, map[string]bool{
+		string(feature.Products): true, string(feature.AIProviders): true, string(feature.LocalAccounts): true,
+	})
+	srv := newEdgeServer(t, e)
+	tok := legacyToken(t, srv)
+	_, err := callAdmin(srv, "/admin.AdminService/ListPromos", tok, legacyOrigin)
+	if st, _ := status.FromError(err); st.Code() != codes.PermissionDenied || st.Message() != msgFeatureOff {
+		t.Fatalf("promo for team #1/standard: %v", err)
+	}
+	ctx, err := callAdmin(srv, writeMethod, tok, legacyOrigin)
+	if err != nil {
+		t.Fatalf("products call refused for team #1/standard: %v", err)
+	}
+	w, _ := GetWorkspace(ctx)
+	for _, k := range w.Features {
+		if k == feature.Promo || k == feature.Orders {
+			t.Fatalf("workspace of team #1/standard lists %s", k)
+		}
+	}
+}
+
 func TestEdgePlatformChain(t *testing.T) {
 	srv := newEdgeServer(t, newEdge())
 	const m = "/admin.PlatformService/ListTeams"
