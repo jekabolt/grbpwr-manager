@@ -185,7 +185,7 @@ func convertDecimal(value string) (decimal.Decimal, error) {
 // it from the main colour's hex (create) or the store keeps the stored one (update). The
 // sku_color_token is carried upper-cased for the store's immutability echo guard; it is never a
 // write of the token.
-func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string) (entity.ColorwayBodyInsert, error) {
+func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string, colors cache.ColorDict) (entity.ColorwayBodyInsert, error) {
 	if m == nil {
 		return entity.ColorwayBodyInsert{}, fmt.Errorf("merchandising is nil")
 	}
@@ -209,7 +209,7 @@ func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countr
 			return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code must be exactly 3 uppercase characters")
 		}
 		var ok bool
-		dictionaryColor, ok = cache.GetColorByCode(m.ColorCode)
+		dictionaryColor, ok = colors.ByCode(m.ColorCode)
 		if !ok {
 			return entity.ColorwayBodyInsert{}, fmt.Errorf("color_code %q is not in the color dictionary", m.ColorCode)
 		}
@@ -252,11 +252,11 @@ func convertMerchInsertToEntity(m *pb_common.ColorwayMerchandisingInsert, countr
 // no usable hex: required (CreateColorway) refuses with a field violation on
 // merchandising.color_code; not required (UpdateColorway) leaves it empty, which the store reads as
 // «keep the stored family».
-func ResolveColorwayFamily(prd *entity.ColorwayInsert, mainHex string, required bool) error {
+func ResolveColorwayFamily(prd *entity.ColorwayInsert, mainHex string, required bool, colors cache.ColorDict) error {
 	if prd == nil || prd.ProductBodyInsert.ColorCode != "" {
 		return nil
 	}
-	if nearest, ok := entity.NearestColourFamily(mainHex, cache.GetColors()); ok {
+	if nearest, ok := entity.NearestColourFamily(mainHex, colors.All()); ok {
 		prd.ProductBodyInsert.ColorCode = nearest.Code
 		prd.ProductBodyInsert.Color = nearest.Name
 		return nil
@@ -285,8 +285,8 @@ func ColorwayMainHex(dev *entity.ColorwayDevelopmentPatch) string {
 // CreateColorway/UpdateColorway request fields (merchandising + thumbnails + merch translations +
 // cost). Style facts are never part of it (R4). cost_price is optional COGS: absent/negative stays
 // invalid so the store leaves the stored value unchanged (COALESCE on update).
-func BuildColorwayInsertEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string, thumbnailMediaID, secondaryThumbnailMediaID int32, translations []*pb_common.ColorwayInsertTranslation, costPrice *pb_decimal.Decimal) (*entity.ColorwayInsert, error) {
-	body, err := convertMerchInsertToEntity(m, countryCode)
+func BuildColorwayInsertEntity(m *pb_common.ColorwayMerchandisingInsert, countryCode string, thumbnailMediaID, secondaryThumbnailMediaID int32, translations []*pb_common.ColorwayInsertTranslation, costPrice *pb_decimal.Decimal, colors cache.ColorDict) (*entity.ColorwayInsert, error) {
+	body, err := convertMerchInsertToEntity(m, countryCode, colors)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +455,7 @@ func convertTags(pbTags []*pb_common.ColorwayTagInsert) []entity.ColorwayTagInse
 // merchandising (colourway merch + style-resolved garment facts, output-only) plus merch translation
 // overrides and thumbnails. The old product_body/ColorwayBody wrapper was removed with the write
 // decomposition; the storefront uses its own StorefrontColorway (R3), never this admin projection.
-func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.ColorwayDisplay {
+func buildColorwayDisplayPb(display *entity.ColorwayDisplay, colors cache.ColorDict) *pb_common.ColorwayDisplay {
 	body := &display.ProductBody
 	bi := &body.ProductBodyInsert
 	tg, _ := ConvertEntityGenderToPbGenderEnum(bi.TargetGender)
@@ -486,7 +486,7 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 			Colours:            ColorwayColoursToPb(bi.Colours),
 			NameI18N:           ColorwayNameI18nToPb(bi.ColourNameI18n),
 			ColourName:         bi.Color,
-			DictionaryColor:    dictionaryColorToPb(bi.ColorCode),
+			DictionaryColor:    dictionaryColorToPb(bi.ColorCode, colors),
 			ColorHexOverride:   optionalStringFromNull(bi.ColorHexOverride),
 			CountryOfOrigin:    bi.CountryOfOrigin,
 			CountryCode:        bi.CountryCode.String,
@@ -510,12 +510,12 @@ func buildColorwayDisplayPb(display *entity.ColorwayDisplay) *pb_common.Colorway
 	}
 }
 
-func ConvertToPbProductFull(e *entity.ColorwayFull) (*pb_common.ColorwayFull, error) {
+func ConvertToPbProductFull(e *entity.ColorwayFull, colors cache.ColorDict) (*pb_common.ColorwayFull, error) {
 	if e == nil {
 		return nil, nil
 	}
 
-	pbProductDisplay := buildColorwayDisplayPb(&e.Product.ProductDisplay)
+	pbProductDisplay := buildColorwayDisplayPb(&e.Product.ProductDisplay, colors)
 
 	// Convert prices - place prices inside nested Product
 	pbPrices := convertEntityPricesToPb(e.Prices)
@@ -764,7 +764,7 @@ func StockChangeRowToProto(e *entity.StockChangeRow) *pb_admin.StockChangeRow {
 }
 
 // ConvertEntityProductToCommon converts entity.Colorway to pb_common.Colorway
-func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, error) {
+func ConvertEntityProductToCommon(e *entity.Colorway, colors cache.ColorDict) (*pb_common.Colorway, error) {
 	// Canonical translation name for the pretty slug — deterministic (default language, else the
 	// smallest language id), never the order-dependent Translations[0] (problem 030).
 	firstTranslationName := canonicalProductName(e.ProductDisplay.ProductBody.Translations)
@@ -774,8 +774,8 @@ func ConvertEntityProductToCommon(e *entity.Colorway) (*pb_common.Colorway, erro
 		CreatedAt:     timestamppb.New(e.CreatedAt),
 		UpdatedAt:     timestamppb.New(e.UpdatedAt),
 		Slug:          slug.ProductPath(firstTranslationName, e.SKU),
-		BaseSku:       e.SKU,                                     // R8: renamed from Sku
-		Display:       buildColorwayDisplayPb(&e.ProductDisplay), // R8: renamed from ProductDisplay
+		BaseSku:       e.SKU,                                             // R8: renamed from Sku
+		Display:       buildColorwayDisplayPb(&e.ProductDisplay, colors), // R8: renamed from ProductDisplay
 		Prices:        convertEntityPricesToPb(e.Prices),
 		SoldOut:       e.SoldOut,
 		Status:        pb_common.ColorwayLifecycleStatus(e.LifecycleStatus),

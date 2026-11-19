@@ -21,7 +21,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 		return nil, false, err
 	}
 
-	paymentMethod, err := validatePaymentMethod(orderNew.PaymentMethod)
+	paymentMethod, err := validatePaymentMethod(ctx, orderNew.PaymentMethod)
 	if err != nil {
 		return nil, false, err
 	}
@@ -30,7 +30,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 	if orderNew.ShippingAddress != nil {
 		shippingCountry = orderNew.ShippingAddress.Country
 	}
-	shipmentCarrier, err := validateShipmentCarrier(orderNew.ShipmentCarrierId, shippingCountry)
+	shipmentCarrier, err := validateShipmentCarrier(ctx, orderNew.ShipmentCarrierId, shippingCountry)
 	if err != nil {
 		return nil, false, err
 	}
@@ -54,7 +54,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 
 		orderNew.Items = mergeOrderItems(orderNew.Items)
 
-		promo, ok := cache.GetPromoByCode(orderNew.PromoCode)
+		promo, ok := cache.GetPromoByCode(ctx, orderNew.PromoCode)
 		if ok && promo.Voucher {
 			if !voucherWithinWindow(promo) {
 				return promoNotAllowedError()
@@ -93,7 +93,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 		}
 
 		freeShipping := false
-		complimentaryPrices := cache.GetComplimentaryShippingPrices()
+		complimentaryPrices := cache.GetComplimentaryShippingPrices(ctx)
 		if threshold, ok := complimentaryPrices[strings.ToUpper(orderNew.Currency)]; ok && threshold.GreaterThan(decimal.Zero) {
 			if subtotal.GreaterThanOrEqual(threshold) {
 				shipmentPrice = decimal.Zero
@@ -135,7 +135,7 @@ func (s *Store) CreateOrder(ctx context.Context, orderNew *entity.OrderNew, rece
 		return nil
 	})
 	if err == nil {
-		voucherChanges.apply()
+		voucherChanges.apply(ctx)
 	}
 
 	return order, sendEmail, err
@@ -149,7 +149,7 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 	if orderNew.PaymentMethod != entity.BANK_INVOICE && orderNew.PaymentMethod != entity.CASH {
 		return nil, &entity.ValidationError{Message: "payment method must be bank_invoice or cash for custom orders"}
 	}
-	paymentMethod, err := validatePaymentMethod(orderNew.PaymentMethod)
+	paymentMethod, err := validatePaymentMethod(ctx, orderNew.PaymentMethod)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (s *Store) CreateCustomOrder(ctx context.Context, orderNew *entity.OrderNew
 	if orderNew.ShippingAddress != nil {
 		shippingCountry = orderNew.ShippingAddress.Country
 	}
-	shipmentCarrier, err := validateShipmentCarrier(orderNew.ShipmentCarrierId, shippingCountry)
+	shipmentCarrier, err := validateShipmentCarrier(ctx, orderNew.ShipmentCarrierId, shippingCountry)
 	if err != nil {
 		return nil, err
 	}

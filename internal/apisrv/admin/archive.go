@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -109,7 +110,7 @@ func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByI
 		return nil, status.Errorf(codes.Internal, "failed to get archive: %v", err)
 	}
 
-	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
+	pbAf, err := dto.ConvertArchiveFullEntityToPb(af, cache.ColorDictFor(ctx))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert archive to pb",
 			slog.String("err", err.Error()),

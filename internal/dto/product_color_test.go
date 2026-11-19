@@ -27,7 +27,7 @@ func TestColorwayBodyAcceptsOnlyDictionaryColorIdentity(t *testing.T) {
 			_, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{
 				ColorCode:        tt.code,
 				ColorHexOverride: tt.override,
-			}, "")
+			}, "", testColors)
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
@@ -37,14 +37,14 @@ func TestColorwayBodyResolvesDictionaryDisplayAndKeepsOptionalOverride(t *testin
 	got, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{
 		ColorCode:        "BLK",
 		ColorHexOverride: stringPointer("#010101"),
-	}, "")
+	}, "", testColors)
 	require.NoError(t, err)
 	require.Equal(t, "BLK", got.ColorCode)
 	require.Equal(t, "black", got.Color)
 	require.True(t, got.ColorHexOverride.Valid)
 	require.Equal(t, "#010101", got.ColorHexOverride.String)
 
-	resolved := dictionaryColorToPb(got.ColorCode)
+	resolved := dictionaryColorToPb(got.ColorCode, testColors)
 	require.Equal(t, "BLK", resolved.Code)
 	require.Equal(t, "black", resolved.Name)
 	require.Equal(t, "#000000", resolved.Hex)
@@ -63,7 +63,7 @@ func TestFilterConditionsAcceptOnlyDictionaryColorCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ConvertPBCommonFilterConditionsToEntity(&pb_common.FilterConditions{ColorCodes: tt.codes})
+			got, err := ConvertPBCommonFilterConditionsToEntity(&pb_common.FilterConditions{ColorCodes: tt.codes}, testColors)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				return

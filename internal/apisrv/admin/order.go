@@ -43,7 +43,7 @@ func (s *Server) GetOrderByUUID(ctx context.Context, req *pb_admin.GetOrderByUUI
 	}
 
 	if os.Status.Name == entity.AwaitingPayment {
-		pm, ok := cache.GetPaymentMethodById(o.Payment.PaymentMethodID)
+		pm, ok := cache.GetPaymentMethodById(ctx, o.Payment.PaymentMethodID)
 		if !ok {
 			slog.Default().ErrorContext(ctx, "can't get payment method by id",
 				slog.Any("paymentMethodId", o.Payment.PaymentMethodID),
@@ -130,7 +130,7 @@ func (s *Server) shipOrder(ctx context.Context, orderUUID, trackingCode string) 
 	// is best-effort and idempotent (the store guards a re-ship) — a warehouse hiccup or a short
 	// packaging material must never block the actual shipment, so a failure is logged, not returned.
 	s.consumePackagingOnShip(ctx, orderFull)
-	shipmentDetails := dto.OrderFullToOrderShipment(orderFull)
+	shipmentDetails := dto.OrderFullToOrderShipment(orderFull, cache.ShipmentCarrierLookup(ctx))
 	if err := s.mailer.SendOrderShipped(ctx, s.repo, orderFull.Buyer.Email, shipmentDetails); err != nil {
 		return fmt.Errorf("can't send order shipped email: %w", err)
 	}
@@ -270,7 +270,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 	}
 
 	// Stripe refund for Stripe payment methods (CARD / CARD_TEST)
-	pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+	pm, ok := cache.GetPaymentMethodById(ctx, orderFull.Payment.PaymentMethodID)
 	if ok && (pm.Method.Name == entity.CARD || pm.Method.Name == entity.CARD_TEST) {
 		handler, err := s.getPaymentHandler(ctx, pm.Method.Name)
 		if err != nil {

@@ -14,8 +14,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
-	sc, ok := cache.GetShipmentCarrierById(of.Shipment.CarrierId)
+func OrderFullToOrderConfirmed(of *entity.OrderFull, carriers cache.CarrierLookup) *OrderConfirmed {
+	sc, ok := carriers(of.Shipment.CarrierId)
 	if !ok {
 		sc = entity.ShipmentCarrier{
 			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
@@ -55,8 +55,8 @@ func OrderFullToOrderConfirmed(of *entity.OrderFull) *OrderConfirmed {
 	}
 }
 
-func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
-	sc, ok := cache.GetShipmentCarrierById(of.Shipment.CarrierId)
+func OrderFullToOrderShipment(of *entity.OrderFull, carriers cache.CarrierLookup) *OrderShipment {
+	sc, ok := carriers(of.Shipment.CarrierId)
 	if !ok {
 		sc = entity.ShipmentCarrier{
 			ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
@@ -98,8 +98,8 @@ func OrderFullToOrderShipment(of *entity.OrderFull) *OrderShipment {
 
 // OrderFullToOrderDelivered builds the delivered-email data. It reuses the shipment builder (same
 // item/total layout); the distinct type is what selects the delivered subject and template.
-func OrderFullToOrderDelivered(of *entity.OrderFull) *OrderDelivered {
-	s := OrderFullToOrderShipment(of)
+func OrderFullToOrderDelivered(of *entity.OrderFull, carriers cache.CarrierLookup) *OrderDelivered {
+	s := OrderFullToOrderShipment(of, carriers)
 	return &OrderDelivered{
 		Locale:              of.Order.Locale.String,
 		BuyerName:           s.BuyerName,

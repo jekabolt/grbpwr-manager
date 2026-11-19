@@ -194,7 +194,7 @@ func (s *Server) SetBackgroundHeroColor(ctx context.Context, req *pb_admin.SetBa
 		return nil, status.Errorf(codes.Internal, "failed to set background hero color: %v", err)
 	}
 
-	cache.SetBackgroundHeroColor(req.Color)
+	cache.SetBackgroundHeroColor(ctx, req.Color)
 
 	s.revalidateAsync(&dto.RevalidationData{
 		Hero: true,

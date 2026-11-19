@@ -14,7 +14,7 @@ import (
 
 // seedCarrier replaces the in-memory carrier cache with a single carrier under test.
 func seedCarrier(id int, slug string, hours int) {
-	cache.UpdateShipmentCarriers([]entity.ShipmentCarrier{{
+	cache.UpdateShipmentCarriers(context.Background(), []entity.ShipmentCarrier{{
 		Id: id,
 		ShipmentCarrierInsert: entity.ShipmentCarrierInsert{
 			AftershipSlug:         sql.NullString{String: slug, Valid: slug != ""},

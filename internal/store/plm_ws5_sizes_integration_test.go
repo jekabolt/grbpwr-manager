@@ -190,7 +190,7 @@ func TestTechCardSizeRangeRefreshesDictionary(t *testing.T) {
 
 	revisions, err := s.Dictionary().GetDictionaryRevisions(ctx)
 	require.NoError(t, err)
-	cache.SetDictionaryRevisions(revisions)
+	cache.SetDictionaryRevisions(ctx, revisions)
 
 	used := map[int]bool{}
 	rows, err := testDB.QueryContext(ctx, `SELECT sku_ord FROM size WHERE sku_system = 'apparel'`)

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -16,9 +17,11 @@ func TestRefreshDictionaryLoadsTags(t *testing.T) {
 		{ID: 1, Code: "sale", Name: "Sale"},
 		{ID: 2, Code: "new", Name: "New", ArchivedAt: sql.NullTime{Valid: true}},
 	}
-	RefreshDictionary(&entity.DictionaryInfo{Tags: tags})
+	resetForTest(t)
+	ctx := context.Background()
+	RefreshDictionary(ctx, &entity.DictionaryInfo{Tags: tags})
 
-	got := GetTags()
+	got := GetTags(ctx)
 	require.Len(t, got, 2)
 	require.Equal(t, "sale", got[0].Code)
 	require.Equal(t, "new", got[1].Code)

@@ -49,8 +49,8 @@ func TestSingleUseVoucherClaimLifecycle(t *testing.T) {
 	hf, err := s.Hero().GetHero(ctx)
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
-	cache.UpdatePaymentMethodAllowance(entity.CARD, true)
-	paymentMethod, ok := cache.GetPaymentMethodByName(entity.CARD)
+	cache.UpdatePaymentMethodAllowance(ctx, entity.CARD, true)
+	paymentMethod, ok := cache.GetPaymentMethodByName(ctx, entity.CARD)
 	require.True(t, ok)
 	require.True(t, paymentMethod.Method.Allowed)
 
@@ -128,7 +128,7 @@ func TestSingleUseVoucherClaimLifecycle(t *testing.T) {
 		require.NoError(t, testDB.QueryRowContext(ctx,
 			`SELECT allowed FROM promo_code WHERE code = ?`, code).Scan(&got))
 		require.Equal(t, want, got, "database allowed flag for %s", code)
-		cached, ok := cache.GetPromoByCode(code)
+		cached, ok := cache.GetPromoByCode(ctx, code)
 		require.True(t, ok)
 		require.Equal(t, want, cached.Allowed, "cache allowed flag for %s", code)
 	}
@@ -163,7 +163,7 @@ func TestSingleUseVoucherClaimLifecycle(t *testing.T) {
 		}
 		for _, code := range promoCodes {
 			_, _ = testDB.ExecContext(cleanupCtx, `DELETE FROM promo_code WHERE code = ?`, code)
-			cache.DeletePromo(code)
+			cache.DeletePromo(ctx, code)
 		}
 		_, _ = testDB.ExecContext(cleanupCtx, `DELETE FROM product_size WHERE id = ?`, variantID)
 		_, _ = testDB.ExecContext(cleanupCtx, `DELETE FROM product_price WHERE product_id = ?`, productID)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -120,14 +121,14 @@ func convertPbArchiveItemTranslationsToEntity(in []*pb_common.ArchiveItemTransla
 }
 
 // Convert an entity ArchiveFull to a protobuf ArchiveFull
-func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) (*pb_common.ArchiveFull, error) {
+func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull, colors cache.ColorDict) (*pb_common.ArchiveFull, error) {
 	if af == nil {
 		return nil, nil
 	}
 
 	itemsPb := make([]*pb_common.ArchiveItemFull, 0, len(af.Items))
 	for i := range af.Items {
-		itemPb, err := convertEntityArchiveItemFullToPb(&af.Items[i])
+		itemPb, err := convertEntityArchiveItemFullToPb(&af.Items[i], colors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert archive item at index %d: %w", i, err)
 		}
@@ -142,7 +143,7 @@ func ConvertArchiveFullEntityToPb(af *entity.ArchiveFull) (*pb_common.ArchiveFul
 
 // convertEntityArchiveItemFullToPb maps a single resolved timeline block into its
 // typed pb payload, selected by Type.
-func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.ArchiveItemFull, error) {
+func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull, colors cache.ColorDict) (*pb_common.ArchiveItemFull, error) {
 	if it == nil {
 		return nil, nil
 	}
@@ -190,7 +191,7 @@ func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.Ar
 				Translations: convertEntityArchiveItemTranslationsToPb(b.Translations),
 			}
 			if b.Product != nil {
-				p, err := ConvertEntityProductToCommon(b.Product)
+				p, err := ConvertEntityProductToCommon(b.Product, colors)
 				if err != nil {
 					return nil, fmt.Errorf("failed to convert product: %w", err)
 				}
@@ -200,7 +201,7 @@ func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.Ar
 		}
 	case entity.ArchiveItemTypeProductsTag:
 		if b := it.ProductsTag; b != nil {
-			products, err := convertEntityProductsToCommon(b.Products)
+			products, err := convertEntityProductsToCommon(b.Products, colors)
 			if err != nil {
 				return nil, err
 			}
@@ -212,7 +213,7 @@ func convertEntityArchiveItemFullToPb(it *entity.ArchiveItemFull) (*pb_common.Ar
 		}
 	case entity.ArchiveItemTypeProductsManual:
 		if b := it.ProductsManual; b != nil {
-			products, err := convertEntityProductsToCommon(b.Products)
+			products, err := convertEntityProductsToCommon(b.Products, colors)
 			if err != nil {
 				return nil, err
 			}

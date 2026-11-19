@@ -127,7 +127,7 @@ func TestUpdateMaskIsDevelopmentOnly(t *testing.T) {
 // ─── the family (owner's decision 4) ───
 
 func TestColorwayBodyAcceptsAnEmptyFamily(t *testing.T) {
-	got, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{SkuColorToken: " bkw "}, "")
+	got, err := convertMerchInsertToEntity(&pb_common.ColorwayMerchandisingInsert{SkuColorToken: " bkw "}, "", testColors)
 	require.NoError(t, err, "an empty family is proposed (create) or kept (update), never refused here")
 	require.Empty(t, got.ColorCode)
 	require.Equal(t, "BKW", got.SkuColorToken, "carried upper-cased for the store's echo guard")
@@ -135,7 +135,7 @@ func TestColorwayBodyAcceptsAnEmptyFamily(t *testing.T) {
 
 func TestResolveColorwayFamily(t *testing.T) {
 	named := &entity.ColorwayInsert{ProductBodyInsert: entity.ColorwayBodyInsert{ColorCode: "WHT", Color: "white"}}
-	require.NoError(t, ResolveColorwayFamily(named, "#000000", true))
+	require.NoError(t, ResolveColorwayFamily(named, "#000000", true, testColors))
 	require.Equal(t, "WHT", named.ProductBodyInsert.ColorCode, "a family the request named is kept")
 
 	for _, tc := range []struct{ hex, code, name string }{
@@ -144,14 +144,14 @@ func TestResolveColorwayFamily(t *testing.T) {
 		{"#EFE9DC", "OFW", "off-white"},
 	} {
 		prd := &entity.ColorwayInsert{}
-		require.NoError(t, ResolveColorwayFamily(prd, tc.hex, true))
+		require.NoError(t, ResolveColorwayFamily(prd, tc.hex, true, testColors))
 		require.Equal(t, tc.code, prd.ProductBodyInsert.ColorCode, tc.hex)
 		require.Equal(t, tc.name, prd.ProductBodyInsert.Color, "the dictionary name travels with the code")
 	}
 
 	prd := &entity.ColorwayInsert{}
-	requireFieldViolation(t, ResolveColorwayFamily(prd, "", true), "merchandising.color_code", "family_required")
-	require.NoError(t, ResolveColorwayFamily(prd, "", false), "update: empty = keep the stored family")
+	requireFieldViolation(t, ResolveColorwayFamily(prd, "", true, testColors), "merchandising.color_code", "family_required")
+	require.NoError(t, ResolveColorwayFamily(prd, "", false, testColors), "update: empty = keep the stored family")
 	require.Empty(t, prd.ProductBodyInsert.ColorCode)
 }
 
@@ -205,7 +205,7 @@ func TestConvertToPbProductFullCarriesTheSkuColorToken(t *testing.T) {
 	full := &entity.ColorwayFull{Product: &entity.Colorway{Id: 41, StyleId: 9}}
 	body := &full.Product.ProductDisplay.ProductBody.ProductBodyInsert
 	body.ColorCode, body.SkuColorToken = "BLK", "BKW"
-	pb, err := ConvertToPbProductFull(full)
+	pb, err := ConvertToPbProductFull(full, testColors)
 	require.NoError(t, err)
 	require.Equal(t, "BLK", pb.GetColorway().GetColorCode(), "the family")
 	require.Equal(t, "BKW", pb.GetColorway().GetSkuColorToken(), "the SKU segment, top-level")

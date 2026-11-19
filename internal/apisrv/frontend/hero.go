@@ -15,9 +15,9 @@ import (
 func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (*pb_frontend.GetHeroResponse, error) {
 	// Cached hero is the shared, resolved default-language hero. Filter a copy of
 	// it for the requesting viewer (TARGETING modifier); never mutate the cache.
-	heroFull := s.filterHeroForViewer(ctx, cache.GetHero())
+	heroFull := s.filterHeroForViewer(ctx, cache.GetHero(ctx))
 
-	h, err := dto.ConvertEntityHeroFullToCommonWithTranslations(heroFull)
+	h, err := dto.ConvertEntityHeroFullToCommonWithTranslations(heroFull, cache.ColorDictFor(ctx))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert entity hero to pb hero",
 			slog.String("err", err.Error()),
@@ -28,28 +28,28 @@ func (s *Server) GetHero(ctx context.Context, req *pb_frontend.GetHeroRequest) (
 	return &pb_frontend.GetHeroResponse{
 		Hero: h,
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:                  cache.GetCategories(),
+			Categories:                  cache.GetCategories(ctx),
 			Measurements:                cache.GetMeasurements(),
 			OrderStatuses:               cache.GetOrderStatuses(),
-			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(),
-			ShipmentCarriers:            cache.GetShipmentCarriers(),
-			Sizes:                       cache.GetSizes(),
-			Collections:                 cache.GetCollections(),
-			Colors:                      cache.GetColors(),
+			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(ctx),
+			ShipmentCarriers:            cache.GetShipmentCarriers(ctx),
+			Sizes:                       cache.GetSizes(ctx),
+			Collections:                 cache.GetCollections(ctx),
+			Colors:                      cache.GetColors(ctx),
 			Genders:                     cache.GetGenders(),
 			Languages:                   cache.GetLanguages(),
 			SortFactors:                 cache.GetSortFactors(),
 			OrderFactors:                cache.GetOrderFactors(),
-			SiteEnabled:                 cache.GetSiteAvailability(),
-			MaxOrderItems:               cache.GetMaxOrderItems(),
+			SiteEnabled:                 cache.GetSiteAvailability(ctx),
+			MaxOrderItems:               cache.GetMaxOrderItems(ctx),
 			BaseCurrency:                cache.GetBaseCurrency(),
-			BigMenu:                     cache.GetBigMenu(),
-			Announce:                    cache.GetAnnounce(),
-			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(),
-			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
-			IsProd:                      cache.GetPaymentIsProd(),
-			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
-			ProductTags:                 cache.GetProductTags(),
+			BigMenu:                     cache.GetBigMenu(ctx),
+			Announce:                    cache.GetAnnounce(ctx),
+			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(ctx),
+			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(ctx),
+			IsProd:                      cache.GetPaymentIsProd(ctx),
+			BackgroundHeroColor:         cache.GetBackgroundHeroColor(ctx),
+			ProductTags:                 cache.GetProductTags(ctx),
 			// The care vocabulary travels with the storefront dictionary so a PDP can render a
 			// colourway's care_entries in the buyer's language: the entries carry the codes and the
 			// order, this carries the wording for every language.

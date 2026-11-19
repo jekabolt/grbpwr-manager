@@ -112,7 +112,7 @@ func (s *Store) insertOrderInvoice(ctx context.Context, orderUUID string, addrOr
 	if err != nil {
 		return nil, err
 	}
-	voucherChanges.apply()
+	voucherChanges.apply(ctx)
 	if itemsChanged {
 		return nil, ErrOrderItemsUpdated
 	}
@@ -437,7 +437,7 @@ func (s *Store) ExpireOrderPayment(ctx context.Context, orderUUID string) (*enti
 		return nil, err
 	}
 	if voucherCodeToEnable != "" {
-		cache.EnablePromo(voucherCodeToEnable)
+		cache.EnablePromo(ctx, voucherCodeToEnable)
 	}
 
 	return payment, nil
@@ -570,7 +570,7 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 
 	// Cache mutation after commit only — see disableVoucherInTx.
 	if voucherCodeToDisable != "" {
-		cache.DisablePromo(voucherCodeToDisable)
+		cache.DisablePromo(ctx, voucherCodeToDisable)
 	}
 
 	return wasUpdated, nil
@@ -580,7 +580,7 @@ func (s *Store) OrderPaymentDone(ctx context.Context, orderUUID string, p *entit
 func (s *Store) GetAwaitingPaymentsByPaymentType(ctx context.Context, pmn ...entity.PaymentMethodName) ([]entity.PaymentOrderUUID, error) {
 	pmIds := []int{}
 	for _, pm := range pmn {
-		method, ok := cache.GetPaymentMethodByName(pm)
+		method, ok := cache.GetPaymentMethodByName(ctx, pm)
 		if ok {
 			pmIds = append(pmIds, method.Method.Id)
 		}

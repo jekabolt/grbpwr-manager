@@ -54,7 +54,7 @@ func TestTierHiddenPurchaseBlock(t *testing.T) {
 	hf, err := s.Hero().GetHero(ctx)
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
-	cache.UpdatePaymentMethodAllowance(entity.BANK_INVOICE, true)
+	cache.UpdatePaymentMethodAllowance(ctx, entity.BANK_INVOICE, true)
 
 	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 1, FullSizeHeight: 1,

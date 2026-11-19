@@ -269,7 +269,7 @@ func checkColorwayPublishPreconditions(ctx context.Context, db dependency.DB, co
 	// T45: two colour facts, two checks. The family is a dictionary tag and must be one; the SKU
 	// token is the colour segment and only has to have its shape (a custom token is not a dictionary
 	// code by design).
-	if err := validateColorCode(r.ColorCode); err != nil {
+	if err := validateColorCode(ctx, r.ColorCode); err != nil {
 		missing = append(missing, "colour family is not a valid dictionary code")
 	}
 	if !entity.IsValidSkuColorToken(r.SkuColorToken) {

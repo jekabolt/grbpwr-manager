@@ -8,36 +8,37 @@ import (
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
-func (s *Server) GetDictionary(context.Context, *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
+// GetDictionary answers from the caller's team cache.
+func (s *Server) GetDictionary(ctx context.Context, _ *pb_admin.GetDictionaryRequest) (*pb_admin.GetDictionaryResponse, error) {
 	return &pb_admin.GetDictionaryResponse{
 		Dictionary: dto.ConvertToCommonDictionary(dto.Dict{
-			Categories:                  cache.GetCategories(),
+			Categories:                  cache.GetCategories(ctx),
 			Measurements:                cache.GetMeasurements(),
 			OrderStatuses:               cache.GetOrderStatuses(),
-			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(),
-			ShipmentCarriers:            cache.GetShipmentCarriers(),
-			Sizes:                       cache.GetSizes(),
-			Collections:                 cache.GetCollections(),
+			PaymentMethods:              cache.GetPaymentMethodsFilteredByIsProd(ctx),
+			ShipmentCarriers:            cache.GetShipmentCarriers(ctx),
+			Sizes:                       cache.GetSizes(ctx),
+			Collections:                 cache.GetCollections(ctx),
 			Languages:                   cache.GetLanguages(),
 			Genders:                     cache.GetGenders(),
 			SortFactors:                 cache.GetSortFactors(),
 			OrderFactors:                cache.GetOrderFactors(),
-			SiteEnabled:                 cache.GetSiteAvailability(),
-			MaxOrderItems:               cache.GetMaxOrderItems(),
+			SiteEnabled:                 cache.GetSiteAvailability(ctx),
+			MaxOrderItems:               cache.GetMaxOrderItems(ctx),
 			BaseCurrency:                cache.GetBaseCurrency(),
-			BigMenu:                     cache.GetBigMenu(),
-			Announce:                    cache.GetAnnounce(),
-			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(),
-			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(),
-			IsProd:                      cache.GetPaymentIsProd(),
-			BackgroundHeroColor:         cache.GetBackgroundHeroColor(),
-			ProductTags:                 cache.GetProductTags(),
-			Tags:                        cache.GetTags(),
-			Colors:                      cache.GetColors(),
+			BigMenu:                     cache.GetBigMenu(ctx),
+			Announce:                    cache.GetAnnounce(ctx),
+			OrderExpirationSeconds:      cache.GetOrderExpirationSeconds(ctx),
+			ComplimentaryShippingPrices: cache.GetComplimentaryShippingPrices(ctx),
+			IsProd:                      cache.GetPaymentIsProd(ctx),
+			BackgroundHeroColor:         cache.GetBackgroundHeroColor(ctx),
+			ProductTags:                 cache.GetProductTags(ctx),
+			Tags:                        cache.GetTags(ctx),
+			Colors:                      cache.GetColors(ctx),
 			CategorySizeSystems:         cache.GetCategorySizeSystems(),
-			Fibers:                      cache.GetFibers(),
+			Fibers:                      cache.GetFibers(ctx),
 			CareSymbols:                 cache.GetCareSymbols(),
-			ModelPhotoTechCardID:        cache.GetModelPhotoTechCardID(),
+			ModelPhotoTechCardID:        cache.GetModelPhotoTechCardID(ctx),
 		}),
 	}, nil
 }

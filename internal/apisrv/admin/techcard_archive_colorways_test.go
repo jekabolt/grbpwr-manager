@@ -72,8 +72,8 @@ func tcacServer(t *testing.T) *tcacRig {
 	// cache from GetDictionaryInfo. A mock answer without colours would therefore WIPE the colour
 	// dictionary after the first colour and make the second one fail — which is precisely what it
 	// did until this line said so.
-	cache.RefreshDictionary(tcacDictionary())
-	t.Cleanup(func() { cache.RefreshDictionary(&entity.DictionaryInfo{}) })
+	cache.RefreshDictionary(context.Background(), tcacDictionary())
+	t.Cleanup(func() { cache.RefreshDictionary(context.Background(), &entity.DictionaryInfo{}) })
 
 	repo := mocks.NewMockRepository(t)
 	cards := mocks.NewMockTechCards(t)

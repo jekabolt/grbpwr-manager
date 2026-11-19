@@ -97,11 +97,11 @@ func validateSKUSeason(code entity.SeasonEnum, year int) error {
 
 // validateColorCode checks a dictionary FAMILY code: canonical shape and present in the dictionary.
 // Since T45 it guards the family (the publish gate), never the SKU segment.
-func validateColorCode(code string) error {
+func validateColorCode(ctx context.Context, code string) error {
 	if len(code) != 3 || code != strings.ToUpper(code) || strings.TrimSpace(code) != code {
 		return fmt.Errorf("color_code %q is not canonical", code)
 	}
-	if _, ok := cache.GetColorByCode(code); !ok {
+	if _, ok := cache.GetColorByCode(ctx, code); !ok {
 		return fmt.Errorf("color_code %q is not in the dictionary", code)
 	}
 	return nil

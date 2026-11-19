@@ -285,7 +285,7 @@ func (a *App) Start(ctx context.Context) error {
 		slog.Default().WarnContext(ctx, "can't load house target margin; using the built-in default",
 			slog.String("err", err.Error()))
 	} else {
-		cache.SetTargetMarginPct(t.TargetMarginPct)
+		cache.SetTargetMarginPct(ctx, t.TargetMarginPct)
 	}
 
 	if a.shopGate(ctx, "marketingaggregate") {
@@ -1576,7 +1576,7 @@ func (e *stripeOrderExpirer) ExpireOrderPayment(ctx context.Context, orderUUID s
 		return fmt.Errorf("can't get payment for order %s: %w", orderUUID, err)
 	}
 
-	pm, ok := cache.GetPaymentMethodById(payment.PaymentMethodID)
+	pm, ok := cache.GetPaymentMethodById(ctx, payment.PaymentMethodID)
 	if ok {
 		switch pm.Method.Name {
 		case entity.CARD:

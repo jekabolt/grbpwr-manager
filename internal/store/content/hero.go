@@ -60,7 +60,7 @@ func (s *Store) SetHero(ctx context.Context, hfi entity.HeroFullInsert) error {
 		if err != nil {
 			return fmt.Errorf("failed to build hero data: %w", err)
 		}
-		cache.UpdateHero(heroFull)
+		cache.UpdateHero(ctx, heroFull)
 
 		return nil
 	})

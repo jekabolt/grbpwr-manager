@@ -120,7 +120,7 @@ func (s *Server) refreshDictionaryCache(ctx context.Context) {
 	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "can't refresh dictionary cache", slog.String("err", err.Error()))
 	} else {
-		cache.RefreshDictionary(di)
+		cache.RefreshDictionary(ctx, di)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -25,10 +26,10 @@ func convertEntityHeroSingleSliceToCommon(in []entity.HeroSingleWithTranslations
 	return out
 }
 
-func convertEntityProductsToCommon(products []entity.Colorway) ([]*pb_common.Colorway, error) {
+func convertEntityProductsToCommon(products []entity.Colorway, colors cache.ColorDict) ([]*pb_common.Colorway, error) {
 	out := make([]*pb_common.Colorway, len(products))
 	for i := range products {
-		cp, err := ConvertEntityProductToCommon(&products[i])
+		cp, err := ConvertEntityProductToCommon(&products[i], colors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert product at index %d: %w", i, err)
 		}
@@ -359,7 +360,7 @@ func ConvertCommonHeroEntityInsertToEntity(hi *pb_common.HeroEntityInsert) entit
 
 // ─── read: entity → proto (WithTranslations) ────────────────────────────────
 
-func ConvertEntityHeroFullToCommonWithTranslations(hf *entity.HeroFullWithTranslations) (*pb_common.HeroFullWithTranslations, error) {
+func ConvertEntityHeroFullToCommonWithTranslations(hf *entity.HeroFullWithTranslations, colors cache.ColorDict) (*pb_common.HeroFullWithTranslations, error) {
 	if hf == nil {
 		return nil, nil
 	}
@@ -370,7 +371,7 @@ func ConvertEntityHeroFullToCommonWithTranslations(hf *entity.HeroFullWithTransl
 	}
 
 	for i := range hf.Entities {
-		commonEntity, err := ConvertEntityHeroEntityToCommonWithTranslations(&hf.Entities[i])
+		commonEntity, err := ConvertEntityHeroEntityToCommonWithTranslations(&hf.Entities[i], colors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert entity at index %d: %w", i, err)
 		}
@@ -422,7 +423,7 @@ func convertEntityHeroSingleToCommon(s *entity.HeroSingleWithTranslations) *pb_c
 	}
 }
 
-func convertEntityHeroFeaturedProductsToCommon(fp *entity.HeroFeaturedProductsWithTranslations) (*pb_common.HeroFeaturedProductsWithTranslations, error) {
+func convertEntityHeroFeaturedProductsToCommon(fp *entity.HeroFeaturedProductsWithTranslations, colors cache.ColorDict) (*pb_common.HeroFeaturedProductsWithTranslations, error) {
 	if fp == nil {
 		return nil, nil
 	}
@@ -432,7 +433,7 @@ func convertEntityHeroFeaturedProductsToCommon(fp *entity.HeroFeaturedProductsWi
 		Translations: convertEntityHeroCopyTranslationsToCommon(fp.Translations),
 	}
 	for i := range fp.Products {
-		commonProduct, err := ConvertEntityProductToCommon(&fp.Products[i])
+		commonProduct, err := ConvertEntityProductToCommon(&fp.Products[i], colors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert product at index %d: %w", i, err)
 		}
@@ -441,11 +442,11 @@ func convertEntityHeroFeaturedProductsToCommon(fp *entity.HeroFeaturedProductsWi
 	return result, nil
 }
 
-func convertEntityHeroFeaturedProductsTagToCommon(fp *entity.HeroFeaturedProductsTagWithTranslations) (*pb_common.HeroFeaturedProductsTagWithTranslations, error) {
+func convertEntityHeroFeaturedProductsTagToCommon(fp *entity.HeroFeaturedProductsTagWithTranslations, colors cache.ColorDict) (*pb_common.HeroFeaturedProductsTagWithTranslations, error) {
 	if fp == nil {
 		return nil, nil
 	}
-	products, err := convertEntityHeroFeaturedProductsToCommon(&fp.Products)
+	products, err := convertEntityHeroFeaturedProductsToCommon(&fp.Products, colors)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert featured products: %w", err)
 	}
@@ -456,7 +457,7 @@ func convertEntityHeroFeaturedProductsTagToCommon(fp *entity.HeroFeaturedProduct
 	}, nil
 }
 
-func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTranslations) (*pb_common.HeroEntityWithTranslations, error) {
+func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTranslations, colors cache.ColorDict) (*pb_common.HeroEntityWithTranslations, error) {
 	if he == nil {
 		return nil, nil
 	}
@@ -489,7 +490,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeFeaturedProducts:
 		if he.FeaturedProducts != nil {
-			featuredProducts, err := convertEntityHeroFeaturedProductsToCommon(he.FeaturedProducts)
+			featuredProducts, err := convertEntityHeroFeaturedProductsToCommon(he.FeaturedProducts, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert featured products: %w", err)
 			}
@@ -497,7 +498,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeFeaturedProductsTag:
 		if he.FeaturedProductsTag != nil {
-			featuredProductsTag, err := convertEntityHeroFeaturedProductsTagToCommon(he.FeaturedProductsTag)
+			featuredProductsTag, err := convertEntityHeroFeaturedProductsTagToCommon(he.FeaturedProductsTag, colors)
 			if err != nil {
 				return nil, err
 			}
@@ -505,7 +506,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeFeaturedArchive:
 		if he.FeaturedArchive != nil {
-			archive, err := ConvertArchiveFullEntityToPb(&he.FeaturedArchive.Archive)
+			archive, err := ConvertArchiveFullEntityToPb(&he.FeaturedArchive.Archive, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert featured archive: %w", err)
 			}
@@ -540,7 +541,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeLastChance:
 		if he.LastChance != nil {
-			products, err := convertEntityProductsToCommon(he.LastChance.Products)
+			products, err := convertEntityProductsToCommon(he.LastChance.Products, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert last chance products: %w", err)
 			}
@@ -560,7 +561,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeNewArrivals:
 		if he.NewArrivals != nil {
-			products, err := convertEntityProductsToCommon(he.NewArrivals.Products)
+			products, err := convertEntityProductsToCommon(he.NewArrivals.Products, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert new arrivals products: %w", err)
 			}
@@ -586,7 +587,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeSplit:
 		if he.Split != nil {
-			products, err := convertEntityProductsToCommon(he.Split.Products)
+			products, err := convertEntityProductsToCommon(he.Split.Products, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert split products: %w", err)
 			}
@@ -610,7 +611,7 @@ func ConvertEntityHeroEntityToCommonWithTranslations(he *entity.HeroEntityWithTr
 		}
 	case entity.HeroTypeProductSpotlight:
 		if he.ProductSpotlight != nil {
-			product, err := ConvertEntityProductToCommon(&he.ProductSpotlight.Product)
+			product, err := ConvertEntityProductToCommon(&he.ProductSpotlight.Product, colors)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert spotlight product: %w", err)
 			}

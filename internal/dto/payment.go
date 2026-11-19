@@ -60,13 +60,13 @@ func ConvertEntityToPbPaymentInsert(p *entity.PaymentInsert) (*pb_common.Payment
 	if p == nil {
 		return nil, fmt.Errorf("empty entity.PaymentInsert")
 	}
-	pm, ok := cache.GetPaymentMethodById(p.PaymentMethodID)
+	pb, ok := cache.PaymentMethodPBByID(p.PaymentMethodID)
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
 	}
 
 	return &pb_common.PaymentInsert{
-		PaymentMethod:                    pm.PB,
+		PaymentMethod:                    pb,
 		TransactionId:                    p.TransactionID.String,
 		TransactionAmount:                &pb_decimal.Decimal{Value: p.TransactionAmount.String()},
 		TransactionAmountPaymentCurrency: &pb_decimal.Decimal{Value: p.TransactionAmountPaymentCurrency.String()},
@@ -121,7 +121,7 @@ func ConvertToOrderStripeDetails(o *entity.OrderFull) *pb_common.OrderStripeDeta
 	}
 	if p.TransactionID.Valid && p.TransactionID.String != "" {
 		base := stripeDashboardLive
-		if pm, ok := cache.GetPaymentMethodById(p.PaymentMethodID); ok && pm.Method.Name == entity.CARD_TEST {
+		if name, ok := cache.PaymentMethodNameByID(p.PaymentMethodID); ok && name == entity.CARD_TEST {
 			base = stripeDashboardTest
 		}
 		d.StripeDashboardUrl = base + p.TransactionID.String

@@ -134,12 +134,12 @@ type voucherCacheChanges struct {
 	enableCode  string
 }
 
-func (c voucherCacheChanges) apply() {
+func (c voucherCacheChanges) apply(ctx context.Context) {
 	if c.enableCode != "" {
-		cache.EnablePromo(c.enableCode)
+		cache.EnablePromo(ctx, c.enableCode)
 	}
 	if c.disableCode != "" {
-		cache.DisablePromo(c.disableCode)
+		cache.DisablePromo(ctx, c.disableCode)
 	}
 }
 
@@ -186,7 +186,7 @@ func releaseVoucherInTx(ctx context.Context, db dependency.DB, promoID sql.NullI
 	if !promoID.Valid || promoID.Int32 == 0 {
 		return "", nil
 	}
-	promo, ok := cache.GetPromoById(int(promoID.Int32))
+	promo, ok := cache.GetPromoById(ctx, int(promoID.Int32))
 	if !ok || !promo.Voucher {
 		return "", nil
 	}
@@ -250,12 +250,12 @@ func updateTotalAmount(ctx context.Context, db dependency.DB, orderId int, subto
 
 	shipmentCost := shipment.CostDecimal(currency)
 	freeShipping := false
-	carrier, carrierOk := cache.GetShipmentCarrierById(shipment.CarrierId)
+	carrier, carrierOk := cache.GetShipmentCarrierById(ctx, shipment.CarrierId)
 	if carrierOk {
 		carrierPrice, err := carrier.PriceDecimal(currency)
 		if err == nil {
 			shipmentCost = carrierPrice
-			complimentaryPrices := cache.GetComplimentaryShippingPrices()
+			complimentaryPrices := cache.GetComplimentaryShippingPrices(ctx)
 			if threshold, ok := complimentaryPrices[strings.ToUpper(currency)]; ok && threshold.GreaterThan(decimal.Zero) {
 				if subtotal.GreaterThanOrEqual(threshold) {
 					shipmentCost = decimal.Zero
@@ -331,7 +331,7 @@ func disableVoucherInTx(ctx context.Context, db dependency.DB, promoID sql.NullI
 	if !promoID.Valid || promoID.Int32 == 0 {
 		return "", nil
 	}
-	promo, ok := cache.GetPromoById(int(promoID.Int32))
+	promo, ok := cache.GetPromoById(ctx, int(promoID.Int32))
 	if !ok || !promo.Voucher {
 		return "", nil
 	}

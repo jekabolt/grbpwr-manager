@@ -1201,7 +1201,7 @@ func (s *Server) UpsertAlertSettings(ctx context.Context, req *pb_admin.UpsertAl
 	}
 	// Every tech-card costing read resolves its effective target against the cached house value, so
 	// refresh it here or the change would not show up until the next restart.
-	cache.SetTargetMarginPct(t.TargetMarginPct)
+	cache.SetTargetMarginPct(ctx, t.TargetMarginPct)
 	return &pb_admin.UpsertAlertSettingsResponse{}, nil
 }
 
@@ -1213,7 +1213,7 @@ func (s *Server) currentTargetMarginPct(ctx context.Context) float64 {
 	if cur, err := s.repo.Metrics().GetAlertThresholds(ctx); err == nil && cur.TargetMarginPct > 0 {
 		return cur.TargetMarginPct
 	}
-	return cache.GetTargetMarginPct()
+	return cache.GetTargetMarginPct(ctx)
 }
 
 // enrichCampaignSpend fills Spend and ROAS on the attribution rows from channel_spend,

@@ -116,7 +116,7 @@ var errColorwayInvalid = errors.New("invalid colourway")
 // *entity.ValidationError, which createColorwayStatus turns into InvalidArgument.
 func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (int, error) {
 	prd, err := dto.BuildColorwayInsertEntity(in.Merchandising, in.CountryCode, in.ThumbnailMediaID,
-		in.SecondaryThumbnailMediaID, in.Translations, in.CostPrice)
+		in.SecondaryThumbnailMediaID, in.Translations, in.CostPrice, cache.ColorDictFor(ctx))
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", errColorwayInvalid, err)
 	}
@@ -139,7 +139,7 @@ func (s *Server) createColorway(ctx context.Context, in colorwayCreateInput) (in
 			return 0, ve
 		}
 	}
-	if err := dto.ResolveColorwayFamily(prd, dto.ColorwayMainHex(dev), true); err != nil {
+	if err := dto.ResolveColorwayFamily(prd, dto.ColorwayMainHex(dev), true, cache.ColorDictFor(ctx)); err != nil {
 		return 0, err
 	}
 	prd.RestoreSkuColorToken = in.RestoreSkuColorToken
@@ -191,12 +191,12 @@ func (s *Server) UpdateColorway(ctx context.Context, req *pb_admin.UpdateColorwa
 	var prd *entity.ColorwayInsert // nil = a development-only write
 	if !dto.UpdateMaskIsDevelopmentOnly(req.GetUpdateMask()) {
 		// Translations/media/tags/prices are a sparse update in the store (empty slice = leave unchanged).
-		prd, err = dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice())
+		prd, err = dto.BuildColorwayInsertEntity(req.GetMerchandising(), req.GetCountryCode(), req.GetThumbnailMediaId(), req.GetSecondaryThumbnailMediaId(), req.GetTranslations(), req.GetCostPrice(), cache.ColorDictFor(ctx))
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("invalid colourway: %v", err))
 		}
 		if main := dev.MainColour(); main != nil {
-			if err := dto.ResolveColorwayFamily(prd, main.Hex, false); err != nil {
+			if err := dto.ResolveColorwayFamily(prd, main.Hex, false, cache.ColorDictFor(ctx)); err != nil {
 				return nil, colorwayRequestError(err)
 			}
 		}
@@ -607,7 +607,7 @@ func (s *Server) afterColorwayLifecycleChange(ctx context.Context, id int) {
 	if di, err := s.repo.Cache().GetDictionaryInfo(ctx); err != nil {
 		slog.Default().ErrorContext(ctx, "can't refresh dictionary counts", slog.String("err", err.Error()))
 	} else {
-		cache.RefreshDictionary(di)
+		cache.RefreshDictionary(ctx, di)
 	}
 	s.revalidateAsync(&dto.RevalidationData{Products: []int{id}, Hero: true})
 }
@@ -625,7 +625,7 @@ func (s *Server) getPbColorway(ctx context.Context, id int) (*pb_common.Colorway
 		}
 		return nil, status.Errorf(codes.Internal, "can't load colourway %d: %v", id, err)
 	}
-	pb, err := dto.ConvertToPbProductFull(pf)
+	pb, err := dto.ConvertToPbProductFull(pf, cache.ColorDictFor(ctx))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "can't convert colourway %d: %v", id, err)
 	}
@@ -648,7 +648,7 @@ func (s *Server) GetColorwayByID(ctx context.Context, req *pb_admin.GetColorwayB
 		return nil, status.Errorf(codes.Internal, "failed to get product: %v", err)
 	}
 
-	pbPrd, err := dto.ConvertToPbProductFull(pf)
+	pbPrd, err := dto.ConvertToPbProductFull(pf, cache.ColorDictFor(ctx))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 			slog.String("err", err.Error()),
@@ -819,7 +819,7 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
-	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions, cache.ColorDictFor(ctx))
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -866,7 +866,7 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_admin.GetColorwa
 
 	prdsPb := make([]*pb_common.Colorway, 0, len(prds))
 	for _, prd := range prds {
-		pbPrd, err := dto.ConvertEntityProductToCommon(&prd)
+		pbPrd, err := dto.ConvertEntityProductToCommon(&prd, cache.ColorDictFor(ctx))
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "can't convert dto product to proto product",
 				slog.Int("product_id", prd.Id),

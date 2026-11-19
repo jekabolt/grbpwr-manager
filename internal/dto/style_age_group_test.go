@@ -90,12 +90,12 @@ func TestColorwayMerchandisingEmitsAgeGroup(t *testing.T) {
 	display := &entity.ColorwayDisplay{}
 	display.ProductBody.ProductBodyInsert.TargetGender = entity.Unisex
 	display.ProductBody.ProductBodyInsert.AgeGroup = entity.AgeGroupTeen
-	merch := buildColorwayDisplayPb(display).GetMerchandising()
+	merch := buildColorwayDisplayPb(display, testColors).GetMerchandising()
 	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_TEEN, merch.GetAgeGroup())
 	require.Equal(t, pb_common.GenderEnum_GENDER_ENUM_UNISEX, merch.GetTargetGender())
 
 	require.Equal(t, pb_common.AgeGroupEnum_AGE_GROUP_ENUM_UNKNOWN,
-		buildColorwayDisplayPb(&entity.ColorwayDisplay{}).GetMerchandising().GetAgeGroup())
+		buildColorwayDisplayPb(&entity.ColorwayDisplay{}, testColors).GetMerchandising().GetAgeGroup())
 }
 
 // TechCardListItem.age_group (29) is the list/board projection of the same fact. Both the admin
