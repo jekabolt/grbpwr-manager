@@ -174,7 +174,7 @@ func mergeProviderEndpoints(dst *ProviderEndpoints, src ProviderEndpoints) {
 func validateEndpoints(endpoints ProviderEndpoints) error {
 	for _, raw := range []string{endpoints.AuthorizationURL, endpoints.TokenURL, endpoints.JWKSURL} {
 		u, err := url.Parse(raw)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		if err != nil || u.Host == "" || u.User != nil || !secureURLScheme(u) {
 			return errors.New("oauth: invalid provider endpoint")
 		}
 	}

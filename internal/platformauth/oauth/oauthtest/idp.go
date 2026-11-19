@@ -31,6 +31,7 @@ type Claims struct {
 	Email           *string
 	EmailVerified   interface{}
 	PrivateEmail    interface{}
+	HostedDomain    *string
 	Nonce           *string
 	ExpiresAt       *time.Time
 	IssuedAt        *time.Time
@@ -59,20 +60,36 @@ func DefaultClaims(issuer, audience string) Claims {
 type IdP struct {
 	server *httptest.Server
 
-	mu                 sync.Mutex
-	key                *rsa.PrivateKey
-	kid                string
-	keySequence        int
-	claims             Claims
-	lastAuthorize      url.Values
-	lastToken          url.Values
-	authorizationNonce string
-	jwksRequests       int
+	mu            sync.Mutex
+	key           *rsa.PrivateKey
+	kid           string
+	olderKey      *rsa.PrivateKey
+	olderKID      string
+	keySequence   int
+	claims        Claims
+	lastAuthorize url.Values
+	lastToken     url.Values
+	codeSequence  int
+	grants        map[string]authorizationGrant
+	clientSecrets map[string]string
+	jwksRequests  int
 
 	tokenResponseSet bool
 	tokenStatus      int
 	tokenBody        []byte
 	tokenDelay       time.Duration
+
+	jwksResponseSet bool
+	jwksStatus      int
+	jwksBody        []byte
+	jwksDelay       time.Duration
+}
+
+type authorizationGrant struct {
+	nonce       string
+	challenge   string
+	redirectURI string
+	clientID    string
 }
 
 // New starts an IdP and registers cleanup with t.
@@ -92,11 +109,19 @@ func NewServer() (*IdP, error) {
 	if err != nil {
 		return nil, err
 	}
+	olderKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
 	idp := &IdP{
-		key:         key,
-		kid:         "key-1",
-		keySequence: 1,
-		claims:      DefaultClaims("https://accounts.google.com", "google-client"),
+		key:           key,
+		kid:           "key-1",
+		olderKey:      olderKey,
+		olderKID:      "key-0",
+		keySequence:   1,
+		claims:        DefaultClaims("https://accounts.google.com", "google-client"),
+		grants:        make(map[string]authorizationGrant),
+		clientSecrets: map[string]string{"google-client": "google-secret"},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/authorize", idp.handleAuthorize)
@@ -159,6 +184,23 @@ func (i *IdP) SetTokenDelay(delay time.Duration) {
 	i.tokenDelay = delay
 }
 
+// SetJWKSResponse makes the JWKS endpoint return a fixed response. A zero
+// status restores the default two-key response.
+func (i *IdP) SetJWKSResponse(status int, body []byte) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.jwksResponseSet = status != 0
+	i.jwksStatus = status
+	i.jwksBody = append([]byte(nil), body...)
+}
+
+// SetJWKSDelay delays JWKS responses, respecting request cancellation.
+func (i *IdP) SetJWKSDelay(delay time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.jwksDelay = delay
+}
+
 // RotateSigningKey replaces the JWKS and token signing key.
 func (i *IdP) RotateSigningKey() error {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -168,6 +210,8 @@ func (i *IdP) RotateSigningKey() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.keySequence++
+	i.olderKey = i.key
+	i.olderKID = i.kid
 	i.key = key
 	i.kid = fmt.Sprintf("key-%d", i.keySequence)
 	return nil
@@ -234,6 +278,7 @@ func (i *IdP) IssueToken(claims Claims) (string, error) {
 	if claims.PrivateEmail != nil {
 		payload["is_private_email"] = claims.PrivateEmail
 	}
+	putString(payload, "hd", claims.HostedDomain)
 	putString(payload, "nonce", claims.Nonce)
 	if claims.ExpiresAt != nil {
 		payload["exp"] = claims.ExpiresAt.Unix()
@@ -258,23 +303,30 @@ func (i *IdP) IssueToken(claims Claims) (string, error) {
 
 func (i *IdP) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	query := cloneValues(r.URL.Query())
-	i.mu.Lock()
-	i.lastAuthorize = query
-	i.authorizationNonce = query.Get("nonce")
-	i.mu.Unlock()
 	redirect, err := url.Parse(query.Get("redirect_uri"))
-	if err != nil || redirect.Scheme == "" || redirect.Host == "" {
-		http.Error(w, "bad redirect", http.StatusBadRequest)
+	if err != nil || redirect.Scheme == "" || redirect.Host == "" || query.Get("client_id") == "" {
+		http.Error(w, "bad authorization request", http.StatusBadRequest)
 		return
 	}
+	i.mu.Lock()
+	i.lastAuthorize = query
+	i.codeSequence++
+	code := fmt.Sprintf("fake-code-%d", i.codeSequence)
+	i.grants[code] = authorizationGrant{
+		nonce:       query.Get("nonce"),
+		challenge:   query.Get("code_challenge"),
+		redirectURI: query.Get("redirect_uri"),
+		clientID:    query.Get("client_id"),
+	}
+	i.mu.Unlock()
 	if query.Get("response_mode") == "form_post" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, `<form method="post" action="%s"><input name="code" value="fake-code"><input name="state" value="%s"></form>`,
-			template.HTMLEscapeString(redirect.String()), template.HTMLEscapeString(query.Get("state")))
+		_, _ = fmt.Fprintf(w, `<form method="post" action="%s"><input name="code" value="%s"><input name="state" value="%s"></form>`,
+			template.HTMLEscapeString(redirect.String()), template.HTMLEscapeString(code), template.HTMLEscapeString(query.Get("state")))
 		return
 	}
 	values := redirect.Query()
-	values.Set("code", "fake-code")
+	values.Set("code", code)
 	values.Set("state", query.Get("state"))
 	redirect.RawQuery = values.Encode()
 	http.Redirect(w, r, redirect.String(), http.StatusSeeOther)
@@ -292,8 +344,7 @@ func (i *IdP) handleToken(w http.ResponseWriter, r *http.Request) {
 	status := i.tokenStatus
 	body := append([]byte(nil), i.tokenBody...)
 	claims := i.claims
-	nonce := i.authorizationNonce
-	challenge := i.lastAuthorize.Get("code_challenge")
+	expectedSecret, secretRegistered := i.clientSecrets[r.PostForm.Get("client_id")]
 	i.mu.Unlock()
 	if delay > 0 {
 		timer := time.NewTimer(delay)
@@ -312,12 +363,25 @@ func (i *IdP) handleToken(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(body)
 		return
 	}
-	if r.PostForm.Get("grant_type") != "authorization_code" || (challenge != "" && oauth.Challenge(r.PostForm.Get("code_verifier")) != challenge) {
-		http.Error(w, "invalid grant", http.StatusBadRequest)
+	if (secretRegistered && r.PostForm.Get("client_secret") != expectedSecret) ||
+		(!secretRegistered && r.PostForm.Get("client_secret") == "") {
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client")
+		return
+	}
+	i.mu.Lock()
+	grant, ok := i.grants[r.PostForm.Get("code")]
+	if ok {
+		delete(i.grants, r.PostForm.Get("code"))
+	}
+	i.mu.Unlock()
+	if !ok || r.PostForm.Get("grant_type") != "authorization_code" ||
+		r.PostForm.Get("client_id") != grant.clientID || r.PostForm.Get("redirect_uri") != grant.redirectURI ||
+		grant.challenge == "" || oauth.Challenge(r.PostForm.Get("code_verifier")) != grant.challenge {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	if claims.Nonce == nil {
-		claims.Nonce = &nonce
+		claims.Nonce = &grant.nonce
 	}
 	token, err := i.IssueToken(claims)
 	if err != nil {
@@ -328,24 +392,67 @@ func (i *IdP) handleToken(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"id_token": token, "token_type": "Bearer"})
 }
 
-func (i *IdP) handleJWKS(w http.ResponseWriter, _ *http.Request) {
+func (i *IdP) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	i.mu.Lock()
 	i.jwksRequests++
 	key := i.key
 	kid := i.kid
+	olderKey := i.olderKey
+	olderKID := i.olderKID
+	delay := i.jwksDelay
+	fixed := i.jwksResponseSet
+	status := i.jwksStatus
+	body := append([]byte(nil), i.jwksBody...)
 	i.mu.Unlock()
-	jwkKey, err := jwk.New(&key.PublicKey)
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if fixed {
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+	jwkKey, err := publicJWK(key, kid)
 	if err != nil {
 		http.Error(w, "key failed", http.StatusInternalServerError)
 		return
 	}
+	olderJWK, err := publicJWK(olderKey, olderKID)
+	if err != nil {
+		http.Error(w, "key failed", http.StatusInternalServerError)
+		return
+	}
+	set := jwk.NewSet()
+	set.Add(jwkKey)
+	set.Add(olderJWK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(set)
+}
+
+func publicJWK(key *rsa.PrivateKey, kid string) (jwk.Key, error) {
+	jwkKey, err := jwk.New(&key.PublicKey)
+	if err != nil {
+		return nil, err
+	}
 	_ = jwkKey.Set(jwk.KeyIDKey, kid)
 	_ = jwkKey.Set(jwk.AlgorithmKey, jwa.RS256)
 	_ = jwkKey.Set(jwk.KeyUsageKey, jwk.ForSignature)
-	set := jwk.NewSet()
-	set.Add(jwkKey)
+	return jwkKey, nil
+}
+
+func writeOAuthError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(set)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }
 
 func putString(dst map[string]interface{}, name string, value *string) {

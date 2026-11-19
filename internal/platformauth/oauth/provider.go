@@ -24,11 +24,18 @@ const (
 // Identity is the verified provider identity. Email may be empty, notably on
 // Apple callbacks after the first consent.
 type Identity struct {
-	Provider      string
-	Subject       string
-	Email         string
+	Provider string
+	Subject  string
+	Email    string
+
 	EmailVerified bool
 	PrivateEmail  bool
+	// EmailAuthoritative is true for a non-empty verified Apple email, or for a
+	// non-empty verified Google email whose domain is gmail.com/googlemail.com
+	// (case-insensitively) or whose token has a non-empty hd claim. Callers may
+	// link or create an account by email only when this is true; (provider,
+	// subject) lookups do not require it.
+	EmailAuthoritative bool
 }
 
 // Provider performs the provider-specific authorization and token flow.
@@ -107,6 +114,9 @@ func (p *provider) AuthURL(state, nonce, codeChallenge string) string {
 }
 
 func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce string) (Identity, error) {
+	if code == "" || codeVerifier == "" || nonce == "" {
+		return Identity{}, ErrTokenInvalid
+	}
 	secret := p.clientSecret
 	if p.name == ProviderApple {
 		var err error
@@ -138,17 +148,21 @@ func (p *provider) Exchange(ctx context.Context, code, codeVerifier, nonce strin
 	if err != nil || tooLarge {
 		return Identity{}, ErrProviderUnreachable
 	}
+	var tokenResponse struct {
+		Error   string `json:"error"`
+		IDToken string `json:"id_token"`
+	}
 	if response.StatusCode >= 400 && response.StatusCode < 500 {
-		return Identity{}, ErrTokenInvalid
+		if json.Unmarshal(body, &tokenResponse) == nil && tokenResponse.Error == "invalid_grant" {
+			return Identity{}, ErrTokenInvalid
+		}
+		return Identity{}, ErrProviderUnreachable
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return Identity{}, ErrProviderUnreachable
 	}
-	var tokenResponse struct {
-		IDToken string `json:"id_token"`
-	}
-	if err := json.Unmarshal(body, &tokenResponse); err != nil || tokenResponse.IDToken == "" {
-		return Identity{}, ErrTokenInvalid
+	if err := json.Unmarshal(body, &tokenResponse); err != nil || tokenResponse.Error != "" || tokenResponse.IDToken == "" {
+		return Identity{}, ErrProviderUnreachable
 	}
 	return p.verifier.verify(ctx, tokenResponse.IDToken, nonce)
 }

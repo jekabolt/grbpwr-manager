@@ -27,7 +27,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "empty", config: oauth.Config{}},
 		{name: "google id only", config: oauth.Config{GoogleClientID: "client"}, wantErr: true},
 		{name: "google secret only", config: oauth.Config{GoogleClientSecret: "secret"}, wantErr: true},
-		{name: "google complete", config: oauth.Config{GoogleClientID: "client", GoogleClientSecret: "secret"}},
+		{name: "google complete", config: oauth.Config{
+			GoogleClientID: "client", GoogleClientSecret: "secret", CallbackBaseURL: "https://api.example.test",
+		}},
 		{name: "apple disabled bad key", config: oauth.Config{ApplePrivateKey: "not a key"}},
 		{name: "apple enabled missing", config: oauth.Config{AppleEnabled: true}, wantErr: true},
 		{name: "apple enabled bad key", config: oauth.Config{
@@ -35,6 +37,7 @@ func TestConfigValidate(t *testing.T) {
 		}, wantErr: true},
 		{name: "apple complete", config: oauth.Config{
 			AppleEnabled: true, AppleServicesID: "service", AppleTeamID: "team", AppleKeyID: "kid", ApplePrivateKey: privatePEM,
+			CallbackBaseURL: "https://api.example.test",
 		}},
 	}
 	for _, test := range tests {
@@ -46,6 +49,87 @@ func TestConfigValidate(t *testing.T) {
 			if err != nil && (test.config.GoogleClientSecret != "" && contains(err.Error(), test.config.GoogleClientSecret) ||
 				test.config.ApplePrivateKey != "" && contains(err.Error(), test.config.ApplePrivateKey)) {
 				t.Fatal("configuration secret appeared in error")
+			}
+		})
+	}
+}
+
+func TestCallbackBaseURLValidation(t *testing.T) {
+	base := oauth.Config{GoogleClientID: "client", GoogleClientSecret: "secret"}
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "empty", wantErr: true},
+		{name: "http non-loopback", url: "http://api.example.test", wantErr: true},
+		{name: "path", url: "https://api.example.test/base", wantErr: true},
+		{name: "query", url: "https://api.example.test?mode=oauth", wantErr: true},
+		{name: "userinfo", url: "https://user@api.example.test", wantErr: true},
+		{name: "fragment", url: "https://api.example.test#oauth", wantErr: true},
+		{name: "good", url: "https://api.example.test/"},
+		{name: "localhost", url: "http://localhost:8081"},
+		{name: "ipv4 loopback", url: "http://127.0.0.1:8081/"},
+		{name: "ipv6 loopback", url: "http://[::1]:8081"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := base
+			config.CallbackBaseURL = test.url
+			err := config.Validate()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Validate() error = %v, want error %v", err, test.wantErr)
+			}
+		})
+	}
+
+	if err := (oauth.Config{CallbackBaseURL: ":// ignored without providers"}).Validate(); err != nil {
+		t.Fatalf("disabled providers validated callback URL: %v", err)
+	}
+}
+
+func TestEndpointSchemeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "https", url: "https://idp.example.test/authorize"},
+		{name: "http localhost", url: "http://localhost:9090/authorize"},
+		{name: "http ipv4 loopback", url: "http://127.0.0.1:9090/authorize"},
+		{name: "http ipv6 loopback", url: "http://[::1]:9090/authorize"},
+		{name: "http non-loopback", url: "http://idp.example.test/authorize", wantErr: true},
+		{name: "other scheme", url: "ftp://127.0.0.1/authorize", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			endpoints := oauth.ProductionEndpoints()
+			endpoints.Google.AuthorizationURL = test.url
+			_, err := oauth.NewRegistry(oauth.Config{
+				GoogleClientID: "client", GoogleClientSecret: "secret", CallbackBaseURL: "https://api.example.test",
+			}, oauth.WithEndpoints(endpoints))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("NewRegistry() error = %v, want error %v", err, test.wantErr)
+			}
+		})
+	}
+
+	for _, field := range []string{"authorization", "token", "jwks"} {
+		t.Run("reject "+field, func(t *testing.T) {
+			endpoints := oauth.ProductionEndpoints()
+			switch field {
+			case "authorization":
+				endpoints.Google.AuthorizationURL = "http://idp.example.test/authorize"
+			case "token":
+				endpoints.Google.TokenURL = "http://idp.example.test/token"
+			case "jwks":
+				endpoints.Google.JWKSURL = "http://idp.example.test/jwks"
+			}
+			_, err := oauth.NewRegistry(oauth.Config{
+				GoogleClientID: "client", GoogleClientSecret: "secret", CallbackBaseURL: "https://api.example.test",
+			}, oauth.WithEndpoints(endpoints))
+			if err == nil {
+				t.Fatal("NewRegistry() accepted insecure endpoint")
 			}
 		})
 	}

@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"net"
+	"net/url"
 	"strings"
 )
 
@@ -32,16 +34,44 @@ func (c Config) Validate() error {
 	if googleID != googleSecret {
 		return errors.New("oauth: google configuration incomplete")
 	}
-	if !c.AppleEnabled {
-		return nil
+	if c.AppleEnabled {
+		if c.AppleServicesID == "" || c.AppleTeamID == "" || c.AppleKeyID == "" || c.ApplePrivateKey == "" {
+			return errors.New("oauth: apple configuration incomplete")
+		}
+		if _, err := parseApplePrivateKey(c.ApplePrivateKey); err != nil {
+			return errors.New("oauth: apple private key invalid")
+		}
 	}
-	if c.AppleServicesID == "" || c.AppleTeamID == "" || c.AppleKeyID == "" || c.ApplePrivateKey == "" {
-		return errors.New("oauth: apple configuration incomplete")
-	}
-	if _, err := parseApplePrivateKey(c.ApplePrivateKey); err != nil {
-		return errors.New("oauth: apple private key invalid")
+	if googleID || c.AppleEnabled {
+		if err := validateCallbackBaseURL(c.CallbackBaseURL); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validateCallbackBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") ||
+		u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") || !secureURLScheme(u) {
+		return errors.New("oauth: invalid callback base URL")
+	}
+	return nil
+}
+
+func secureURLScheme(u *url.URL) bool {
+	if u.Scheme == "https" {
+		return true
+	}
+	return u.Scheme == "http" && loopbackHost(u.Hostname())
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.Equal(net.ParseIP("127.0.0.1")) || ip.Equal(net.ParseIP("::1")))
 }
 
 func parseApplePrivateKey(src string) (*ecdsa.PrivateKey, error) {

@@ -18,9 +18,17 @@ import (
 )
 
 const (
-	clockSkew            = 60 * time.Second
-	unknownKIDRefreshMin = time.Minute
+	clockSkew              = 60 * time.Second
+	unknownKIDRefreshMin   = time.Minute
+	jwksTTL                = time.Hour
+	coldFetchFailureMemory = 5 * time.Second
+	staleFetchRetryMin     = time.Minute
 )
+
+type jwksFetch struct {
+	done chan struct{}
+	err  error
+}
 
 type idTokenVerifier struct {
 	provider string
@@ -32,7 +40,11 @@ type idTokenVerifier struct {
 
 	mu                 sync.Mutex
 	keys               jwk.Set
+	keysFetchedAt      time.Time
+	coldFailureUntil   time.Time
+	staleRefreshAfter  time.Time
 	lastUnknownRefresh time.Time
+	inflight           *jwksFetch
 }
 
 func newIDTokenVerifier(provider, audience, jwksURL string, issuers []string, client *http.Client, now func() time.Time) *idTokenVerifier {
@@ -70,6 +82,9 @@ func (v *idTokenVerifier) verify(ctx context.Context, compact, expectedNonce str
 	if _, ok := v.issuers[claims.Issuer]; !ok || !claims.Audience.Contains(v.audience) {
 		return Identity{}, ErrTokenInvalid
 	}
+	if len(claims.Audience.Values) > 1 && claims.AuthorizedParty != v.audience {
+		return Identity{}, ErrTokenInvalid
+	}
 	if v.provider == ProviderGoogle && claims.AuthorizedParty != "" && claims.AuthorizedParty != v.audience {
 		return Identity{}, ErrTokenInvalid
 	}
@@ -81,42 +96,171 @@ func (v *idTokenVerifier) verify(ctx context.Context, compact, expectedNonce str
 	if claims.Nonce == nil || subtle.ConstantTimeCompare([]byte(*claims.Nonce), []byte(expectedNonce)) != 1 || claims.Subject == "" {
 		return Identity{}, ErrTokenInvalid
 	}
+	email := strings.TrimSpace(claims.Email)
+	emailVerified := claims.EmailVerified.Value && email != ""
+	privateEmail := claims.PrivateEmail.Value && email != ""
+	emailAuthoritative := false
+	if emailVerified {
+		switch v.provider {
+		case ProviderGoogle:
+			emailAuthoritative = googleAuthoritativeEmail(email, claims.HostedDomain)
+		case ProviderApple:
+			emailAuthoritative = true
+		}
+	}
 	return Identity{
-		Provider:      v.provider,
-		Subject:       claims.Subject,
-		Email:         claims.Email,
-		EmailVerified: claims.EmailVerified.Value,
-		PrivateEmail:  claims.PrivateEmail.Value,
+		Provider:           v.provider,
+		Subject:            claims.Subject,
+		Email:              email,
+		EmailVerified:      emailVerified,
+		PrivateEmail:       privateEmail,
+		EmailAuthoritative: emailAuthoritative,
 	}, nil
 }
 
 func (v *idTokenVerifier) verificationKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+	now := v.now()
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.keys == nil {
-		keys, err := v.fetchKeys(ctx)
-		if err != nil {
-			return nil, err
+	keys := v.keys
+	fetchedAt := v.keysFetchedAt
+	coldBlocked := keys == nil && now.Before(v.coldFailureUntil)
+	staleAllowed := keys != nil && now.Sub(fetchedAt) >= jwksTTL && !now.Before(v.staleRefreshAfter)
+	v.mu.Unlock()
+
+	refreshed := false
+	var refreshErr error
+	if keys == nil {
+		if coldBlocked {
+			return nil, ErrProviderUnreachable
 		}
-		v.keys = keys
+		refreshed, refreshErr = v.refreshKeys(ctx, refreshCold)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		keys = v.currentKeys()
+	} else if staleAllowed {
+		refreshed, refreshErr = v.refreshKeys(ctx, refreshStale)
+		if refreshErr == nil {
+			keys = v.currentKeys()
+		}
 	}
-	if key, ok := rsaKey(v.keys, kid); ok {
+	if key, ok := rsaKey(keys, kid); ok {
 		return key, nil
 	}
-	now := v.now()
-	if !v.lastUnknownRefresh.IsZero() && now.Sub(v.lastUnknownRefresh) < unknownKIDRefreshMin {
+	if refreshErr != nil {
+		return nil, refreshErr
+	}
+	if refreshed {
+		v.mu.Lock()
+		v.lastUnknownRefresh = v.now()
+		v.mu.Unlock()
 		return nil, ErrTokenInvalid
 	}
-	v.lastUnknownRefresh = now
-	keys, err := v.fetchKeys(ctx)
+	_, err := v.refreshKeys(ctx, refreshUnknownKID)
 	if err != nil {
 		return nil, err
 	}
-	v.keys = keys
-	if key, ok := rsaKey(v.keys, kid); ok {
+	if key, ok := rsaKey(v.currentKeys(), kid); ok {
 		return key, nil
 	}
 	return nil, ErrTokenInvalid
+}
+
+type refreshReason uint8
+
+const (
+	refreshCold refreshReason = iota
+	refreshStale
+	refreshUnknownKID
+)
+
+func (v *idTokenVerifier) refreshKeys(ctx context.Context, reason refreshReason) (bool, error) {
+	now := v.now()
+	v.mu.Lock()
+	if v.inflight != nil {
+		fetch := v.inflight
+		v.mu.Unlock()
+		return true, waitForJWKS(ctx, fetch)
+	}
+	switch reason {
+	case refreshCold:
+		if v.keys != nil {
+			v.mu.Unlock()
+			return false, nil
+		}
+		if now.Before(v.coldFailureUntil) {
+			v.mu.Unlock()
+			return false, ErrProviderUnreachable
+		}
+	case refreshStale:
+		if now.Before(v.staleRefreshAfter) {
+			v.mu.Unlock()
+			return false, nil
+		}
+	case refreshUnknownKID:
+		if now.Before(v.staleRefreshAfter) {
+			v.mu.Unlock()
+			return false, ErrProviderUnreachable
+		}
+		if !v.lastUnknownRefresh.IsZero() && now.Sub(v.lastUnknownRefresh) < unknownKIDRefreshMin {
+			v.mu.Unlock()
+			return false, ErrTokenInvalid
+		}
+		v.lastUnknownRefresh = now
+	}
+	fetch := &jwksFetch{done: make(chan struct{})}
+	v.inflight = fetch
+	v.mu.Unlock()
+
+	go v.runJWKSFetch(fetch)
+	return true, waitForJWKS(ctx, fetch)
+}
+
+func (v *idTokenVerifier) runJWKSFetch(fetch *jwksFetch) {
+	keys, err := v.fetchKeys(context.Background())
+	now := v.now()
+	v.mu.Lock()
+	if err == nil {
+		v.keys = keys
+		v.keysFetchedAt = now
+		v.coldFailureUntil = time.Time{}
+		v.staleRefreshAfter = time.Time{}
+	} else if v.keys == nil {
+		v.coldFailureUntil = now.Add(coldFetchFailureMemory)
+	} else {
+		v.staleRefreshAfter = now.Add(staleFetchRetryMin)
+	}
+	fetch.err = err
+	v.inflight = nil
+	close(fetch.done)
+	v.mu.Unlock()
+}
+
+func waitForJWKS(ctx context.Context, fetch *jwksFetch) error {
+	select {
+	case <-ctx.Done():
+		return ErrProviderUnreachable
+	case <-fetch.done:
+		return fetch.err
+	}
+}
+
+func (v *idTokenVerifier) currentKeys() jwk.Set {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.keys
+}
+
+func googleAuthoritativeEmail(email, hostedDomain string) bool {
+	if strings.TrimSpace(hostedDomain) != "" {
+		return true
+	}
+	at := strings.LastIndexByte(email, '@')
+	if at < 0 {
+		return false
+	}
+	domain := email[at+1:]
+	return strings.EqualFold(domain, "gmail.com") || strings.EqualFold(domain, "googlemail.com")
 }
 
 func (v *idTokenVerifier) fetchKeys(ctx context.Context) (jwk.Set, error) {
@@ -190,6 +334,7 @@ type idTokenClaims struct {
 	Email           string        `json:"email"`
 	EmailVerified   booleanClaim  `json:"email_verified"`
 	PrivateEmail    booleanClaim  `json:"is_private_email"`
+	HostedDomain    string        `json:"hd"`
 }
 
 type audienceClaim struct {
