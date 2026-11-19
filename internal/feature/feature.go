@@ -244,6 +244,8 @@ var methodOverrides = map[string][]Key{
 	"SuggestDesignParts":          {TechCards, AI},
 	"SuggestDesignPartsCard":      {TechCards, AI},
 	"GenerateDesignJoins":         {TechCards, AI},
+	// Allowlisted in rbac (four editors use it): core is its domain, ai the capability.
+	"TranslateFields": {Core, AI},
 }
 
 // ForMethod returns the features required by an AdminService full method.

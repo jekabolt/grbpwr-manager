@@ -1888,6 +1888,17 @@ service AdminService {
     };
   }
 
+  // TranslateFields translates a few named text fields from one language into
+  // every requested target language in one model call (the AI router, purpose
+  // chat.email_translate; spend booked to the caller's team). Stores nothing.
+  // Replaces the admin client's Vercel /api/translate function: same body shape.
+  rpc TranslateFields(TranslateFieldsRequest) returns (TranslateFieldsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/ai/translate"
+      body: "*"
+    };
+  }
+
   // SuggestPrompts — the `Ideas ▾` door of a PLAYGROUND prompt field: 3–5 short starting phrases for one field of one
   // workflow, from the field's purpose, the card facts the client attaches, the text so far and at most two pictures
   // (their thumbnails). Nothing is stored; the answer is cached in memory for ten minutes per identical request.
@@ -15515,3 +15526,40 @@ message SetTeamMemberRoleRequest {
 }
 
 message SetTeamMemberRoleResponse {}
+
+// TranslateFieldsRequest — the admin client's /api/translate body
+// ({source:{langName, fields}, targets:[{code, langName}], constraints}).
+message TranslateFieldsRequest {
+  TranslateSource source = 1;
+  repeated TranslateTarget targets = 2;
+  // constraints by field name; a field without an entry has no limit.
+  map<string, TranslateConstraint> constraints = 3;
+}
+
+message TranslateSource {
+  // lang_name is the source language in words ("English").
+  string lang_name = 1;
+  // fields by name; empty values are not sent to the model.
+  map<string, string> fields = 2;
+}
+
+message TranslateTarget {
+  // code is the key the answer uses for this language ("fr", "zh").
+  string code = 1;
+  string lang_name = 2;
+}
+
+message TranslateConstraint {
+  // max_length caps the translation in characters; 0 = no cap.
+  int32 max_length = 1;
+}
+
+message TranslateFieldsResponse {
+  // translations by target code; each holds the translated fields by name.
+  // A language or field the model did not return is absent.
+  map<string, TranslatedFields> translations = 1;
+}
+
+message TranslatedFields {
+  map<string, string> fields = 1;
+}
