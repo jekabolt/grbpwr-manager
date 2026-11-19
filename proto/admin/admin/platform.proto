@@ -11,6 +11,7 @@ option go_package = "github.com/jekabolt/grbpwr-products-manager/proto/admin;adm
 // addressed by slug, never by id.
 service PlatformService {
   // ListTeams returns every team with its people, features and AI spend.
+  // Deleted teams whose data is not wiped yet are listed too (status deleted).
   rpc ListTeams(ListTeamsRequest) returns (ListTeamsResponse) {
     option (google.api.http) = {get: "/api/platform/teams"};
   }
@@ -72,13 +73,31 @@ service PlatformService {
       body: "*"
     };
   }
+
+  // DeleteTeam hides the team at once; its data is wiped when purge_at passes;
+  // until then RestoreTeam brings it back.
+  rpc DeleteTeam(DeleteTeamRequest) returns (DeleteTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/delete"
+      body: "*"
+    };
+  }
+
+  // RestoreTeam brings back a deleted team whose data is not wiped yet.
+  rpc RestoreTeam(RestoreTeamRequest) returns (RestoreTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/restore"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
 message PlatformTeam {
   string slug = 1;
   string name = 2;
-  // status is active, read_only, provisioning, pending or review (waits for approval).
+  // status is active, read_only, provisioning, pending, review (waits for approval)
+  // or deleted (hidden; data is wiped at purge_at).
   string status = 3;
   int32 people = 4;
   google.protobuf.Timestamp created_at = 5;
@@ -88,6 +107,8 @@ message PlatformTeam {
   string ai_spend_month_usd = 7;
   int32 ai_unpriced_calls_month = 8;
   bool schema_ok = 9;
+  // purge_at is set only while status is deleted: the moment the team's data is wiped.
+  google.protobuf.Timestamp purge_at = 10;
 }
 
 // PlatformMember is one member of a team as the console sees it.
@@ -181,4 +202,22 @@ message EnterTeamRequest {
 
 message EnterTeamResponse {
   string handoff_code = 1;
+}
+
+message DeleteTeamRequest {
+  string team_slug = 1;
+  // password is the calling operator's own console password.
+  string password = 2;
+}
+
+message DeleteTeamResponse {
+  PlatformTeam team = 1;
+}
+
+message RestoreTeamRequest {
+  string team_slug = 1;
+}
+
+message RestoreTeamResponse {
+  PlatformTeam team = 1;
 }

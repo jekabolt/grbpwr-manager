@@ -1246,8 +1246,10 @@ func (s *Server) Start(ctx context.Context,
 		ps := platform.New(st)
 		ps.SetConfig(pcfg)
 		ps.SetBudgetZone(s.budgetZone)
+		ps.SetPasswordCheck(authServer.CheckOperatorPassword)
 		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 			ps.SetInvalidator(b.InvalidateTeam)
+			ps.SetSessionInvalidator(b.InvalidateSession)
 		}
 		pb_admin.RegisterPlatformServiceServer(s.gs, ps)
 		s.platformOn = true

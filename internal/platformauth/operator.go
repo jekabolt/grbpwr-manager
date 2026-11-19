@@ -3,11 +3,13 @@ package platformauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -77,3 +79,43 @@ func (s *Service) exchangeOperator(ctx context.Context, team tenant.Team, code s
 }
 
 func isOperatorCode(code string) bool { return strings.HasPrefix(code, OperatorCodePrefix) }
+
+// Answers of CheckOperatorPassword.
+var (
+	// ErrWrongPassword: the password is empty, wrong, or the account has no usable password (one
+	// answer for all three).
+	ErrWrongPassword = errors.New("platformauth: wrong password")
+	// ErrTooManyAttempts: the sign-in limiters refused the attempt.
+	ErrTooManyAttempts = errors.New("platformauth: too many attempts")
+)
+
+// CheckOperatorPassword checks password against the stored hash of the operator userID: the
+// confirmation of a destructive console action (DeleteTeam). Every attempt spends the sign-in
+// limiters — per client IP and per login (the account's email, else its handle), the same budget a
+// console sign-in with that login spends — so a stolen console session cannot be used to guess the
+// password. The password never reaches a log line or an error.
+func (s *Service) CheckOperatorPassword(ctx context.Context, userID int64, password string) error {
+	u, err := s.d.Store.UserByID(ctx, userID)
+	if errors.Is(err, platformstore.ErrUserNotFound) {
+		_ = s.passwordOK(password, "")
+		return ErrWrongPassword
+	}
+	if err != nil {
+		return fmt.Errorf("platformauth: operator lookup: %w", err)
+	}
+	login := u.Handle
+	if u.Email.Valid && u.Email.String != "" {
+		login = u.Email.String
+	}
+	if !s.signInIP.Allow(middleware.GetClientIP(ctx)) || !s.signInLogin.Allow(strings.ToLower(login)) {
+		return ErrTooManyAttempts
+	}
+	if password == "" || len(password) > MaxPasswordLen {
+		_ = s.passwordOK("", "")
+		return ErrWrongPassword
+	}
+	if !s.passwordOK(password, u.PasswordHash) || u.Status != platformstore.UserActive || !u.IsOperator {
+		return ErrWrongPassword
+	}
+	return nil
+}

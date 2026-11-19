@@ -300,6 +300,20 @@ func Sweep() {
 	registry.mu.Unlock()
 }
 
+// ForgetTeam drops one team's snapshot on this instance (the console deleted or restored the team):
+// a deleted team holds no snapshot until its idle sweep, and a restored one is read afresh from its
+// database on its next use. The in-memory settings stay (nothing persists them, like the idle
+// sweep). Team #1 is never dropped; an in-flight load still installs what it read (the idle sweep
+// drops it).
+func ForgetTeam(teamID int64) {
+	if teamID == tenant.TeamOneID {
+		return
+	}
+	registry.mu.Lock()
+	delete(registry.teams, teamID)
+	registry.mu.Unlock()
+}
+
 // CachedTeams returns the ids of the teams whose snapshot is held, ascending (tests, diagnostics).
 func CachedTeams() []int64 {
 	registry.mu.RLock()

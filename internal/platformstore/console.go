@@ -15,7 +15,7 @@ import (
 
 // Console errors (PlatformService maps them to FAILED_PRECONDITION / NOT_FOUND).
 var (
-	// ErrTeamNotFound: no team with that live slug (deleted teams included).
+	// ErrTeamNotFound: no team with that slug.
 	ErrTeamNotFound = errors.New("platformstore: team not found")
 	// ErrWrongTeamStatus: the team is not in the status the operation starts from.
 	ErrWrongTeamStatus = errors.New("platformstore: wrong team status")
@@ -23,6 +23,10 @@ var (
 
 // SlugRedirect is how long a retired slug keeps redirecting to its team after a rename.
 const SlugRedirect = 90 * 24 * time.Hour
+
+// DeleteRetention is how long a deleted team's data is kept (and RestoreTeam can bring it back)
+// before its wipe is due (team.purge_at).
+const DeleteRetention = 30 * 24 * time.Hour
 
 // ConsoleTeam is one team as the operator's console lists it. ID never leaves the server.
 type ConsoleTeam struct {
@@ -41,24 +45,27 @@ type ConsoleTeam struct {
 
 	SchemaVersion     sql.NullString `db:"schema_version"`
 	SchemaFingerprint sql.NullString `db:"schema_fingerprint"`
+	// PurgeAt is set only while the team is deleted: the moment its data is wiped.
+	PurgeAt sql.NullTime `db:"purge_at"`
 }
 
-const consoleTeamSelect = `SELECT t.id, t.slug, t.name, t.profile, t.status, t.created_at, t.schema_version, t.schema_fingerprint,
+const consoleTeamSelect = `SELECT t.id, t.slug, t.name, t.profile, t.status, t.created_at, t.schema_version, t.schema_fingerprint, t.purge_at,
  (SELECT COUNT(*) FROM team_member m WHERE m.team_id = t.id AND m.status = 'active') AS people
 FROM team t`
 
-// ConsoleTeams lists every team that is not deleted, filtered by a slug / name substring (empty =
-// all), team #1 first, then newest first. A fixed three queries whatever the number of teams:
-// teams with their people count, every feature override, the reference fingerprints.
+// ConsoleTeams lists every team that is not deleted, then the deleted teams whose data is not wiped
+// yet (purge_at set), filtered by a slug / name substring (empty = all): team #1 first, then newest
+// first, the deleted ones last (newest first among them). A fixed three queries whatever the number
+// of teams: teams with their people count, every feature override, the reference fingerprints.
 func (s *Store) ConsoleTeams(ctx context.Context, query string) ([]ConsoleTeam, error) {
-	q := consoleTeamSelect + ` WHERE t.status <> 'deleted'`
+	q := consoleTeamSelect + ` WHERE (t.status <> 'deleted' OR t.purge_at IS NOT NULL)`
 	var args []any
 	if query = strings.ToLower(strings.TrimSpace(query)); query != "" {
 		like := "%" + escapeLike(query) + "%"
 		q += ` AND (t.slug LIKE ? ESCAPE '!' OR LOWER(t.name) LIKE ? ESCAPE '!')`
 		args = append(args, like, like)
 	}
-	q += ` ORDER BY t.id = 1 DESC, t.created_at DESC, t.id DESC`
+	q += ` ORDER BY t.status = 'deleted', t.id = 1 DESC, t.created_at DESC, t.id DESC`
 	var teams []ConsoleTeam
 	if err := s.db.SelectContext(ctx, &teams, q, args...); err != nil {
 		return nil, fmt.Errorf("platformstore: console teams: %w", err)
@@ -72,14 +79,26 @@ func (s *Store) ConsoleTeams(ctx context.Context, query string) ([]ConsoleTeam, 
 	return teams, nil
 }
 
-// ConsoleTeam returns one team by its live slug (not deleted). ErrTeamNotFound when there is none.
+// ConsoleTeam returns one team by its live slug for the console's actions; it never returns a
+// deleted team: ErrWrongTeamStatus for one (every action but DeleteTeam / RestoreTeam / GetTeam
+// answers wrong_status on it), ErrTeamNotFound when there is no team with the slug.
 func (s *Store) ConsoleTeam(ctx context.Context, slug string) (ConsoleTeam, error) {
+	t, err := s.ConsoleTeamWithDeleted(ctx, slug)
+	if err == nil && t.Status == string(tenant.StatusDeleted) {
+		return ConsoleTeam{}, ErrWrongTeamStatus
+	}
+	return t, err
+}
+
+// ConsoleTeamWithDeleted is ConsoleTeam that also returns a deleted team (DeleteTeam, RestoreTeam,
+// GetTeam). ErrTeamNotFound when there is no team with the slug.
+func (s *Store) ConsoleTeamWithDeleted(ctx context.Context, slug string) (ConsoleTeam, error) {
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
 		return ConsoleTeam{}, ErrTeamNotFound
 	}
 	var t ConsoleTeam
-	if err := s.db.GetContext(ctx, &t, consoleTeamSelect+` WHERE t.slug = ? AND t.status <> 'deleted'`, slug); err != nil {
+	if err := s.db.GetContext(ctx, &t, consoleTeamSelect+` WHERE t.slug = ?`, slug); err != nil {
 		if isNoRows(err) {
 			return ConsoleTeam{}, ErrTeamNotFound
 		}
