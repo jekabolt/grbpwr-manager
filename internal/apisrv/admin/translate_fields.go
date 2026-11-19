@@ -224,12 +224,17 @@ func parseTranslateFields(content string, in *translateFieldsIn) (map[string]*pb
 
 // TranslateFields translates the source fields into every target language in ONE router call.
 // Stores nothing. Gates (interceptors): feature core + ai; any account of the team may press it
-// (rbac allowlist, write class — a suspended team cannot spend). Here: not configured / paused first,
-// then the request, then the text assistant's shared concurrency gate and per-admin hourly window
+// (rbac allowlist, write class — a suspended team cannot spend). Here: a token with no account name
+// first (a legacy JWT without subject has no hourly window of its own, so it may not spend at all),
+// then not configured / paused, then the request, then the text assistant's shared concurrency gate and per-admin hourly window
 // (the same ones EnhanceText draws on: one budget for every ✦ press of a person), then the call.
 // Only sizes, codes, timing and the model are logged — never the text.
 func (s *Server) TranslateFields(ctx context.Context, req *pb_admin.TranslateFieldsRequest) (*pb_admin.TranslateFieldsResponse, error) {
 	const purpose = translateFieldsPurpose
+	admin := strings.TrimSpace(authsrv.GetAdminUsername(ctx))
+	if admin == "" {
+		return nil, status.Error(codes.Unauthenticated, "this session has no account name — sign in again")
+	}
 	if !s.ai.Enabled(purpose) {
 		return nil, s.aiOffRefusal(purpose, translateFieldsNotConfiguredMsg)
 	}
@@ -248,7 +253,7 @@ func (s *Server) TranslateFields(ctx context.Context, req *pb_admin.TranslateFie
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the translator is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, admin)) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the AI text tools %d times in the last hour — try again later", enhancePerAdminCalls)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/aiprovtest"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
+	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/openrouter"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -121,6 +122,9 @@ func newLedgeredRouter(t *testing.T, client *openrouter.Client) (*router.Router,
 		AIRouterDefaults(client), client.CompletionBase()), store
 }
 
+// signedIn is the ctx an admin's named token gives: the interceptor put the username in.
+func signedIn(ctx context.Context) context.Context { return authsrv.PutAdminUsername(ctx, "anna") }
+
 func translateReq() *pb_admin.TranslateFieldsRequest {
 	return &pb_admin.TranslateFieldsRequest{
 		Source: &pb_admin.TranslateSource{LangName: "English", Fields: map[string]string{
@@ -144,7 +148,7 @@ func TestTranslateFieldsCallsRouterOnTheCallersTeam(t *testing.T) {
 	ai, store := newLedgeredRouter(t, client)
 	s := &Server{ai: ai, enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
 
-	ctx := tenant.With(context.Background(), tenant.Team{ID: 2, FileKey: "0123456789abcdef0123456789abcdef"})
+	ctx := tenant.With(signedIn(context.Background()), tenant.Team{ID: 2, FileKey: "0123456789abcdef0123456789abcdef"})
 	resp, err := s.TranslateFields(ctx, translateReq())
 	require.NoError(t, err)
 
@@ -199,13 +203,13 @@ func TestTranslateFieldsRefusesBeforeAnyCall(t *testing.T) {
 	} {
 		req := translateReq()
 		mutate(req)
-		_, err := s.TranslateFields(context.Background(), req)
+		_, err := s.TranslateFields(signedIn(context.Background()), req)
 		require.Equalf(t, codes.InvalidArgument, status.Code(err), name)
 	}
 	require.Empty(t, *calls)
 
 	off := &Server{ai: newTestRouter(openrouter.New(openrouter.Config{})), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
-	_, err := off.TranslateFields(context.Background(), translateReq())
+	_, err := off.TranslateFields(signedIn(context.Background()), translateReq())
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 
@@ -216,7 +220,32 @@ func TestTranslateFieldsUnusableAnswer(t *testing.T) {
 	} {
 		client, _ := newTranslateOpenRouter(t, answer)
 		s := &Server{ai: newTestRouter(client), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
-		_, err := s.TranslateFields(context.Background(), translateReq())
+		_, err := s.TranslateFields(signedIn(context.Background()), translateReq())
 		require.Equalf(t, codes.Internal, status.Code(err), name)
 	}
+}
+
+// A legacy JWT without subject passes the auth interceptor with no account name. It has no hourly
+// window of its own, so it is refused before the AI check, before the request is read, before any call.
+func TestTranslateFieldsRefusesTokenWithoutName(t *testing.T) {
+	client, calls := newTranslateOpenRouter(t, `{"translations":{"fr":{"name":"x"}}}`)
+	ai, store := newLedgeredRouter(t, client)
+	s := &Server{ai: ai, enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
+	team := tenant.With(context.Background(), tenant.Team{ID: 2, FileKey: "0123456789abcdef0123456789abcdef"})
+
+	for name, ctx := range map[string]context.Context{
+		"no name":    team,
+		"blank name": authsrv.PutAdminUsername(team, "  "),
+	} {
+		_, err := s.TranslateFields(ctx, translateReq())
+		require.Equalf(t, codes.Unauthenticated, status.Code(err), name)
+		_, err = s.TranslateFields(ctx, &pb_admin.TranslateFieldsRequest{})
+		require.Equalf(t, codes.Unauthenticated, status.Code(err), "%s: refused before the request is read", name)
+	}
+	off := &Server{ai: newTestRouter(openrouter.New(openrouter.Config{})), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
+	_, err := off.TranslateFields(team, translateReq())
+	require.Equal(t, codes.Unauthenticated, status.Code(err), "refused before the AI check")
+
+	require.Empty(t, *calls)
+	require.Empty(t, store.Rows(), "no ledger row")
 }
