@@ -10215,6 +10215,14 @@ message AdminRef {
   // of super-admins is not a secret, and the difference between «доступа нет» and
   // «доступ выдаёт jekabolt» is the difference between a dead end and a minute.
   bool is_super = 4;
+  // name is the person's display name: trim(first_name + ' ' + last_name); empty when both are empty.
+  string name = 5;
+  // public_username is the person's effective @username (the username when none was chosen); empty outside teams mode
+  // (show username then).
+  // username stays the lookup key; public_username is only for display.
+  string public_username = 6;
+  // avatar_url is the absolute URL of the person's avatar; empty when there is none.
+  string avatar_url = 7;
 }
 
 message ListAdminsRequest {}
@@ -12945,6 +12953,13 @@ message AdminAccount {
   // specialties is the «чем занимается» column of the accounts table and the
   // chips on the account card. It grants nothing — see AdminRef.specialties.
   repeated string specialties = 7;
+  // name is the account's display name: trim(first_name + ' ' + last_name); empty when both are empty.
+  string name = 8;
+  // public_username is the account's effective @username (the username when none was chosen); empty outside teams mode
+  // (show username then).
+  string public_username = 9;
+  // avatar_url is the absolute URL of the account's avatar; empty when there is none.
+  string avatar_url = 10;
 }
 
 // AdminSectionInfo describes a grantable section for the permission picker.
@@ -12976,6 +12991,9 @@ message Workspace {
   string logo_url = 6;
   // brand is the team's brand data; set only in teams mode, null otherwise.
   TeamBrand brand = 7;
+  // entry_needed is true while the calling member has not finished the first-entry screen of this team
+  // (FinishTeamEntry clears it); false for legacy tokens, operators and outside teams mode.
+  bool entry_needed = 8;
 }
 
 // TeamBrand is the calling team's brand data; only in teams mode.
@@ -15508,6 +15526,12 @@ message TeamMember {
   bool you = 5;
   // permissions are the member's grants inside the grantable set; empty for an owner (full access).
   repeated AdminPermission permissions = 6;
+  // name is the member's display name: trim(first_name + ' ' + last_name); empty when both are empty.
+  string name = 7;
+  // public_username is the member's effective @username (the handle when none was chosen); never empty.
+  string public_username = 8;
+  // avatar_url is the absolute URL of the member's avatar; empty when there is none.
+  string avatar_url = 9;
 }
 
 // TeamInvite is one invite of the calling team.
@@ -15520,6 +15544,8 @@ message TeamInvite {
   google.protobuf.Timestamp expires_at = 5;
   // status is pending, accepted, revoked or expired.
   string status = 6;
+  // name is the name the inviter typed; it seeds first/last name of a new account on accept; empty when none.
+  string name = 7;
 }
 
 message ListTeamMembersRequest {}
@@ -15536,6 +15562,10 @@ message InviteTeamMemberRequest {
   string role = 2;
   // permissions are the rights the invited person gets on joining; empty = the team's default.
   repeated AdminPermission permissions = 3;
+  // name is the invited person's optional full name; it prefills their invite sheet and seeds first/last name
+  // of a new account on accept; at most 80 characters after trimming; a bad value refuses the request with
+  // bad_name.
+  string name = 4;
 }
 
 message InviteTeamMemberResponse {

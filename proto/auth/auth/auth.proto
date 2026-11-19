@@ -4,6 +4,7 @@ package auth;
 
 import "admin/admin.proto";
 import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth";
 
@@ -13,7 +14,10 @@ option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth
 //   GET  /api/auth/oauth/google/callback and POST /api/auth/oauth/apple/callback end it with a 303 to
 //        https://<base>/auth/oauth#code=<one-time code for ExchangeSignInCode> or #error=<fixed key>
 //        (cancelled, expired, unverified, invite_mismatch, disabled, try_again);
-//   GET  /api/auth/team-logo/{slug} serves a team's logo as PNG (public; 404 when there is none).
+//   GET  /api/auth/team-logo/{slug} serves a team's logo as PNG (public; 404 when there is none);
+//   GET|HEAD /api/auth/avatar/{sha256} serves an account avatar as PNG (public, immutable; 404 when gone).
+// Google connect: StartGoogleLink, then the HTML form POST /api/auth/oauth/google/start with
+//   target=link&ticket=<ticket>; the callback redirects to https://<slug>.<base>/profile?google=linked|taken|unverified.
 // "root session" below = a Bearer token from SignIn target root or ExchangeSignInCode.
 service AuthService {
   // Authenticate a user. Returns a JWT token if the user is authenticated.
@@ -101,7 +105,8 @@ service AuthService {
   }
 
   // SignOut revokes the session of the calling token. A root token ends the root session and every
-  // team session opened from it; a team token ends only itself.
+  // team session opened from it; a team token ends only itself, unless device is true: then it ends the
+  // token's whole chain (the root session plus every team session opened from it).
   rpc SignOut(SignOutRequest) returns (SignOutResponse) {
     option (google.api.http) = {
       post: "/api/auth/sign-out"
@@ -177,6 +182,99 @@ service AuthService {
   rpc SetTeamLogo(SetTeamLogoRequest) returns (SetTeamLogoResponse) {
     option (google.api.http) = {
       post: "/api/auth/set-team-logo"
+      body: "*"
+    };
+  }
+
+  // The account RPCs below act on the calling person's own account: a team token (any role, any team
+  // status except deleted) or a root token. Console, operator-entered and legacy tokens get sign_in_again.
+  // Every one answers Unimplemented outside teams mode.
+
+  // GetMyProfile returns the calling person's own account profile.
+  rpc GetMyProfile(GetMyProfileRequest) returns (GetMyProfileResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/get-my-profile"
+      body: "*"
+    };
+  }
+
+  // UpdateMyProfile sets first/last name and @username. Errors: bad_username, username_taken, name_too_long.
+  rpc UpdateMyProfile(UpdateMyProfileRequest) returns (UpdateMyProfileResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/update-my-profile"
+      body: "*"
+    };
+  }
+
+  // SetMyAvatar sets or removes the calling person's avatar. Errors: bad_avatar.
+  rpc SetMyAvatar(SetMyAvatarRequest) returns (SetMyAvatarResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/set-my-avatar"
+      body: "*"
+    };
+  }
+
+  // ChangeMyPassword changes (or, for a Google-only account, sets) the password.
+  // Errors: wrong_password, weak_password, too_many_attempts.
+  rpc ChangeMyPassword(ChangeMyPasswordRequest) returns (ChangeMyPasswordResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/change-my-password"
+      body: "*"
+    };
+  }
+
+  // ListMySessions lists the calling person's live devices (a root session plus its team sessions).
+  rpc ListMySessions(ListMySessionsRequest) returns (ListMySessionsResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/list-my-sessions"
+      body: "*"
+    };
+  }
+
+  // RevokeMySession signs one device out. Errors: this_device, not_found.
+  rpc RevokeMySession(RevokeMySessionRequest) returns (RevokeMySessionResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/revoke-my-session"
+      body: "*"
+    };
+  }
+
+  // RevokeMyOtherSessions signs out every device except the calling one.
+  rpc RevokeMyOtherSessions(RevokeMyOtherSessionsRequest) returns (RevokeMyOtherSessionsResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/revoke-my-other-sessions"
+      body: "*"
+    };
+  }
+
+  // StartGoogleLink returns a single-use ticket for the Google connect form. Errors: already_linked.
+  rpc StartGoogleLink(StartGoogleLinkRequest) returns (StartGoogleLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/start-google-link"
+      body: "*"
+    };
+  }
+
+  // UnlinkMyGoogle disconnects Google from the account. Errors: only_sign_in.
+  rpc UnlinkMyGoogle(UnlinkMyGoogleRequest) returns (UnlinkMyGoogleResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/unlink-my-google"
+      body: "*"
+    };
+  }
+
+  // DeleteMyAccount deletes the calling person's account. Errors: bad_confirm, sole_owner.
+  rpc DeleteMyAccount(DeleteMyAccountRequest) returns (DeleteMyAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/delete-my-account"
+      body: "*"
+    };
+  }
+
+  // FinishTeamEntry ends the first-entry screen of the calling team (team token only).
+  rpc FinishTeamEntry(FinishTeamEntryRequest) returns (FinishTeamEntryResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/finish-team-entry"
       body: "*"
     };
   }
@@ -276,6 +374,10 @@ message SignUpRequest {
   // brand is optional brand data of the new team; empty = nothing is stored; a bad value refuses the
   // whole request with the same keys as SetTeamBrand.
   admin.TeamBrand brand = 7;
+  // name is the optional full name of the person creating the account, typed in one box; the server splits it
+  // at the first space into first/last name (the rest goes to last; each at most 60 characters); empty = no
+  // name; at most 80 characters after trimming; a bad value refuses the request with bad_name.
+  string name = 8;
 }
 
 message SignUpResponse {}
@@ -341,7 +443,11 @@ message ExchangeHandoffResponse {
   string token = 1;
 }
 
-message SignOutRequest {}
+message SignOutRequest {
+  // device is true for the profile's log out: with a team token the whole chain of the token ends (this
+  // device leaves every team). false keeps the old behaviour.
+  bool device = 1;
+}
 
 message SignOutResponse {}
 
@@ -368,6 +474,9 @@ message GetInviteResponse {
   string team_name = 1;
   string email = 2;
   bool account_exists = 3;
+  // name is the name the inviter typed (it prefills the sheet and seeds first/last name of a new account);
+  // empty when none.
+  string name = 4;
 }
 
 message AcceptInviteRequest {
@@ -377,6 +486,10 @@ message AcceptInviteRequest {
   string handle = 3;
   // terms_accepted must be true for a new account; the server refuses otherwise.
   bool terms_accepted = 4;
+  // name is the person's optional full name, typed in one box; for a new account the server splits it at the
+  // first space into first/last name (the rest goes to last; each at most 60 characters); at most 80
+  // characters after trimming; a bad value refuses the request with bad_name.
+  string name = 5;
 }
 
 message AcceptInviteResponse {
@@ -395,6 +508,8 @@ message ListMyTeamsResponse {
   bool can_create_team = 3;
   // terms_needed is true when CreateTeam must carry terms_accepted (the current terms are not accepted yet).
   bool terms_needed = 4;
+  // name is the account's display name: trim(first_name + ' ' + last_name); empty when both are empty.
+  string name = 5;
 }
 
 message CreateTeamRequest {
@@ -446,3 +561,123 @@ message SetTeamLogoResponse {
   // logo_url is the absolute URL of the new logo; empty after a removal.
   string logo_url = 1;
 }
+
+// MyProfile is the calling person's own account.
+message MyProfile {
+  string first_name = 1;
+  string last_name = 2;
+  // public_username is the effective @username (the handle when none was chosen); never empty.
+  string public_username = 3;
+  string email = 4;
+  // avatar_url is the absolute URL of the avatar; empty when there is none.
+  string avatar_url = 5;
+  // password_set is false for an account that signs in only with a provider.
+  bool password_set = 6;
+  // password_changed_at is unset when the change time is unknown.
+  google.protobuf.Timestamp password_changed_at = 7;
+  // google_email is the connected Google account's email; empty = not connected.
+  string google_email = 8;
+  // sole_owner_teams are the teams where the person is the only active owner and others are members;
+  // DeleteMyAccount is refused while this is not empty.
+  repeated TeamRef sole_owner_teams = 9;
+}
+
+// MySession is one signed-in device: a root session plus the team sessions opened from it.
+message MySession {
+  // key identifies the device for RevokeMySession; opaque, never shown.
+  string key = 1;
+  // browser is chrome, safari, firefox, edge, opera or browser.
+  string browser = 2;
+  // os is macos, windows, ios, android, linux or empty.
+  string os = 3;
+  string ip = 4;
+  google.protobuf.Timestamp last_seen_at = 5;
+  // this_device is true for the calling token's device (listed first).
+  bool this_device = 6;
+}
+
+message GetMyProfileRequest {}
+
+message GetMyProfileResponse {
+  MyProfile profile = 1;
+}
+
+message UpdateMyProfileRequest {
+  // first_name and last_name are at most 60 characters each after trimming (name_too_long).
+  string first_name = 1;
+  string last_name = 2;
+  // public_username matches ^[a-z0-9][a-z0-9._-]{1,29}$ after lowercasing and stripping a leading @
+  // (bad_username); taken by another person = username_taken; the own handle clears the choice.
+  string public_username = 3;
+}
+
+message UpdateMyProfileResponse {
+  MyProfile profile = 1;
+}
+
+message SetMyAvatarRequest {
+  // avatar is a PNG or JPEG, at most 1 MB (JSON: base64); empty removes the avatar.
+  bytes avatar = 1;
+}
+
+message SetMyAvatarResponse {
+  // avatar_url is the absolute URL of the new avatar; empty after a removal.
+  string avatar_url = 1;
+}
+
+message ChangeMyPasswordRequest {
+  // current_password must be empty when the account has no password yet (password_set false).
+  string current_password = 1;
+  // new_password is at least 8 characters (weak_password).
+  string new_password = 2;
+  // sign_out_others true also signs out every other device.
+  bool sign_out_others = 3;
+}
+
+message ChangeMyPasswordResponse {
+  google.protobuf.Timestamp password_changed_at = 1;
+  // signed_out is the number of devices signed out.
+  int32 signed_out = 2;
+}
+
+message ListMySessionsRequest {}
+
+message ListMySessionsResponse {
+  repeated MySession sessions = 1;
+}
+
+message RevokeMySessionRequest {
+  // key is MySession.key.
+  string key = 1;
+}
+
+message RevokeMySessionResponse {}
+
+message RevokeMyOtherSessionsRequest {}
+
+message RevokeMyOtherSessionsResponse {
+  // signed_out is the number of devices signed out.
+  int32 signed_out = 1;
+}
+
+message StartGoogleLinkRequest {}
+
+message StartGoogleLinkResponse {
+  // ticket is single use and lives 2 minutes; post it to /api/auth/oauth/google/start with target=link.
+  string ticket = 1;
+}
+
+message UnlinkMyGoogleRequest {}
+
+message UnlinkMyGoogleResponse {}
+
+message DeleteMyAccountRequest {
+  // confirm_username must equal the effective @username (bad_confirm).
+  string confirm_username = 1;
+}
+
+message DeleteMyAccountResponse {}
+
+message FinishTeamEntryRequest {}
+
+message FinishTeamEntryResponse {}

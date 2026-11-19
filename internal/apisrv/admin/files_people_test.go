@@ -159,9 +159,16 @@ func TestListAdminsProjectsDownToAPicker(t *testing.T) {
 	// Весь словарь — для «+ добавить свою»: незанятая никем затравка иначе невидима.
 	require.Equal(t, []string{"фотограф", "технолог"}, resp.Specialties)
 
-	// Ни одного поля сверх четырёх: AdminRef физически не несёт ни прав, ни
+	// Ни одного поля сверх этих: AdminRef физически не несёт ни прав, ни
 	// disabled, ни хеша пароля, и этот require ловит момент, когда понесёт.
-	require.Equal(t, 4, got.ProtoReflect().Descriptor().Fields().Len(),
+	// name / public_username / avatar_url (P0 profile) — то, что пикер и так
+	// показывает в строке человека: имя, @username, фото.
+	fields := got.ProtoReflect().Descriptor().Fields()
+	names := make([]string, 0, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		names = append(names, string(fields.Get(i).Name()))
+	}
+	require.Equal(t, []string{"id", "username", "specialties", "is_super", "name", "public_username", "avatar_url"}, names,
 		"AdminRef grew a field: an allowlisted response now says more about people than a picker needs")
 }
 

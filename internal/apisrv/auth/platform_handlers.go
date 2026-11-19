@@ -167,3 +167,93 @@ func (s *Server) SetTeamLogo(ctx context.Context, req *auth.SetTeamLogoRequest) 
 	}
 	return svc.SetTeamLogo(ctx, bearer(ctx), req)
 }
+
+// The account RPCs of the calling person (team token or root token; no rbac entry, no feature gate).
+
+func (s *Server) GetMyProfile(ctx context.Context, req *auth.GetMyProfileRequest) (*auth.GetMyProfileResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.GetMyProfile(ctx, bearer(ctx), req)
+}
+
+func (s *Server) UpdateMyProfile(ctx context.Context, req *auth.UpdateMyProfileRequest) (*auth.UpdateMyProfileResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.UpdateMyProfile(ctx, bearer(ctx), req)
+}
+
+func (s *Server) SetMyAvatar(ctx context.Context, req *auth.SetMyAvatarRequest) (*auth.SetMyAvatarResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.SetMyAvatar(ctx, bearer(ctx), req)
+}
+
+func (s *Server) ChangeMyPassword(ctx context.Context, req *auth.ChangeMyPasswordRequest) (*auth.ChangeMyPasswordResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ChangeMyPassword(ctx, bearer(ctx), req)
+}
+
+func (s *Server) ListMySessions(ctx context.Context, req *auth.ListMySessionsRequest) (*auth.ListMySessionsResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.ListMySessions(ctx, bearer(ctx), req)
+}
+
+func (s *Server) RevokeMySession(ctx context.Context, req *auth.RevokeMySessionRequest) (*auth.RevokeMySessionResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.RevokeMySession(ctx, bearer(ctx), req)
+}
+
+func (s *Server) RevokeMyOtherSessions(ctx context.Context, req *auth.RevokeMyOtherSessionsRequest) (*auth.RevokeMyOtherSessionsResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.RevokeMyOtherSessions(ctx, bearer(ctx), req)
+}
+
+func (s *Server) StartGoogleLink(ctx context.Context, req *auth.StartGoogleLinkRequest) (*auth.StartGoogleLinkResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.StartGoogleLink(ctx, bearer(ctx), req)
+}
+
+func (s *Server) UnlinkMyGoogle(ctx context.Context, req *auth.UnlinkMyGoogleRequest) (*auth.UnlinkMyGoogleResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.UnlinkMyGoogle(ctx, bearer(ctx), req)
+}
+
+func (s *Server) DeleteMyAccount(ctx context.Context, req *auth.DeleteMyAccountRequest) (*auth.DeleteMyAccountResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.DeleteMyAccount(ctx, bearer(ctx), req)
+}
+
+func (s *Server) FinishTeamEntry(ctx context.Context, req *auth.FinishTeamEntryRequest) (*auth.FinishTeamEntryResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.FinishTeamEntry(ctx, bearer(ctx), req)
+}
