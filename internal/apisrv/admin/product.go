@@ -1229,6 +1229,9 @@ func (s *Server) ListStockChanges(ctx context.Context, req *pb_admin.ListStockCh
 // handed an uncancellable context (see the caller): it used to substitute context.Background()
 // for whatever it was given, which hid the fact that its caller was passing a request context.
 func (s *Server) notifyWaitlist(notifyCtx context.Context, productId int, sizeId int) {
+	if s.noShop {
+		return
+	}
 	// Get product details (includeArchived=false: a waitlist notification never targets an archived colourway)
 	product, err := s.repo.Products().GetProductByIdShowHidden(notifyCtx, productId, false)
 	if err != nil {

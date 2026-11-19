@@ -268,8 +268,9 @@ func (c *Client) withCircuitBreaker(ctx context.Context, fn func(context.Context
 }
 
 // CircuitBreakerState returns the current state of the circuit breaker.
+// Nil-receiver safe: a disabled client may reach a /statusz reporter as a nil pointer.
 func (c *Client) CircuitBreakerState() circuitbreaker.State {
-	if c.circuitBreaker == nil {
+	if c == nil || c.circuitBreaker == nil {
 		return circuitbreaker.StateClosed
 	}
 	return c.circuitBreaker.State()
@@ -277,7 +278,7 @@ func (c *Client) CircuitBreakerState() circuitbreaker.State {
 
 // Close closes the underlying BigQuery client.
 func (c *Client) Close() error {
-	if c.client != nil {
+	if c != nil && c.client != nil {
 		return c.client.Close()
 	}
 	return nil

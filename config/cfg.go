@@ -1,10 +1,12 @@
 package config
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/acctposting"
@@ -155,8 +157,15 @@ const defaultStorefrontTeamID = 1
 // TENANT_TEAM1_DB that is not the MYSQL_DSN database (the shared pool starts every connection on
 // the DSN database, so they must be the same), and sets the store's routing options.
 func (c *Config) resolveTenant() error {
-	if c.Platform.StorefrontTeamID == 0 {
-		c.Platform.StorefrontTeamID = defaultStorefrontTeamID
+	if err := c.resolveStorefront(); err != nil {
+		return err
+	}
+	if c.Platform.Enabled() {
+		profile, err := platformstore.ParseTeam1Profile(c.Platform.Team1Profile)
+		if err != nil {
+			return err
+		}
+		c.Platform.Team1Profile = profile
 	}
 	if c.DB.DSN == "" {
 		return nil
@@ -178,6 +187,92 @@ func (c *Config) resolveTenant() error {
 		DBPrefix: c.Platform.DBPrefix,
 	}
 	return nil
+}
+
+// storefrontNone is the TENANT_STOREFRONT_TEAM_ID value of an installation without a shop.
+const storefrontNone = "none"
+
+// resolveStorefront turns TENANT_STOREFRONT_TEAM_ID into Platform.StorefrontTeamID /
+// Platform.StorefrontNone.
+//
+// Teams mode off: unset or 0 = team #1 and any other integer is kept, as before; "none" refuses
+// boot (an installation without teams mode is grbpwr, which has a shop). Teams mode on: a positive
+// id, or "none" (any case) = no shop, which also refuses boot while any shop switch or shop secret
+// is set (noShopConflicts).
+func (c *Config) resolveStorefront() error {
+	p := &c.Platform
+	raw := strings.TrimSpace(p.StorefrontTeam)
+	p.StorefrontNone = false
+	if strings.EqualFold(raw, storefrontNone) {
+		if !p.Enabled() {
+			return errors.New("TENANT_STOREFRONT_TEAM_ID=none needs teams mode (PLATFORM_MYSQL_DSN); without it the storefront is team #1 — unset TENANT_STOREFRONT_TEAM_ID")
+		}
+		p.StorefrontNone = true
+		p.StorefrontTeamID = 0
+		if bad := c.noShopConflicts(); len(bad) > 0 {
+			return fmt.Errorf("TENANT_STOREFRONT_TEAM_ID=none (no shop) but shop settings are on: %s", strings.Join(bad, "; "))
+		}
+		return nil
+	}
+	var id int64
+	if raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fmt.Errorf("TENANT_STOREFRONT_TEAM_ID %q: want a positive team id or none", p.StorefrontTeam)
+		}
+		id = n
+	}
+	if id == 0 {
+		id = defaultStorefrontTeamID
+	}
+	if id < 0 && p.Enabled() {
+		return fmt.Errorf("TENANT_STOREFRONT_TEAM_ID %q: want a positive team id or none", p.StorefrontTeam)
+	}
+	p.StorefrontTeamID = id
+	return nil
+}
+
+// noShopConflicts names every shop switch and shop secret that is set, by its env variable. The four
+// switches that default to true say so: on a no-shop installation they must be set to false.
+func (c *Config) noShopConflicts() []string {
+	var bad []string
+	defaultOn := func(on bool, env string) {
+		if on {
+			bad = append(bad, env+" (defaults to true when unset: set "+env+"=false)")
+		}
+	}
+	set := func(on bool, env string) {
+		if on {
+			bad = append(bad, env)
+		}
+	}
+	str := func(v, env string) { set(strings.TrimSpace(v) != "", env) }
+
+	defaultOn(c.StripePayment.Enabled, "STRIPE_PAYMENT_ENABLED")
+	defaultOn(c.StripePaymentTest.Enabled, "STRIPE_PAYMENT_TEST_ENABLED")
+	defaultOn(c.StripeReconcile.Enabled, "STRIPE_RECONCILE_ENABLED")
+	defaultOn(c.DeliverySync.Enabled, "DELIVERY_SYNC_ENABLED")
+	set(c.GA4.Enabled, "GA4_ENABLED")
+	set(c.GA4MP.Enabled, "GA4MP_ENABLED")
+	str(c.BigQuery.ProjectID, "BIGQUERY_PROJECT_ID")
+	str(c.BigQuery.DatasetID, "BIGQUERY_DATASET_ID")
+	set(c.Accounting.Enabled, "ACCOUNTING_ENABLED")
+
+	str(c.StripePayment.SecretKey, "STRIPE_PAYMENT_SECRET_KEY")
+	str(c.StripePayment.PubKey, "STRIPE_PAYMENT_PUB_KEY")
+	str(c.StripePayment.WebhookSecret, "STRIPE_PAYMENT_WEBHOOK_SECRET")
+	str(c.StripePaymentTest.SecretKey, "STRIPE_PAYMENT_TEST_SECRET_KEY")
+	str(c.StripePaymentTest.PubKey, "STRIPE_PAYMENT_TEST_PUB_KEY")
+	str(c.StripePaymentTest.WebhookSecret, "STRIPE_PAYMENT_TEST_WEBHOOK_SECRET")
+	str(c.AfterShip.APIKey, "AFTERSHIP_API_KEY")
+	str(c.AfterShip.WebhookSecret, "AFTERSHIP_WEBHOOK_SECRET")
+	str(c.ShippingLabel.PublicKey, "SENDCLOUD_PUBLIC_KEY")
+	str(c.ShippingLabel.SecretKey, "SENDCLOUD_SECRET_KEY")
+	str(c.GA4.CredentialsJSON, "GA4_CREDENTIALS_JSON")
+	str(c.GA4MP.APISecret, "GA4MP_API_SECRET")
+	str(c.BigQuery.CredentialsJSON, "BIGQUERY_CREDENTIALS_JSON")
+	str(c.Mailer.WebhookSecret, "MAILER_WEBHOOK_SECRET")
+	return bad
 }
 
 // AIConfig configures internal/aiprov.
@@ -466,6 +561,7 @@ func bindEnvVars() {
 	viper.BindEnv("platform.db_prefix", "TENANT_DB_PREFIX")
 	viper.BindEnv("platform.team1_db", "TENANT_TEAM1_DB")
 	viper.BindEnv("platform.storefront_team_id", "TENANT_STOREFRONT_TEAM_ID")
+	viper.BindEnv("platform.team1_profile", "TENANT_TEAM1_PROFILE")
 	viper.BindEnv("platform.spares", "TENANT_SPARES")
 	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
 	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")

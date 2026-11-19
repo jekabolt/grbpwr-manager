@@ -57,8 +57,17 @@ type Config struct {
 	DBPrefix string `mapstructure:"db_prefix"`
 	// Team1DB: team #1's database; empty = the database of MYSQL_DSN. A mismatch refuses boot.
 	Team1DB string `mapstructure:"team1_db"`
-	// StorefrontTeamID: the team the public storefront reads (1 = grbpwr).
-	StorefrontTeamID int64 `mapstructure:"storefront_team_id"`
+	// StorefrontTeam is TENANT_STOREFRONT_TEAM_ID as written: a team id or "none". config resolves
+	// it into StorefrontTeamID / StorefrontNone; nothing else reads it.
+	StorefrontTeam string `mapstructure:"storefront_team_id"`
+	// StorefrontTeamID: the team the public storefront reads (1 = grbpwr). 0 when StorefrontNone.
+	StorefrontTeamID int64 `mapstructure:"-"`
+	// StorefrontNone: TENANT_STOREFRONT_TEAM_ID=none in teams mode — this installation has no shop.
+	// Read it through NoShop.
+	StorefrontNone bool `mapstructure:"-"`
+	// Team1Profile: TENANT_TEAM1_PROFILE, the feature profile EnsureTeamOne gives team #1
+	// (Team1ProfileAll, the default, or Team1ProfileProduction). Teams mode only.
+	Team1Profile string `mapstructure:"team1_profile"`
 	// Spares: how many ready spare databases the provisioner keeps.
 	Spares int `mapstructure:"spares"`
 	// ProvisionPerHour bounds new teams per hour.
@@ -104,6 +113,10 @@ func (c Config) Terms() string {
 // Enabled reports teams mode: a control-plane DSN is configured.
 func (c Config) Enabled() bool { return strings.TrimSpace(c.DSN) != "" }
 
+// NoShop reports an installation without a storefront: teams mode with TENANT_STOREFRONT_TEAM_ID=none.
+// It is the one predicate every no-shop decision reads (mounts, workers, side effects).
+func (c Config) NoShop() bool { return c.Enabled() && c.StorefrontNone }
+
 // LegacyOrigins splits LegacyAdminOrigins.
 func (c Config) LegacyOrigins() []string { return splitList(c.LegacyAdminOrigins) }
 
@@ -124,8 +137,8 @@ func (c Config) String() string {
 		}
 		return "***REDACTED***"
 	}
-	return fmt.Sprintf("platformstore.Config{DSN:%s BaseDomain:%s DBPrefix:%s Team1DB:%s StorefrontTeamID:%d MailerEnabled:%t TokenPepper:%s}",
-		red(c.DSN), c.BaseDomain, c.DBPrefix, c.Team1DB, c.StorefrontTeamID, c.MailerEnabled, red(c.TokenPepper))
+	return fmt.Sprintf("platformstore.Config{DSN:%s BaseDomain:%s DBPrefix:%s Team1DB:%s StorefrontTeamID:%d NoShop:%t Team1Profile:%s MailerEnabled:%t TokenPepper:%s}",
+		red(c.DSN), c.BaseDomain, c.DBPrefix, c.Team1DB, c.StorefrontTeamID, c.NoShop(), c.Team1Profile, c.MailerEnabled, red(c.TokenPepper))
 }
 
 func splitList(s string) []string {

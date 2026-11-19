@@ -159,6 +159,8 @@ type App struct {
 	stopTeamsMail   func()
 	stopProvisioner func()
 	stopAIRollup    func()
+	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
+	noShopSkipped []string
 }
 
 // New returns a new instance of App
@@ -258,7 +260,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.OpenRouterImages.KeyFunc = a.aireg.OpenRouterImagesKeyFunc()
 	a.c.Fal.KeyFunc = a.aireg.KeyFunc(entity.AIProviderFal)
 	var reconcileAfterAdminKeySave func(context.Context, string)
-	if a.c.AIReconcile.Enabled {
+	if a.shopGate(ctx, "aireconcile") && a.c.AIReconcile.Enabled {
 		// The registry is the one key policy: AdminKey for openai/anthropic/fal, and the
 		// enabled-gated KeyFunc result for openrouter. reconcile documents why they differ. It is
 		// also the zone (design_settings.budget_timezone) whose midnights close OpenRouter's days,
@@ -286,72 +288,96 @@ func (a *App) Start(ctx context.Context) error {
 		cache.SetTargetMarginPct(t.TargetMarginPct)
 	}
 
-	a.maw = marketingaggregate.New(&a.c.MarketingAggregate, a.db)
-	if err = a.maw.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start marketing aggregate worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "marketingaggregate") {
+		a.maw = marketingaggregate.New(&a.c.MarketingAggregate, a.db)
+		if err = a.maw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start marketing aggregate worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
-	a.ma, err = mail.New(&a.c.Mailer, a.db.Mail(), a.db.StorefrontAccount())
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-	err = a.ma.Start(ctx)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-
-	a.cdw, err = campaigndispatch.New(&a.c.CampaignDispatch, a.db, a.ma)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't construct campaign dispatch worker",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
-	if err = a.cdw.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start campaign dispatch worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	// No shop: the tenant outbox is never written and never drained (noShopMailer). Admin sign-in
+	// letters are platform mail and go on.
+	if a.shopGate(ctx, "mail") {
+		a.ma, err = mail.New(&a.c.Mailer, a.db.Mail(), a.db.StorefrontAccount())
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		err = a.ma.Start(ctx)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+	} else {
+		a.ma = noShopMailer{}
 	}
 
-	reservationMgr := stockreserve.NewDefaultManager()
-	a.rm = reservationMgr
+	if a.shopGate(ctx, "campaigndispatch") {
+		a.cdw, err = campaigndispatch.New(&a.c.CampaignDispatch, a.db, a.ma)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't construct campaign dispatch worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		if err = a.cdw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start campaign dispatch worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+	}
+
+	// Storefront checkout holds. nil on a no-shop installation: admin and order cleanup nil-check it.
+	var reservationMgr *stockreserve.Manager
+	// reservations is the same manager as the interface admin and order cleanup take. Assigned only
+	// when non-nil: a nil *Manager inside the interface would pass their nil checks and panic.
+	var reservations dependency.StockReservationManager
+	if a.shopGate(ctx, "stockreserve") {
+		reservationMgr = stockreserve.NewDefaultManager()
+		a.rm = reservationMgr
+		reservations = reservationMgr
+	}
 	// NOTE: the order cleanup worker is created later, after the Stripe
 	// processors exist, so its safety-net expiry can verify payment with Stripe.
 
-	a.sc = storefrontcleanup.New(&a.c.StorefrontCleanup, a.db)
-	if err = a.sc.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start storefront cleanup worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "storefrontcleanup") {
+		a.sc = storefrontcleanup.New(&a.c.StorefrontCleanup, a.db)
+		if err = a.sc.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start storefront cleanup worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
-	a.tm = tiermanagement.New(&a.c.TierManagement, a.db, a.ma)
-	if err = a.tm.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start tier management worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "tiermanagement") {
+		a.tm = tiermanagement.New(&a.c.TierManagement, a.db, a.ma)
+		if err = a.tm.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start tier management worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// Keep DONE bounded without inventing a second archive implementation: the worker discovers
 	// cards from status history, then calls the same task store ArchiveTask path as the admin RPC.
-	a.taw = taskarchive.New(&a.c.TaskAutoArchive, a.db.Tasks())
-	if err = a.taw.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start task auto-archive worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "taskarchive") {
+		a.taw = taskarchive.New(&a.c.TaskAutoArchive, a.db.Tasks())
+		if err = a.taw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start task auto-archive worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	cache.SetDefaultCurrency(a.c.Rates.BaseCurrency)
@@ -360,18 +386,20 @@ func (a *App) Start(ctx context.Context) error {
 	// recurring template to base via cache.GetBaseCurrency(), and a materialised opex_line is
 	// insert-only (a wrong-base fold on the first tick would be permanent). Every other worker is
 	// base-currency-independent, so this is the one ordering that matters here (infra-01).
-	a.om = opexmaterialize.New(&a.c.OpexMaterialize, a.db)
-	if err = a.om.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start opex materialize worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "opexmaterialize") {
+		a.om = opexmaterialize.New(&a.c.OpexMaterialize, a.db)
+		if err = a.om.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start opex materialize worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// Accounting posting worker. Gated (off unless ACCOUNTING_ENABLED): the outbox producers enqueue
 	// events regardless, so enabling it later just drains the queue from the cutover. Started AFTER the
 	// base currency is set (like opexmaterialize) — the whole ledger is EUR-native.
-	if a.c.Accounting.Enabled {
+	if a.shopGate(ctx, "acctposting") && a.c.Accounting.Enabled {
 		// Ship-from origin for the VAT resolver (phase 2, wave 1); not an accounting.* config key, so it
 		// is derived from the shipping-label config here rather than bound via env (07 §7.1).
 		a.c.Accounting.OriginCountry = a.c.ShippingLabel.ShipFromAddress().CountryISO2
@@ -387,7 +415,7 @@ func (a *App) Start(ctx context.Context) error {
 	// External FX-rate sync (ECB reference rates → costing_fx_rate). Gated: off unless enabled.
 	// Wired AFTER the base currency is set (above): each fetch expresses rates relative to the
 	// configured base via cache.GetBaseCurrency().
-	if a.c.FxSync.Enabled {
+	if a.shopGate(ctx, "fxsync") && a.c.FxSync.Enabled {
 		a.fxw = fxsync.New(&a.c.FxSync, a.db.TechCards())
 		if err = a.fxw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start fx sync worker",
@@ -443,12 +471,14 @@ func (a *App) Start(ctx context.Context) error {
 	// is an owner decision that already has exactly one home (bucket.ArchiveRetention), and an
 	// hourly sweep of two folders needs no tuning — so there is no archive_cleanup section in
 	// config, and no second place for seven days to be true.
-	a.acw = archivecleanup.New(nil, a.db, a.b)
-	if err = a.acw.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start archive cleanup worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "archivecleanup") {
+		a.acw = archivecleanup.New(nil, a.db, a.b)
+		if err = a.acw.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start archive cleanup worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	authS, err := auth.New(&a.c.Auth, a.db.Admin())
@@ -460,20 +490,25 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.authS = authS
 
-	stripeMain, err := newStripeProcessor(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
-			slog.String("err", err.Error()),
-		)
-		return err
-	}
+	// Both processors stay nil on a no-shop installation, as for a disabled processor: the API
+	// answers payment-unavailable and nothing below starts a monitor.
+	var stripeMain, stripeTest dependency.Invoicer
+	if a.shopGate(ctx, "stripe") {
+		stripeMain, err = newStripeProcessor(ctx, &a.c.StripePayment, a.db, a.ma, entity.CARD)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed create new stripe processor",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 
-	stripeTest, err := newStripeProcessor(ctx, &a.c.StripePaymentTest, a.db, a.ma, entity.CARD_TEST)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new stripe processor",
-			slog.String("err", err.Error()),
-		)
-		return err
+		stripeTest, err = newStripeProcessor(ctx, &a.c.StripePaymentTest, a.db, a.ma, entity.CARD_TEST)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed create new stripe processor",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// Hold the concrete processors so App.Stop can stop their in-process payment
@@ -493,7 +528,7 @@ func (a *App) Start(ctx context.Context) error {
 	if p, ok := stripeTest.(*stripe.Processor); ok {
 		stripeCleaners = append(stripeCleaners, p)
 	}
-	if a.c.StripeReconcile.Enabled && len(stripeCleaners) > 0 {
+	if a.shopGate(ctx, "stripereconcile") && a.c.StripeReconcile.Enabled && len(stripeCleaners) > 0 {
 		a.sr = stripereconcile.New(&a.c.StripeReconcile, stripeCleaners...)
 		if err = a.sr.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start stripe reconcile worker",
@@ -513,12 +548,14 @@ func (a *App) Start(ctx context.Context) error {
 	if p, ok := stripeTest.(*stripe.Processor); ok {
 		expirer.test = p
 	}
-	a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservationMgr, expirer)
-	if err = a.oc.Start(ctx); err != nil {
-		slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "ordercleanup") {
+		a.oc = ordercleanup.New(&a.c.OrderCleanup, a.db, reservations, expirer)
+		if err = a.oc.Start(ctx); err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start order cleanup worker",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
 	// Sendcloud label provider (carrier tracking-number + label generation); a disabled no-op when
@@ -527,7 +564,7 @@ func (a *App) Start(ctx context.Context) error {
 	// stamped on every generated label.
 	labelProvider := shippinglabel.New(&a.c.ShippingLabel)
 	shipFrom := a.c.ShippingLabel.ShipFromAddress()
-	if a.c.DeliverySync.Enabled {
+	if a.shopGate(ctx, "deliverysync") && a.c.DeliverySync.Enabled {
 		// AfterShip tracker for the real delivery signal; a disabled no-op when no API key is
 		// configured (delivery then falls back entirely to the per-carrier timer safety net).
 		tracker := aftership.New(&a.c.AfterShip)
@@ -544,7 +581,9 @@ func (a *App) Start(ctx context.Context) error {
 	// side effect. If its client can't be constructed, log and continue with a
 	// no-op revalidator instead of crash-looping the whole process — the
 	// storefront/admin must still boot and serve.
-	if rev, revErr := revalidation.New(ctx, &a.c.Revalidation); revErr != nil {
+	if !a.shopGate(ctx, "revalidation") {
+		a.re = revalidation.NewDisabled()
+	} else if rev, revErr := revalidation.New(ctx, &a.c.Revalidation); revErr != nil {
 		slog.Default().WarnContext(ctx, "failed to create revalidation service; continuing with revalidation disabled",
 			slog.String("err", revErr.Error()),
 		)
@@ -553,26 +592,35 @@ func (a *App) Start(ctx context.Context) error {
 		a.re = rev
 	}
 
-	// GA4 Analytics integration
-	ga4Client, err := ga4.NewClient(ctx, &a.c.GA4)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create new ga4 client",
-			slog.String("err", err.Error()),
-		)
-		return err
+	// GA4 Analytics integration. nil on a no-shop installation (buildHealthRegistry skips it).
+	var ga4Client *ga4.Client
+	if a.shopGate(ctx, "ga4") {
+		ga4Client, err = ga4.NewClient(ctx, &a.c.GA4)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed create new ga4 client",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 
-	// BigQuery client (optional — disabled when not configured)
-	a.bqc, err = bq.NewClient(ctx, &a.c.BigQuery)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to create bigquery client",
-			slog.String("err", err.Error()),
-		)
-		return err
+	// BigQuery client (optional — disabled when not configured). bq.NewClient answers (nil, nil)
+	// when BigQuery is not configured; a.bqc is an interface, so that nil pointer is NOT stored —
+	// a typed nil in the interface passes every `a.bqc != nil` check and panicked /statusz and
+	// Stop with analytics off.
+	if a.shopGate(ctx, "bigquery") {
+		bqc, err := bq.NewClient(ctx, &a.c.BigQuery)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed to create bigquery client",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		a.bqc = bigQueryClient(bqc)
 	}
 
 	// GA4 sync worker (only if GA4 is enabled)
-	if a.c.GA4.Enabled {
+	if a.shopGate(ctx, "ga4sync") && a.c.GA4.Enabled {
 		if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
 			a.ga4w = ga4sync.New(ga4Client, a.bqc, mysqlStore.GA4Data(), mysqlStore.BQCache(), mysqlStore.SyncStatus(), &a.c.GA4Sync)
 			if err = a.ga4w.Start(ctx); err != nil {
@@ -585,8 +633,12 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	// GA4 Measurement Protocol client for server-side event tracking
-	ga4mpClient := ga4mp.New(&a.c.GA4MP)
+	// GA4 Measurement Protocol client for server-side event tracking. A no-shop installation gets
+	// a client with no configuration, which sends nothing.
+	ga4mpClient := ga4mp.New(&ga4mp.Config{})
+	if a.shopGate(ctx, "ga4mp") {
+		ga4mpClient = ga4mp.New(&a.c.GA4MP)
+	}
 
 	if p, ok := stripeMain.(*stripe.Processor); ok {
 		p.SetGA4MP(ga4mpClient)
@@ -941,7 +993,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservationMgr, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, jpk.Taxpayer{
+	adminS, err := admin.New(a.db, a.b, a.ma, stripeMain, stripeTest, a.re, reservations, ga4mpClient, adminPwHasher, labelProvider, shipFrom, a.c.Security.HeroEmbedAllowedHosts, a.c.Mailer.TestRecipients, jpk.Taxpayer{
 		NIP:       a.c.JPK.NIP,
 		FullName:  a.c.JPK.FullName,
 		Email:     a.c.JPK.Email,
@@ -1001,19 +1053,25 @@ func (a *App) Start(ctx context.Context) error {
 	})
 	a.adminS = adminS
 
+	// No shop: FrontendService is neither built nor registered (the HTTP server answers its routes
+	// with Unavailable / 503, see httpapi.SetNoShop).
 	var frontendS *frontend.Server
-	frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed create frontend server",
-			slog.String("err", err.Error()),
-		)
-		return err
+	if a.shopGate(ctx, "storefront") {
+		frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed create frontend server",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
 	}
 	a.frontendS = frontendS
+	adminS.SetNoShop(a.c.Platform.NoShop())
 
 	// start API server
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
+	a.hs.SetNoShop(a.c.Platform.NoShop())
 	binder, err := tenantbind.NewCompat(a.teamOne)
 	if err != nil {
 		return err
@@ -1031,15 +1089,20 @@ func (a *App) Start(ctx context.Context) error {
 		a.hs.SetHealthChecker(healthChecker)
 	}
 
-	// Set up Resend webhook handler (bounce/complaint suppression + list-unsubscribe)
-	webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret, a.c.Mailer.UnsubscribePepper)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to create webhook handler",
-			slog.String("err", err.Error()),
-		)
-		return err
+	// Set up Resend webhook handler (bounce/complaint suppression + list-unsubscribe).
+	// No shop: none of the shop webhooks (Resend, Stripe, AfterShip) is built; the HTTP server
+	// answers /api/webhooks/* with the fixed 503.
+	shopWebhooks := a.shopGate(ctx, "webhooks")
+	if shopWebhooks {
+		webhookHandler, err := mail.NewWebhookHandler(a.db, a.c.Mailer.WebhookSecret, a.c.Mailer.UnsubscribePepper)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed to create webhook handler",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		a.hs.SetWebhookHandler(webhookHandler)
 	}
-	a.hs.SetWebhookHandler(webhookHandler)
 
 	// Tokenized pattern read path (Ф7): stable capability urls for private выкройки —
 	// minted into admin responses (view_url/download_url) and printed QR codes, resolved
@@ -1129,7 +1192,9 @@ func (a *App) Start(ctx context.Context) error {
 	if p, ok := stripeTest.(*stripe.Processor); ok {
 		stripeProcs = append(stripeProcs, p)
 	}
-	if stripeWebhook := stripe.NewWebhookHandler(stripeProcs...); stripeWebhook.Enabled() {
+	if !shopWebhooks {
+		// no shop: no Stripe webhook
+	} else if stripeWebhook := stripe.NewWebhookHandler(stripeProcs...); stripeWebhook.Enabled() {
 		a.hs.SetStripeWebhookHandler(stripeWebhook)
 		slog.Default().InfoContext(ctx, "stripe webhook handler enabled")
 	} else {
@@ -1140,7 +1205,9 @@ func (a *App) Start(ctx context.Context) error {
 	// secret is configured; the delivery-sync worker's AfterShip poll reconciles anything the
 	// webhook misses, and the per-carrier timer is the final safety net — so a blank secret still
 	// auto-delivers, just without the immediate push.
-	if aftershipWebhook := aftership.NewWebhookHandler(a.c.AfterShip.WebhookSecret, a.db, a.ma); aftershipWebhook.Enabled() {
+	if !shopWebhooks {
+		// no shop: no AfterShip webhook
+	} else if aftershipWebhook := aftership.NewWebhookHandler(a.c.AfterShip.WebhookSecret, a.db, a.ma); aftershipWebhook.Enabled() {
 		a.hs.SetAftershipWebhookHandler(aftershipWebhook)
 		slog.Default().InfoContext(ctx, "aftership webhook handler enabled")
 	} else {
@@ -1560,7 +1627,8 @@ func (a *App) startPlatform(ctx context.Context) error {
 			Disabled:     acc.Disabled,
 		})
 	}
-	if err := st.EnsureTeamOne(ctx, a.teamOne.DBName, admins); err != nil {
+	// TENANT_TEAM1_PROFILE: applied on every boot; operator overrides (updated_by set) survive.
+	if err := st.EnsureTeamOneProfile(ctx, a.teamOne.DBName, admins, a.c.Platform.Team1Profile); err != nil {
 		_ = st.Close()
 		return err
 	}
