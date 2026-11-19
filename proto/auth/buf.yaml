@@ -2,6 +2,7 @@ version: v1
 name: buf.build/jekabolt/grbpwr-manager-auth
 deps:
   - buf.build/googleapis/googleapis
+  - buf.build/jekabolt/grbpwr-manager-admin
 breaking:
   use:
     - FILE
