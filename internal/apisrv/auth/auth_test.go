@@ -238,7 +238,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		resp, err := interceptor(ctx, nil, info, handler)
@@ -256,7 +256,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		md := metadata.New(map[string]string{
@@ -296,7 +296,7 @@ func TestUnaryAdminAuthInterceptor(t *testing.T) {
 		}
 
 		info := &grpc.UnaryServerInfo{
-			FullMethod: "/admin.AdminService/GetProduct",
+			FullMethod: "/admin.AdminService/GetColorwayByID",
 		}
 
 		md := metadata.New(map[string]string{
@@ -363,7 +363,7 @@ func TestAdminAccountStateDatabaseErrorPolicy(t *testing.T) {
 
 	// An explicit mutation evicts that fallback. A DB error then fails closed as Unavailable,
 	// preserving the session token while refusing the request until account state can be read.
-	authsrv.InvalidateAdminAccount(context.Background(), "worker")
+	authsrv.InvalidateAdminAccount("worker")
 	called, err = call()
 	assert.False(t, called)
 	assert.Equal(t, codes.Unavailable, status.Code(err))
@@ -391,7 +391,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		assert.NoError(t, err)
 		return tok
 	}
-	// Legacy token: pre-RBAC, carries no super/perms claims → full access.
+	// Legacy token: pre-RBAC, carries no super/perms claims → full access (teams mode OFF).
 	legacyTok, err := authjwt.NewTokenWithSubject(authsrv.JwtAuth, time.Hour, "legacy")
 	assert.NoError(t, err)
 	legacyNoSubject, err := authjwt.NewToken(authsrv.JwtAuth, time.Hour)
@@ -422,7 +422,7 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"scoped read allowed", scoped, "/admin.AdminService/GetOrderByUUID", true},
 		{"scoped write on read grant denied", scoped, "/admin.AdminService/RefundOrder", false},
 		{"scoped write allowed", scoped, "/admin.AdminService/UploadContentImage", true},
-		{"scoped other section denied", scoped, "/admin.AdminService/UpsertProduct", false},
+		{"scoped other section denied", scoped, "/admin.AdminService/UpdateColorway", false},
 		{"models read may get mannequin pose", modelsRead, "/admin.AdminService/GetModelMannequinPose", true},
 		{"models read may not put mannequin pose", modelsRead, "/admin.AdminService/PutModelMannequinPose", false},
 		{"models write may get mannequin pose", modelsWrite, "/admin.AdminService/GetModelMannequinPose", true},
@@ -430,11 +430,11 @@ func TestInterceptorEnforcesSections(t *testing.T) {
 		{"allowlist always allowed", scoped, "/admin.AdminService/GetDictionary", true},
 		{"self view allowlisted", noAccess, "/admin.AdminService/GetCurrentAccount", true},
 		{"no-access denied", noAccess, "/admin.AdminService/ListOrders", false},
-		{"super bypass", super, "/admin.AdminService/UpsertProduct", true},
+		{"super bypass", super, "/admin.AdminService/UpdateColorway", true},
 		{"super on accounts", super, "/admin.AdminService/CreateAccount", true},
 		{"scoped cannot manage accounts", scoped, "/admin.AdminService/CreateAccount", false},
-		{"legacy full access", legacyTok, "/admin.AdminService/UpsertProduct", true},
-		{"legacy token without username", legacyNoSubject, "/admin.AdminService/UpsertProduct", true},
+		{"legacy full access", legacyTok, "/admin.AdminService/UpdateColorway", true},
+		{"legacy token without username", legacyNoSubject, "/admin.AdminService/UpdateColorway", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -518,7 +518,7 @@ func TestInterceptorAiMethodsAreSuperOnly(t *testing.T) {
 		})
 	}
 
-	// Every other method: the legacy token keeps the full access it always had.
+	// Every other method: the legacy token keeps the full access it always had (teams mode OFF).
 	others := 0
 	for _, m := range pb_admin.AdminService_ServiceDesc.Methods {
 		if _, ai := aiMethods[m.MethodName]; ai {

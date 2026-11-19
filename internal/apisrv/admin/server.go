@@ -3,13 +3,12 @@ package admin
 import (
 	"context"
 	"fmt"
+	"github.com/shopspring/decimal"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/shopspring/decimal"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/keyring"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/registry"
@@ -94,7 +93,7 @@ type Server struct {
 	pwhash *pwhash.PasswordHasher
 	// invalidateAdminAuth evicts one username from the auth server's account-state cache after a
 	// successful account mutation. Nil is safe for isolated handler tests.
-	invalidateAdminAuth func(context.Context, string)
+	invalidateAdminAuth func(string)
 	// revalidateSem is a counting semaphore bounding concurrent async revalidations
 	// spawned by revalidateAsync. Buffered to maxConcurrentRevalidations.
 	revalidateSem chan struct{}
@@ -406,12 +405,12 @@ func (s *Server) SetFileLinkService(svc *fileaccess.Service) {
 }
 
 // SetAdminAuthInvalidator wires account mutations to the auth server's account-state cache.
-func (s *Server) SetAdminAuthInvalidator(invalidate func(context.Context, string)) {
+func (s *Server) SetAdminAuthInvalidator(invalidate func(string)) {
 	s.invalidateAdminAuth = invalidate
 }
 
-func (s *Server) invalidateAccountAuth(ctx context.Context, username string) {
+func (s *Server) invalidateAccountAuth(username string) {
 	if s.invalidateAdminAuth != nil {
-		s.invalidateAdminAuth(ctx, username)
+		s.invalidateAdminAuth(username)
 	}
 }

@@ -49,7 +49,28 @@ func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAc
 		acc.Permissions = permsToProto(authz.Perms)
 	}
 	acc.Specialties = s.currentAccountSpecialties(ctx, username)
-	return &pb_admin.GetCurrentAccountResponse{Account: acc}, nil
+	return &pb_admin.GetCurrentAccountResponse{Account: acc, Workspace: workspaceToProto(ctx)}, nil
+}
+
+// workspaceToProto is the team the call runs in, as the admin chain resolved it (teams §6): slug,
+// name, role, the feature keys that are on, read-only when the team is suspended. nil outside the
+// chain (an in-process caller).
+func workspaceToProto(ctx context.Context) *pb_admin.Workspace {
+	w, ok := authsrv.GetWorkspace(ctx)
+	if !ok {
+		return nil
+	}
+	features := make([]string, 0, len(w.Features))
+	for _, k := range w.Features {
+		features = append(features, string(k))
+	}
+	return &pb_admin.Workspace{
+		Slug:     w.Team.Slug,
+		Name:     w.Team.Name,
+		Role:     w.Role,
+		Features: features,
+		ReadOnly: w.ReadOnly,
+	}
 }
 
 // currentAccountSpecialties reads the caller's own specialties, and ONLY them.
@@ -153,7 +174,7 @@ func (s *Server) CreateAccount(ctx context.Context, req *pb_admin.CreateAccountR
 		}
 		return nil, status.Error(codes.Internal, "failed to create account")
 	}
-	s.invalidateAccountAuth(ctx, username)
+	s.invalidateAccountAuth(username)
 	account, err := s.repo.Admin().GetAccountWithPermissions(ctx, username)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to reload created account", slog.String("err", err.Error()))
@@ -231,7 +252,7 @@ func (s *Server) SetAccountDisabled(ctx context.Context, req *pb_admin.SetAccoun
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to update account")
 	}
-	s.invalidateAccountAuth(ctx, username)
+	s.invalidateAccountAuth(username)
 	return &pb_admin.SetAccountDisabledResponse{}, nil
 }
 
@@ -262,7 +283,7 @@ func (s *Server) ResetAccountPassword(ctx context.Context, req *pb_admin.ResetAc
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Errorf(codes.NotFound, "account %q not found", username)
 	}
-	s.invalidateAccountAuth(ctx, username)
+	s.invalidateAccountAuth(username)
 	return &pb_admin.ResetAccountPasswordResponse{}, nil
 }
 
@@ -295,7 +316,7 @@ func (s *Server) DeleteAccount(ctx context.Context, req *pb_admin.DeleteAccountR
 			slog.String("username", username), slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to delete account")
 	}
-	s.invalidateAccountAuth(ctx, username)
+	s.invalidateAccountAuth(username)
 	return &pb_admin.DeleteAccountResponse{}, nil
 }
 

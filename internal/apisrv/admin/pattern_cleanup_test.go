@@ -3,10 +3,12 @@ package admin
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
@@ -107,4 +109,44 @@ func TestPatternCleanupOutlivesRequestCancellation(t *testing.T) {
 
 	(&Server{repo: repo, bucket: files}).deleteOrphanedPatternObjects(
 		ctx, "tech_card", 7, []string{testPatternURL})
+}
+
+// roFileStore is a file store with one read-only host (lane B8): urls on it live elsewhere.
+type roFileStore struct {
+	*mocks.MockFileStore
+	host string
+}
+
+func (f roFileStore) PatternObjectSource(_ context.Context, rawURL string) (string, bool) {
+	if strings.HasPrefix(rawURL, "https://"+f.host+"/") {
+		return f.host, true
+	}
+	return "", true
+}
+
+// Own row and read-only row share one key. Cleaning up the read-only pattern deletes nothing in our
+// bucket (DeleteObjects refuses the host) and therefore drops no access row: above all not the own
+// row with that key, which carries its revocation epoch and expiry policy. Cleaning up the own
+// pattern drops exactly the own row, named by key and empty host.
+func TestPatternCleanupOfReadOnlyURLKeepsOwnRowWithSameKey(t *testing.T) {
+	const key = "base/tech-card-patterns/2026/august/pattern.pdf"
+	roURL := "https://files.grbpwr.com/" + key
+
+	files := mocks.NewMockFileStore(t)
+	files.On("DeleteObjects", mock.Anything, roURL).Return(nil).Once()
+	repo := mocks.NewMockRepository(t)
+	objects := mocks.NewMockPatternObjects(t)
+	repo.EXPECT().PatternObjects().Return(objects)
+	objects.On("DeleteByKeys", mock.Anything, []entity.PatternObjectID{}).Return(nil).Once()
+	(&Server{repo: repo, bucket: roFileStore{MockFileStore: files, host: "files.grbpwr.com"}}).
+		deleteOrphanedPatternObjects(context.Background(), "tech_card", 7, []string{roURL})
+
+	files2 := mocks.NewMockFileStore(t)
+	files2.On("DeleteObjects", mock.Anything, testPatternURL).Return(nil).Once()
+	repo2 := mocks.NewMockRepository(t)
+	objects2 := mocks.NewMockPatternObjects(t)
+	repo2.EXPECT().PatternObjects().Return(objects2)
+	objects2.On("DeleteByKeys", mock.Anything, []entity.PatternObjectID{{Key: key}}).Return(nil).Once()
+	(&Server{repo: repo2, bucket: roFileStore{MockFileStore: files2, host: "files.grbpwr.com"}}).
+		deleteOrphanedPatternObjects(context.Background(), "tech_card", 7, []string{testPatternURL})
 }

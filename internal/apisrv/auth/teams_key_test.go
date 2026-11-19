@@ -69,10 +69,15 @@ func TestAuthCachesAreKeyedByTeamAndUsername(t *testing.T) {
 	require.Error(t, srv.checkAdminAccountState(ctxA, "anna"), "anna is disabled in team A")
 	require.NoError(t, srv.checkAdminAccountState(ctxB, "anna"), "team A's disabled anna must not lock out team B's")
 
-	// A's invalidation leaves B's cached answer alone; B's anna stays enabled.
-	srv.InvalidateAdminAccount(ctxA, "anna")
-	_, ok := srv.cachedAdminAccountState(tenant.Key(ctxB, "anna"))
-	require.True(t, ok)
+	// Invalidation names no team, so it evicts the username in every team; each team then reads its
+	// own row again.
+	srv.InvalidateAdminAccount("anna")
+	_, okA := srv.cachedAdminAccountState(accountKey(ctxA, "anna"))
+	_, okB := srv.cachedAdminAccountState(accountKey(ctxB, "anna"))
+	require.False(t, okA)
+	require.False(t, okB)
+	require.Error(t, srv.checkAdminAccountState(ctxA, "anna"))
+	require.NoError(t, srv.checkAdminAccountState(ctxB, "anna"))
 
 	// Flights: team A's lookup is parked; team B's own lookup still answers at once.
 	parked := &teamAdmins{rows: store.rows, park: make(chan struct{}), parkTeam: 2}

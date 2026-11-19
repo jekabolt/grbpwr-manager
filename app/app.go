@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -407,7 +408,16 @@ func (a *App) Start(ctx context.Context) error {
 	// Write validation must know which hosts are OURS before any pattern url can be
 	// stored: dto is fail-closed and rejects every pattern url until this is configured
 	// (it cannot import bucket — dependency imports dto — so the hosts are pushed in).
-	dto.SetManagedPatternHosts(bucket.ManagedHosts(&a.c.Bucket)...)
+	//
+	// Read-only hosts (BUCKET_S3_READONLY_HOSTS, lane B8) are admitted as REFERENCES too: a copied
+	// row keeps its legacy pattern url and must stay savable. Being referenceable is a read
+	// question; nothing is ever deleted or overwritten there (bucket.DeleteObjects refuses it).
+	a.c.Bucket.TeamsMode = a.c.Platform.Enabled()
+	dto.SetManagedPatternHosts(append(bucket.ManagedHosts(&a.c.Bucket), bucket.ReadOnlyHosts(&a.c.Bucket)...)...)
+	if hosts := bucket.ReadOnlyHosts(&a.c.Bucket); len(hosts) > 0 {
+		slog.Default().InfoContext(ctx, "bucket read-only hosts admitted",
+			slog.String("hosts", strings.Join(hosts, ",")), slog.Bool("team_one_only", a.c.Bucket.TeamsMode))
+	}
 
 	a.b, err = bucket.New(&a.c.Bucket, a.db.Media())
 	if err != nil {
@@ -720,6 +730,7 @@ func (a *App) Start(ctx context.Context) error {
 			KeyFromURL: func(rawURL string) (string, error) {
 				return bucket.ManagedObjectKeyFromURL(&a.c.Bucket, rawURL)
 			},
+			OpenURL: a.bucketOpenURL(),
 		}),
 	}
 	// runblob (B-27): the adapter beside the chat transports, with the panel's key. It is not a
@@ -843,6 +854,7 @@ func (a *App) Start(ctx context.Context) error {
 				KeyFromURL: func(rawURL string) (string, error) {
 					return bucket.ManagedObjectKeyFromURL(&a.c.Bucket, rawURL)
 				},
+				OpenURL: a.bucketOpenURL(),
 			})
 		}
 
@@ -1573,5 +1585,15 @@ func (a *App) startTeamsWorkers(ctx context.Context) error {
 		return fmt.Errorf("ai spend rollup: %w", err)
 	}
 	a.stopAIRollup = stop
+	return nil
+}
+
+// bucketOpenURL is the host-checked url reader of the AI transports (bucket.Bucket.OpenManagedURL:
+// our own host by key, a read-only host of team #1 over https). nil when the file store is not a
+// *bucket.Bucket — the transports then keep KeyFromURL + Objects.
+func (a *App) bucketOpenURL() func(ctx context.Context, rawURL string) (io.ReadCloser, int64, error) {
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		return bk.OpenManagedURL
+	}
 	return nil
 }

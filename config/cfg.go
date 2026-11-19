@@ -430,6 +430,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid accounting configuration: %w", err)
 	}
 
+	// Read-only file hosts (lane B8): a read-only host that is also one of our writable hosts, or a
+	// read-only bucket that is our write bucket, would let uploads land in the other installation's
+	// storage. Both variables are optional; unset = nothing is checked.
+	if err := bucket.ValidateReadOnly(&c.Bucket); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -485,6 +492,7 @@ func bindEnvVars() {
 	viper.BindEnv("http.address", "HTTP_ADDRESS")
 	viper.BindEnv("http.allowed_origins", "HTTP_ALLOWED_ORIGINS")
 	viper.BindEnv("http.allow_dev_origins", "HTTP_ALLOW_DEV_ORIGINS")
+	_ = viper.BindEnv("http.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 	viper.BindEnv("http.block_local_origin_writes", "HTTP_BLOCK_LOCAL_ORIGIN_WRITES")
 
 	// Auth
@@ -516,6 +524,8 @@ func bindEnvVars() {
 	viper.BindEnv("bucket.s3_bucket_location", "BUCKET_S3_BUCKET_LOCATION")
 	viper.BindEnv("bucket.base_folder", "BUCKET_BASE_FOLDER")
 	viper.BindEnv("bucket.subdomain_endpoint", "BUCKET_SUBDOMAIN_ENDPOINT")
+	viper.BindEnv("bucket.readonly_hosts", "BUCKET_S3_READONLY_HOSTS")
+	viper.BindEnv("bucket.readonly_buckets", "BUCKET_S3_READONLY_BUCKETS")
 
 	// Mailer
 	viper.BindEnv("mailer.sendgrid_api_key", "MAILER_SENDGRID_API_KEY")
