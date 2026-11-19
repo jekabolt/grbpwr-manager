@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauth/oauthtest"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 )
 
 const (
@@ -123,12 +125,17 @@ func (f *fakeFlow) lastCreated(t *testing.T) platformstore.OAuthState {
 	return f.created[len(f.created)-1]
 }
 
+// fakeOrigins are the binder's rules over its own canonical form, so case variants of an admitted
+// origin pass here as they do at the edge.
 type fakeOrigins struct{}
 
-func (fakeOrigins) RootOriginAllowed(o string) bool { return o == rootOrigin }
-func (fakeOrigins) OriginAllowed(o string, t tenant.Team, legacy bool) bool {
-	return !legacy && t.Slug != "" && o == "https://"+t.Slug+".beta.lekalo.studio"
+func (fakeOrigins) RootOriginAllowed(o string) bool {
+	return tenantbind.CanonicalOrigin(o) == rootOrigin
 }
+func (fakeOrigins) OriginAllowed(o string, t tenant.Team, legacy bool) bool {
+	return !legacy && t.Slug != "" && tenantbind.CanonicalOrigin(o) == "https://"+t.Slug+".beta.lekalo.studio"
+}
+func (fakeOrigins) CanonicalOrigin(o string) string { return tenantbind.CanonicalOrigin(o) }
 
 type rig struct {
 	idp  *oauthtest.IdP
@@ -162,6 +169,12 @@ func (r *rig) serve(req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	r.h.ServeHTTP(rec, req)
 	return rec
+}
+
+// from makes req arrive from ip.
+func from(req *http.Request, ip string) *http.Request {
+	req.RemoteAddr = ip + ":4000"
+	return req
 }
 
 func formReq(method, target, body, origin string) *http.Request {
@@ -240,6 +253,9 @@ func wantResult(t *testing.T, rec *httptest.ResponseRecorder, fragment string) {
 	}
 	if got := rec.Header().Get("Location"); got != resultURL+"#"+fragment {
 		t.Fatalf("Location %q, want %s#%s", got, resultURL, fragment)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("the 303 to the result page carries a %d-byte body", rec.Body.Len())
 	}
 }
 
@@ -536,35 +552,154 @@ func TestBodyCap(t *testing.T) {
 	}
 }
 
-func TestLimiters(t *testing.T) {
+// The start: the loose guard per IP in front; the strict limit per IP + the origin's canonical
+// form, counted only once the origin passed its rule.
+func TestStartLimiters(t *testing.T) {
 	r := newRig(t, true, false)
-	for i := 0; i < perMinute; i++ {
-		if rec, _ := r.start(t, "google", "target=signin", rootOrigin); rec.Code != http.StatusSeeOther {
-			t.Fatalf("start %d = %d", i+1, rec.Code)
+	// variant(i) upper-cases the letters of the root origin picked by the bits of i.
+	variant := func(i int) string {
+		b, bit := []byte(rootOrigin), 0
+		for k, c := range b {
+			if c >= 'a' && c <= 'z' {
+				if i>>bit&1 == 1 {
+					b[k] = c - 'a' + 'A'
+				}
+				bit++
+			}
+		}
+		return string(b)
+	}
+	spellings := map[string]bool{}
+	for i := 1; i <= perMinute; i++ {
+		spellings[variant(i)] = true
+		rec, _ := r.start(t, "google", "target=signin", variant(i))
+		if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), r.idp.URL()) {
+			t.Fatalf("start %d (%s) = %d", i, variant(i), rec.Code)
 		}
 	}
+	if len(spellings) != perMinute || spellings[rootOrigin] {
+		t.Fatalf("%d distinct spellings, want %d case variants", len(spellings), perMinute)
+	}
 	rows := len(r.flow.created)
-	rec, cookie := r.start(t, "google", "target=signin", rootOrigin)
+	rec, cookie := r.start(t, "google", "target=signin", variant(perMinute+1))
 	wantResult(t, rec, "error=try_again")
 	if cookie != nil || len(r.flow.created) != rows {
 		t.Fatal("a limited start made a row")
 	}
-	// The start limiter is per IP + Origin: the same IP from a team host still starts.
+	// Per IP + origin: the same IP from a team host still starts.
 	if rec, _ := r.start(t, "google", "target=invite&invite_token=invite-token-value&terms_accepted=true", acmeOrigin); rec.Code != http.StatusSeeOther {
 		t.Fatalf("start from another origin = %d", rec.Code)
 	}
-	// The callback limiter is per IP.
-	for i := 0; i < perMinute; i++ {
+
+	// Origins the rules refuse never get a bucket, under any spelling.
+	const ip = "198.51.100.20"
+	for i := 0; i < 30; i++ {
+		o := fmt.Sprintf("https://Evil-%d.Example", i)
+		if rec := r.serve(from(formReq(http.MethodPost, "/google/start", "target=signin", o), ip)); rec.Code != http.StatusForbidden {
+			t.Fatalf("refused origin %d = %d", i, rec.Code)
+		}
+		for _, key := range []string{ip + "|" + o, ip + "|" + strings.ToLower(o)} {
+			if n := r.h.startLimit.GetRemaining(key); n != perMinute {
+				t.Fatalf("a refused origin took a start slot (%d left)", n)
+			}
+		}
+	}
+	if rec := r.serve(from(formReq(http.MethodPost, "/google/start", "target=signin", rootOrigin), ip)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("a valid start after refused origins = %d", rec.Code)
+	}
+	if n := r.h.startLimit.GetRemaining(ip + "|" + rootOrigin); n != perMinute-1 {
+		t.Fatalf("the root bucket has %d left, want %d", n, perMinute-1)
+	}
+
+	// The guard: guardPerMinute starts per IP whatever they carry; the next is refused before the
+	// form or the origin is read.
+	const ip2 = "198.51.100.21"
+	for i := 0; i < guardPerMinute; i++ {
+		if rec := r.serve(from(formReq(http.MethodPost, "/google/start", "target=signin", "https://evil.example"), ip2)); rec.Code != http.StatusForbidden {
+			t.Fatalf("guarded start %d = %d", i+1, rec.Code)
+		}
+	}
+	rows = len(r.flow.created)
+	wantResult(t, r.serve(from(formReq(http.MethodPost, "/google/start", "target=signin", rootOrigin), ip2)), "error=try_again")
+	if len(r.flow.created) != rows {
+		t.Fatal("a guarded start made a row")
+	}
+}
+
+// The callback: junk (no live state) from a shared address never spends a person's flow — the
+// strict per-IP limit sits right before the exchange it protects; the loose guard in front only
+// caps how often one address reaches the state table.
+func TestCallbackLimiters(t *testing.T) {
+	r := newRig(t, true, false)
+	rec, cookie := r.start(t, "google", "target=signin", rootOrigin)
+	code, state := r.authorize(t, rec.Header().Get("Location"))
+	junk := 2 * perMinute
+	for i := 0; i < junk; i++ {
+		wantResult(t, r.serve(googleCallback("c", "unknown-state", nil)), "error=expired")
+	}
+	wantResult(t, r.serve(googleCallback(code, state, cookie)), "code="+r.flow.code)
+	if r.idp.LastTokenRequest().Get("code") != code {
+		t.Fatal("junk callbacks kept a valid flow from the exchange")
+	}
+	// The guard: guardPerMinute callbacks per IP in all; the next is refused before the state table.
+	for i := junk + 1; i < guardPerMinute; i++ {
 		wantResult(t, r.serve(googleCallback("c", "unknown-state", nil)), "error=expired")
 	}
 	consumes := r.flow.consumes
 	wantResult(t, r.serve(googleCallback("c", "unknown-state", nil)), "error=try_again")
 	if r.flow.consumes != consumes {
-		t.Fatal("a limited callback consumed a state")
+		t.Fatal("a guarded callback reached the state table")
 	}
-	other := googleCallback("c", "unknown-state", nil)
-	other.RemoteAddr = "198.51.100.7:4000"
-	wantResult(t, r.serve(other), "error=expired")
+	wantResult(t, r.serve(from(googleCallback("c", "unknown-state", nil), "198.51.100.7")), "error=expired")
+
+	// The strict limit: perMinute exchanges per IP; the next flow is spent (row used, cookie
+	// cleared) without calling the provider.
+	r = newRig(t, true, false)
+	for i := 0; i < perMinute; i++ {
+		rec, cookie := r.start(t, "google", "target=signin", rootOrigin)
+		code, state := r.authorize(t, rec.Header().Get("Location"))
+		wantResult(t, r.serve(googleCallback(code, state, cookie)), "code="+r.flow.code)
+	}
+	rec, cookie = r.start(t, "google", "target=invite&invite_token=invite-token-value&terms_accepted=true", acmeOrigin)
+	code, state = r.authorize(t, rec.Header().Get("Location"))
+	consumes = r.flow.consumes
+	cb := r.serve(googleCallback(code, state, cookie))
+	wantResult(t, cb, "error=try_again")
+	if r.flow.consumes != consumes+1 || !strings.Contains(setCookieHeader(cb), "Max-Age=0") {
+		t.Fatal("the limited callback did not spend its row and clear the cookie")
+	}
+	if r.idp.LastTokenRequest().Get("code") == code || len(r.flow.signIns)+len(r.flow.accepts) != perMinute {
+		t.Fatal("the limited callback reached the provider or a completion")
+	}
+}
+
+// Every 303 of a flow is a Location and nothing else: http.Redirect would echo the target into an
+// HTML body on a GET — the sign-in code of the result page, the state and nonce of a provider URL.
+func TestRedirectsCarryNoBody(t *testing.T) {
+	r := newRig(t, true, false)
+	empty := func(what string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") == "" {
+			t.Fatalf("%s: %d without a Location", what, rec.Code)
+		}
+		if rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
+			t.Fatalf("%s: a %d-byte body (%q)", what, rec.Body.Len(), rec.Header().Get("Content-Type"))
+		}
+	}
+	rec, cookie := r.start(t, "google", "target=signin", rootOrigin)
+	empty("start", rec)
+	code, state := r.authorize(t, rec.Header().Get("Location"))
+	cb := r.serve(googleCallback(code, state, cookie))
+	empty("successful callback", cb)
+	if !strings.HasPrefix(cb.Header().Get("Location"), resultURL+"#code=") {
+		t.Fatal("the successful callback did not land on the result page with a code")
+	}
+	failed := r.serve(googleCallback(code, state, cookie))
+	empty("failing callback", failed)
+	if failed.Header().Get("Location") != resultURL+"#error=expired" {
+		t.Fatal("the replayed callback did not land on expired")
+	}
+	empty("refused start", r.serve(formReq(http.MethodPost, "/google/start", "target=invite&invite_token=dead-token&terms_accepted=true", acmeOrigin)))
 }
 
 // The happy path, Google: start → provider → callback → completion, the cookie cleared, the code on

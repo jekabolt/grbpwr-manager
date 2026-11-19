@@ -22,6 +22,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"google.golang.org/grpc/codes"
 )
@@ -56,6 +57,7 @@ func (e2eOrigins) RootOriginAllowed(o string) bool { return o == oauthRootOrigin
 func (e2eOrigins) OriginAllowed(o string, t tenant.Team, legacy bool) bool {
 	return !legacy && t.Slug != "" && o == "https://"+t.Slug+".beta.lekalo.studio"
 }
+func (e2eOrigins) CanonicalOrigin(o string) string { return tenantbind.CanonicalOrigin(o) }
 
 type oauthE2E struct {
 	t   *testing.T
@@ -528,4 +530,76 @@ WHERE m.team_id = ? AND u.email = ?`, j.teamID, email)
 	}
 	_, err = j.svc.SignIn(ctxFrom("10.9.1.3", ""), &auth.SignInRequest{Login: fresh, Password: "Any-Pass-7715", Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT})
 	wantCode(t, err, codes.Unauthenticated, "password sign-in of a provider-made account")
+}
+
+// An invite whose provider identity is already another account's (teams O3): the subject is linked
+// to account A, the invite is for account B, and the provider vouches for B's address under A's
+// subject → invite_mismatch with nothing written: no membership for B, the identity still A's and
+// not stamped, no sign-in code, the invite still open.
+func TestOAuthE2EInviteForeignIdentity(t *testing.T) {
+	j := newJoinTeam(t, "oauth-xid")
+	e := newOAuthE2E(t, j.flow, "10.9.2.1")
+	const teamOrigin = "https://oauth-xid.beta.lekalo.studio"
+	const accA, accB = "delivered+o3xa@resend.dev", "delivered+o3xb@resend.dev"
+
+	// Account A: made by its first Google sign-in, which links the subject.
+	e.idp.SetClaims(googleID("g-o3-xa", accA, "resend.dev"))
+	if code, key := e.run("google", url.Values{"target": {"signin"}}, oauthRootOrigin); code == "" || key != "" {
+		t.Fatalf("account A sign-in: %q", key)
+	}
+	// Account B: a password account, invited.
+	hash, err := j.svc.d.Hasher.HashPassword("Member-Pass-7716")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.st.DB().Exec(`INSERT INTO platform_user (email, handle, password_hash, status, email_verified_at)
+VALUES (?, 'o3xb', ?, 'active', UTC_TIMESTAMP(3))`, accB, hash); err != nil {
+		t.Fatal(err)
+	}
+	tok, inviteID := j.invite(accB, writeProducts)
+
+	type identity struct {
+		UserID    int64  `db:"user_id"`
+		LastLogin string `db:"last_login_at"`
+	}
+	readIdentity := func() identity {
+		t.Helper()
+		var id identity
+		if err := j.st.DB().Get(&id, `SELECT user_id, last_login_at FROM platform_identity WHERE provider = 'google' AND subject = 'g-o3-xa'`); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	var userA int64
+	if err := j.st.DB().Get(&userA, `SELECT id FROM platform_user WHERE email = ?`, accA); err != nil {
+		t.Fatal(err)
+	}
+	before := readIdentity()
+	if before.UserID != userA {
+		t.Fatal("the subject is not linked to account A")
+	}
+	counts := func() [3]int {
+		return [3]int{
+			j.oauthCount(`SELECT COUNT(*) FROM email_token`),
+			j.oauthCount(`SELECT COUNT(*) FROM platform_identity`),
+			j.oauthCount(`SELECT COUNT(*) FROM team_member WHERE team_id = ?`, j.teamID),
+		}
+	}
+	was := counts()
+
+	e.idp.SetClaims(googleID("g-o3-xa", accB, "resend.dev"))
+	code, key := e.run("google", url.Values{"target": {"invite"}, "invite_token": {tok}}, teamOrigin)
+	if code != "" || key != oauthflow.KeyInviteMismatch {
+		t.Fatalf("foreign identity on the invite: code %t, key %q", code != "", key)
+	}
+	if readIdentity() != before {
+		t.Fatal("the identity of account A changed")
+	}
+	if now := counts(); now != was {
+		t.Fatalf("a refused invite wrote rows: codes, identities, memberships %v → %v", was, now)
+	}
+	if n := j.oauthCount(`SELECT COUNT(*) FROM team_member m JOIN platform_user u ON u.id = m.user_id WHERE u.email = ?`, accB) +
+		j.oauthCount(`SELECT COUNT(*) FROM team_invite WHERE id = ? AND accepted_at IS NOT NULL`, inviteID); n != 0 {
+		t.Fatal("account B joined or the invite was spent")
+	}
 }

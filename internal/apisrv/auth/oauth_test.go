@@ -58,6 +58,7 @@ func TestSetPlatformOAuth(t *testing.T) {
 type rootEdge struct{ Edge }
 
 func (rootEdge) RootOriginAllowed(o string) bool { return o == "https://beta.lekalo.studio" }
+func (rootEdge) CanonicalOrigin(o string) string { return "canon:" + o }
 func (rootEdge) OriginAllowed(o string, t tenant.Team, _ bool) bool {
 	return o == "https://"+t.Slug+".beta.lekalo.studio"
 }
@@ -82,9 +83,15 @@ func TestEdgeOrigins(t *testing.T) {
 	if !o.OriginAllowed("https://acme.beta.lekalo.studio", acme, false) || o.OriginAllowed("https://beta.lekalo.studio", acme, false) {
 		t.Fatal("team rule not the edge's")
 	}
+	if got := o.CanonicalOrigin("HTTPS://Beta.Lekalo.Studio"); got != "canon:HTTPS://Beta.Lekalo.Studio" {
+		t.Fatalf("canonical origin %q is not the edge's", got)
+	}
 	s.SetEdge(teamEdge{})
 	if o.RootOriginAllowed("https://beta.lekalo.studio") {
 		t.Fatal("an edge without the root rule allowed a root start")
+	}
+	if got := o.CanonicalOrigin("https://Evil.example"); got != "" {
+		t.Fatalf("an edge without the canonical form keyed on %q", got)
 	}
 	if o.OriginAllowed("", acme, false) || o.OriginAllowed("  ", acme, false) {
 		t.Fatal("an empty origin passed")

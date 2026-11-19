@@ -264,6 +264,27 @@ func TestRootOriginAllowed(t *testing.T) {
 	}
 }
 
+// CanonicalOrigin is the rules' own form: every case variant of an admitted origin maps to one key.
+func TestCanonicalOrigin(t *testing.T) {
+	b, _ := teamsBinder(t)
+	for origin, want := range map[string]string{
+		"https://beta.lekalo.studio":       "https://beta.lekalo.studio",
+		"HTTPS://Beta.Lekalo.STUDIO/":      "https://beta.lekalo.studio",
+		" https://ACME.beta.lekalo.studio": "https://acme.beta.lekalo.studio",
+		"https://beta.lekalo.studio/auth":  "",
+		"null":                             "",
+		"":                                 "",
+	} {
+		got := CanonicalOrigin(origin)
+		if got != want || b.CanonicalOrigin(origin) != got {
+			t.Errorf("CanonicalOrigin(%q) = %q, want %q", origin, got, want)
+		}
+		if got != "" && b.RootOriginAllowed(origin) != (got == "https://beta.lekalo.studio") {
+			t.Errorf("CanonicalOrigin(%q) disagrees with RootOriginAllowed", origin)
+		}
+	}
+}
+
 func TestCachesAndInvalidate(t *testing.T) {
 	b, p := teamsBinder(t)
 	ctx := context.Background()

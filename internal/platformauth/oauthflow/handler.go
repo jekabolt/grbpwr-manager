@@ -37,10 +37,17 @@ const (
 	ResultPath = "/auth/oauth"
 
 	maxBodyBytes = 16 << 10
-	perMinute    = 20
-	maxStateLen  = 128
-	maxCodeLen   = 2048
-	maxTokenLen  = 128
+	// perMinute is the strict limit of the two steps that cost something: a start writing a state
+	// row (per IP + canonical origin) and a callback calling the provider's token endpoint (per IP).
+	perMinute = 20
+	// guardPerMinute is the loose per-IP guard in front of both routes, before the form, the origin
+	// or the state table is touched. Three times the strict limit: an office behind one address keeps
+	// headroom, junk from it reaches the state table at most once a second, and a callback without a
+	// live state and its cookie never counts against the strict limit (it fails before the exchange).
+	guardPerMinute = 3 * perMinute
+	maxStateLen    = 128
+	maxCodeLen     = 2048
+	maxTokenLen    = 128
 )
 
 // The fixed #error= keys (teams O §3). platformauth's completion answers with the same strings.
@@ -135,10 +142,12 @@ type Flow interface {
 }
 
 // Origins are the edge's origin rules (tenantbind.Binder): the root host for a sign-in, the
-// invite's team host for an invite.
+// invite's team host for an invite. CanonicalOrigin is the form those rules compare (the start
+// limiter keys on it).
 type Origins interface {
 	RootOriginAllowed(origin string) bool
 	OriginAllowed(origin string, t tenant.Team, legacy bool) bool
+	CanonicalOrigin(origin string) string
 }
 
 // Providers is the boot-time registry (*oauth.Registry; nil-safe).
@@ -160,16 +169,20 @@ type Handler struct {
 	mux           *chi.Mux
 	d             Deps
 	resultURL     string
-	startLimit    *ratelimit.Limiter // per IP + Origin
-	callbackLimit *ratelimit.Limiter // per IP
+	startGuard    *ratelimit.Limiter // per IP, loose: before the form and the origin are read
+	startLimit    *ratelimit.Limiter // per IP + canonical origin, strict: before a state row is written
+	callbackGuard *ratelimit.Limiter // per IP, loose: before the state table is touched
+	exchangeLimit *ratelimit.Limiter // per IP, strict: before the provider's token endpoint
 }
 
 // New builds the handler and its limiters (Close stops them).
 func New(d Deps) *Handler {
 	h := &Handler{
 		d:             d,
+		startGuard:    ratelimit.NewLimiter(time.Minute, guardPerMinute),
 		startLimit:    ratelimit.NewLimiter(time.Minute, perMinute),
-		callbackLimit: ratelimit.NewLimiter(time.Minute, perMinute),
+		callbackGuard: ratelimit.NewLimiter(time.Minute, guardPerMinute),
+		exchangeLimit: ratelimit.NewLimiter(time.Minute, perMinute),
 	}
 	if base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d.BaseDomain)), "."); base != "" {
 		h.resultURL = "https://" + base + ResultPath
@@ -188,8 +201,10 @@ func New(d Deps) *Handler {
 
 // Close stops the limiters (idempotent).
 func (h *Handler) Close() {
+	h.startGuard.Stop()
 	h.startLimit.Stop()
-	h.callbackLimit.Stop()
+	h.callbackGuard.Stop()
+	h.exchangeLimit.Stop()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }
@@ -214,7 +229,9 @@ func (h *Handler) provider(name string) (oauth.Provider, bool) {
 
 // start: POST /{provider}/start. Client mistakes (no target, wrong origin, terms not ticked)
 // answer 4xx; what a person can run into (a dead invite, the limiter, the store) answers the same
-// 303 to the result page as a callback.
+// 303 to the result page as a callback. The order: the loose per-IP guard → the form → the origin
+// for the target → the strict limit per IP + canonical origin → the state row. An origin the rules
+// refuse never gets a bucket of its own.
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "provider")
 	p, ok := h.provider(name)
@@ -222,11 +239,12 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		plain(w, http.StatusNotFound, "not available")
 		return
 	}
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if !h.startLimit.Allow(middleware.ClientIPFromRequest(r) + "|" + origin) {
+	ip := middleware.ClientIPFromRequest(r)
+	if !h.startGuard.Allow(ip) {
 		h.fail(w, r, name, outLimited)
 		return
 	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	form, status := readForm(w, r)
 	if status != 0 {
 		plain(w, status, http.StatusText(status))
@@ -277,6 +295,12 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		plain(w, http.StatusBadRequest, "target must be signin or invite")
 		return
 	}
+	// The origin passed its rule: the canonical form (the binder's) keys the bucket, so case
+	// variants of one origin share it.
+	if !h.startLimit.Allow(ip + "|" + h.d.Origins.CanonicalOrigin(origin)) {
+		h.fail(w, r, name, outLimited)
+		return
+	}
 	state, err1 := oauth.NewState()
 	nonce, err2 := oauth.NewNonce()
 	verifier, err3 := oauth.NewVerifier()
@@ -293,13 +317,14 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, binderCookie(binder, int(platformstore.OAuthStateTTL/time.Second)))
-	noStore(w)
-	http.Redirect(w, r, p.AuthURL(state, nonce, oauth.Challenge(verifier)), http.StatusSeeOther)
+	seeOther(w, p.AuthURL(state, nonce, oauth.Challenge(verifier)))
 }
 
 // callback: GET /google/callback (query) or POST /apple/callback (form_post body). The order is
-// fixed: read state → spend the row → binder cookie (constant time) → provider error → Exchange
-// with the row's verifier and nonce → completion → 303 to the result page.
+// fixed: the loose per-IP guard → read state → spend the row → binder cookie (constant time) →
+// provider error → the strict per-IP limit → Exchange with the row's verifier and nonce →
+// completion → 303 to the result page. The strict limit sits right before the outbound call it
+// protects, so junk callbacks (which never get that far) cannot spend a person's flow.
 func (h *Handler) callback(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := h.provider(name)
@@ -307,7 +332,8 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 			plain(w, http.StatusNotFound, "not available")
 			return
 		}
-		if !h.callbackLimit.Allow(middleware.ClientIPFromRequest(r)) {
+		ip := middleware.ClientIPFromRequest(r)
+		if !h.callbackGuard.Allow(ip) {
 			h.fail(w, r, name, outLimited)
 			return
 		}
@@ -359,6 +385,10 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 			h.fail(w, r, name, outTokenInvalid)
 			return
 		}
+		if !h.exchangeLimit.Allow(ip) {
+			h.fail(w, r, name, outLimited)
+			return
+		}
 		id, err := p.Exchange(ctx, code, row.PKCEVerifier, row.Nonce)
 		if err != nil {
 			h.fail(w, r, name, providerOutcome(err))
@@ -385,8 +415,7 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 			h.fail(w, r, name, completionOutcome(key))
 			return
 		}
-		noStore(w)
-		http.Redirect(w, r, h.resultURL+"#code="+url.QueryEscape(signInCode), http.StatusSeeOther)
+		seeOther(w, h.resultURL+"#code="+url.QueryEscape(signInCode))
 	}
 }
 
@@ -397,8 +426,15 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, provider string, 
 		slog.Default().ErrorContext(r.Context(), "oauth: provider unreachable",
 			slog.String("provider", provider), slog.String("kind", string(oauth.ErrorProviderUnreachable)))
 	}
+	seeOther(w, h.resultURL+"#error="+o.key())
+}
+
+// seeOther is the 303 every flow step ends in: Location and no body. http.Redirect would echo the
+// target into an HTML body on a GET — the sign-in code, or the state and nonce of a provider URL.
+func seeOther(w http.ResponseWriter, location string) {
 	noStore(w)
-	http.Redirect(w, r, h.resultURL+"#error="+o.key(), http.StatusSeeOther)
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 // readForm parses an urlencoded body capped at 16 KiB and returns its fields (never the query).

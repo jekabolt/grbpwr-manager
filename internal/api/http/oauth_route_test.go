@@ -9,7 +9,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 )
+
+// The binder handed to SetEdge carries every origin rule the provider routes read through it (the
+// auth server reaches RootOriginAllowed and CanonicalOrigin by assertion; losing one would refuse
+// every root start or collapse the start limiter to one bucket per IP).
+var _ oauthflow.Origins = (*tenantbind.Binder)(nil)
 
 // The provider routes are a mount of their own next to the AuthService gateway: every method and
 // path under /api/auth/oauth is the provider handler's answer (its 405 included), never the

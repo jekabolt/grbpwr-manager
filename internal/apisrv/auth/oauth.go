@@ -65,3 +65,13 @@ func (o edgeOrigins) RootOriginAllowed(origin string) bool {
 func (o edgeOrigins) OriginAllowed(origin string, t tenant.Team, legacy bool) bool {
 	return o.s.edge != nil && strings.TrimSpace(origin) != "" && o.s.edge.OriginAllowed(origin, t, legacy)
 }
+
+// CanonicalOrigin is the binder's form of an origin (the start limiter's key). An edge without it
+// answers "": the strict start limit then falls back to one bucket per IP, never one per spelling.
+func (o edgeOrigins) CanonicalOrigin(origin string) string {
+	c, ok := o.s.edge.(interface{ CanonicalOrigin(string) string })
+	if !ok {
+		return ""
+	}
+	return c.CanonicalOrigin(origin)
+}
