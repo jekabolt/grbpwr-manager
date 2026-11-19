@@ -339,8 +339,6 @@ func reserveProviderAccountTx(ctx context.Context, tx *sqlx.Tx, inv Invite, p Ac
 		res = AcceptResult{UserID: id, Handle: h, Created: true}
 	case err != nil:
 		return AcceptResult{}, nil, err
-	case len(known) > 0 && known[0] != u.ID:
-		return AcceptResult{}, nil, ErrInviteMismatch
 	case u.IsOperator:
 		return AcceptResult{}, nil, ErrProviderOperator
 	case u.Status == UserDisabled:
