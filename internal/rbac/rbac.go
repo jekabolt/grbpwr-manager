@@ -938,6 +938,9 @@ var methodRequirements = map[string]Requirement{
 	"ResendTeamInvite":  wr(SectionAccounts),
 	"RemoveTeamMember":  wr(SectionAccounts),
 	"SetTeamMemberRole": wr(SectionAccounts),
+	// workspace screen: the team's brand data and a member's section rights (owner-only writes)
+	"SetTeamBrand":        wr(SectionAccounts),
+	"SetTeamMemberAccess": wr(SectionAccounts),
 	// УДАЛЕНИЕ ПОЗИЦИИ СЛОВАРЯ СПЕЦИАЛЬНОСТЕЙ — ЗДЕСЬ, А НЕ В allowlist РЯДОМ С ЗАПИСЬЮ.
 	// SetAccountSpecialties внизу разрешён всем аутентифицированным, потому что человек правит СВОЁ
 	// самоописание, и новое имя только добавляется: ни у кого на экране ничего не пропадает.
