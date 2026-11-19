@@ -223,6 +223,19 @@ func (s *Server) refreshed(ctx context.Context, slug string) (*pb_admin.Platform
 	return teamPB(t, spend), nil
 }
 
+// refreshedByID is refreshed by the team's id, a deleted team included (DeleteTeam, RestoreTeam).
+func (s *Server) refreshedByID(ctx context.Context, teamID int64) (*pb_admin.PlatformTeam, error) {
+	t, err := s.st.ConsoleTeamByID(ctx, teamID)
+	if err != nil {
+		return nil, storeErr(ctx, "read team", err)
+	}
+	spend, err := s.monthSpend(ctx, t.ID)
+	if err != nil {
+		return nil, storeErr(ctx, "month spend", err)
+	}
+	return teamPB(t, spend), nil
+}
+
 // ApproveTeam opens a waiting sign-up: review → provisioning (the provisioner claims it) and the
 // team_approved letter to its owner, in one transaction.
 func (s *Server) ApproveTeam(ctx context.Context, req *pb_admin.ApproveTeamRequest) (*pb_admin.ApproveTeamResponse, error) {

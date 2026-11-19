@@ -93,7 +93,10 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' AND t.status IN ('
 // IssueHandoff inserts a hand-off row (purpose handoff, no code) for the user into the team, only
 // while the root session rootSID that asked for it is still live: the session row is locked, so a
 // password change (which revokes the session and expires unused hand-offs in one transaction)
-// either sees the new row and expires it, or has revoked the session first (ErrTokenInvalid).
+// either sees the new row and expires it, or has revoked the session first (ErrTokenInvalid). The
+// team row is taken FOR SHARE first (lock order at DeleteTeam): a team that is not provisioning,
+// active or suspended — deleted a moment ago included — gets no code (ErrWrongTeamStatus), and a
+// delete waiting on the team row sees the new code and consumes it.
 func (s *Store) IssueHandoff(ctx context.Context, userID int64, rootSID string, t NewToken, now time.Time) error {
 	t.Purpose = "handoff"
 	t.CodeHash = ""
@@ -101,6 +104,15 @@ func (s *Store) IssueHandoff(ctx context.Context, userID int64, rootSID string, 
 		return errors.New("platformstore: a hand-off needs a team")
 	}
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		st, err := shareTeamTx(ctx, tx, t.TeamID)
+		if err != nil {
+			return err
+		}
+		switch st {
+		case "provisioning", "active", "suspended":
+		default:
+			return ErrWrongTeamStatus
+		}
 		var n int
 		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM user_session
 WHERE sid = ? AND user_id = ? AND revoked_at IS NULL FOR SHARE`, rootSID, userID); err != nil {
@@ -120,12 +132,29 @@ type HandoffResult struct {
 }
 
 // ExchangeHandoff consumes a hand-off for teamID and opens a team session sid; the membership row is
-// locked, so a concurrent removal either wins (refused) or sees and revokes the session. A team still being
-// provisioned answers ErrTeamNotReady and leaves the hand-off alive (the page retries); everything
-// else wrong is ErrTokenInvalid.
+// locked, so a concurrent removal either wins (refused) or sees and revokes the session. The team
+// row (FOR SHARE) and the account come first (lock order at DeleteTeam): a delete either commits
+// before (status deleted: refused) or waits for this commit and revokes the session. A team still
+// being provisioned answers ErrTeamNotReady and leaves the hand-off alive (the page retries);
+// everything else wrong is ErrTokenInvalid.
 func (s *Store) ExchangeHandoff(ctx context.Context, tokenHash string, teamID int64, sid string, now time.Time) (HandoffResult, error) {
+	uid, err := s.handoffUser(ctx, tokenHash)
+	if err != nil {
+		return HandoffResult{}, err
+	}
 	var res HandoffResult
-	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = s.inTx(ctx, func(tx *sqlx.Tx) error {
+		st, err := shareTeamTx(ctx, tx, teamID)
+		if err != nil {
+			return err
+		}
+		u, err := shareUserByID(ctx, tx, uid)
+		if errors.Is(err, ErrUserNotFound) {
+			return ErrTokenInvalid
+		}
+		if err != nil {
+			return err
+		}
 		var t tokenRow
 		if err := tx.GetContext(ctx, &t, `SELECT `+tokenColumns+` FROM email_token
 WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil {
@@ -134,11 +163,11 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 			}
 			return fmt.Errorf("platformstore: lock hand-off: %w", err)
 		}
-		if t.UsedAt.Valid || !t.ExpiresAt.After(now) || !t.TeamID.Valid || t.TeamID.Int64 != teamID {
+		if t.UsedAt.Valid || !t.ExpiresAt.After(now) || !t.TeamID.Valid || t.TeamID.Int64 != teamID || t.UserID != u.ID {
 			return ErrTokenInvalid
 		}
 		var m MemberTeam
-		err := tx.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
+		err = tx.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
 FROM team_member m JOIN team t ON t.id = m.team_id
 WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, t.UserID, teamID)
 		if isNoRows(err) {
@@ -147,19 +176,13 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, 
 		if err != nil {
 			return fmt.Errorf("platformstore: hand-off membership: %w", err)
 		}
-		switch m.Status {
+		m.Status = st // as locked above
+		switch st {
 		case "provisioning":
 			return ErrTeamNotReady
 		case "active", "suspended":
 		default:
 			return ErrTokenInvalid
-		}
-		u, err := s.userWhere(ctx, tx, `id = ?`, t.UserID)
-		if err != nil {
-			if errors.Is(err, ErrUserNotFound) {
-				return ErrTokenInvalid
-			}
-			return err
 		}
 		if u.Status != UserActive {
 			return ErrTokenInvalid
@@ -174,4 +197,18 @@ WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, 
 		return nil
 	})
 	return res, err
+}
+
+// handoffUser reads, outside any transaction, whose hand-off code tokenHash is, so the exchange can
+// lock the account before the code (lock order at DeleteTeam). ErrTokenInvalid when there is none.
+func (s *Store) handoffUser(ctx context.Context, tokenHash string) (int64, error) {
+	var uid int64
+	if err := s.db.GetContext(ctx, &uid, `SELECT user_id FROM email_token WHERE token_hash = ? AND purpose = 'handoff'`,
+		tokenHash); err != nil {
+		if isNoRows(err) {
+			return 0, ErrTokenInvalid
+		}
+		return 0, fmt.Errorf("platformstore: find hand-off: %w", err)
+	}
+	return uid, nil
 }

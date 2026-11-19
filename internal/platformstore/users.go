@@ -157,6 +157,19 @@ func lockUserByID(ctx context.Context, tx *sqlx.Tx, id int64) (User, error) {
 	return u, nil
 }
 
+// shareUserByID reads the account FOR SHARE: the transactions that open a session take it after
+// the team row and before the account's tokens, membership and sessions (lock order at DeleteTeam).
+func shareUserByID(ctx context.Context, tx *sqlx.Tx, id int64) (User, error) {
+	var u User
+	if err := tx.GetContext(ctx, &u, `SELECT `+userColumns+` FROM platform_user WHERE id = ? FOR SHARE`, id); err != nil {
+		if isNoRows(err) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("platformstore: share user: %w", err)
+	}
+	return u, nil
+}
+
 // inTx runs fn in a transaction, committing on nil and rolling back otherwise.
 func (s *Store) inTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
 	tx, err := s.db.BeginTxx(ctx, nil)

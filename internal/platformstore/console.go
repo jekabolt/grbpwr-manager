@@ -97,8 +97,18 @@ func (s *Store) ConsoleTeamWithDeleted(ctx context.Context, slug string) (Consol
 	if slug == "" {
 		return ConsoleTeam{}, ErrTeamNotFound
 	}
+	return s.consoleTeamWhere(ctx, `t.slug = ?`, slug)
+}
+
+// ConsoleTeamByID is ConsoleTeamWithDeleted by the team's id, for answering an action that already
+// committed by id (DeleteTeam, RestoreTeam): a rename in between does not lose the team.
+func (s *Store) ConsoleTeamByID(ctx context.Context, teamID int64) (ConsoleTeam, error) {
+	return s.consoleTeamWhere(ctx, `t.id = ?`, teamID)
+}
+
+func (s *Store) consoleTeamWhere(ctx context.Context, where string, arg any) (ConsoleTeam, error) {
 	var t ConsoleTeam
-	if err := s.db.GetContext(ctx, &t, consoleTeamSelect+` WHERE t.slug = ?`, slug); err != nil {
+	if err := s.db.GetContext(ctx, &t, consoleTeamSelect+` WHERE `+where, arg); err != nil {
 		if isNoRows(err) {
 			return ConsoleTeam{}, ErrTeamNotFound
 		}
@@ -370,11 +380,30 @@ type OperatorHandoff struct {
 
 // ExchangeOperatorHandoff consumes an operator-entry hand-off for teamID and opens a team session
 // sid with no membership: the code's user must still be an active operator and the team active or
-// suspended. Everything wrong is ErrTokenInvalid (a provisioning team: ErrTeamNotReady, the code
-// stays alive).
+// suspended. The team row (FOR SHARE) and the account are locked before the code (lock order at
+// DeleteTeam): a delete either commits first (refused) or waits and revokes the session.
+// Everything wrong is ErrTokenInvalid (a provisioning team: ErrTeamNotReady, the code stays alive).
 func (s *Store) ExchangeOperatorHandoff(ctx context.Context, tokenHash string, teamID int64, sid string, now time.Time) (OperatorHandoff, error) {
+	uid, err := s.handoffUser(ctx, tokenHash)
+	if err != nil {
+		return OperatorHandoff{}, err
+	}
 	var res OperatorHandoff
-	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = s.inTx(ctx, func(tx *sqlx.Tx) error {
+		var tr teamRow
+		if err := tx.GetContext(ctx, &tr, `SELECT `+teamColumns+` FROM team WHERE id = ? FOR SHARE`, teamID); err != nil {
+			if isNoRows(err) {
+				return ErrTokenInvalid
+			}
+			return fmt.Errorf("platformstore: operator hand-off team: %w", err)
+		}
+		u, err := shareUserByID(ctx, tx, uid)
+		if errors.Is(err, ErrUserNotFound) {
+			return ErrTokenInvalid
+		}
+		if err != nil {
+			return err
+		}
 		var t tokenRow
 		if err := tx.GetContext(ctx, &t, `SELECT `+tokenColumns+` FROM email_token
 WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil {
@@ -383,15 +412,8 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 			}
 			return fmt.Errorf("platformstore: lock operator hand-off: %w", err)
 		}
-		if t.UsedAt.Valid || !t.ExpiresAt.After(now) || !t.TeamID.Valid || t.TeamID.Int64 != teamID {
+		if t.UsedAt.Valid || !t.ExpiresAt.After(now) || !t.TeamID.Valid || t.TeamID.Int64 != teamID || t.UserID != u.ID {
 			return ErrTokenInvalid
-		}
-		var tr teamRow
-		if err := tx.GetContext(ctx, &tr, `SELECT `+teamColumns+` FROM team WHERE id = ?`, teamID); err != nil {
-			if isNoRows(err) {
-				return ErrTokenInvalid
-			}
-			return fmt.Errorf("platformstore: operator hand-off team: %w", err)
 		}
 		switch tr.Status {
 		case "provisioning":
@@ -399,13 +421,6 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 		case "active", "suspended":
 		default:
 			return ErrTokenInvalid
-		}
-		u, err := s.userWhere(ctx, tx, `id = ?`, t.UserID)
-		if err != nil {
-			if errors.Is(err, ErrUserNotFound) {
-				return ErrTokenInvalid
-			}
-			return err
 		}
 		if u.Status != UserActive || !u.IsOperator {
 			return ErrTokenInvalid
