@@ -126,7 +126,7 @@ func (e *oauthE2E) authorize(authURL string) (code, state string) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusSeeOther { // Google: back by redirect
 		u, err := url.Parse(resp.Header.Get("Location"))
 		if err != nil {

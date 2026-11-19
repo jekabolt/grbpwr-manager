@@ -194,7 +194,7 @@ func (r *rig) authorize(t *testing.T, authURL string) (code, state string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusSeeOther {
 		u, err := url.Parse(resp.Header.Get("Location"))
 		if err != nil {
