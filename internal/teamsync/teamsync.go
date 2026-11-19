@@ -87,6 +87,72 @@ func DisableAdmin(ctx context.Context, admins dependency.Admin, handle string) e
 	return nil
 }
 
+// StageAdmin is the first half of a fail-closed rights change: the member's admins row in the ctx
+// team's database ends DISABLED, not super, with these permissions. A disabled row refuses the
+// member's live tokens at their next call and every sign-in. The disable is written before the
+// rights and clears join_pending, so no sign-in mints either set and no unfinished invite join
+// enables the row meanwhile. A missing row is created with these rights, then disabled. EnableAdmin
+// is the second half; until it runs the member is locked out.
+func StageAdmin(ctx context.Context, admins dependency.Admin, handle string, perms []entity.AdminPermission) error {
+	if _, ok := tenant.From(ctx); !ok {
+		return tenant.ErrNoTenant
+	}
+	handle = strings.TrimSpace(handle)
+	if handle == "" {
+		return errors.New("teamsync: empty handle")
+	}
+	cur, err := admins.GetAdminByUsername(ctx, handle)
+	switch {
+	case err == nil:
+		if !cur.Disabled || cur.JoinPending {
+			if err := admins.SetAccountDisabled(ctx, handle, true); err != nil {
+				return fmt.Errorf("teamsync: stage-disable %s: %w", handle, err)
+			}
+		}
+		if err := admins.SetAccountPermissions(ctx, handle, false, perms); err != nil {
+			return fmt.Errorf("teamsync: stage permissions of %s: %w", handle, err)
+		}
+		return nil
+	case errors.Is(err, sql.ErrNoRows):
+		hash, err := unusableHash()
+		if err != nil {
+			return err
+		}
+		if err := admins.AddAccount(ctx, handle, hash, false, perms); err != nil {
+			return fmt.Errorf("teamsync: stage-add %s: %w", handle, err)
+		}
+		if err := admins.SetAccountDisabled(ctx, handle, true); err != nil {
+			return fmt.Errorf("teamsync: stage-disable %s: %w", handle, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("teamsync: read %s: %w", handle, err)
+	}
+}
+
+// EnableAdmin enables the member's admins row in the ctx team's database (join_pending cleared). An
+// enabled row is left as it is; a missing row is an error (nothing to enable).
+func EnableAdmin(ctx context.Context, admins dependency.Admin, handle string) error {
+	if _, ok := tenant.From(ctx); !ok {
+		return tenant.ErrNoTenant
+	}
+	handle = strings.TrimSpace(handle)
+	if handle == "" {
+		return errors.New("teamsync: empty handle")
+	}
+	cur, err := admins.GetAdminByUsername(ctx, handle)
+	if err != nil {
+		return fmt.Errorf("teamsync: read %s: %w", handle, err)
+	}
+	if !cur.Disabled && !cur.JoinPending {
+		return nil
+	}
+	if err := admins.SetAccountDisabled(ctx, handle, false); err != nil {
+		return fmt.Errorf("teamsync: enable %s: %w", handle, err)
+	}
+	return nil
+}
+
 func unusableHash() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {

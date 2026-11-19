@@ -518,6 +518,7 @@ FOR UPDATE`, teamID, teamID); err != nil {
 	}
 	stmts := []stmt{
 		{`DELETE FROM team_logo WHERE team_id = ?`, []any{teamID}},
+		{`DELETE FROM team_brand WHERE team_id = ?`, []any{teamID}},
 		{`DELETE FROM email_token WHERE team_id = ?`, []any{teamID}},
 		{`DELETE FROM user_session WHERE team_id = ?`, []any{teamID}},
 		{`DELETE FROM team_invite WHERE team_id = ?`, []any{teamID}},
