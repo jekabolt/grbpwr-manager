@@ -63,6 +63,8 @@ type Bucket struct {
 	ms dependency.Media
 	// legacyHTTP reads objects from a read-only host; nil = a default client (tests inject one).
 	legacyHTTP *http.Client
+	// proxyMax caps one proxied object; 0 = MaxProxyObjectBytes (tests lower it).
+	proxyMax int64
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {

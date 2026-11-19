@@ -271,6 +271,9 @@ var routeFeatures = map[route][]Key{
 	{method: "POST", pattern: "/api/files/upload"}:            {Files},
 	{method: "POST", pattern: "/api/files/{id}/preview"}:      {Files},
 	{method: "POST", pattern: "/api/techcard-archive/upload"}: {TechCards},
+	// The file proxy serves media, patterns, crops and 3D models of the caller's own team: every
+	// screen that shows a file needs it, so it is Core like the token reads below.
+	{method: "GET", pattern: "/api/files/proxy"}: {Core},
 
 	{method: "GET", pattern: "/api/p/{token}"}:   {Core},
 	{method: "HEAD", pattern: "/api/p/{token}"}:  {Core},
