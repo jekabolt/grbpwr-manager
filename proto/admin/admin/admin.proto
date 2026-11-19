@@ -12956,6 +12956,8 @@ message Workspace {
   repeated string features = 4;
   // read_only is true while the team is suspended.
   bool read_only = 5;
+  // logo_url is the absolute URL of the team's logo (changes when the logo does); empty when there is none.
+  string logo_url = 6;
 }
 
 message ListAccountSectionsRequest {}
