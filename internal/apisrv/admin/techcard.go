@@ -385,9 +385,9 @@ func (s *Server) readTechCardForResponseWith(ctx context.Context, id int, vatCou
 	if read, _ := s.costingAccess(ctx); !read {
 		stripTechCardCosting(pbTc)
 	}
-	// Tokenized read urls are minted on the RESPONSE only — the release-snapshot path
-	// converts the entity separately and must stay token-free (persisted blobs).
-	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, pbTc.GetTechCard().GetPatterns())
+	// Download links belong to the response. Team one gets the existing public links.
+	// Dedicated teams get the same authenticated object proxy as saved Assembly snapshots.
+	s.fillSavedAssemblyDownloadURLs(ctx, pbTc.GetTechCard().GetPatterns())
 	return pbTc, nil
 }
 
