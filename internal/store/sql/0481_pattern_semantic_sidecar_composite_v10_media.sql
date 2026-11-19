@@ -2,7 +2,7 @@
 
 -- Composite V10 registers whole-layout world placement on the existing slot.
 -- Atomically widen the stable media CHECK. Recover an interrupted prior change if the CHECK is absent.
--- migrationlint:allow-retroactive the replacement CHECK only adds Composite V10, preserving every media type admitted by 0478
+-- migrationlint:allow-retroactive the replacement CHECK only adds Composite V10, preserving every media type admitted by 0480
 SET @has_composite_v10_media_check := (
   SELECT COUNT(*)
   FROM information_schema.TABLE_CONSTRAINTS tc
@@ -52,7 +52,7 @@ DEALLOCATE PREPARE stmt;
 -- +migrate Down
 
 -- Refuse rollback while V10 placements exist. Recover a missing CHECK before checking whether
--- the previous 0478 allowlist can be restored atomically.
+-- the previous 0480 allowlist can be restored atomically.
 SET @has_media_check := (
   SELECT COUNT(*)
   FROM information_schema.TABLE_CONSTRAINTS

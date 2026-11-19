@@ -2,7 +2,7 @@
 
 -- Composite V9 registers the complete-source native cross-row placement on the existing slot.
 -- Atomically widen the stable media CHECK. Recover an interrupted prior change if the CHECK is absent.
--- migrationlint:allow-retroactive the replacement CHECK only adds Composite V9, preserving every media type admitted by 0477
+-- migrationlint:allow-retroactive the replacement CHECK only adds Composite V9, preserving every media type admitted by 0479
 SET @has_composite_v9_media_check := (
   SELECT COUNT(*)
   FROM information_schema.TABLE_CONSTRAINTS tc
@@ -52,7 +52,7 @@ DEALLOCATE PREPARE stmt;
 -- +migrate Down
 
 -- Refuse rollback while V9 placements exist. Recover a missing CHECK before checking whether
--- the previous 0477 allowlist can be restored atomically.
+-- the previous 0479 allowlist can be restored atomically.
 SET @has_media_check := (
   SELECT COUNT(*)
   FROM information_schema.TABLE_CONSTRAINTS

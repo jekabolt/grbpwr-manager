@@ -35,7 +35,7 @@ func TestPatternSemanticSidecarV9TransitionAndColdReopen(t *testing.T) {
 	cardID, sizeID, sizeToken := seedNativeCrossRowReviewV8(t, ctx, cards)
 
 	// Both migration directions execute the real stable SQL CHECK.
-	migrationBytes, err := os.ReadFile("sql/0478_pattern_semantic_sidecar_composite_v9_media.sql")
+	migrationBytes, err := os.ReadFile("sql/0480_pattern_semantic_sidecar_composite_v9_media.sql")
 	require.NoError(t, err)
 	migration, err := sqlparse.ParseMigration(strings.NewReader(string(migrationBytes)))
 	require.NoError(t, err)

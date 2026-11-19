@@ -35,7 +35,7 @@ func TestPatternSemanticSidecarV8FirstCASAndCompleteReopen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	migrationBytes, err := os.ReadFile("sql/0477_pattern_semantic_sidecar_composite_v8_media.sql")
+	migrationBytes, err := os.ReadFile("sql/0479_pattern_semantic_sidecar_composite_v8_media.sql")
 	require.NoError(t, err)
 	migration, err := sqlparse.ParseMigration(strings.NewReader(string(migrationBytes)))
 	require.NoError(t, err)

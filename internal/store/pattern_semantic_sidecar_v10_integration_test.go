@@ -30,7 +30,7 @@ func TestPatternSemanticSidecarV10CurrentSlotAndColdReopen(t *testing.T) {
 	t.Cleanup(repo.Close)
 	cards, models := repo.TechCards(), repo.Models()
 
-	migrationBytes, err := os.ReadFile("sql/0479_pattern_semantic_sidecar_composite_v10_media.sql")
+	migrationBytes, err := os.ReadFile("sql/0481_pattern_semantic_sidecar_composite_v10_media.sql")
 	require.NoError(t, err)
 	migration, err := sqlparse.ParseMigration(strings.NewReader(string(migrationBytes)))
 	require.NoError(t, err)
