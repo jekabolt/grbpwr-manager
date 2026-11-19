@@ -23,10 +23,67 @@ type SavedPatternRowIdentity struct {
 }
 
 type SavedAssemblySnapshotRequest struct {
-	ExpectedRow                    SavedPatternRowIdentity
-	SelectedOperationNumber        int
-	ExpectedServerAssemblyRevision string
-	ExpectedTopologySHA256         string
+	ExpectedRow                      SavedPatternRowIdentity
+	SelectedOperationNumber          int
+	ExpectedServerAssemblyRevision   string
+	ExpectedTopologySHA256           string
+	Profile                          SavedAssemblySnapshotProfile
+	ExpectedCompleteSourceSHA256     string
+	SelectedSizeID                   int
+	ExpectedAuthoredFoldSourceSHA256 string
+	SourceOnly                       bool
+}
+
+type SavedAssemblySnapshotProfile int32
+
+const (
+	SavedAssemblySnapshotSelected SavedAssemblySnapshotProfile = iota
+	SavedAssemblySnapshotCompleteSourceV1
+	SavedAssemblySnapshotCompleteSourceWithAuthoredFoldsV1
+)
+
+type SavedAssemblySourceAliasV1 struct {
+	ScopeKey     string
+	BlockName    string
+	PieceLineKey string
+}
+
+// SavedAssemblyCompleteSourceV1 commits persisted inputs only. It cannot authorize a DXF edge,
+// convert an old POSE to physical placement, or imply that any seam is ready for simulation.
+type SavedAssemblyCompleteSourceV1 struct {
+	Rows          []SavedPatternRowIdentity
+	OwnedSeams    []TechCardSeam
+	Aliases       []SavedAssemblySourceAliasV1
+	GarmentLabels []TechCardGarmentLabel
+	CutStrips     []SavedAssemblyCutStripSourceV1
+	SourceSHA256  string
+	CanonicalJSON []byte
+}
+
+// SavedAssemblyCutStripSourceV1 identifies a card-owned generated trim, separate from DXF rows.
+type SavedAssemblyCutStripSourceV1 struct {
+	Strip         TechCardCutStrip
+	SizeIDs       []int
+	BomSection    TechCardBomSection
+	BomUnit       string
+	BomMaterialID *int64
+}
+
+type SavedAssemblyAuthoredFoldV1 struct {
+	OperationNumber int32
+	OperationOrder  int
+	Fold            TechCardPieceFold
+}
+
+// SavedAssemblyAuthoredFoldSourceV1 attests persisted AO-owned folds and the current selected
+// size identity. It supplies source witnesses for native geometry resolution at that rank.
+type SavedAssemblyAuthoredFoldSourceV1 struct {
+	CompleteSourceSHA256 string
+	SelectedSizeID       int
+	SelectedSizeToken    string
+	Folds                []SavedAssemblyAuthoredFoldV1
+	SourceSHA256         string
+	CanonicalJSON        []byte
 }
 
 type SavedAssemblySnapshot struct {
@@ -38,4 +95,6 @@ type SavedAssemblySnapshot struct {
 	TopologySHA256          string
 	TopologyCanonicalJSON   []byte
 	SemanticSidecar         *PatternSemanticSidecar
+	CompleteSourceV1        *SavedAssemblyCompleteSourceV1
+	AuthoredFoldSourceV1    *SavedAssemblyAuthoredFoldSourceV1
 }

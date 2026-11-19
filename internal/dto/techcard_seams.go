@@ -17,12 +17,13 @@ var seamStatusFromPb = map[pb_common.TechCardSeamStatus]entity.TechCardSeamStatu
 }
 
 var seamKindFromPb = map[pb_common.TechCardSeamKind]entity.TechCardSeamKind{
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_EDGE:      entity.TechCardSeamKindEdge,
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_PARTIAL:   entity.TechCardSeamKindPartial,
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_COMPOSITE: entity.TechCardSeamKindComposite,
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_SURFACE:   entity.TechCardSeamKindSurface,
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_CLOSURE:   entity.TechCardSeamKindClosure,
-	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE:      entity.TechCardSeamKindPose,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_EDGE:          entity.TechCardSeamKindEdge,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_PARTIAL:       entity.TechCardSeamKindPartial,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_COMPOSITE:     entity.TechCardSeamKindComposite,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_SURFACE:       entity.TechCardSeamKindSurface,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_CLOSURE:       entity.TechCardSeamKindClosure,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POINT_CLOSURE: entity.TechCardSeamKindPointClosure,
+	pb_common.TechCardSeamKind_TECH_CARD_SEAM_KIND_POSE:          entity.TechCardSeamKindPose,
 }
 
 var seamDirectionFromPb = map[pb_common.TechCardSeamDirection]entity.TechCardSeamDirection{
@@ -41,8 +42,8 @@ var seamSourceFromPb = map[pb_common.TechCardSeamSource]entity.TechCardSeamSourc
 
 var seamLayerFromPb = map[pb_common.TechCardSeamLayer]entity.TechCardSeamLayer{
 	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNKNOWN: "",
-	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNDER:       entity.TechCardSeamLayerUnder,
-	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_OVER:        entity.TechCardSeamLayerOver,
+	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_UNDER:   entity.TechCardSeamLayerUnder,
+	pb_common.TechCardSeamLayer_TECH_CARD_SEAM_LAYER_OVER:    entity.TechCardSeamLayerOver,
 }
 
 func invertSeamMap[K comparable, V comparable](m map[K]V) map[V]K {
@@ -85,7 +86,15 @@ func TechCardSeamsWriteFromPb(techCardID int, seams []*pb_common.TechCardSeam, b
 			}
 			for j, p := range parts {
 				af := fmt.Sprintf("seams[%d].%s.parts[%d]", i, side.name, j)
-				if len(p.GetSamples()) != entity.TechCardSeamSamplesPerAnchor {
+				point := p.GetPointClosure()
+				if point != nil {
+					if len(p.GetSamples()) != 0 {
+						return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(af+".samples", "count", "", "omit run samples for a native point")
+					}
+					if len(point.GetSourceInstancePath()) > entity.TechCardSeamPointClosureMaxInstanceDepth {
+						return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(af+".point_closure.source_instance_path", "too_many", "", "send a bounded native INSERT path")
+					}
+				} else if len(p.GetSamples()) != entity.TechCardSeamSamplesPerAnchor {
 					return entity.TechCardSeamsWrite{}, entity.NewFieldViolation(af+".samples", "count", "",
 						fmt.Sprintf("exactly %d samples along the run", entity.TechCardSeamSamplesPerAnchor))
 				}
@@ -107,7 +116,7 @@ func TechCardSeamsWriteFromPb(techCardID int, seams []*pb_common.TechCardSeam, b
 		}
 		kind, ok := seamKindFromPb[s.GetKind()]
 		if !ok {
-			return in, entity.NewFieldViolation(f+".kind", "invalid", s.GetKind().String(), "EDGE, PARTIAL, COMPOSITE, SURFACE, CLOSURE or POSE")
+			return in, entity.NewFieldViolation(f+".kind", "invalid", s.GetKind().String(), "EDGE, PARTIAL, COMPOSITE, SURFACE, CLOSURE, POINT_CLOSURE or POSE")
 		}
 		dir, ok := seamDirectionFromPb[s.GetDirection()]
 		if !ok {
@@ -156,6 +165,7 @@ func seamSideFromPb(side *pb_common.TechCardSeamSide) []entity.TechCardSeamAncho
 			ContourSig:   p.GetContourSig(),
 			Placement:    seamPlacementFromPb(p.GetPlacement()),
 			Layer:        seamLayerOf(p.GetLayer()),
+			PointClosure: seamPointClosureFromPb(p.GetPointClosure()),
 		})
 	}
 	return out
@@ -168,7 +178,7 @@ func seamSideToPb(side []entity.TechCardSeamAnchor) *pb_common.TechCardSeamSide 
 		for _, sm := range a.Samples {
 			samples = append(samples, &pb_common.TechCardSeamSample{U: sm.U, V: sm.V})
 		}
-		parts = append(parts, &pb_common.TechCardSeamAnchor{
+		wire := &pb_common.TechCardSeamAnchor{
 			PieceLineKey: a.PieceLineKey,
 			Samples:      samples,
 			PerimShare:   a.PerimShare,
@@ -181,9 +191,64 @@ func seamSideToPb(side []entity.TechCardSeamAnchor) *pb_common.TechCardSeamSide 
 			ContourSig:   a.ContourSig,
 			Placement:    seamPlacementToPb(a.Placement),
 			Layer:        seamLayerToPb[a.Layer], // a stored value this binary does not know reads unset
-		})
+		}
+		if a.PointClosure != nil {
+			wire.NativeGeometry = &pb_common.TechCardSeamAnchor_PointClosure{PointClosure: seamPointClosureToPb(a.PointClosure)}
+		}
+		parts = append(parts, wire)
 	}
 	return &pb_common.TechCardSeamSide{Parts: parts}
+}
+
+var pointClosureRoleFromPb = map[pb_common.TechCardSeamPointClosureRole]entity.TechCardSeamPointClosureRole{
+	pb_common.TechCardSeamPointClosureRole_TECH_CARD_SEAM_POINT_CLOSURE_ROLE_BUTTONHOLE_MIDPOINT: entity.TechCardSeamButtonholeMidpoint,
+	pb_common.TechCardSeamPointClosureRole_TECH_CARD_SEAM_POINT_CLOSURE_ROLE_BUTTON_MARK_CENTER:  entity.TechCardSeamButtonMarkCenter,
+}
+
+var pointClosureIntentFromPb = map[pb_common.TechCardSeamPointClosureIntent]entity.TechCardSeamPointClosureIntent{
+	pb_common.TechCardSeamPointClosureIntent_TECH_CARD_SEAM_POINT_CLOSURE_INTENT_UNKNOWN: "",
+	pb_common.TechCardSeamPointClosureIntent_TECH_CARD_SEAM_POINT_CLOSURE_INTENT_OPEN:    entity.TechCardSeamPointClosureOpen,
+	pb_common.TechCardSeamPointClosureIntent_TECH_CARD_SEAM_POINT_CLOSURE_INTENT_CLOSED:  entity.TechCardSeamPointClosureClosed,
+}
+
+var pointClosureRoleToPb = invertSeamMap(pointClosureRoleFromPb)
+var pointClosureIntentToPb = invertSeamMap(pointClosureIntentFromPb)
+
+func seamPointClosureFromPb(point *pb_common.TechCardSeamPointClosureAnchor) *entity.TechCardSeamPointClosureAnchor {
+	if point == nil {
+		return nil
+	}
+	intent, known := pointClosureIntentFromPb[point.Intent]
+	if !known {
+		intent = entity.TechCardSeamPointClosureIntent(point.Intent.String())
+	}
+	anchor := &entity.TechCardSeamPointClosureAnchor{
+		PatternLineKey: point.PatternLineKey, SavedRowRevision: point.SavedRowRevision,
+		DXFSHA256: point.DxfSha256, SizeID: point.SizeId, AliasBlockName: point.AliasBlockName,
+		NativeBlockName: point.NativeBlockName, SourceInstancePath: append([]string(nil), point.SourceInstancePath...),
+		Role: pointClosureRoleFromPb[point.Role], Intent: intent,
+		ButtonholeOperationNumber: point.ButtonholeOperationNumber, ButtonOperationNumber: point.ButtonOperationNumber,
+	}
+	if point.SourceEntityOp != nil {
+		op := *point.SourceEntityOp
+		anchor.SourceEntityOp = &op
+	}
+	return anchor
+}
+
+func seamPointClosureToPb(anchor *entity.TechCardSeamPointClosureAnchor) *pb_common.TechCardSeamPointClosureAnchor {
+	wire := &pb_common.TechCardSeamPointClosureAnchor{
+		PatternLineKey: anchor.PatternLineKey, SavedRowRevision: anchor.SavedRowRevision,
+		DxfSha256: anchor.DXFSHA256, SizeId: anchor.SizeID, AliasBlockName: anchor.AliasBlockName,
+		NativeBlockName: anchor.NativeBlockName, SourceInstancePath: append([]string(nil), anchor.SourceInstancePath...),
+		Role: pointClosureRoleToPb[anchor.Role], Intent: pointClosureIntentToPb[anchor.Intent],
+		ButtonholeOperationNumber: anchor.ButtonholeOperationNumber, ButtonOperationNumber: anchor.ButtonOperationNumber,
+	}
+	if anchor.SourceEntityOp != nil {
+		op := *anchor.SourceEntityOp
+		wire.SourceEntityOp = &op
+	}
+	return wire
 }
 
 // seamLayerOf maps the wire layer; an enum number this binary does not know becomes its own name, so

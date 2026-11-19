@@ -121,7 +121,9 @@ func (s *Service) ListMyTeams(ctx context.Context, rootToken string, _ *auth.Lis
 
 // CreateTeam creates one more team owned by the root session's account. The team follows the
 // verified sign-up's transition: review (and the operators' letters) while approval is on, else
-// provisioning; no letter to the person. terms_accepted is required while terms are needed.
+// provisioning; no letter to the person. terms_accepted is required while terms are needed. The
+// brand, when the request carries one, is written with the team (NormalizeTeamBrand: a bad value
+// refuses the request with its key before anything is written).
 func (s *Service) CreateTeam(ctx context.Context, rootToken string, req *auth.CreateTeamRequest) (*auth.CreateTeamResponse, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -138,6 +140,10 @@ func (s *Service) CreateTeam(ctx context.Context, rootToken string, req *auth.Cr
 	if err := tenant.ValidSlug(slug); err != nil {
 		return nil, errBad(err.Error())
 	}
+	brand, err := creationBrand(req.GetBrand())
+	if err != nil {
+		return nil, err
+	}
 	if !s.createTeam.Allow("u:" + strconv.FormatInt(u.ID, 10)) {
 		return nil, errBusy()
 	}
@@ -149,7 +155,7 @@ func (s *Service) CreateTeam(ctx context.Context, rootToken string, req *auth.Cr
 	res, err := s.d.Store.CreateTeam(ctx, platformstore.CreateTeamParams{
 		UserID: u.ID, RootSID: rootSID, RootNotBefore: now.Add(-RootSessionTTL),
 		Name: name, Slug: slug, Now: now, Review: s.review(),
-		TermsVersion: s.d.TermsVersion, TermsAccepted: req.GetTermsAccepted(), Logo: logo,
+		TermsVersion: s.d.TermsVersion, TermsAccepted: req.GetTermsAccepted(), Logo: logo, Brand: brand,
 	})
 	switch {
 	case errors.Is(err, platformstore.ErrSlugTaken):

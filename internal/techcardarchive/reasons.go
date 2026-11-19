@@ -161,7 +161,8 @@ const (
 	// ReasonSeamStepMissing — a step that sewed a seam did not survive the import: the FUSING
 	// reconciliation rebuilds automatic fusing steps from the pieces and may drop the archive's own.
 	// The seam imported; only that step's link to it was dropped — never moved to another step.
-	ReasonSeamStepMissing Reason = "seam_step_missing"
+	ReasonSeamStepMissing              Reason = "seam_step_missing"
+	ReasonPointClosureSourceUnverified Reason = "point_closure_source_unverified"
 
 	// ReasonFoldPieceMissing — a piece fold (card.json pieceFolds) is on a cut piece the imported card
 	// does not have. Legal on the source (0443 keeps no FK to the piece), meaningless here. The fold

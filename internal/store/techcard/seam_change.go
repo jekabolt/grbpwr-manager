@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -120,6 +121,56 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 	if err != nil {
 		return zero, fmt.Errorf("load seams of tech card %d: %w", id, err)
 	}
+	pointKeys := make(map[string]bool)
+	for _, row := range stored {
+		if row.Kind == string(entity.TechCardSeamKindPointClosure) {
+			pointKeys[entity.NormalizeTechCardSeamKey(row.SeamKey)] = true
+		}
+	}
+	pointChange := false
+	for i, row := range in.Upsert {
+		native := row.Kind == entity.TechCardSeamKindPointClosure
+		if pointKeys[row.SeamKey] && !native {
+			return zero, entity.NewFieldViolation(fmt.Sprintf("upsert[%d].kind", i), "point_closure_kind_mismatch", row.SeamKey, "an existing point closure cannot become a run seam")
+		}
+		pointChange = pointChange || native
+	}
+	for _, side := range [][]entity.TechCardSeamLink{in.Link, in.Detach} {
+		for _, link := range side {
+			pointChange = pointChange || pointKeys[link.SeamKey]
+		}
+	}
+	for _, key := range in.Delete {
+		pointChange = pointChange || pointKeys[key]
+	}
+	if pointChange || in.ExpectedServerAssemblyRevision != nil {
+		if in.ExpectedServerAssemblyRevision == nil {
+			return zero, entity.NewFieldViolation("expected_server_assembly_revision", "required", "", "send the saved Assembly clock to change a point closure")
+		}
+		clock, err := readTechCardAssemblyClock(ctx, db, id)
+		if err != nil {
+			return zero, err
+		}
+		if clock.Token() != *in.ExpectedServerAssemblyRevision {
+			return zero, entity.ErrTechCardSavedAssemblyMoved
+		}
+	}
+	var pointSources *pointClosureSources
+	for i, row := range in.Upsert {
+		if row.Kind != entity.TechCardSeamKindPointClosure {
+			continue
+		}
+		if pointSources == nil {
+			sources, err := loadPointClosureSources(ctx, db, id)
+			if err != nil {
+				return zero, err
+			}
+			pointSources = &sources
+		}
+		if err := pointSources.check(fmt.Sprintf("upsert[%d]", i), row, true); err != nil {
+			return zero, err
+		}
+	}
 	excluded := make(map[string]bool, len(in.Delete)+len(in.Detach))
 	for _, k := range in.Delete {
 		excluded[k] = true
@@ -133,25 +184,34 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 	}
 	storedKeys := make(map[string]bool, len(stored))
 	bySig := map[string]string{}
+	pointOwners := make(map[string]int32, len(pointKeys))
 	for _, r := range stored {
 		key := entity.NormalizeTechCardSeamKey(r.SeamKey)
 		storedKeys[key] = true
-		if excluded[key] {
-			continue
+		row := entity.TechCardSeamInput{Kind: entity.TechCardSeamKind(r.Kind)}
+		decoded := false
+		if pointKeys[key] {
+			decoded = json.Unmarshal(r.SideA, &row.SideA) == nil && json.Unmarshal(r.SideB, &row.SideB) == nil
+			if decoded && len(row.SideA) == 1 && row.SideA[0].PointClosure != nil {
+				pointOwners[key] = row.SideA[0].PointClosure.ButtonOperationNumber
+			}
 		}
-		var row entity.TechCardSeamInput
 		if i, rewritten := sentAt[key]; rewritten {
+			native := in.Upsert[i].Kind == entity.TechCardSeamKindPointClosure
+			if native && (!pointKeys[key] || !decoded ||
+				entity.TechCardSeamPairRangeSig(row) != entity.TechCardSeamPairRangeSig(in.Upsert[i])) {
+				return zero, entity.NewFieldViolation(fmt.Sprintf("upsert[%d].seam_key", i), "point_closure_pair_mismatch", key, "use a new key for a different native point pair")
+			}
 			row = in.Upsert[i]
-		} else {
-			row = entity.TechCardSeamInput{Kind: entity.TechCardSeamKind(r.Kind)}
+		} else if !decoded {
 			if json.Unmarshal(r.SideA, &row.SideA) != nil || json.Unmarshal(r.SideB, &row.SideB) != nil {
 				continue // a corrupted row is offered for re-confirm or delete, never a rekey target
 			}
 		}
-		if row.Kind == entity.TechCardSeamKindPose {
+		if excluded[key] || row.Kind == entity.TechCardSeamKindPose {
 			continue
 		}
-		if sig := entity.TechCardSeamPairRangeSig(row); bySig[sig] == "" {
+		if sig := entity.TechCardSeamPairRangeSig(row); sig != "" && bySig[sig] == "" {
 			bySig[sig] = key
 		}
 	}
@@ -159,6 +219,7 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 	keyMap := make([]entity.TechCardSeamKeyMap, 0, len(in.Upsert))
 	alias := map[string]string{}
 	rowAt := make(map[string]int, len(in.Upsert)) // stored key → its row in upsert
+	changedPointOwners := make(map[string]int32)
 	for _, u := range in.Upsert {
 		sent := u.SeamKey
 		key := sent
@@ -175,7 +236,13 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 			alias[sent] = key
 		}
 		u.SeamKey = key
+		if u.Kind == entity.TechCardSeamKindPointClosure {
+			changedPointOwners[key] = u.SideA[0].PointClosure.ButtonOperationNumber
+		}
 		if j, landed := rowAt[key]; landed {
+			if u.Kind == entity.TechCardSeamKindPointClosure && upsert[j].SideA[0].PointClosure.Intent != u.SideA[0].PointClosure.Intent {
+				return zero, entity.NewFieldViolation("upsert", "conflicting_point_closure_intent", key, "submit one intent for this native point pair")
+			}
 			if sent == key {
 				upsert[j] = u
 			}
@@ -195,6 +262,13 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 		return out
 	}
 	link, detach := resolve(in.Link), resolve(in.Detach)
+	for _, side := range [][]entity.TechCardSeamLink{link, detach} {
+		for _, edge := range side {
+			if pointKeys[edge.SeamKey] {
+				changedPointOwners[edge.SeamKey] = pointOwners[edge.SeamKey]
+			}
+		}
+	}
 	// Checked again on the stored keys: two sent keys may name one row now.
 	if err := entity.TechCardSeamLinksContradiction(link, detach, in.Delete); err != nil {
 		return zero, err
@@ -356,6 +430,9 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 	if err != nil {
 		return zero, err
 	}
+	if err := checkPointClosureOwners(changedPointOwners, links, deleted); err != nil {
+		return zero, err
+	}
 	if deleted == nil {
 		deleted = []string{}
 	}
@@ -366,6 +443,24 @@ func changeTechCardSeamsTx(ctx context.Context, db dependency.DB, in entity.Tech
 		KeyMap:      keyMap,
 		DeletedKeys: deleted,
 	}, nil
+}
+
+func checkPointClosureOwners(changed map[string]int32, links []entity.TechCardOperationSeamKeys, deleted []string) error {
+	for key, expected := range changed {
+		if slices.Contains(deleted, key) {
+			continue
+		}
+		var owners []int
+		for _, operation := range links {
+			if slices.Contains(operation.SeamKeys, key) {
+				owners = append(owners, operation.OperationNumber)
+			}
+		}
+		if expected <= 0 || len(owners) != 1 || owners[0] != int(expected) {
+			return entity.NewFieldViolation("link", "point_closure_owner_mismatch", key, "a point closure belongs only to its numbered button attach operation")
+		}
+	}
+	return nil
 }
 
 // lockTechCardRowVersion takes the card row FOR UPDATE (as lockTechCardRow) and returns its

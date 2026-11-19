@@ -415,7 +415,7 @@ type DesignQuizAnswer struct {
 type SeamPayload struct {
 	SeamKey      string       `json:"seam_key"`
 	Status       string       `json:"status"`    // confirmed | rejected
-	Kind         string       `json:"kind"`      // edge | partial | composite | surface | closure | pose (a hand pose, not a seam)
+	Kind         string       `json:"kind"`      // edge | partial | composite | surface | closure | pose | point_close
 	Direction    string       `json:"direction"` // reversed | same | unknown
 	Source       string       `json:"source"`    // graph | doll | order | manual | ai
 	SideA        []SeamAnchor `json:"side_a"`
@@ -427,18 +427,36 @@ type SeamPayload struct {
 
 // SeamAnchor is one run of one piece on one side of a seam.
 type SeamAnchor struct {
-	PieceLineKey string         `json:"piece_line_key"`
-	Samples      []SeamSample   `json:"samples"`
-	PerimShare   float64        `json:"perim_share"`
-	LenMm        float64        `json:"len_mm"`
-	Notches      int32          `json:"notches"`
-	TurnDeg      float64        `json:"turn_deg"`
-	RangeFrom    float64        `json:"range_from"`
-	RangeTo      float64        `json:"range_to"`
-	EdgeHint     string         `json:"edge_hint"`
-	ContourSig   string         `json:"contour_sig"`
-	Placement    *SeamPlacement `json:"placement,omitempty"`
-	Layer        string         `json:"layer,omitempty"` // "under" / "over"; absent = unset
+	PieceLineKey string                  `json:"piece_line_key"`
+	Samples      []SeamSample            `json:"samples"`
+	PerimShare   float64                 `json:"perim_share"`
+	LenMm        float64                 `json:"len_mm"`
+	Notches      int32                   `json:"notches"`
+	TurnDeg      float64                 `json:"turn_deg"`
+	RangeFrom    float64                 `json:"range_from"`
+	RangeTo      float64                 `json:"range_to"`
+	EdgeHint     string                  `json:"edge_hint"`
+	ContourSig   string                  `json:"contour_sig"`
+	Placement    *SeamPlacement          `json:"placement,omitempty"`
+	Layer        string                  `json:"layer,omitempty"` // "under" / "over"; absent = unset
+	PointClosure *SeamPointClosureAnchor `json:"point_closure,omitempty"`
+}
+
+// SeamPointClosureAnchor carries the exact immutable DXF occurrence; the destination must recheck
+// that occurrence before a retained imported decision can be used.
+type SeamPointClosureAnchor struct {
+	PatternLineKey            string   `json:"pattern_line_key"`
+	SavedRowRevision          uint32   `json:"saved_row_revision"`
+	DXFSHA256                 string   `json:"dxf_sha256"`
+	SizeID                    int32    `json:"size_id"`
+	AliasBlockName            string   `json:"alias_block_name"`
+	NativeBlockName           string   `json:"native_block_name"`
+	SourceInstancePath        []string `json:"source_instance_path"`
+	SourceEntityOp            *uint32  `json:"source_entity_op"`
+	Role                      string   `json:"role"`
+	Intent                    string   `json:"intent,omitempty"`
+	ButtonholeOperationNumber int32    `json:"buttonhole_operation_number,omitempty"`
+	ButtonOperationNumber     int32    `json:"button_operation_number,omitempty"`
 }
 
 // SeamSample is one point of an edge's shape in the piece's bbox-normalised frame.

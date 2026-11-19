@@ -313,6 +313,8 @@ func (s *Service) CheckTeamSlug(ctx context.Context, req *auth.CheckTeamSlugRequ
 
 // SignUp registers the person and a pending team and queues one letter with a code and a link. It
 // answers {} whether or not the email was known; only a bad field or a taken address is an error.
+// The team's brand, when the sheet carries one, is written with the team (NormalizeTeamBrand: a bad
+// value refuses the whole sheet with its key before anything is written).
 func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.SignUpResponse, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -335,6 +337,10 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	if !req.GetTermsAccepted() {
 		return nil, errTerms()
 	}
+	brand, err := creationBrand(req.GetBrand())
+	if err != nil {
+		return nil, err
+	}
 	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
 		return &auth.SignUpResponse{}, nil
 	}
@@ -355,6 +361,7 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
 		TermsVersion:    s.d.TermsVersion,
 		Logo:            logo,
+		Brand:           brand,
 	})
 	if errors.Is(err, platformstore.ErrSlugTaken) {
 		return nil, errSlugTaken()
@@ -406,8 +413,14 @@ func (s *Service) ResendVerification(ctx context.Context, req *auth.ResendVerifi
 // VerifyEmail confirms a sign-up by its link token or by (email, code): the account becomes active,
 // the team goes to provisioning, and a 10-minute hand-off into it comes back. With sign-up approval
 // on the team goes to review instead: the operators get a letter each, the answer carries the slug
-// and awaiting_approval, and no hand-off or session is made. A second click on the link then
-// answers the same and writes nothing.
+// and awaiting_approval, and no hand-off is made. A second click on the link then answers the same
+// and writes nothing.
+//
+// A first-time confirmation also signs the person in: the root session the password sign-in opens
+// (same store row, RootSessionTTL, the "signin" audit) comes back as root_token, under review too.
+// It is opened in the confirming transaction, so only a letter consumed there yields one: a used,
+// expired or wrong code or link, a disabled account and the repeat of a used link get today's
+// answer and no token. An operator gets none either (password only, as on the provider path).
 func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest) (*auth.VerifyEmailResponse, error) {
 	if err := s.usable(); err != nil {
 		return nil, err
@@ -418,15 +431,20 @@ func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest)
 		s.log(ctx, "hand-off token", err)
 		return nil, errInternal()
 	}
+	sid, err := NewSessionID()
+	if err != nil {
+		s.log(ctx, "session id", err)
+		return nil, errInternal()
+	}
 	var res platformstore.VerifyResult
 	if tok := strings.TrimSpace(req.GetToken()); tok != "" {
-		res, err = s.d.Store.VerifyByLink(ctx, HashToken(tok), now, nt, s.review())
+		res, err = s.d.Store.VerifyByLink(ctx, HashToken(tok), now, nt, sid, s.review())
 	} else {
 		email, c, ierr := s.codeInput(ctx, req.GetEmail(), req.GetCode())
 		if ierr != nil {
 			return nil, ierr
 		}
-		res, err = s.d.Store.VerifyByCode(ctx, s.attempt(PurposeVerify, email, c, now), nt, s.review())
+		res, err = s.d.Store.VerifyByCode(ctx, s.attempt(PurposeVerify, email, c, now), nt, sid, s.review())
 	}
 	if errors.Is(err, platformstore.ErrTokenInvalid) {
 		return nil, errCode()
@@ -435,12 +453,32 @@ func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest)
 		s.log(ctx, "verify email", err)
 		return nil, errInternal()
 	}
+	var resp *auth.VerifyEmailResponse
 	if res.AwaitingApproval {
 		s.audit(ctx, res.UserID, res.TeamID, "verify", map[string]string{"team": "review"})
-		return &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, AwaitingApproval: true}, nil
+		resp = &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, AwaitingApproval: true}
+	} else {
+		s.audit(ctx, res.UserID, res.TeamID, "verify", nil)
+		resp = &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, HandoffCode: code}
 	}
-	s.audit(ctx, res.UserID, res.TeamID, "verify", nil)
-	return &auth.VerifyEmailResponse{TeamSlug: res.TeamSlug, HandoffCode: code}, nil
+	resp.RootToken = s.verifiedRootToken(ctx, res, sid, now)
+	return resp, nil
+}
+
+// verifiedRootToken mints the token of the root session a confirmation opened ("" when it opened
+// none). The confirmation has committed: a mint failure is logged and the answer goes without the
+// token (the person signs in with the password), never as an error over a spent letter.
+func (s *Service) verifiedRootToken(ctx context.Context, res platformstore.VerifyResult, sid string, now time.Time) string {
+	if !res.RootSession {
+		return ""
+	}
+	tok, err := s.mint(ctx, platformstore.User{ID: res.UserID, Handle: res.Handle}, sid, 0, jwt.AudRoot, RootSessionTTL, false, nil, now)
+	if err != nil {
+		s.log(ctx, "verify root token", err)
+		return ""
+	}
+	s.audit(ctx, res.UserID, 0, "signin", map[string]string{"target": "root", "by": "verify"})
+	return tok
 }
 
 // review is the store's approval switch: on, with the console address for the operators' letters.

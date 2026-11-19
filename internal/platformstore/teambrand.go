@@ -35,6 +35,11 @@ type TeamBrand struct {
 	Website      string
 }
 
+// Empty is a brand with no value at all: a team's creation writes no row for it.
+func (b TeamBrand) Empty() bool {
+	return b.BrandName == "" && b.LegalEntity == "" && len(b.LegalAddress) == 0 && b.ContactEmail == "" && b.Website == ""
+}
+
 type teamBrandRow struct {
 	BrandName    string `db:"brand_name"`
 	LegalEntity  string `db:"legal_entity"`
@@ -66,6 +71,36 @@ func brandRow(b TeamBrand) (teamBrandRow, error) {
 }
 
 const teamBrandColumns = `brand_name, legal_entity, legal_address_1, legal_address_2, legal_address_3, contact_email, website`
+
+// teamBrandUpsert writes a team's whole brand: a new row, or every field of the existing one.
+const teamBrandUpsert = `INSERT INTO team_brand
+  (team_id, ` + teamBrandColumns + `, updated_by, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3)) AS nv
+ON DUPLICATE KEY UPDATE brand_name = nv.brand_name, legal_entity = nv.legal_entity,
+  legal_address_1 = nv.legal_address_1, legal_address_2 = nv.legal_address_2, legal_address_3 = nv.legal_address_3,
+  contact_email = nv.contact_email, website = nv.website, updated_by = nv.updated_by, updated_at = nv.updated_at`
+
+func execBrandUpsert(ctx context.Context, tx *sqlx.Tx, teamID int64, r teamBrandRow, by int64) error {
+	if _, err := tx.ExecContext(ctx, teamBrandUpsert, teamID, r.BrandName, r.LegalEntity, r.Address1, r.Address2, r.Address3,
+		r.ContactEmail, r.Website, by); err != nil {
+		return fmt.Errorf("platformstore: put team brand: %w", err)
+	}
+	return nil
+}
+
+// putTeamBrandTx writes the brand of a team the caller's transaction has just inserted (sign-up,
+// create team): lock order 1b, right after putTeamLogoTx. by is the creating person (updated_by).
+// nil or an empty brand writes no row.
+func putTeamBrandTx(ctx context.Context, tx *sqlx.Tx, teamID int64, b *TeamBrand, by int64) error {
+	if b == nil || b.Empty() {
+		return nil
+	}
+	r, err := brandRow(*b)
+	if err != nil {
+		return err
+	}
+	return execBrandUpsert(ctx, tx, teamID, r, by)
+}
 
 // TeamBrand reads a team's brand. ok=false when the team has none (a new team: empty values).
 func (s *Store) TeamBrand(ctx context.Context, teamID int64) (TeamBrand, bool, error) {
@@ -126,17 +161,7 @@ func (s *Store) SetTeamBrand(ctx context.Context, p SetTeamBrandParams) ([]strin
 			prev = cur[0]
 		}
 		changed = brandChanges(prev, next)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO team_brand
-  (team_id, `+teamBrandColumns+`, updated_by, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3)) AS nv
-ON DUPLICATE KEY UPDATE brand_name = nv.brand_name, legal_entity = nv.legal_entity,
-  legal_address_1 = nv.legal_address_1, legal_address_2 = nv.legal_address_2, legal_address_3 = nv.legal_address_3,
-  contact_email = nv.contact_email, website = nv.website, updated_by = nv.updated_by, updated_at = nv.updated_at`,
-			p.TeamID, next.BrandName, next.LegalEntity, next.Address1, next.Address2, next.Address3, next.ContactEmail,
-			next.Website, p.Actor.UserID); err != nil {
-			return fmt.Errorf("platformstore: put team brand: %w", err)
-		}
-		return nil
+		return execBrandUpsert(ctx, tx, p.TeamID, next, p.Actor.UserID)
 	})
 	if err != nil {
 		return nil, err

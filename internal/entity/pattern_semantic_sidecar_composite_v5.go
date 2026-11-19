@@ -63,6 +63,24 @@ var patternExactNClaimsV2 = map[string]bool{
 var exactNStableID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}$`)
 var annotationStableID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
+// These sizes and the vertex grammar match the DXF V1 provenance builder. Only
+// existing annotation anchor fields may carry this qualified slash syntax.
+const (
+	annotationDXFHex     = `([0-9a-f]{2})+`
+	annotationDXFOrdinal = `(0|[1-9][0-9]*)`
+	annotationDXFEntity  = `(h/` + annotationDXFHex + `|p/` + annotationDXFOrdinal + `)`
+	annotationDXFInsert  = `b/` + annotationDXFHex + `/` + annotationDXFEntity +
+		`/o/` + annotationDXFOrdinal + `/r/` + annotationDXFOrdinal + `/c/` + annotationDXFOrdinal
+	annotationDXFVertexPrefix = "dxf-vertex-v1/"
+)
+
+var annotationDXFContourID = regexp.MustCompile(`^dxf-piece-v1/p/` + annotationDXFHex +
+	`/s/` + annotationDXFHex + `/g/(cut|seam)$`)
+var annotationDXFVertexID = regexp.MustCompile(`^` + annotationDXFVertexPrefix +
+	`dxf-curve-v1/f/` + annotationDXFHex + `/i/(m|n/` + annotationDXFInsert + `(/x/` + annotationDXFInsert + `)*)` +
+	`/e/` + annotationDXFEntity + `/s/` + annotationDXFOrdinal + `/p/` + annotationDXFOrdinal +
+	`/sample/` + annotationDXFOrdinal + `$`)
+
 func compositeV5Violation(code, detail string) error {
 	return NewFieldViolation("sidecar_bytes", code, "", detail)
 }
@@ -819,10 +837,19 @@ func validateAnnotationAnchor(value any) error {
 	if !ok {
 		return fmt.Errorf("annotation anchor fields differ")
 	}
-	for _, key := range []string{"pieceId", "pieceLineKey", "contourId", "vertexId"} {
-		if _, ok := annotationID(record[key]); !ok {
-			return fmt.Errorf("annotation anchor identity differs")
-		}
+	pieceID, pieceOK := annotationID(record["pieceId"])
+	_, lineOK := annotationID(record["pieceLineKey"])
+	contourID, contourOK := annotationID(record["contourId"])
+	if !contourOK {
+		contourOK = len(contourID) <= 256 && annotationDXFContourID.MatchString(contourID) &&
+			strings.HasPrefix(contourID, "dxf-piece-v1/p/"+hex.EncodeToString([]byte(pieceID))+"/s/")
+	}
+	vertexID, vertexOK := annotationID(record["vertexId"])
+	if !vertexOK {
+		vertexOK = validAnnotationDXFVertexID(vertexID)
+	}
+	if !pieceOK || !lineOK || !contourOK || !vertexOK {
+		return fmt.Errorf("annotation anchor identity differs")
 	}
 	point, ok := exactJSONObject(record["pointMm"], "x", "y")
 	if !ok {
@@ -835,6 +862,27 @@ func validateAnnotationAnchor(value any) error {
 		return fmt.Errorf("annotation y coordinate differs")
 	}
 	return nil
+}
+
+func validAnnotationDXFVertexID(value string) bool {
+	if len(value) > 256 || !annotationDXFVertexID.MatchString(value) {
+		return false
+	}
+	curve := strings.TrimPrefix(value, annotationDXFVertexPrefix)
+	if strings.LastIndex(curve, "/sample/") > 192 {
+		return false
+	}
+	tokens := strings.Split(value, "/")
+	for i, tag := range tokens[:len(tokens)-1] {
+		switch tag {
+		case "p", "o", "r", "c", "s", "sample":
+			// The TypeScript provenance builder requires every index to be a safe integer.
+			if _, err := strconv.ParseUint(tokens[i+1], 10, 53); err != nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func annotationID(value any) (string, bool) {

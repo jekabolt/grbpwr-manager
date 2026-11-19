@@ -21,6 +21,10 @@ func TestPieceFoldWritesLockTheCardRowFirstAndNeverBumpLockVersion(t *testing.T)
 			if lock < 0 {
 				t.Fatal("the fold write no longer locks the card row")
 			}
+			clock := strings.Index(body, "bumpTechCardAssemblyClock(")
+			if clock <= lock || clock >= strings.Index(body, "listTechCardPieceFolds(") {
+				t.Fatal("the fold revision must advance in the locked transaction before readback")
+			}
 			for _, after := range []string{
 				"RequireMutableTechCard(", "storeutil.Query", "storeutil.Exec", "listTechCardPieceFolds(",
 				"loadSeamSources(", "writeTechCardPieceFoldsTx(",

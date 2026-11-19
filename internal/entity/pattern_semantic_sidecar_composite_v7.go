@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 )
 
@@ -81,8 +82,9 @@ func validatePatternProductCompositeSidecarV7(
 }
 
 // V7's transport anchor may name a different selected operation than the nested historical V6.
-// The exact row and server Assembly revision must agree; the nested topology digest remains its own
-// valid V6 authority; arrangement-only transitions preserve its nested V5 bytes.
+// The exact row and server Assembly revision must agree. The outer operation is checked against
+// current AO under the writer lock. The nested historical operation belongs to the prior V6/V4
+// bytes, which the locked transition requires the client to carry forward.
 func validateNestedCompositeV6ForV7(payload []byte, outerRow SavedPatternRowIdentity, expected PatternProductCompositeSidecarExpected) error {
 	document, row, previous, err := validOuterCompositeDocument(payload, patternProductCompositeSidecarDocumentV6,
 		PatternProductCompositeSidecarV6MediaType, patternProductCompositeClaimsV6)
@@ -96,6 +98,7 @@ func validateNestedCompositeV6ForV7(payload []byte, outerRow SavedPatternRowIden
 	nestedExpected.Row = outerRow
 	nestedExpected.ExpectedPreviousSidecarSHA256 = previous
 	nestedExpected.AssemblyTopologySHA256 = document.Bindings.AssemblyTopologySHA256
+	nestedExpected.SelectedOperationNumber = 0
 	return validatePatternProductCompositeSidecarV6(payload, nestedExpected, true)
 }
 
@@ -142,10 +145,32 @@ func validateSavedFullAssemblyPhysicalV1(
 		}
 	}
 
-	graphDocument, ok := exactJSONObject(document["graph"],
-		"schemaVersion", "profile", "row", "serverAssemblyRevision", "source", "pieces", "operations", "seams", "compile")
-	if !ok || graphDocument["schemaVersion"] != dxfExactAssemblyGraphDocumentV1 ||
-		graphDocument["profile"] != "single-saved-row-size-adjacent-native-stitch" {
+	graphDocument, ok := document["graph"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("exact Assembly graph is missing")
+	}
+	fields := []string{"schemaVersion", "profile", "row", "serverAssemblyRevision", "source", "pieces", "operations", "seams", "compile"}
+	if graphDocument["profile"] == recordedTerminalPressGraphProfile {
+		if profile != savedFullAssemblyNativeDrawnSewingProfileV1 {
+			return fmt.Errorf("recorded terminal press requires native drawn sewing")
+		}
+		fields = append(fields, "productionOrder")
+		if err := validateRecordedTerminalPressOrder(graphDocument, expected, requireAOContent); err != nil {
+			return err
+		}
+	} else if graphDocument["profile"] != "single-saved-row-size-adjacent-native-stitch" {
+		return fmt.Errorf("exact Assembly graph profile differs")
+	}
+	// The previous graph vocabulary cannot encode a pressing step. With an authoritative
+	// source present, relabeling a new graph as the legacy profile cannot drop that step.
+	if requireAOContent && expected.AssemblyOrderCard != nil && graphDocument["profile"] != recordedTerminalPressGraphProfile {
+		for _, op := range expected.AssemblyOrderCard.Operations {
+			if op.OperationType == OpTypePress || op.Work.String == "press_flat" {
+				return fmt.Errorf("legacy stitch graph cannot represent an Assembly Order press")
+			}
+		}
+	}
+	if _, ok := exactJSONObject(graphDocument, fields...); !ok || graphDocument["schemaVersion"] != dxfExactAssemblyGraphDocumentV1 {
 		return fmt.Errorf("exact Assembly graph schema differs")
 	}
 	graphRow, graphRowOK := savedFullAssemblyExactRow(graphDocument["row"])
@@ -320,9 +345,33 @@ func compositeV7ComponentsForTransition(payload []byte) ([]byte, []byte, error) 
 	return v6, physical, nil
 }
 
-// ValidatePatternProductCompositeSidecarV7Transition allows two lossless lanes after the first
-// V7 wraps the current V6 exactly: physical updates preserve V6, while presentation arrangement
-// updates preserve both physical initialization and nested V5. These placements are not physics.
+func compositeV5AnnotationBindingsForV7Transition(payload []byte) (json.RawMessage, error) {
+	document, _, _, err := validOuterCompositeDocument(payload, patternProductCompositeSidecarDocumentV5,
+		PatternProductCompositeSidecarV5MediaType, patternProductCompositeClaimsV5)
+	if err != nil || len(document.Components) != 2 {
+		return nil, fmt.Errorf("invalid nested Composite V5")
+	}
+	annotations, err := compositeComponentBytes(document.Components[1], "phase-e-topology-annotations-v1",
+		patternTopologyAnnotationsMediaTypeV1)
+	if err != nil {
+		return nil, err
+	}
+	var annotationDocument struct {
+		Bindings json.RawMessage `json:"bindings"`
+	}
+	if err := json.Unmarshal(annotations, &annotationDocument); err != nil {
+		return nil, err
+	}
+	if len(annotationDocument.Bindings) == 0 {
+		return nil, fmt.Errorf("nested annotation bindings are absent")
+	}
+	// The stored and next documents have already passed full canonical payload validation.
+	return annotationDocument.Bindings, nil
+}
+
+// ValidatePatternProductCompositeSidecarV7Transition allows one change at a time after V7
+// first wraps V6. Physical edits preserve V6. Presentation edits preserve physical bytes
+// and use the V6 transition policy. Annotation edits also preserve their exact source bindings.
 func ValidatePatternProductCompositeSidecarV7Transition(nextPayload []byte, priorMediaType string, priorPayload []byte) error {
 	nextV6, nextPhysical, err := compositeV7ComponentsForTransition(nextPayload)
 	if err != nil {
@@ -353,12 +402,19 @@ func ValidatePatternProductCompositeSidecarV7Transition(nextPayload []byte, prio
 	if err != nil {
 		return compositeV5Violation("invalid_composite_v7_transition", err.Error())
 	}
-	priorV5, _, err := compositeV6ComponentsForTransition(priorV6)
-	if err != nil || !bytes.Equal(nextV5, priorV5) {
-		return compositeV5Violation("composite_v7_nested_v5_changed", "presentation arrangement updates must preserve Composite V5 bytes exactly")
-	}
 	if err := ValidatePatternProductCompositeSidecarV6Transition(nextV6, PatternProductCompositeSidecarV6MediaType, priorV6); err != nil {
 		return compositeV5Violation("composite_v7_nested_v6_transition_invalid", err.Error())
+	}
+	priorV5, _, err := compositeV6ComponentsForTransition(priorV6)
+	if err != nil {
+		return compositeV5Violation("composite_v7_prior_required", err.Error())
+	}
+	if !bytes.Equal(nextV5, priorV5) {
+		priorBindings, priorErr := compositeV5AnnotationBindingsForV7Transition(priorV5)
+		nextBindings, nextErr := compositeV5AnnotationBindingsForV7Transition(nextV5)
+		if priorErr != nil || nextErr != nil || !bytes.Equal(nextBindings, priorBindings) {
+			return compositeV5Violation("composite_v7_annotation_source_changed", "annotation updates must preserve their current source bindings")
+		}
 	}
 	_, row, _, err := validOuterCompositeDocument(nextPayload, patternProductCompositeSidecarDocumentV7,
 		PatternProductCompositeSidecarV7MediaType, patternProductCompositeClaimsV7)

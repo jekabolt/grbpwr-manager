@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -29,109 +27,13 @@ import (
 // rights. Every read and write keys on the team the edge resolved (GetWorkspace), never on a field
 // of the request; refusals are fixed keys.
 
-// Brand limits (runes), as the team_brand columns.
+// Refusal keys of the workspace writes. The brand's own keys (bad_text, bad_address, bad_email,
+// bad_website) and its one normalisation live in platformauth (NormalizeTeamBrand), shared with a
+// team's creation.
 const (
-	brandNameMax    = 64
-	legalEntityMax  = 96
-	addressLineMax  = 64
-	websiteMax      = 128
-	errKeyBadText   = "bad_text"
-	errKeyBadAddr   = "bad_address"
-	errKeyBadEmail  = "bad_email"
-	errKeyBadSite   = "bad_website"
 	errKeyBadSect   = "bad_section"
 	errKeyBadAccess = "bad_access"
 )
-
-// cleanBrandText trims, refuses control characters and line breaks inside, collapses whitespace
-// runs into one space and checks the rune limit. Any script is accepted; case is kept as typed.
-func cleanBrandText(s string, max int) (string, bool) {
-	if !utf8.ValidString(s) {
-		return "", false
-	}
-	s = strings.TrimSpace(s)
-	for _, r := range s {
-		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
-			return "", false
-		}
-	}
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) > max {
-		return "", false
-	}
-	return s, true
-}
-
-// cleanWebsite: empty, or the address without its http(s) scheme and one trailing slash, lower-case,
-// with a dot and nothing that is a space or a control character.
-func cleanWebsite(s string) (string, bool) {
-	if !utf8.ValidString(s) {
-		return "", false
-	}
-	s = strings.ToLower(strings.TrimSpace(s))
-	if s == "" {
-		return "", true
-	}
-	if rest, ok := strings.CutPrefix(s, "https://"); ok {
-		s = rest
-	} else if rest, ok := strings.CutPrefix(s, "http://"); ok {
-		s = rest
-	}
-	s = strings.TrimSuffix(s, "/")
-	host, _, _ := strings.Cut(s, "/")
-	if !strings.Contains(host, ".") || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") ||
-		strings.Contains(s, "://") || utf8.RuneCountInString(s) > websiteMax {
-		return "", false
-	}
-	for _, r := range s {
-		if unicode.IsSpace(r) || unicode.IsControl(r) {
-			return "", false
-		}
-	}
-	return s, true
-}
-
-// normalizeBrand is the one normalisation of a brand write (teams W §1). Refusals (InvalidArgument):
-// bad_text (a control character or line break, or over the limit: name 64, entity 96, address line 64),
-// bad_address (more than three non-blank lines; blank lines are dropped and the rest move up),
-// bad_email (not empty and not an address platformauth.NormalizeEmail accepts), bad_website.
-func normalizeBrand(req *pb_admin.SetTeamBrandRequest) (platformstore.TeamBrand, error) {
-	bad := func(key string) (platformstore.TeamBrand, error) {
-		return platformstore.TeamBrand{}, status.Error(codes.InvalidArgument, key)
-	}
-	var b platformstore.TeamBrand
-	var ok bool
-	if b.BrandName, ok = cleanBrandText(req.GetBrandName(), brandNameMax); !ok {
-		return bad(errKeyBadText)
-	}
-	if b.LegalEntity, ok = cleanBrandText(req.GetLegalEntity(), legalEntityMax); !ok {
-		return bad(errKeyBadText)
-	}
-	for _, raw := range req.GetLegalAddress() {
-		line, ok := cleanBrandText(raw, addressLineMax)
-		if !ok {
-			return bad(errKeyBadText)
-		}
-		if line == "" {
-			continue
-		}
-		if len(b.LegalAddress) == platformstore.TeamBrandAddressLines {
-			return bad(errKeyBadAddr)
-		}
-		b.LegalAddress = append(b.LegalAddress, line)
-	}
-	if email := strings.TrimSpace(req.GetContactEmail()); email != "" {
-		norm, err := platformauth.NormalizeEmail(email)
-		if err != nil {
-			return bad(errKeyBadEmail)
-		}
-		b.ContactEmail = norm
-	}
-	if b.Website, ok = cleanWebsite(req.GetWebsite()); !ok {
-		return bad(errKeyBadSite)
-	}
-	return b, nil
-}
 
 // brandPB is the brand as the screen and the papers read it. firstTeam: team #1, whose papers keep
 // the house vector mark and the build's VAT id.
@@ -185,7 +87,7 @@ func (s *Server) SetTeamBrand(ctx context.Context, req *pb_admin.SetTeamBrandReq
 	if err != nil {
 		return nil, err
 	}
-	b, err := normalizeBrand(req)
+	b, err := platformauth.NormalizeTeamBrand(req)
 	if err != nil {
 		return nil, err
 	}

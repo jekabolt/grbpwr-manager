@@ -649,10 +649,11 @@ func TestSignupApproval(t *testing.T) {
 		return code, link
 	}
 
-	// Verify by link: the account is active, the team waits in review, no hand-off and no session.
+	// Verify by link: the account is active, the team waits in review, no hand-off; the person is
+	// signed in (one root session, its token in the answer).
 	_, link := signUp(anna, "Atelier Anna", "atelier-anna")
 	vr, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: link})
-	if err != nil || vr.GetTeamSlug() != "atelier-anna" || vr.GetHandoffCode() != "" || !vr.GetAwaitingApproval() {
+	if err != nil || vr.GetTeamSlug() != "atelier-anna" || vr.GetHandoffCode() != "" || !vr.GetAwaitingApproval() || vr.GetRootToken() == "" {
 		t.Fatalf("verify under approval = %v, %v", vr, err)
 	}
 	var team struct {
@@ -668,8 +669,17 @@ func TestSignupApproval(t *testing.T) {
 	if err := f.st.DB().Get(&handoffs, `SELECT COUNT(*) FROM email_token WHERE purpose = 'handoff'`); err != nil || handoffs != 0 {
 		t.Fatalf("hand-offs = %d, %v", handoffs, err)
 	}
-	if err := f.st.DB().Get(&sessions, `SELECT COUNT(*) FROM user_session`); err != nil || sessions != 0 {
-		t.Fatalf("sessions = %d, %v", sessions, err)
+	if err := f.st.DB().Get(&sessions, `SELECT COUNT(*) FROM user_session WHERE aud = 'root' AND team_id IS NULL`); err != nil || sessions != 1 {
+		t.Fatalf("root sessions = %d, %v", sessions, err)
+	}
+	// The root token is the root list's: the team marked, a hand-off into it refused with the reason.
+	mt, err := f.svc.ListMyTeams(ctx, vr.GetRootToken(), &auth.ListMyTeamsRequest{})
+	if err != nil || len(mt.GetTeams()) != 1 || !mt.GetTeams()[0].GetAwaitingApproval() {
+		t.Fatalf("teams of the verify token = %v, %v", mt, err)
+	}
+	_, err = f.svc.IssueHandoff(ctx, vr.GetRootToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "team_awaiting_approval" {
+		t.Fatalf("hand-off with the verify token = %v", err)
 	}
 	// One team_request letter per active operator: team name, slug, the person's email, the console.
 	reqs := f.teamLetters("team_request")
@@ -687,18 +697,22 @@ func TestSignupApproval(t *testing.T) {
 		t.Fatalf("team_request payload = %s, %v", reqs[0].Payload, err)
 	}
 	// A second click on the link answers the same and writes no second operator letter.
+	// It mints no second session: the repeat carries no token.
 	again, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Token: link})
-	if err != nil || again.GetTeamSlug() != "atelier-anna" || again.GetHandoffCode() != "" || !again.GetAwaitingApproval() {
+	if err != nil || again.GetTeamSlug() != "atelier-anna" || again.GetHandoffCode() != "" || !again.GetAwaitingApproval() || again.GetRootToken() != "" {
 		t.Fatalf("second verify = %v, %v", again, err)
 	}
 	if n := len(f.teamLetters("team_request")); n != 1 {
 		t.Fatalf("team_request letters after a second click = %d", n)
 	}
+	if err := f.st.DB().Get(&sessions, `SELECT COUNT(*) FROM user_session`); err != nil || sessions != 1 {
+		t.Fatalf("sessions after a second click = %d, %v", sessions, err)
+	}
 
 	// Verify by code goes the same way.
 	bcode, _ := signUp(bob, "Bob Studio", "bob-studio")
 	bv, err := f.svc.VerifyEmail(ctx, &auth.VerifyEmailRequest{Email: bob, Code: bcode})
-	if err != nil || bv.GetHandoffCode() != "" || !bv.GetAwaitingApproval() {
+	if err != nil || bv.GetHandoffCode() != "" || !bv.GetAwaitingApproval() || bv.GetRootToken() == "" {
 		t.Fatalf("verify by code under approval = %v, %v", bv, err)
 	}
 	if n := len(f.teamLetters("team_request")); n != 2 {
