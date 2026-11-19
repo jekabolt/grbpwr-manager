@@ -13,8 +13,8 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
-// teamAdmins answers from the team in ctx: two teams, the same username, different rows.
-type teamAdmins struct {
+// keyTeamAdmins answers from the team in ctx: two teams, the same username, different rows.
+type keyTeamAdmins struct {
 	dependency.Admin
 	rows map[int64]map[string]entity.Admin
 	// park, when set, holds team parkTeam's lookups until it is closed.
@@ -22,7 +22,7 @@ type teamAdmins struct {
 	parkTeam int64
 }
 
-func (f *teamAdmins) GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error) {
+func (f *keyTeamAdmins) GetAdminByUsername(ctx context.Context, username string) (*entity.Admin, error) {
 	t, _ := tenant.From(ctx)
 	if f.park != nil && t.ID == f.parkTeam {
 		<-f.park
@@ -34,7 +34,7 @@ func (f *teamAdmins) GetAdminByUsername(ctx context.Context, username string) (*
 	return &a, nil
 }
 
-func newTeamsAuth(t *testing.T, store *teamAdmins) *Server {
+func newKeyTeamsAuth(t *testing.T, store *keyTeamAdmins) *Server {
 	t.Helper()
 	srv, err := New(&Config{
 		JWTSecret: jwtSecret, MasterPassword: masterPassword,
@@ -46,19 +46,19 @@ func newTeamsAuth(t *testing.T, store *teamAdmins) *Server {
 }
 
 var (
-	teamA = tenant.Team{ID: 2, Slug: "alpha", Status: tenant.StatusActive}
-	teamB = tenant.Team{ID: 3, Slug: "bravo", Status: tenant.StatusActive}
+	keyTeamA = tenant.Team{ID: 2, Slug: "alpha", Status: tenant.StatusActive}
+	keyTeamB = tenant.Team{ID: 3, Slug: "bravo", Status: tenant.StatusActive}
 )
 
 // Two teams, one username "anna": each team gets its own admin id and its own account state, and a
 // lookup in flight for one team is never joined by the other.
 func TestAuthCachesAreKeyedByTeamAndUsername(t *testing.T) {
-	store := &teamAdmins{rows: map[int64]map[string]entity.Admin{
+	store := &keyTeamAdmins{rows: map[int64]map[string]entity.Admin{
 		2: {"anna": {Id: 42, Username: "anna", Disabled: true}},
 		3: {"anna": {Id: 77, Username: "anna"}},
 	}}
-	srv := newTeamsAuth(t, store)
-	ctxA, ctxB := tenant.With(context.Background(), teamA), tenant.With(context.Background(), teamB)
+	srv := newKeyTeamsAuth(t, store)
+	ctxA, ctxB := tenant.With(context.Background(), keyTeamA), tenant.With(context.Background(), keyTeamB)
 
 	idA, idB := srv.adminIDFor(ctxA, "anna"), srv.adminIDFor(ctxB, "anna")
 	require.NotNil(t, idA)
@@ -80,8 +80,8 @@ func TestAuthCachesAreKeyedByTeamAndUsername(t *testing.T) {
 	require.NoError(t, srv.checkAdminAccountState(ctxB, "anna"))
 
 	// Flights: team A's lookup is parked; team B's own lookup still answers at once.
-	parked := &teamAdmins{rows: store.rows, park: make(chan struct{}), parkTeam: 2}
-	srv2 := newTeamsAuth(t, parked)
+	parked := &keyTeamAdmins{rows: store.rows, park: make(chan struct{}), parkTeam: 2}
+	srv2 := newKeyTeamsAuth(t, parked)
 	done := make(chan *int, 1)
 	go func() { done <- srv2.adminIDFor(ctxA, "anna") }()
 	time.Sleep(20 * time.Millisecond) // let A start its flight
