@@ -136,6 +136,7 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		ExpectedCompleteSourceSHA256:     req.GetExpectedCompleteSourceSha256(),
 		SelectedSizeID:                   int(req.GetSelectedSizeId()),
 		ExpectedAuthoredFoldSourceSHA256: req.GetExpectedAuthoredFoldSourceSha256(),
+		SourceOnly:                       req.GetSourceOnly(),
 	}
 	if req.ExpectedServerAssemblyRevision != nil {
 		in.ExpectedServerAssemblyRevision = req.GetExpectedServerAssemblyRevision()

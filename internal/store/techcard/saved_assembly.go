@@ -118,9 +118,12 @@ func (s *Store) GetTechCardSavedAssemblySnapshot(ctx context.Context, in entity.
 			if err != nil {
 				return err
 			}
-			sidecar, err := readSavedAssemblyAnchorSidecar(ctx, rep.DB(), row)
-			if err != nil {
-				return err
+			var sidecar *entity.PatternSemanticSidecar
+			if !in.SourceOnly {
+				sidecar, err = readSavedAssemblyAnchorSidecar(ctx, rep.DB(), row)
+				if err != nil {
+					return err
+				}
 			}
 			var sizeTokens map[int]string
 			if sidecar != nil && isNativeCrossRowCarrier(sidecar.MediaType) {
@@ -221,6 +224,9 @@ func validateSavedAssemblySnapshotRequest(in entity.SavedAssemblySnapshotRequest
 	}
 	switch in.Profile {
 	case entity.SavedAssemblySnapshotSelected:
+		if in.SourceOnly {
+			return entity.NewFieldViolation("source_only", "incompatible", "", "select a complete-source profile")
+		}
 		if in.SelectedOperationNumber <= 0 {
 			return entity.NewFieldViolation("selected_operation_number", "invalid", fmt.Sprint(in.SelectedOperationNumber), "send a positive stored operation number")
 		}
@@ -375,6 +381,10 @@ func savedAssemblyKnownSeamValues(seam entity.TechCardSeam, allowWorkflow bool) 
 	case entity.TechCardSeamKindEdge, entity.TechCardSeamKindPartial, entity.TechCardSeamKindComposite,
 		entity.TechCardSeamKindSurface, entity.TechCardSeamKindClosure:
 	case entity.TechCardSeamKindPose:
+		if !allowWorkflow {
+			return false
+		}
+	case entity.TechCardSeamKindPointClosure:
 		if !allowWorkflow {
 			return false
 		}

@@ -4495,6 +4495,36 @@ message TechCardSeamSample {
   double v = 2;
 }
 
+enum TechCardSeamPointClosureRole {
+  TECH_CARD_SEAM_POINT_CLOSURE_ROLE_UNKNOWN = 0;
+  TECH_CARD_SEAM_POINT_CLOSURE_ROLE_BUTTONHOLE_MIDPOINT = 1;
+  TECH_CARD_SEAM_POINT_CLOSURE_ROLE_BUTTON_MARK_CENTER = 2;
+}
+
+enum TechCardSeamPointClosureIntent {
+  TECH_CARD_SEAM_POINT_CLOSURE_INTENT_UNKNOWN = 0;
+  TECH_CARD_SEAM_POINT_CLOSURE_INTENT_OPEN = 1;
+  TECH_CARD_SEAM_POINT_CLOSURE_INTENT_CLOSED = 2;
+}
+
+// The exact original L8 mark of one piece in one saved size. The point is derived from the signed
+// DXF after reading. A decoded PathId by itself is not a durable entity identity.
+message TechCardSeamPointClosureAnchor {
+  string pattern_line_key = 1;
+  uint32 saved_row_revision = 2;
+  string dxf_sha256 = 3;
+  int32 size_id = 4;
+  string alias_block_name = 5;
+  string native_block_name = 6;
+  repeated string source_instance_path = 7;
+  optional uint32 source_entity_op = 8;
+  TechCardSeamPointClosureRole role = 9;
+  // The buttonhole side holds the owner's choice, independent of physical closure in a frame.
+  TechCardSeamPointClosureIntent intent = 10;
+  int32 buttonhole_operation_number = 11; // Buttonhole side only.
+  int32 button_operation_number = 12; // Buttonhole side only. This operation owns the pair.
+}
+
 // TechCardSeamAnchor is one run of one piece taking part in a seam side.
 message TechCardSeamAnchor {
   // tech_card_piece.line_key — never a block name, never an id.
@@ -4524,6 +4554,10 @@ message TechCardSeamAnchor {
   // Which way THIS anchor's piece lies against the other side's pieces in the step that sews the
   // row (the owner's under/over switch). UNKNOWN = unset: the client's own rule, as before.
   TechCardSeamLayer layer = 12;
+  // Present only for POINT_CLOSURE. The legacy run fields have no meaning for a point mark.
+  oneof native_geometry {
+    TechCardSeamPointClosureAnchor point_closure = 13;
+  }
 }
 
 // TechCardSeamLayer is an explicit stacking of a seam side's piece: under or over the other side.
@@ -4571,6 +4605,7 @@ enum TechCardSeamKind {
   TECH_CARD_SEAM_KIND_SURFACE = 4;
   TECH_CARD_SEAM_KIND_CLOSURE = 5;
   TECH_CARD_SEAM_KIND_POSE = 6;
+  TECH_CARD_SEAM_KIND_POINT_CLOSURE = 7;
 }
 
 // TechCardSeamDirection is how the two sides walk against each other. REVERSED is the normal seam

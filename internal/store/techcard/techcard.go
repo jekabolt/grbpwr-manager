@@ -537,6 +537,11 @@ func (s *Store) UpdateTechCardTx(ctx context.Context, rep dependency.Repository,
 			tc.SnapshotLockVersion = cur.LockVersion
 		}
 	}
+	if tc.RestoreSeams == nil {
+		if err := guardPointClosureLinksOnDocumentUpdate(ctx, rep.DB(), id, tc.Operations); err != nil {
+			return nil, err
+		}
+	}
 	// A client-requested snapshot keeps its existing eager semantics: it is an explicit journalled
 	// undo point even when no pattern row changes. An unrequested snapshot is created lazily, at the
 	// first outgoing pattern row, so ordinary saves without an archive do not grow the snapshot table.

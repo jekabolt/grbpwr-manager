@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -396,6 +395,9 @@ func completeSourceOwnedSeams(card *entity.TechCard, pieceScopes map[string]bool
 			if err := validateCompleteSourceSeam(seam, pieceScopes, labels, strips); err != nil {
 				return nil, err
 			}
+			if seam.Kind == entity.TechCardSeamKindPointClosure && seam.SideA[0].PointClosure.ButtonOperationNumber != number {
+				return nil, fmt.Errorf("point closure %q is not owned by its button attach operation: %w", key, entity.ErrTechCardSavedAssemblyUnsupported)
+			}
 			owned[key] = true
 			out = append(out, seam)
 		}
@@ -410,6 +412,11 @@ func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string
 		(seam.Status != entity.TechCardSeamConfirmed && seam.Status != entity.TechCardSeamRejected) {
 		return fmt.Errorf("seam %q has an unknown stored enum: %w", seam.SeamKey, entity.ErrTechCardSavedAssemblyUnsupported)
 	}
+	if seam.Kind == entity.TechCardSeamKindPointClosure {
+		if err := entity.ValidateTechCardSeamPointClosure("seam", seam.TechCardSeamInput); err != nil {
+			return fmt.Errorf("point closure %q has invalid persisted geometry: %w: %w", seam.SeamKey, entity.ErrTechCardSavedAssemblyUnsupported, err)
+		}
+	}
 	// Do not run write-time physical/placement validation on legacy data. The source still
 	// records missing sizes, UNKNOWN directions, original side order and stale/rejected status.
 	for _, side := range [][]entity.TechCardSeamAnchor{seam.SideA, seam.SideB} {
@@ -417,6 +424,9 @@ func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string
 			return fmt.Errorf("seam %q has an invalid anchor count: %w", seam.SeamKey, entity.ErrTechCardSavedAssemblyUnsupported)
 		}
 		for _, a := range side {
+			if seam.Kind != entity.TechCardSeamKindPointClosure && a.PointClosure != nil {
+				return fmt.Errorf("seam %q has unexpected point closure geometry: %w", seam.SeamKey, entity.ErrTechCardSavedAssemblyUnsupported)
+			}
 			_, label := labels[a.PieceLineKey]
 			_, strip := strips[a.PieceLineKey]
 			if (!pieceScopes[a.PieceLineKey] && !label && !strip) || len(a.Samples) > entity.TechCardSeamSamplesPerAnchor {
@@ -440,19 +450,7 @@ func validateCompleteSourceSeam(seam entity.TechCardSeam, pieceScopes map[string
 }
 
 func validCompleteSourceAssemblyRevision(token string) bool {
-	value, ok := strings.CutPrefix(token, "asm:v1:")
-	if !ok {
-		return false
-	}
-	lineage, rawRevision, found := strings.Cut(value, ":")
-	if !found || len(lineage) != 32 || strings.ToLower(lineage) != lineage {
-		return false
-	}
-	if _, err := hex.DecodeString(lineage); err != nil {
-		return false
-	}
-	revision, err := strconv.ParseUint(rawRevision, 10, 64)
-	return err == nil && revision > 0 && rawRevision == strconv.FormatUint(revision, 10)
+	return entity.ValidTechCardAssemblyRevision(token)
 }
 
 // Hash the same protobuf JSON fields the caller sees. Remove download capabilities: they are

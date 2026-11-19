@@ -91,6 +91,14 @@ func (s *Server) ChangeTechCardSeams(ctx context.Context, req *pb_admin.ChangeTe
 			return nil, apierr.FailedPrecondition(entity.NewFieldViolation("expected_lock_version", "lock_version_moved", "",
 				"the card changed since it was read — reload it and repeat"))
 		}
+		if errors.Is(err, entity.ErrTechCardSavedAssemblyMoved) {
+			var field *entity.ValidationError
+			if errors.As(err, &field) {
+				return nil, apierr.FailedPrecondition(field)
+			}
+			return nil, apierr.FailedPrecondition(entity.NewFieldViolation("expected_server_assembly_revision", "assembly_revision_moved", "",
+				"the saved Assembly changed since it was read — reload and repeat"))
+		}
 		if st, ok := apierr.Status(err); ok {
 			return nil, st
 		}

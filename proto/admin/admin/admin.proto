@@ -12232,6 +12232,8 @@ message GetTechCardSavedAssemblySnapshotRequest {
   // Required for the authored-fold profile. A current card size ID from the size dictionary.
   optional int32 selected_size_id = 14;
   optional string expected_authored_fold_source_sha256 = 15;
+  // Complete source only. Do not read or admit a stored placement or review carrier.
+  optional bool source_only = 16;
 }
 
 message TechCardSavedAssemblySourceAliasV1 {
@@ -12360,6 +12362,8 @@ message ChangeTechCardSeamsRequest {
   repeated SeamLink link = 5;
   // Links to remove; keys may name rows of this request's upsert by their sent key.
   repeated SeamLink detach = 6;
+  // Required for changes to a POINT_CLOSURE, including its operation link or intent.
+  optional string expected_server_assembly_revision = 7;
 }
 
 message ChangeTechCardSeamsResponse {

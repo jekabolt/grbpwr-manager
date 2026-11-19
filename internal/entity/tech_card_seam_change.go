@@ -28,12 +28,13 @@ type TechCardSeamLink struct {
 type TechCardSeamsChange struct {
 	TechCardId int
 	// ExpectedLockVersion is required; nil is refused before anything is read.
-	ExpectedLockVersion *int
-	Upsert              []TechCardSeamInput
-	Delete              []string
-	Link                []TechCardSeamLink
-	Detach              []TechCardSeamLink
-	By                  string
+	ExpectedLockVersion            *int
+	ExpectedServerAssemblyRevision *string
+	Upsert                         []TechCardSeamInput
+	Delete                         []string
+	Link                           []TechCardSeamLink
+	Detach                         []TechCardSeamLink
+	By                             string
 }
 
 // TechCardSeamKeyMap is the key a sent upsert row was stored under.
@@ -75,6 +76,9 @@ func ValidateTechCardSeamsChange(in *TechCardSeamsChange) error {
 		return NewFieldViolation("expected_lock_version", "required", "",
 			"send the card's lock_version as last read")
 	}
+	if in.ExpectedServerAssemblyRevision != nil && !ValidTechCardAssemblyRevision(*in.ExpectedServerAssemblyRevision) {
+		return NewFieldViolation("expected_server_assembly_revision", "invalid", "", "send the exact saved Assembly clock token")
+	}
 	if len(in.Upsert) == 0 && len(in.Delete) == 0 && len(in.Link) == 0 && len(in.Detach) == 0 {
 		return NewFieldViolation("upsert", "empty", "", "name at least one upsert, delete, link or detach")
 	}
@@ -111,6 +115,9 @@ func ValidateTechCardSeamsChange(in *TechCardSeamsChange) error {
 	}
 	in.Link, in.Detach = link, detach
 	for i, s := range in.Upsert {
+		if s.Kind == TechCardSeamKindPointClosure && in.ExpectedServerAssemblyRevision == nil {
+			return NewFieldViolation("expected_server_assembly_revision", "required", "", "send the saved Assembly clock to change a point closure")
+		}
 		if j, ok := delAt[s.SeamKey]; ok {
 			return NewFieldViolation(fmt.Sprintf("delete[%d]", j), "contradicts_upsert", fmt.Sprintf("upsert[%d]", i),
 				"a row is either written or deleted in one change")
@@ -185,6 +192,9 @@ func RenameSeamFieldPrefix(err error, from, to string) error {
 // it was sent (the wire's 0/0 or an explicit 0/1), as the client reads it. Two rows with one
 // signature are one seam: a new row of a stored pair is stored under the stored row's key.
 func TechCardSeamPairRangeSig(s TechCardSeamInput) string {
+	if s.Kind == TechCardSeamKindPointClosure {
+		return techCardSeamPointClosurePairSig(s)
+	}
 	side := func(xs []TechCardSeamAnchor) string {
 		parts := make([]string, 0, len(xs))
 		for _, a := range xs {

@@ -31,6 +31,7 @@ type SavedAssemblySnapshotRequest struct {
 	ExpectedCompleteSourceSHA256     string
 	SelectedSizeID                   int
 	ExpectedAuthoredFoldSourceSHA256 string
+	SourceOnly                       bool
 }
 
 type SavedAssemblySnapshotProfile int32

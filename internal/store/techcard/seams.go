@@ -73,6 +73,7 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 		return nil, err
 	}
 	out := make([]entity.TechCardSeam, 0, len(rows))
+	var pointSources *pointClosureSources
 	for _, r := range rows {
 		seam := entity.TechCardSeam{
 			TechCardSeamInput: entity.TechCardSeamInput{
@@ -99,6 +100,17 @@ func listTechCardSeams(ctx context.Context, db dependency.DB, techCardID int) ([
 		errB := json.Unmarshal(r.SideB, &seam.SideB)
 		seam.Stale = errA != nil || errB != nil ||
 			!src.fresh(seam.PieceLineKeys(), r.SourceFingerprint)
+		if seam.Kind == entity.TechCardSeamKindPointClosure && !seam.Stale {
+			if pointSources == nil {
+				current, err := loadPointClosureSources(ctx, db, techCardID)
+				if err != nil {
+					return nil, err
+				}
+				pointSources = &current
+			}
+			seam.Stale = entity.ValidateTechCardSeamPointClosure("seam", seam.TechCardSeamInput) != nil ||
+				pointSources.check("seam", seam.TechCardSeamInput, false) != nil
+		}
 		out = append(out, seam)
 	}
 	return out, nil
@@ -219,6 +231,13 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 	if err := entity.ValidateTechCardSeamsWrite(&in); err != nil {
 		return nil, 0, err
 	}
+	keys := make([]string, 0, len(in.Seams))
+	for _, seam := range in.Seams {
+		if seam.Kind == entity.TechCardSeamKindPointClosure {
+			return nil, 0, entity.NewFieldViolation("seams", "point_closure_requires_change", seam.SeamKey, "use ChangeTechCardSeams with the saved Assembly clock")
+		}
+		keys = append(keys, seam.SeamKey)
+	}
 	var out []entity.TechCardSeam
 	err := s.txFunc(ctx, func(ctx context.Context, rep dependency.Repository) error {
 		db := rep.DB()
@@ -232,6 +251,9 @@ func (s *Store) UpsertTechCardSeams(ctx context.Context, in entity.TechCardSeams
 		// A released card is frozen content — the seams included, they feed the seam map print and
 		// the doll.
 		if err := storeutil.RequireMutableTechCard(ctx, db, in.TechCardId); err != nil {
+			return err
+		}
+		if err := refuseLegacyPointClosureKeys(ctx, db, in.TechCardId, keys); err != nil {
 			return err
 		}
 		if err := writeTechCardSeamsTx(ctx, db, in.TechCardId, in.Seams, in.By, seamWriteOpts{}); err != nil {
@@ -429,6 +451,9 @@ func (s *Store) DeleteTechCardSeams(ctx context.Context, techCardID int, seamKey
 			return err
 		}
 		if err := storeutil.RequireMutableTechCard(ctx, db, techCardID); err != nil {
+			return err
+		}
+		if err := refuseLegacyPointClosureKeys(ctx, db, techCardID, keys); err != nil {
 			return err
 		}
 		n, err := deleteTechCardSeamsTx(ctx, db, techCardID, keys)

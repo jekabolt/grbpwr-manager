@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -1639,7 +1640,20 @@ func insertImportedSeams(ctx context.Context, db dependency.DB, techCardID int, 
 			if err := entity.ValidateTechCardSeamsWrite(&in); err != nil {
 				return fmt.Errorf("imported seams of tech card %d: %w", techCardID, err)
 			}
-			if err := writeTechCardSeamsTx(ctx, db, techCardID, in.Seams, actor, seamWriteOpts{stale: stale}); err != nil {
+			writeOpts := seamWriteOpts{stale: stale}
+			var importStale map[string]bool
+			for _, row := range in.Seams {
+				if row.Kind != entity.TechCardSeamKindPointClosure || stale[row.SeamKey] {
+					continue
+				}
+				if importStale == nil {
+					importStale = make(map[string]bool, len(stale)+1)
+					maps.Copy(importStale, stale)
+					writeOpts.stale = importStale
+				}
+				importStale[row.SeamKey] = true // import cannot prove the destination's native occurrence
+			}
+			if err := writeTechCardSeamsTx(ctx, db, techCardID, in.Seams, actor, writeOpts); err != nil {
 				return err
 			}
 			for _, s := range in.Seams {

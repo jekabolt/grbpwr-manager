@@ -32,6 +32,10 @@ func TechCardSeamsChangeFromPb(req *pb_admin.ChangeTechCardSeamsRequest, by stri
 		v := int(req.GetExpectedLockVersion())
 		in.ExpectedLockVersion = &v
 	}
+	if req.ExpectedServerAssemblyRevision != nil {
+		revision := *req.ExpectedServerAssemblyRevision
+		in.ExpectedServerAssemblyRevision = &revision
+	}
 	if len(req.GetUpsert()) > 0 {
 		w, err := TechCardSeamsWriteFromPb(int(req.GetTechCardId()), req.GetUpsert(), by)
 		if err != nil {
