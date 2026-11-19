@@ -71,7 +71,7 @@ var profileMigrationKeys = map[string]string{
 func TestProfileMigration(t *testing.T) {
 	d := freshDSN(t)
 	ctx := context.Background()
-	db, err := sql.Open("mysql", d+"?sql_mode="+url.QueryEscape("'"+serverSQLMode+"'"))
+	db, err := sql.Open("mysql", d+"?parseTime=true&sql_mode="+url.QueryEscape("'"+serverSQLMode+"'"))
 	if err != nil {
 		t.Fatal(err)
 	}
