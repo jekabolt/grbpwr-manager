@@ -36,7 +36,7 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 		return nil, status.Errorf(codes.Internal, "can't add archive")
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: archiveId,
 	})
 
@@ -72,7 +72,7 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 		return nil, status.Errorf(codes.Internal, "can't update archive")
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})
@@ -89,7 +89,7 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 		return nil, status.Errorf(codes.Internal, "failed to delete archive: %v", err)
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})

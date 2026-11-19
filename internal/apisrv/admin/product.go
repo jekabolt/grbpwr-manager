@@ -609,7 +609,7 @@ func (s *Server) afterColorwayLifecycleChange(ctx context.Context, id int) {
 	} else {
 		cache.RefreshDictionary(ctx, di)
 	}
-	s.revalidateAsync(&dto.RevalidationData{Products: []int{id}, Hero: true})
+	s.revalidateAsync(ctx, &dto.RevalidationData{Products: []int{id}, Hero: true})
 }
 
 // getPbColorway loads a colourway and projects the admin Colorway (the nested message of ColorwayFull)
@@ -1079,7 +1079,7 @@ func (s *Server) UpdateVariantStock(ctx context.Context, req *pb_admin.UpdateVar
 		}()
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Products: []int{productId},
 		Hero:     true,
 	})

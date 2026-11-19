@@ -25,6 +25,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -315,9 +316,21 @@ func clampPagination(limit, offset int) (int, int) {
 // than the request context, so it survives the RPC returning but is still
 // cancellable: StopRevalidation cancels revalCtx and waits on revalWG at shutdown,
 // so best-effort Vercel calls stop retrying instead of outliving the process.
-func (s *Server) revalidateAsync(data *dto.RevalidationData) {
+//
+// The caller's team is resolved here, before detaching: the storefront shows one team's catalogue,
+// so only a change made by that team re-renders it (teams mode off: one team, always). The detached
+// work carries that team, never the request's ctx.
+func (s *Server) revalidateAsync(ctx context.Context, data *dto.RevalidationData) {
 	if s.noShop {
 		return
+	}
+	team, ok := s.storefrontTeamOf(ctx)
+	if !ok {
+		return
+	}
+	rctx := s.revalCtx
+	if team.ID > 0 {
+		rctx = tenant.With(rctx, team)
 	}
 	// Add before the goroutine starts so a concurrent StopRevalidation cannot
 	// Wait() past an un-registered goroutine.
@@ -326,17 +339,35 @@ func (s *Server) revalidateAsync(data *dto.RevalidationData) {
 		defer s.revalWG.Done()
 		// Best-effort background side effect: a panic in the revalidation path must
 		// be logged with a stack and swallowed, never crash the whole process.
-		defer saferun.Recover(s.revalCtx, "admin-revalidate")
+		defer saferun.Recover(rctx, "admin-revalidate")
 		// Acquire a semaphore slot, queuing if maxConcurrentRevalidations are already
 		// in flight, so concurrency stays bounded.
 		s.revalidateSem <- struct{}{}
 		defer func() { <-s.revalidateSem }()
-		if err := s.re.RevalidateAll(s.revalCtx, data); err != nil {
-			slog.Default().ErrorContext(s.revalCtx, "async storefront revalidation failed",
+		if err := s.re.RevalidateAll(rctx, data); err != nil {
+			slog.Default().ErrorContext(rctx, "async storefront revalidation failed",
 				slog.String("err", err.Error()),
 			)
 		}
 	}()
+}
+
+// storefrontTeamOf returns the caller's team and whether it is the storefront team. Teams mode off
+// (no control plane): there is one team, and it is the storefront. Teams mode on: the configured
+// storefront team (<= 0 reads as team #1, as tenantbind does); a ctx without a team never matches.
+func (s *Server) storefrontTeamOf(ctx context.Context) (tenant.Team, bool) {
+	t, ok := tenant.From(ctx)
+	if s.platform.store == nil {
+		return t, true
+	}
+	if !ok || s.platform.cfg.NoShop() {
+		return tenant.Team{}, false
+	}
+	sf := s.platform.cfg.StorefrontTeamID
+	if sf <= 0 {
+		sf = tenant.TeamOneID
+	}
+	return t, t.ID == sf
 }
 
 // StopRevalidation cancels the server-scoped revalidation context and waits, bounded

@@ -157,7 +157,7 @@ func (s *Server) UpdateSettings(ctx context.Context, req *pb_admin.UpdateSetting
 		}
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Hero: true,
 	})
 	return &pb_admin.UpdateSettingsResponse{}, nil
@@ -196,7 +196,7 @@ func (s *Server) SetBackgroundHeroColor(ctx context.Context, req *pb_admin.SetBa
 
 	cache.SetBackgroundHeroColor(ctx, req.Color)
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Hero: true,
 	})
 

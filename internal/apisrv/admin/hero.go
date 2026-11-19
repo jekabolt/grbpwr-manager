@@ -31,7 +31,7 @@ func (s *Server) AddHero(ctx context.Context, req *pb_admin.AddHeroRequest) (*pb
 		return nil, status.Errorf(codes.Internal, "can't add hero")
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Hero: true,
 	})
 	return &pb_admin.AddHeroResponse{}, nil

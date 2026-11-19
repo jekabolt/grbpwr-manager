@@ -138,7 +138,7 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 	} else {
 		cache.RefreshDictionary(ctx, di)
 	}
-	s.revalidateAsync(&dto.RevalidationData{Hero: true})
+	s.revalidateAsync(ctx, &dto.RevalidationData{Hero: true})
 	return &pb_admin.UpdateStyleResponse{LockVersion: int32(lockVersion)}, nil
 }
 

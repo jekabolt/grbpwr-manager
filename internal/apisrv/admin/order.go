@@ -351,7 +351,7 @@ func (s *Server) RefundOrder(ctx context.Context, req *pb_admin.RefundOrderReque
 			}
 		}
 		if len(products) > 0 {
-			s.revalidateAsync(&dto.RevalidationData{Products: products, Hero: true})
+			s.revalidateAsync(ctx, &dto.RevalidationData{Products: products, Hero: true})
 		}
 	}
 	return &pb_admin.RefundOrderResponse{}, nil
