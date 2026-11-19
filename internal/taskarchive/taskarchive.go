@@ -38,6 +38,7 @@ func DefaultConfig() Config {
 type Worker struct {
 	tasks   dependency.Tasks
 	c       *Config
+	teams   func(context.Context, func(context.Context) bool) bool
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -61,6 +62,12 @@ func New(c *Config, tasks dependency.Tasks) *Worker {
 		c.RetentionPeriod = DefaultConfig().RetentionPeriod
 	}
 	return &Worker{tasks: tasks, c: c, now: time.Now}
+}
+
+// SetTeamLoop makes one worker tick visit every team selected by the application. Nil keeps the
+// original single-context behaviour. Call before Start.
+func (w *Worker) SetTeamLoop(loop func(context.Context, func(context.Context) bool) bool) {
+	w.teams = loop
 }
 
 // Start starts the worker.
@@ -92,14 +99,33 @@ func (w *Worker) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			w.runOnce(ctx)
+			w.runTick(ctx)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
+func (w *Worker) runTick(ctx context.Context) bool {
+	if w.teams == nil {
+		return w.runOnce(ctx)
+	}
+	ok := w.teams(ctx, w.runTeamOnce)
+	if ok {
+		w.tracker.MarkSuccess()
+	}
+	return ok
+}
+
 func (w *Worker) runOnce(ctx context.Context) bool {
+	ok := w.runTeamOnce(ctx)
+	if ok {
+		w.tracker.MarkSuccess()
+	}
+	return ok
+}
+
+func (w *Worker) runTeamOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, "taskarchive")
 
 	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
@@ -133,9 +159,6 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 			continue
 		}
 		slog.Default().InfoContext(ctx, "auto-archived DONE task", slog.Int("task_id", id))
-	}
-	if ok {
-		w.tracker.MarkSuccess()
 	}
 	return ok
 }
