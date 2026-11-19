@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -193,7 +195,7 @@ func (s *Server) SuggestPrompts(ctx context.Context, req *pb_admin.SuggestPrompt
 		return nil, err
 	}
 
-	key := suggestCacheKey(in)
+	key := tenant.KeyHash(ctx, suggestCacheKey(in))
 	logAttrs := []any{
 		slog.String("workflow", in.workflow), slog.String("field", in.field),
 		slog.Int("context_runes", in.ctxRunes), slog.Int("text_runes", in.txtRunes),
@@ -274,7 +276,7 @@ func (s *Server) suggestCall(ctx context.Context, in suggestInput, key [32]byte,
 	default:
 		return suggestFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return suggestFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas and text improvements share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

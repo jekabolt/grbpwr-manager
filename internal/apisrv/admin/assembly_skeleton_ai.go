@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -156,7 +158,7 @@ func (s *Server) SuggestAssemblySkeleton(ctx context.Context, req *pb_admin.Sugg
 		return nil, s.aiOffRefusal(purpose, skeletonAINotConfiguredMsg)
 	}
 
-	key := skeletonAIDigest(req)
+	key := tenant.KeyHash(ctx, skeletonAIDigest(req))
 	force := req.GetForce()
 	if !force {
 		if hit, ok := s.skeletonAICache.get(key, time.Now()); ok {
@@ -227,7 +229,7 @@ func (s *Server) skeletonAICall(ctx context.Context, job skeletonAIJob, budget t
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(job.admin) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, job.admin)) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts, the pattern pieces and the skeleton share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

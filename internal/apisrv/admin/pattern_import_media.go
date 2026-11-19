@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"google.golang.org/grpc/codes"
@@ -87,9 +89,9 @@ func patternImportURLs(pics []patternImportPicture) []string {
 // patternImportSpendExtraSlots books into the hourly window every PHYSICAL paid call beyond the
 // slots already taken (a router fallback inside one attempt is a second paid call). The window may
 // already be exhausted: the call happened, the slot is spent all the same (allow's false is ignored).
-func (s *Server) patternImportSpendExtraSlots(admin string, physical, taken int) {
+func (s *Server) patternImportSpendExtraSlots(ctx context.Context, admin string, physical, taken int) {
 	for i := taken; i < physical; i++ {
-		_ = s.enhanceRuns.allow(admin)
+		_ = s.enhanceRuns.allow(tenant.Key(ctx, admin))
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -244,7 +246,7 @@ func (s *Server) SuggestDesignPartsCard(ctx context.Context, req *pb_admin.Sugge
 
 	// ⚠ ONE FLIGHT PER (card, sides+flats, cut): a double press pays once. Detached from the leader's
 	// cancellation under its own budget, like the per-side call.
-	ch := s.partsCardFlight.DoChan(designPartsCardFlightKey(cardID, views, algoRev), func() (any, error) {
+	ch := s.partsCardFlight.DoChan(tenant.Key(ctx, designPartsCardFlightKey(cardID, views, algoRev)), func() (any, error) {
 		// One budget per attempt (an unusable answer is asked once more, designPartsCardAttempts).
 		budget := s.ai.ChainBudget(purpose, designPartsCardMaxTokens)
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
@@ -410,7 +412,7 @@ func (s *Server) designPartsCardCall(ctx context.Context, cardID int, views []de
 	default:
 		return designPartsCardFlightAnswer{}, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(authsrv.GetAdminUsername(ctx)) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, authsrv.GetAdminUsername(ctx))) {
 		return designPartsCardFlightAnswer{}, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz and the parts share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)
