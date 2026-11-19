@@ -223,10 +223,10 @@ func (r *teamRegistry) load(ctx context.Context, tid int64) (*teamSnap, error) {
 		r.sweepLocked()
 	}
 	r.mu.Unlock()
-	if err == nil && tid == tenant.TeamOneID && data.Dict != nil {
-		// Team #1 loaded lazily (a test harness; production fills it in InitConsts): the
-		// process-wide definitions come from it too.
-		setDefinitions(data.Dict)
+	if err == nil && data.Dict != nil {
+		// A lazy load (production fills team #1 in InitConsts): the process-wide definitions and
+		// identity come from team #1, or from the first team loaded while they are still empty.
+		publishDefinitions(tid, data.Dict)
 		setIdentityOnce(data.Dict)
 	}
 	close(c.done)
@@ -507,4 +507,24 @@ func (r *teamRegistry) writeSettings(ctx context.Context, f func(*teamSettings))
 	f(st)
 	st.mu.Unlock()
 	return nil
+}
+
+// publishDefinitions keeps the process-wide definitions in step with a team's dictionary: team #1's
+// always, another team's only while none are known yet (team #1 was never loaded: a harness, or an
+// installation whose team #1 database is empty). The rows are migration-seeded and the same in every
+// team database, so whichever team fills them first gives the same answer.
+func publishDefinitions(tid int64, d *entity.DictionaryInfo) {
+	if d == nil {
+		return
+	}
+	if tid == tenant.TeamOneID {
+		setDefinitions(d)
+		return
+	}
+	cacheMu.RLock()
+	known := len(sizeById) > 0 || len(categoryById) > 0
+	cacheMu.RUnlock()
+	if !known && (len(d.Sizes) > 0 || len(d.Categories) > 0) {
+		setDefinitions(d)
+	}
 }

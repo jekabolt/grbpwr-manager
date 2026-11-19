@@ -44,6 +44,8 @@ func resetForTest(t *testing.T) {
 			paymentMethodIdByPbId[p.PB] = 0
 		}
 		paymentMethodsById = map[int]*PaymentMethod{}
+		sizeById = map[int]entity.Size{}
+		categoryById = map[int]entity.Category{}
 		cacheMu.Unlock()
 	}
 	reset()
@@ -361,6 +363,43 @@ func TestLazyLoadSingleflight(t *testing.T) {
 	require.Equal(t, int32(32), seen.Load())
 	require.Equal(t, 1, fl.callsOf(2))
 	require.Equal(t, 1, fl.callsOf(3))
+}
+
+// The process-wide size and category definitions come from team #1; while team #1 was never
+// loaded (its database is empty, or a harness), the first team loaded fills them, and a later team
+// never replaces what is known. A freshly provisioned team must be able to validate its size ids.
+func TestDefinitionsFromFirstLoadedTeam(t *testing.T) {
+	resetForTest(t)
+	SetStrict(true)
+	fl := newFakeLoader()
+	fl.data[2] = teamDict("bravoo")
+	fl.data[3] = teamDict("charlie")
+	SetLoader(fl.load)
+
+	_, ok := GetSizeById(1)
+	require.False(t, ok, "nothing is loaded yet")
+
+	require.Len(t, GetColors(teamCtx(2)), 1)
+	sz, ok := GetSizeById(1)
+	require.True(t, ok, "team 2's load fills the definitions while none are known")
+	require.Equal(t, "bravoo-size", sz.Name)
+	_, ok = GetCategoryById(1)
+	require.True(t, ok)
+
+	require.Len(t, GetColors(teamCtx(3)), 1)
+	sz, _ = GetSizeById(1)
+	require.Equal(t, "bravoo-size", sz.Name, "a later team does not replace known definitions")
+
+	RefreshDictionary(teamCtx(3), teamDict("charlie").Dict)
+	sz, _ = GetSizeById(1)
+	require.Equal(t, "bravoo-size", sz.Name, "nor does its dictionary refresh")
+
+	fl.mu.Lock()
+	fl.data[1] = teamDict("alphaa")
+	fl.mu.Unlock()
+	RefreshDictionary(teamCtx(1), teamDict("alphaa").Dict)
+	sz, _ = GetSizeById(1)
+	require.Equal(t, "alphaa-size", sz.Name, "team #1 always sets them")
 }
 
 // A failed load is not cached: the next call loads again. A waiter whose ctx ends stops waiting.

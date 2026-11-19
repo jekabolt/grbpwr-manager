@@ -109,9 +109,7 @@ func EnsureDictionaryFresh(ctx context.Context, revSrc DictionaryRevisionSource,
 	}
 	s.revisions = copyRevisions(dbRevs)
 	s.mu.Unlock()
-	if tid == tenant.TeamOneID {
-		setDefinitions(dInfo)
-	}
+	publishDefinitions(tid, dInfo)
 	return true, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/shopspring/decimal"
 )
 
@@ -39,9 +38,7 @@ func RefreshDictionary(ctx context.Context, dInfo *entity.DictionaryInfo) {
 		s.modelPhotoTechCardID = dInfo.ModelPhotoTechCardID
 	}
 	s.mu.Unlock()
-	if tid == tenant.TeamOneID {
-		setDefinitions(dInfo)
-	}
+	publishDefinitions(tid, dInfo)
 }
 
 func GetCategories(ctx context.Context) []entity.Category {
