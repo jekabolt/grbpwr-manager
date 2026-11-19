@@ -52,9 +52,11 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 			pocket.PatternLineKey = "01JABCDEFGHJKMNPQRSTVWXYZ1"
 			pocket.URL = "https://files.grbpwr.com/" + pocketKey
 			pocket.Filename = "pocket.dxf"
-			access := map[string]entity.PatternObjectAccess{mainKey: {Id: 41, ObjectKey: mainKey}}
+			mainObject := entity.PatternObjectAccess{Id: 41, ObjectKey: mainKey}
+			access := map[entity.PatternObjectID]entity.PatternObjectAccess{mainObject.ID(): mainObject}
 			if !tc.missing {
-				access[pocketKey] = entity.PatternObjectAccess{Id: 42, ObjectKey: pocketKey}
+				pocketObject := entity.PatternObjectAccess{Id: 42, ObjectKey: pocketKey}
+				access[pocketObject.ID()] = pocketObject
 			}
 			objects.EXPECT().EnsureByKeys(mock.Anything, []entity.PatternObjectRef{
 				{Key: mainKey, Filename: "main.dxf"}, {Key: pocketKey, Filename: "pocket.dxf"},
