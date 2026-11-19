@@ -34,6 +34,7 @@ type fakeEdge struct {
 	ops      map[int64]bool
 	removed  map[int64]bool   // uid → membership removed / user disabled
 	roles    map[int64]string // uid → membership role (default owner)
+	gens     map[string]int64 // handle → credential generation
 }
 
 const (
@@ -109,6 +110,9 @@ func (e *fakeEdge) RequestedTeam(_ context.Context, host, xteam string) (tenant.
 }
 
 func (e *fakeEdge) Operator(_ context.Context, id int64) (bool, error) { return e.ops[id], nil }
+func (e *fakeEdge) LegacyCredGen(_ context.Context, h string, _ int64) (int64, error) {
+	return e.gens[h], nil
+}
 
 var (
 	edgeTeamOne = tenant.TeamOne("grbpwr_beta")

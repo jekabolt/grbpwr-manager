@@ -6,60 +6,56 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
-// platformServices holds the identity service of each server (*Server → *platformServiceEntry). The
-// service is not a Server field because platform.go and auth.go belong to other lanes; the
-// coordinator may fold it into platformHandle (built in SetPlatform) and drop this map.
-var platformServices sync.Map
-
-type platformServiceEntry struct {
-	once sync.Once
-	svc  *platformauth.Service
-	err  error
+// newPlatformService builds the identity service from the server's control plane (SetPlatform).
+func (s *Server) newPlatformService() (*platformauth.Service, error) {
+	svc, err := platformauth.New(platformauth.Deps{
+		Store:          s.platform.store,
+		Config:         s.platform.cfg,
+		JWT:            s.JwtAuth,
+		Hasher:         s.pwhash,
+		TeamTTL:        s.jwtTTL,
+		Now:            s.clockNow,
+		Hooks:          s.platformHooks(),
+		SignupApproval: s.platform.cfg.SignupApprovalOn(),
+		TermsVersion:   s.platform.cfg.Terms(),
+		SchemaBehind:   s.schemaBehind,
+	})
+	if err != nil {
+		slog.Default().Error("platformauth: identity service not built", slog.String("err", err.Error()))
+		return nil, err
+	}
+	if err := svc.Ready(); err != nil {
+		slog.Default().Error("platformauth: identity RPCs unavailable", slog.String("err", err.Error()))
+	}
+	return svc, nil
 }
 
-// platformService is the identity service built from the server's control plane on first use. nil,
-// nil = teams mode off (the platform RPCs answer Unimplemented).
+// schemaBehind is the edge's schema predicate (set at boot by SetEdge, before serving); no edge =
+// every team current.
+func (s *Server) schemaBehind(t tenant.Team) bool {
+	return s.edge != nil && s.edge.SchemaBehind(t)
+}
+
+// platformService is the identity service built in SetPlatform. nil, nil = teams mode off (the
+// platform RPCs answer Unimplemented).
 func (s *Server) platformService() (*platformauth.Service, error) {
 	if s.platform.store == nil {
 		return nil, nil
 	}
-	v, _ := platformServices.LoadOrStore(s, &platformServiceEntry{})
-	e := v.(*platformServiceEntry)
-	e.once.Do(func() {
-		e.svc, e.err = platformauth.New(platformauth.Deps{
-			Store:   s.platform.store,
-			Config:  s.platform.cfg,
-			JWT:     s.JwtAuth,
-			Hasher:  s.pwhash,
-			TeamTTL: s.jwtTTL,
-			Now:     s.clockNow,
-			Hooks:   s.platformHooks(),
-			// Read here only in teams mode; the coordinator may move both into config/cfg.go.
-			SignupApproval: platformauth.SignupApprovalFromEnv(),
-			TermsVersion:   platformauth.TermsVersionFromEnv(),
-		})
-		if e.err == nil {
-			if err := e.svc.Ready(); err != nil {
-				slog.Default().Error("platformauth: identity RPCs unavailable", slog.String("err", err.Error()))
-			}
-		}
-	})
-	return e.svc, e.err
+	return s.platform.svc, s.platform.svcErr
 }
 
-// closePlatformService stops the service's limiters (StopRateLimiter calls it).
+// closePlatformService stops the service's limiters (StopRateLimiter calls it; idempotent).
 func (s *Server) closePlatformService() {
-	if v, ok := platformServices.LoadAndDelete(s); ok {
-		if e := v.(*platformServiceEntry); e.svc != nil {
-			e.svc.Close()
-		}
+	if s.platform.svc != nil {
+		s.platform.svc.Close()
 	}
 }
 
@@ -90,12 +86,37 @@ func (s *Server) platformHooks() platformauth.Hooks {
 			if err != nil {
 				return err
 			}
-			if err := s.adminRepository.ChangePassword(pctx, handle, hash); err != nil {
-				return fmt.Errorf("team one password: %w", err)
+			// Mirrored like the admin-panel change: a few attempts, so the old team #1 Login
+			// stops taking the old password.
+			for attempt := 1; ; attempt++ {
+				err = s.adminRepository.ChangePassword(pctx, handle, hash)
+				if err == nil || attempt == passwordMirrorAttempts {
+					break
+				}
+				if serr := sleepCtx(ctx, time.Duration(attempt)*100*time.Millisecond); serr != nil {
+					break
+				}
 			}
 			s.InvalidateAdminAccount(handle)
+			if err != nil {
+				return fmt.Errorf("team one password: %w", err)
+			}
 			return nil
 		},
+		PasswordChanged: s.dropRevokedCredentials,
+	}
+}
+
+// dropRevokedCredentials drops what a password change revoked from the edge caches (best effort:
+// the edge's TTL bounds a miss): the revoked sessions and the handle's legacy «not before».
+func (s *Server) dropRevokedCredentials(_ context.Context, handle string, sids []string) {
+	if inv, ok := s.edge.(interface{ InvalidateSession(sid string) }); ok {
+		for _, sid := range sids {
+			inv.InvalidateSession(sid)
+		}
+	}
+	if inv, ok := s.edge.(interface{ InvalidateCredentials(handle string) }); ok {
+		inv.InvalidateCredentials(handle)
 	}
 }
 

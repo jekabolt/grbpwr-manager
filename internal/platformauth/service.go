@@ -37,6 +37,10 @@ type Hooks struct {
 	EnableMember func(ctx context.Context, team tenant.Team, handle string) (bool, error)
 	// TeamOnePassword writes a new password hash onto team #1's admins row of the handle.
 	TeamOnePassword func(ctx context.Context, handle, hash string) error
+	// PasswordChanged runs after a password reset committed: sids are the sessions it revoked.
+	// The edge drops them and the handle's cached «not before» so old platform sessions, team
+	// tokens and legacy team #1 tokens fail on their next call.
+	PasswordChanged func(ctx context.Context, handle string, sids []string)
 }
 
 // TeamAccount is what a team token needs from the team's admins row.
@@ -62,6 +66,10 @@ type Deps struct {
 	SignupApproval bool
 	// TermsVersion (PLATFORM_TERMS_VERSION) is stored on every account created by sign-up or invite.
 	TermsVersion string
+	// SchemaBehind is the edge's boot-time predicate «team t's database is behind the binary»
+	// (tenantbind.Binder.SchemaBehind). A sign-in, hand-off or invite into such a team is refused
+	// before any code is spent, session opened or team database touched. nil = every team current.
+	SchemaBehind func(tenant.Team) bool
 }
 
 // Service is the identity logic behind the AuthService platform RPCs.
@@ -79,6 +87,7 @@ type Service struct {
 func errCode() error     { return status.Error(codes.InvalidArgument, "invalid or expired code") }
 func errAuth() error     { return status.Error(codes.Unauthenticated, "not authenticated") }
 func errNotReady() error { return status.Error(codes.Unavailable, "workspace is being prepared") }
+func errUpdating() error { return status.Error(codes.Unavailable, "team is being updated") }
 func errInternal() error { return status.Error(codes.Internal, "internal error") }
 func errBusy() error {
 	return status.Error(codes.ResourceExhausted, "too many attempts, please try again later")
@@ -548,6 +557,9 @@ func (s *Service) teamToken(ctx context.Context, u platformstore.User, team tena
 			return "", errNotReady()
 		}
 	}
+	if s.schemaBehind(team) {
+		return "", errUpdating()
+	}
 	acc, found, err := s.teamAccount(ctx, team, u)
 	if err != nil {
 		s.log(ctx, "team account", err)
@@ -557,6 +569,18 @@ func (s *Service) teamToken(ctx context.Context, u platformstore.User, team tena
 		return "", errAuth()
 	}
 	return s.session(ctx, u, team.ID, jwt.AudTeam, s.d.TeamTTL, acc.Super, rbac.EncodePermissions(acc.Perms), now)
+}
+
+// schemaBehind: the team has a workspace (active or suspended) whose database is behind the binary.
+// A team without one yet is the provisioning answer's business, not this one's.
+func (s *Service) schemaBehind(t tenant.Team) bool {
+	if s.d.SchemaBehind == nil || t.DBName == "" {
+		return false
+	}
+	if t.Status != tenant.StatusActive && t.Status != tenant.StatusSuspended {
+		return false
+	}
+	return s.d.SchemaBehind(t)
 }
 
 // teamAccount reads the member's admins row. A row an invite staged and never finished (disabled,
@@ -588,7 +612,12 @@ func (s *Service) session(ctx context.Context, u platformstore.User, teamID int6
 		s.log(ctx, "session id", err)
 		return "", errInternal()
 	}
-	if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, now); err != nil {
+	// u.CredGen is the generation read with the password the caller checked: a password change
+	// that committed since refuses the session (the sign-in used the old password).
+	if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, u.CredGen, now); err != nil {
+		if errors.Is(err, platformstore.ErrCredentialsChanged) {
+			return "", errAuth()
+		}
 		s.log(ctx, "create session", err)
 		return "", errInternal()
 	}
@@ -655,7 +684,10 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 		return nil, errInternal()
 	}
 	nt.TeamID = team.ID
-	if err := s.d.Store.IssueHandoff(ctx, u.ID, nt, now); err != nil {
+	if err := s.d.Store.IssueHandoff(ctx, u.ID, claims.SessionID, nt, now); err != nil {
+		if errors.Is(err, platformstore.ErrTokenInvalid) {
+			return nil, errAuth()
+		}
 		s.log(ctx, "issue hand-off", err)
 		return nil, errInternal()
 	}
@@ -694,6 +726,16 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 	if err != nil {
 		return nil, errCode()
 	}
+	if team.Status == tenant.StatusProvisioning || team.DBName == "" {
+		// The directory's copy may predate activation: read it again before the code is spent.
+		dir.Invalidate(team.ID)
+		if team, err = dir.ByID(ctx, team.ID); err != nil {
+			return nil, errCode()
+		}
+	}
+	if s.schemaBehind(team) {
+		return nil, errUpdating()
+	}
 	sid, err := NewSessionID()
 	if err != nil {
 		s.log(ctx, "session id", err)
@@ -716,9 +758,11 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 		team, err = dir.ByID(ctx, team.ID)
 	}
 	var acc TeamAccount
-	found := false
+	found, behind := false, false
 	if err == nil && team.DBName != "" {
-		acc, found, err = s.teamAccount(ctx, team, res.User)
+		if behind = s.schemaBehind(team); !behind {
+			acc, found, err = s.teamAccount(ctx, team, res.User)
+		}
 	}
 	if err != nil || !found || acc.Disabled {
 		// The code is spent; close the session it opened. The page sends the person to sign in.
@@ -728,6 +772,9 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 		if err != nil {
 			s.log(ctx, "team account", err)
 			return nil, errInternal()
+		}
+		if behind {
+			return nil, errUpdating()
 		}
 		return nil, errCode()
 	}
@@ -846,6 +893,9 @@ func (s *Service) ResetPassword(ctx context.Context, req *auth.ResetPasswordRequ
 		s.log(ctx, "reset password", err)
 		return nil, errInternal()
 	}
+	if s.d.Hooks.PasswordChanged != nil {
+		s.d.Hooks.PasswordChanged(ctx, res.Handle, res.SIDs)
+	}
 	if res.TeamOneMem && s.d.Hooks.TeamOnePassword != nil {
 		if err := s.d.Hooks.TeamOnePassword(ctx, res.Handle, hash); err != nil {
 			// The platform password is set; the old team #1 Login keeps the old one until fixed.
@@ -952,6 +1002,12 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 			}
 			handle = h
 		}
+	}
+	// The invite stages and enables a row in the team's database: refused before the token is spent
+	// while that database is behind the binary. A directory miss is left to the store's Stage step,
+	// which reads the same entry and fails the same way it always has.
+	if team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID); err == nil && s.schemaBehind(team) {
+		return nil, errUpdating()
 	}
 	hash, err := s.d.Hasher.HashPassword(pw)
 	if err != nil {
