@@ -191,6 +191,8 @@ type Server struct {
 	tenantBinder            TenantBinder
 	// platformOn: PlatformService is registered (teams mode); /api/platform is mounted.
 	platformOn bool
+	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
+	noShop bool
 }
 
 // TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
@@ -626,9 +628,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	if err != nil {
 		return nil, err
 	}
-	frontendHandler, err := s.frontendJSONGateway(ctx)
-	if err != nil {
-		return nil, err
+	var frontendHandler http.Handler = http.HandlerFunc(noShopHTTP)
+	if !s.noShop {
+		if frontendHandler, err = s.frontendJSONGateway(ctx); err != nil {
+			return nil, err
+		}
 	}
 	authHandler, err := s.authJSONGateway(ctx)
 	if err != nil {
@@ -810,16 +814,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	})
 
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.
-	if s.webhookHandler != nil {
-		r.Post("/api/webhooks/resend", s.webhookHandler.HandleResendEvent)
-		r.Post("/api/webhooks/list-unsubscribe/{email_b64}/{token}", s.webhookHandler.HandleListUnsubscribe)
-		r.Post("/api/webhooks/list-unsubscribe/{topic}/{email_b64}/{token}", s.webhookHandler.HandleCampaignListUnsubscribe)
-	}
-	if s.stripeWebhookHandler != nil {
-		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)
-	}
-	if s.aftershipWebhookHandler != nil {
-		r.Post("/api/webhooks/aftership", s.aftershipWebhookHandler.HandleAftershipEvent)
+	// No shop: every webhook path answers the fixed 503 instead.
+	if s.noShop {
+		r.HandleFunc("/api/webhooks/*", noShopHTTP)
+	} else {
+		s.mountShopWebhooks(r)
 	}
 
 	r.Mount("/", http.FileServer(http.FS(fs)))
@@ -1203,13 +1202,18 @@ func (s *Server) Start(ctx context.Context,
 		grpc.ChainStreamInterceptor(
 			observability.StreamServerInterceptor(),
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
+			s.noShopStreamInterceptor(),
 			s.tenantStream(),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.StreamAdminAuthInterceptor(),
 		),
+		s.unknownServiceOption(),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
-	pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
+	// No shop: FrontendService is not registered; its calls answer Unavailable (noshop.go).
+	if !s.noShop {
+		pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
+	}
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
 	// PlatformService exists only in teams mode (a control plane is set).
 	if st, _, ok := authServer.PlatformStore(); ok {

@@ -57,6 +57,8 @@ type Server struct {
 	pb_admin.UnimplementedAdminServiceServer
 	// platform is the control plane in teams mode (platform.go); zero = teams mode off.
 	platform platformHandle
+	// noShop: no storefront on this installation (noshop.go); storefront side effects are skipped.
+	noShop bool
 
 	repo   dependency.Repository
 	bucket dependency.FileStore
@@ -314,6 +316,9 @@ func clampPagination(limit, offset int) (int, int) {
 // cancellable: StopRevalidation cancels revalCtx and waits on revalWG at shutdown,
 // so best-effort Vercel calls stop retrying instead of outliving the process.
 func (s *Server) revalidateAsync(data *dto.RevalidationData) {
+	if s.noShop {
+		return
+	}
 	// Add before the goroutine starts so a concurrent StopRevalidation cannot
 	// Wait() past an un-registered goroutine.
 	s.revalWG.Add(1)
