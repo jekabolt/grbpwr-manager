@@ -80,6 +80,49 @@ type Config struct {
 	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
 	// read through Terms. Optional, read only in teams mode.
 	TermsVersion string `mapstructure:"terms_version"`
+	// OAuth: provider sign-in settings (OAUTH_*). Optional; read only in teams mode.
+	OAuth OAuthConfig `mapstructure:"oauth"`
+}
+
+// OAuthConfig is sign in with Google / Apple (OAUTH_*). Parsed only: nothing set (or teams mode
+// off) behaves exactly as without it. Its String redacts the secrets.
+type OAuthConfig struct {
+	// GoogleClientID / GoogleClientSecret: OAUTH_GOOGLE_CLIENT_ID / OAUTH_GOOGLE_CLIENT_SECRET.
+	GoogleClientID     string `mapstructure:"google_client_id"`
+	GoogleClientSecret string `mapstructure:"google_client_secret"`
+	// AppleEnabled (OAUTH_APPLE_ENABLED): kept as text so an unreadable value never stops a boot;
+	// read through AppleOn (default off).
+	AppleEnabled string `mapstructure:"apple_enabled"`
+	// AppleServicesID, AppleTeamID, AppleKeyID, ApplePrivateKey (the .p8 PEM):
+	// OAUTH_APPLE_SERVICES_ID, OAUTH_APPLE_TEAM_ID, OAUTH_APPLE_KEY_ID, OAUTH_APPLE_PRIVATE_KEY.
+	AppleServicesID string `mapstructure:"apple_services_id"`
+	AppleTeamID     string `mapstructure:"apple_team_id"`
+	AppleKeyID      string `mapstructure:"apple_key_id"`
+	ApplePrivateKey string `mapstructure:"apple_private_key"`
+	// CallbackBase (OAUTH_CALLBACK_BASE): the scheme and host of the provider callbacks; empty means
+	// https://api.<PLATFORM_BASE_DOMAIN>. Set only for local development.
+	CallbackBase string `mapstructure:"callback_base"`
+}
+
+// AppleOn reads AppleEnabled: off unless it parses as true.
+func (o OAuthConfig) AppleOn() bool {
+	b, err := strconv.ParseBool(strings.TrimSpace(o.AppleEnabled))
+	return err == nil && b
+}
+
+// String names which settings are present and never prints a secret.
+func (o OAuthConfig) String() string {
+	set := func(s string) bool { return strings.TrimSpace(s) != "" }
+	return fmt.Sprintf("platformstore.OAuthConfig{Google:%t GoogleSecret:%t Apple:%t AppleKey:%t CallbackBase:%s}",
+		set(o.GoogleClientID), set(o.GoogleClientSecret), o.AppleOn(), set(o.ApplePrivateKey), o.CallbackBase)
+}
+
+// OAuthCallbackBase is OAuth.CallbackBase, or https://api.<BaseDomain> when it is empty.
+func (c Config) OAuthCallbackBase() string {
+	if v := strings.TrimRight(strings.TrimSpace(c.OAuth.CallbackBase), "/"); v != "" {
+		return v
+	}
+	return "https://api." + strings.TrimSpace(c.BaseDomain)
 }
 
 // DefaultTermsVersion is the terms version stored when PLATFORM_TERMS_VERSION is not set.

@@ -6,6 +6,14 @@ import "google/api/annotations.proto";
 
 option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth";
 
+// AuthService. Plain HTTP routes of the same /api/auth mount that are not RPCs (no gateway, no session):
+//   POST /api/auth/oauth/{google|apple}/start  (HTML form: target signin|invite; for an invite
+//        invite_token and terms_accepted) starts a provider sign-in;
+//   GET  /api/auth/oauth/google/callback and POST /api/auth/oauth/apple/callback end it with a 303 to
+//        https://<base>/auth/oauth#code=<one-time code for ExchangeSignInCode> or #error=<fixed key>
+//        (cancelled, expired, unverified, invite_mismatch, disabled, try_again);
+//   GET  /api/auth/team-logo/{slug} serves a team's logo as PNG (public; 404 when there is none).
+// "root session" below = a Bearer token from SignIn target root or ExchangeSignInCode.
 service AuthService {
   // Authenticate a user. Returns a JWT token if the user is authenticated.
   rpc Login(LoginRequest) returns (LoginResponse) {
@@ -91,7 +99,8 @@ service AuthService {
     };
   }
 
-  // SignOut revokes the session of the calling token.
+  // SignOut revokes the session of the calling token. A root token ends the root session and every
+  // team session opened from it; a team token ends only itself.
   rpc SignOut(SignOutRequest) returns (SignOutResponse) {
     option (google.api.http) = {
       post: "/api/auth/sign-out"
@@ -127,6 +136,46 @@ service AuthService {
   rpc AcceptInvite(AcceptInviteRequest) returns (AcceptInviteResponse) {
     option (google.api.http) = {
       post: "/api/auth/accept-invite"
+      body: "*"
+    };
+  }
+
+  // ListMyTeams lists the teams of the root session's account (root session).
+  rpc ListMyTeams(ListMyTeamsRequest) returns (ListMyTeamsResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/list-my-teams"
+      body: "*"
+    };
+  }
+
+  // CreateTeam creates one more team owned by the root session's account (root session).
+  rpc CreateTeam(CreateTeamRequest) returns (CreateTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/create-team"
+      body: "*"
+    };
+  }
+
+  // GetSignInOptions tells which provider sign-in buttons to show (public).
+  rpc GetSignInOptions(GetSignInOptionsRequest) returns (GetSignInOptionsResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/get-sign-in-options"
+      body: "*"
+    };
+  }
+
+  // ExchangeSignInCode swaps the one-time code of a provider sign-in for a root token (public).
+  rpc ExchangeSignInCode(ExchangeSignInCodeRequest) returns (ExchangeSignInCodeResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/exchange-sign-in-code"
+      body: "*"
+    };
+  }
+
+  // SetTeamLogo sets or removes the logo of the calling team (team session, owner only).
+  rpc SetTeamLogo(SetTeamLogoRequest) returns (SetTeamLogoResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/set-team-logo"
       body: "*"
     };
   }
@@ -209,6 +258,8 @@ message TeamRef {
   bool ready = 5;
   // awaiting_approval is true while the team waits for an operator's approval; ready is false then.
   bool awaiting_approval = 6;
+  // logo_url is the absolute URL of the team's logo (changes when the logo does); empty when there is none.
+  string logo_url = 7;
 }
 
 message SignUpRequest {
@@ -218,6 +269,9 @@ message SignUpRequest {
   string team_slug = 4;
   // terms_accepted must be true for a new account; the server refuses otherwise.
   bool terms_accepted = 5;
+  // logo is an optional team logo, PNG or JPEG, at most 1 MB (JSON: base64); a bad image refuses
+  // the whole request with bad_logo.
+  bytes logo = 6;
 }
 
 message SignUpResponse {}
@@ -321,4 +375,64 @@ message AcceptInviteRequest {
 message AcceptInviteResponse {
   string team_slug = 1;
   string handoff_code = 2;
+}
+
+message ListMyTeamsRequest {}
+
+message ListMyTeamsResponse {
+  // teams are the account's teams, review and suspended included; deleted and pending are absent.
+  repeated TeamRef teams = 1;
+  // email is the account's email.
+  string email = 2;
+  // can_create_team is false while the account already owns the most teams it may own.
+  bool can_create_team = 3;
+  // terms_needed is true when CreateTeam must carry terms_accepted (the current terms are not accepted yet).
+  bool terms_needed = 4;
+}
+
+message CreateTeamRequest {
+  string team_name = 1;
+  string team_slug = 2;
+  // terms_accepted is required while ListMyTeamsResponse.terms_needed is true.
+  bool terms_accepted = 3;
+  // logo is an optional team logo, PNG or JPEG, at most 1 MB (JSON: base64); a bad image refuses
+  // the whole request with bad_logo.
+  bytes logo = 4;
+}
+
+message CreateTeamResponse {
+  // team is the new team; awaiting_approval is true while it waits for an operator's approval.
+  TeamRef team = 1;
+}
+
+message GetSignInOptionsRequest {}
+
+message GetSignInOptionsResponse {
+  // google is true when the sign in with Google button is shown.
+  bool google = 1;
+  // apple is true when the sign in with Apple button is shown.
+  bool apple = 2;
+}
+
+message ExchangeSignInCodeRequest {
+  // code is the one-time code from the #code= fragment of /auth/oauth (60 seconds, single use).
+  string code = 1;
+}
+
+message ExchangeSignInCodeResponse {
+  // token is a root token, valid for 30 days from sign-in.
+  string token = 1;
+  repeated TeamRef teams = 2;
+  // enter_team_slug is set when an invite was accepted with a provider: IssueHandoff to that team.
+  string enter_team_slug = 3;
+}
+
+message SetTeamLogoRequest {
+  // logo is a PNG or JPEG, at most 1 MB (JSON: base64); empty removes the logo.
+  bytes logo = 1;
+}
+
+message SetTeamLogoResponse {
+  // logo_url is the absolute URL of the new logo; empty after a removal.
+  string logo_url = 1;
 }

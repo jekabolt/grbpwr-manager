@@ -92,3 +92,55 @@ func unsetEnv(t *testing.T, key string) {
 	t.Setenv(key, "") // registers the restore
 	require.NoError(t, os.Unsetenv(key))
 }
+
+// TestPlatformOAuthEnv — OAUTH_* come through the config and are parsed only: none set loads exactly
+// as before (mode off and on), an unreadable OAUTH_APPLE_ENABLED keeps Apple off and never fails the
+// load, and OAUTH_CALLBACK_BASE defaults to https://api.<PLATFORM_BASE_DOMAIN>.
+func TestPlatformOAuthEnv(t *testing.T) {
+	keys := []string{"OAUTH_GOOGLE_CLIENT_ID", "OAUTH_GOOGLE_CLIENT_SECRET", "OAUTH_APPLE_ENABLED", "OAUTH_APPLE_SERVICES_ID",
+		"OAUTH_APPLE_TEAM_ID", "OAUTH_APPLE_KEY_ID", "OAUTH_APPLE_PRIVATE_KEY", "OAUTH_CALLBACK_BASE"}
+	t.Run("none set, mode off and on", func(t *testing.T) {
+		for _, dsn := range []string{"", "u:p@tcp(h:3306)/lekalo_platform?tls=custom"} {
+			clearDBParts(t)
+			for _, k := range keys {
+				unsetEnv(t, k)
+			}
+			t.Setenv("PLATFORM_MYSQL_DSN", dsn)
+			t.Setenv("PLATFORM_BASE_DOMAIN", "beta.lekalo.studio")
+			cfg, err := LoadConfig("")
+			require.NoError(t, err)
+			assert.Equal(t, platformstore.OAuthConfig{}, cfg.Platform.OAuth)
+			assert.False(t, cfg.Platform.OAuth.AppleOn())
+			assert.Equal(t, "https://api.beta.lekalo.studio", cfg.Platform.OAuthCallbackBase())
+		}
+	})
+	t.Run("all set", func(t *testing.T) {
+		clearDBParts(t)
+		t.Setenv("PLATFORM_MYSQL_DSN", "u:p@tcp(h:3306)/lekalo_platform")
+		t.Setenv("OAUTH_GOOGLE_CLIENT_ID", "gid")
+		t.Setenv("OAUTH_GOOGLE_CLIENT_SECRET", "gsecret")
+		t.Setenv("OAUTH_APPLE_ENABLED", "true")
+		t.Setenv("OAUTH_APPLE_SERVICES_ID", "studio.lekalo.web")
+		t.Setenv("OAUTH_APPLE_TEAM_ID", "TEAM123")
+		t.Setenv("OAUTH_APPLE_KEY_ID", "KEY123")
+		t.Setenv("OAUTH_APPLE_PRIVATE_KEY", "pem-body")
+		t.Setenv("OAUTH_CALLBACK_BASE", "http://localhost:8081/")
+		cfg, err := LoadConfig("")
+		require.NoError(t, err)
+		o := cfg.Platform.OAuth
+		assert.Equal(t, platformstore.OAuthConfig{GoogleClientID: "gid", GoogleClientSecret: "gsecret", AppleEnabled: "true",
+			AppleServicesID: "studio.lekalo.web", AppleTeamID: "TEAM123", AppleKeyID: "KEY123", ApplePrivateKey: "pem-body",
+			CallbackBase: "http://localhost:8081/"}, o)
+		assert.True(t, o.AppleOn())
+		assert.Equal(t, "http://localhost:8081", cfg.Platform.OAuthCallbackBase())
+		assert.NotContains(t, o.String(), "gsecret")
+		assert.NotContains(t, o.String(), "pem-body")
+	})
+	t.Run("unreadable apple switch", func(t *testing.T) {
+		clearDBParts(t)
+		t.Setenv("OAUTH_APPLE_ENABLED", "junk")
+		cfg, err := LoadConfig("")
+		require.NoError(t, err)
+		assert.False(t, cfg.Platform.OAuth.AppleOn())
+	})
+}

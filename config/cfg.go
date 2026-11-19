@@ -575,6 +575,15 @@ func bindEnvVars() {
 	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 	viper.BindEnv("platform.signup_approval", "PLATFORM_SIGNUP_APPROVAL")
 	viper.BindEnv("platform.terms_version", "PLATFORM_TERMS_VERSION")
+	// Sign in with Google / Apple (teams O). Optional, parsed only; none set = no provider buttons.
+	viper.BindEnv("platform.oauth.google_client_id", "OAUTH_GOOGLE_CLIENT_ID")
+	viper.BindEnv("platform.oauth.google_client_secret", "OAUTH_GOOGLE_CLIENT_SECRET")
+	viper.BindEnv("platform.oauth.apple_enabled", "OAUTH_APPLE_ENABLED")
+	viper.BindEnv("platform.oauth.apple_services_id", "OAUTH_APPLE_SERVICES_ID")
+	viper.BindEnv("platform.oauth.apple_team_id", "OAUTH_APPLE_TEAM_ID")
+	viper.BindEnv("platform.oauth.apple_key_id", "OAUTH_APPLE_KEY_ID")
+	viper.BindEnv("platform.oauth.apple_private_key", "OAUTH_APPLE_PRIVATE_KEY")
+	viper.BindEnv("platform.oauth.callback_base", "OAUTH_CALLBACK_BASE")
 
 	// MySQL
 	viper.BindEnv("mysql.dsn", "MYSQL_DSN")
