@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -69,7 +70,26 @@ type AcceptParams struct {
 	// TermsVersion is the terms version accepted on the join page ("" = not accepted). Required
 	// only when the invite creates a new account; an existing one is never asked again.
 	TermsVersion string
+
+	// Provider, when set, accepts the invite with a verified provider sign-in instead of a password
+	// (teams O §2, lane O3): the provider must vouch for the invited email (verified, authoritative,
+	// ProviderEmail equal to it) and its identity, when already known, must be that account's,
+	// otherwise ErrInviteMismatch. An existing active account joins with its password untouched and
+	// the identity linked; a pending one is claimed as a provider sign-in claims it; no account → a
+	// new one as a provider sign-up creates it (unusable password), terms still required. An
+	// operator's account → ErrProviderOperator, a disabled one → ErrProviderDisabled. Handoff is
+	// then inserted as a sign-in code for the invite's team (its exchange answers enter_team_slug).
+	// PasswordMatches and NewPasswordHash are not used.
+	Provider *ProviderSignIn
+	// ProviderEmail is Provider.Email normalised by the caller ("" when it is not a usable address).
+	ProviderEmail string
+	// UnusableHash makes the password hash of an account the provider path creates or claims.
+	UnusableHash func() (string, error)
 }
+
+// ErrInviteMismatch: a provider sign-in accepting an invite does not vouch for the invited email,
+// or its identity already belongs to another account. Key invite_mismatch.
+var ErrInviteMismatch = errors.New("platformstore: provider identity does not match the invite")
 
 // AcceptResult is an accepted invite: who joined which team, and whether the account is new.
 type AcceptResult struct {
@@ -81,6 +101,9 @@ type AcceptResult struct {
 	// EnablePending: the last step failed or found nothing to enable; a row still staged is
 	// finished on the member's next platform sign-in to the team.
 	EnablePending bool
+	// SIDs are sessions a provider claim of a pending account revoked (the caller drops them from
+	// the edge cache).
+	SIDs []string
 }
 
 // AcceptInvite consumes an invite in four steps, so the team's admins row is never usable while
@@ -102,8 +125,18 @@ type AcceptResult struct {
 // one is swept by SweepJoining, the row stays disabled). A crash after step 3 leaves the marker on
 // an active member's row: their next platform sign-in to the team finishes it.
 // ErrTeamReadOnly for a suspended team, ErrWrongPassword, ErrHandleTaken, ErrTermsRequired,
-// ErrAlreadyMember, else ErrTokenInvalid.
+// ErrAlreadyMember, else ErrTokenInvalid; on the provider path (p.Provider) also
+// ErrInviteMismatch, ErrProviderOperator, ErrProviderDisabled.
 func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult, error) {
+	if p.Provider != nil {
+		in := *p.Provider
+		in.Subject = strings.TrimSpace(in.Subject)
+		if (in.Provider != ProviderGoogle && in.Provider != ProviderApple) || in.Subject == "" || len(in.Subject) > 255 ||
+			p.UnusableHash == nil {
+			return AcceptResult{}, errors.New("platformstore: provider invite needs a provider, a subject and a hash maker")
+		}
+		p.Provider = &in
+	}
 	res, inv, err := s.reserveInvite(ctx, p)
 	if err != nil {
 		return AcceptResult{}, err
@@ -187,14 +220,21 @@ func (s *Store) reserveInvite(ctx context.Context, p AcceptParams) (AcceptResult
 		return AcceptResult{}, Invite{}, err
 	}
 	var (
-		res AcceptResult
-		inv Invite
+		res   AcceptResult
+		inv   Invite
+		swept []int64
 	)
 	err = s.inTx(ctx, func(tx *sqlx.Tx) error {
-		res = AcceptResult{}
+		res, swept = AcceptResult{}, nil
 		var err error
 		if inv, err = lockLiveInviteTx(ctx, tx, teamID, p.TokenHash, p.Now); err != nil {
 			return err
+		}
+		if p.Provider != nil {
+			if res, swept, err = reserveProviderAccountTx(ctx, tx, inv, p); err != nil {
+				return err
+			}
+			return reserveMembershipTx(ctx, tx, inv, res.UserID, p.Now)
 		}
 		u, err := lockUserByEmail(ctx, tx, inv.Email)
 		switch {
@@ -238,14 +278,103 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, p.NewPasswordH
 		default:
 			return ErrTokenInvalid
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
-VALUES (?, ?, ?, 'joining', ?) ON DUPLICATE KEY UPDATE status = IF(status = 'active', 'active', 'joining')`,
-			inv.TeamID, res.UserID, inv.Role, p.Now); err != nil {
-			return fmt.Errorf("platformstore: reserve membership: %w", err)
-		}
-		return nil
+		return reserveMembershipTx(ctx, tx, inv, res.UserID, p.Now)
 	})
+	for _, id := range swept {
+		s.dir.Invalidate(id)
+	}
 	return res, inv, err
+}
+
+// reserveMembershipTx is step 1's 'joining' membership (an active one stays active).
+func reserveMembershipTx(ctx context.Context, tx *sqlx.Tx, inv Invite, userID int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
+VALUES (?, ?, ?, 'joining', ?) ON DUPLICATE KEY UPDATE status = IF(status = 'active', 'active', 'joining')`,
+		inv.TeamID, userID, inv.Role, now); err != nil {
+		return fmt.Errorf("platformstore: reserve membership: %w", err)
+	}
+	return nil
+}
+
+// reserveProviderAccountTx is step 1's account on the provider path (AcceptParams.Provider), inside
+// the transaction that holds the team row and the invite. The provider's word on the email is
+// checked before any lookup; the identity is read without a lock (its unique key settles a
+// concurrent link), the invited account FOR UPDATE (lock order: team, account, its identities).
+// Returns the team ids a pending claim deleted (the caller drops them from the directory cache).
+func reserveProviderAccountTx(ctx context.Context, tx *sqlx.Tx, inv Invite, p AcceptParams) (AcceptResult, []int64, error) {
+	in := *p.Provider
+	if p.ProviderEmail == "" || p.ProviderEmail != inv.Email || !in.EmailVerified || !in.EmailAuthoritative {
+		return AcceptResult{}, nil, ErrInviteMismatch
+	}
+	var known []int64
+	if err := tx.SelectContext(ctx, &known, `SELECT user_id FROM platform_identity WHERE provider = ? AND subject = ?`,
+		in.Provider, in.Subject); err != nil {
+		return AcceptResult{}, nil, fmt.Errorf("platformstore: find identity: %w", err)
+	}
+	var (
+		res   AcceptResult
+		swept []int64
+	)
+	u, err := lockUserByEmail(ctx, tx, inv.Email)
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		if len(known) > 0 {
+			return AcceptResult{}, nil, ErrInviteMismatch // the identity is another account's
+		}
+		if p.TermsVersion == "" {
+			return AcceptResult{}, nil, ErrTermsRequired
+		}
+		hash, err := p.UnusableHash()
+		if err != nil {
+			return AcceptResult{}, nil, err
+		}
+		verified := p.Now
+		id, h, err := insertUserTx(ctx, tx, inv.Email, hash, UserActive, &verified, false, p.HandleBase, false, p.TermsVersion, p.Now)
+		if errors.Is(err, ErrTokenInvalid) {
+			return AcceptResult{}, nil, errIdentityRace // the same email was created a moment ago
+		}
+		if err != nil {
+			return AcceptResult{}, nil, err
+		}
+		res = AcceptResult{UserID: id, Handle: h, Created: true}
+	case err != nil:
+		return AcceptResult{}, nil, err
+	case len(known) > 0 && known[0] != u.ID:
+		return AcceptResult{}, nil, ErrInviteMismatch
+	case u.IsOperator:
+		return AcceptResult{}, nil, ErrProviderOperator
+	case u.Status == UserDisabled:
+		return AcceptResult{}, nil, ErrProviderDisabled
+	case u.Status == UserActive:
+		var active int
+		if err := tx.GetContext(ctx, &active, `SELECT COUNT(*) FROM team_member
+WHERE team_id = ? AND user_id = ? AND status = 'active'`, inv.TeamID, u.ID); err != nil {
+			return AcceptResult{}, nil, fmt.Errorf("platformstore: read membership: %w", err)
+		}
+		if active > 0 {
+			return AcceptResult{}, nil, ErrAlreadyMember
+		}
+		res = AcceptResult{UserID: u.ID, Handle: u.Handle}
+	case u.Status == UserPending:
+		// The pre-hijack claim, as a provider sign-in makes it: whoever typed the password of the
+		// unconfirmed sign-up loses it, its pending teams go.
+		sids, teams, err := claimPendingTx(ctx, tx, u.ID, ProviderParams{Now: p.Now, UnusableHash: p.UnusableHash})
+		if err != nil {
+			return AcceptResult{}, nil, err
+		}
+		res, swept = AcceptResult{UserID: u.ID, Handle: u.Handle, SIDs: sids}, teams
+	default:
+		return AcceptResult{}, nil, ErrTokenInvalid
+	}
+	if len(known) > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE platform_identity SET last_login_at = ? WHERE provider = ? AND subject = ? AND user_id = ?`,
+			p.Now, in.Provider, in.Subject, res.UserID); err != nil {
+			return AcceptResult{}, nil, fmt.Errorf("platformstore: stamp identity: %w", err)
+		}
+	} else if err := insertIdentityTx(ctx, tx, res.UserID, in, p.Now); err != nil {
+		return AcceptResult{}, nil, err
+	}
+	return res, swept, nil
 }
 
 // activateInvite is step 3 of AcceptInvite: the team and the invite are re-checked under lock.
@@ -292,6 +421,10 @@ WHERE team_id = ? AND user_id = ? AND status IN ('joining', 'active')`, inv.Role
 		}
 		h := p.Handoff
 		h.Purpose, h.CodeHash, h.TeamID = "handoff", "", inv.TeamID
+		if p.Provider != nil {
+			// The provider path lands on the root page: a sign-in code that names the team.
+			h.Purpose, h.ParentSID = "signin", ""
+		}
 		return insertTokenTx(ctx, tx, userID, h, p.Now)
 	})
 }

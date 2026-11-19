@@ -187,6 +187,7 @@ type Server struct {
 	tcArchiveUploadHandler  http.Handler
 	fileLinkHandler         http.Handler
 	teamLogoHandler         http.Handler
+	oauthHandler            http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -340,6 +341,14 @@ func (s *Server) SetFileLinkHandler(h http.Handler) {
 // /api/auth body limit does not concern it.
 func (s *Server) SetTeamLogoHandler(h http.Handler) {
 	s.teamLogoHandler = h
+}
+
+// SetOAuthHandler mounts the provider sign-in routes at /api/auth/oauth (teams mode only, teams O
+// §3): POST {provider}/start, GET google/callback, POST apple/callback. A mount of its own next to
+// the AuthService gateway (chi prefers the longer prefix), so every method and path under it is the
+// handler's answer, never the gateway's; it caps its own bodies (16 KiB) and is not team-bound.
+func (s *Server) SetOAuthHandler(h http.Handler) {
+	s.oauthHandler = h
 }
 
 // SetWebhookHandler registers the webhook handler for Resend and list-unsubscribe routes.
@@ -780,6 +789,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.teamLogoHandler != nil {
 			r.Method(http.MethodGet, "/auth/team-logo/{slug}", s.teamLogoHandler)
 			r.Method(http.MethodHead, "/auth/team-logo/{slug}", s.teamLogoHandler)
+		}
+		// Provider sign-in (teams mode): the start and the two callbacks.
+		if s.oauthHandler != nil {
+			r.Mount("/auth/oauth", s.oauthHandler)
 		}
 		// The operator console (teams mode only): PlatformService over the gateway; the gRPC
 		// interceptor checks the console token on the loopback hop.

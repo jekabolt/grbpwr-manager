@@ -430,6 +430,20 @@ func (b *Binder) OriginAllowed(origin string, t tenant.Team, legacy bool) bool {
 	return n == "https://"+strings.ToLower(t.Slug)+"."+base
 }
 
+// RootOriginAllowed is OriginAllowed's rule for the root host (a provider sign-in starts there,
+// teams O §1): the origin must be exactly https://<base>. Unlike OriginAllowed an empty origin
+// fails, since only a browser form starts that flow.
+func (b *Binder) RootOriginAllowed(origin string) bool {
+	n := normOrigin(origin)
+	if n == "" {
+		return false
+	}
+	b.mu.RLock()
+	base := b.baseDomain
+	b.mu.RUnlock()
+	return base != "" && n == "https://"+base
+}
+
 // normOrigin lower-cases scheme and host and drops a trailing slash; "" when it is not an origin.
 func normOrigin(o string) string {
 	u, err := url.Parse(strings.TrimSpace(o))

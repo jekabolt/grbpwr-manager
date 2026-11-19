@@ -241,6 +241,29 @@ func TestOriginAllowed(t *testing.T) {
 	}
 }
 
+// The root host rule of a provider start: exactly https://<base>, and no browser is no pass.
+func TestRootOriginAllowed(t *testing.T) {
+	b, _ := teamsBinder(t)
+	for origin, want := range map[string]bool{
+		"https://beta.lekalo.studio":          true,
+		"HTTPS://Beta.Lekalo.Studio/":         true,
+		"":                                    false,
+		"http://beta.lekalo.studio":           false,
+		"https://acme.beta.lekalo.studio":     false,
+		"https://beta.lekalo.studio.evil.com": false,
+		"https://beta.lekalo.studio/auth":     false,
+		"https://admin.beta.grbpwr.com":       false,
+		"null":                                false,
+	} {
+		if got := b.RootOriginAllowed(origin); got != want {
+			t.Errorf("RootOriginAllowed(%q) = %v, want %v", origin, got, want)
+		}
+	}
+	if newBinder(t).RootOriginAllowed("https://beta.lekalo.studio") {
+		t.Error("a binder with no base domain admitted a root origin")
+	}
+}
+
 func TestCachesAndInvalidate(t *testing.T) {
 	b, p := teamsBinder(t)
 	ctx := context.Background()
