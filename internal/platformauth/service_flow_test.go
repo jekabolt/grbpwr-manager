@@ -57,6 +57,8 @@ type fakeTeams struct {
 	onEnable func(handle string) error
 	// loseEnableResult: the enable commits in the team database, then its answer is lost.
 	loseEnableResult bool
+	// dropped: handle → sessions a password reset handed to the edge to drop.
+	dropped map[string][]string
 }
 
 // adminDisable is an admin (or a removal) disabling the row: the marker goes in the same write.
@@ -70,6 +72,8 @@ type flow struct {
 	svc   *Service
 	teams *fakeTeams
 	clock time.Time
+	// behind: team id → its database is behind the binary (Deps.SchemaBehind).
+	behind map[int64]bool
 }
 
 func newFlow(t *testing.T) *flow { t.Helper(); return newFlowWith(t, false) }
@@ -106,8 +110,8 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}},
-		clock: time.Now().UTC().Truncate(time.Second)}
+	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}, dropped: map[string][]string{}},
+		clock: time.Now().UTC().Truncate(time.Second), behind: map[int64]bool{}}
 	svc, err := New(Deps{
 		Store:   st,
 		Config:  platformstore.Config{BaseDomain: "beta.lekalo.studio", TokenPepper: testPepper, OperatorEmails: "delivered+b3op@resend.dev"},
@@ -162,8 +166,14 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 				f.teams.pwSet[handle] = hash
 				return nil
 			},
+			PasswordChanged: func(_ context.Context, handle string, sids []string) {
+				f.teams.mu.Lock()
+				defer f.teams.mu.Unlock()
+				f.teams.dropped[handle] = append(f.teams.dropped[handle], sids...)
+			},
 		},
 		SignupApproval: approval,
+		SchemaBehind:   func(t tenant.Team) bool { return f.behind[t.ID] },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,6 +368,32 @@ func TestIdentityFlow(t *testing.T) {
 		t.Fatalf("issue hand-off = %v, %v", ih, err)
 	}
 
+	// The team's database falls behind the binary: a hand-off and a team sign-in are refused before
+	// the code is spent, a session opened or the team database read; caught up, the same code works.
+	ih2, err := f.svc.IssueHandoff(sctx, si.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	countSessions := func() (n int) {
+		if err := f.st.DB().Get(&n, `SELECT COUNT(*) FROM user_session`); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	sessionsBefore := countSessions()
+	f.behind[teamID] = true
+	_, err = f.svc.ExchangeHandoff(ctxFrom("10.0.0.3", "atelier-anna"), &auth.ExchangeHandoffRequest{Code: ih2.GetCode()})
+	wantCode(t, err, codes.Unavailable, "hand-off into a team behind the binary")
+	_, err = f.svc.SignIn(ctxFrom("10.0.0.5", "atelier-anna"), &auth.SignInRequest{Login: anna, Password: pw, Target: auth.SignInTarget_SIGN_IN_TARGET_TEAM})
+	wantCode(t, err, codes.Unavailable, "team sign-in into a team behind the binary")
+	if n := countSessions(); n != sessionsBefore {
+		t.Fatalf("a refused schema-behind sign-in opened %d sessions", n-sessionsBefore)
+	}
+	f.behind[teamID] = false
+	if ex, err := f.svc.ExchangeHandoff(ctxFrom("10.0.0.3", "atelier-anna"), &auth.ExchangeHandoffRequest{Code: ih2.GetCode()}); err != nil || ex.GetToken() == "" {
+		t.Fatalf("hand-off after the catch-up = %v, %v", ex, err)
+	}
+
 	// Reset: 10 wrong codes in 24 h lock the code path; the link still resets and revokes sessions.
 	rctx := ctxFrom("10.0.0.4", "")
 	if _, err := f.svc.RequestPasswordReset(rctx, &auth.RequestPasswordResetRequest{Email: anna}); err != nil {
@@ -397,6 +433,23 @@ func TestIdentityFlow(t *testing.T) {
 	}
 	_, err = f.svc.IssueHandoff(sctx, si.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
 	wantCode(t, err, codes.Unauthenticated, "root token after reset")
+	// The edge is told which sessions died (root + team: its cache would keep them for its TTL),
+	// and the legacy team #1 «not before» is the reset's time.
+	var liveAfter int
+	if err := f.st.DB().Get(&liveAfter, `SELECT COUNT(*) FROM user_session s JOIN platform_user u ON u.id = s.user_id
+WHERE u.email = ? AND s.revoked_at IS NULL`, anna); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.teams.dropped[annaHandle]; len(got) < 2 || liveAfter != 0 {
+		t.Fatalf("reset dropped %d sessions, %d still live", len(got), liveAfter)
+	}
+	var gen int64
+	if err := f.st.DB().Get(&gen, `SELECT credential_gen FROM platform_user WHERE email = ?`, anna); err != nil || gen != 1 {
+		t.Fatalf("credential_gen after the reset = %d, %v", gen, err)
+	}
+	// The hand-off issued before the reset (never exchanged) died with the old password.
+	_, err = f.svc.ExchangeHandoff(ctxFrom("10.0.0.3", "atelier-anna"), &auth.ExchangeHandoffRequest{Code: ih.GetCode()})
+	wantCode(t, err, codes.InvalidArgument, "hand-off issued before the reset")
 	if _, err := f.svc.SignIn(sctx, &auth.SignInRequest{Login: anna, Password: "new-password-1", Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT}); err != nil {
 		t.Fatalf("sign-in with the new password: %v", err)
 	}
@@ -428,6 +481,14 @@ VALUES (?, ?, 'member', '[{"section":"products","access":"write"}]', ?, ?, ?)`, 
 	if status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != "terms_required" {
 		t.Fatalf("invite for a new account without terms = %v", err)
 	}
+	// While the team's database is behind the binary the invite is refused and stays usable.
+	f.behind[teamID] = true
+	_, err = f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k", TermsAccepted: true})
+	wantCode(t, err, codes.Unavailable, "invite into a team behind the binary")
+	if _, ok := f.teams.ensured["bob.k"]; ok {
+		t.Fatal("a schema-behind invite staged a team row")
+	}
+	f.behind[teamID] = false
 	ai, err := f.svc.AcceptInvite(ctx, &auth.AcceptInviteRequest{Token: btok, Password: "bob-password-1", Handle: "bob.k", TermsAccepted: true})
 	if err != nil || ai.GetTeamSlug() != "atelier-anna" || ai.GetHandoffCode() == "" {
 		t.Fatalf("accept = %v, %v", ai, err)

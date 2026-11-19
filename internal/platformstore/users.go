@@ -59,10 +59,12 @@ type User struct {
 	CodeFailures    int            `db:"code_failures"`
 	FailuresSince   sql.NullTime   `db:"code_failures_since"`
 	LockedUntil     sql.NullTime   `db:"code_locked_until"`
+	// CredGen is credential_gen: a session opened for this read is created only while it is unchanged.
+	CredGen int64 `db:"credential_gen"`
 }
 
 const userColumns = `id, email, handle, password_hash, email_verified_at, is_operator, status, code_failures,
-code_failures_since, code_locked_until`
+code_failures_since, code_locked_until, credential_gen`
 
 // Counters is a user's code-failure state as the code path reads and writes it.
 func (u User) Counters() CodeCounters {

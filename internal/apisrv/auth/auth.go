@@ -249,6 +249,7 @@ func (s *Server) StopRateLimiter() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.stop()
 	}
+	s.closePlatformService()
 }
 
 func (s *Server) jwtIssueOpts() *jwt.IssueOpts {
@@ -291,7 +292,12 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	err = s.pwhash.Validate(req.Password, account.PasswordHash)
+	// Teams mode: a linked team #1 admin's password is the control plane's (platform.go).
+	hash, gen, err := s.legacyCredentials(ctx, username, account.PasswordHash)
+	if err != nil {
+		return nil, err
+	}
+	err = s.pwhash.Validate(req.Password, hash)
 	if err != nil {
 		// Wrong password is also an expected failed login, not a server error.
 		slog.Default().WarnContext(ctx, "login attempt with invalid password",
@@ -309,7 +315,7 @@ func (s *Server) Login(ctx context.Context, req *auth.LoginRequest) (*auth.Login
 	}
 
 	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username,
-		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.jwtIssueOpts())
+		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.issueOpts(gen))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -366,8 +372,16 @@ func (s *Server) Create(ctx context.Context, req *auth.CreateRequest) (*auth.Cre
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
+	// Teams mode: the control-plane account first (refused when the handle is someone else's).
+	var gen int64
+	if s.creds != nil {
+		if gen, err = s.LinkTeamOneAccount(ctx, username, pwHash, true); err != nil {
+			return nil, err
+		}
+	}
+
 	// Bootstrap accounts are super-admins: full access, no per-section grants.
-	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username, true, nil, s.jwtIssueOpts())
+	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username, true, nil, s.issueOpts(gen))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
@@ -481,39 +495,35 @@ func (s *Server) ChangePassword(ctx context.Context, req *auth.ChangePasswordReq
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
 
-	// Re-issue the token with the account's current authorization so a password
-	// change never widens or drops the caller's permissions.
+	// Teams mode: the control plane is authoritative (changePasswordTeams, platform.go); an
+	// account with no platform user linked through team #1 is refused there.
+	var gen int64
+	if teams {
+		if gen, err = s.changePasswordTeams(ctx, username, req.CurrentPassword, pwHashNew); err != nil {
+			return nil, err
+		}
+	} else {
+		err = s.adminRepository.ChangePassword(ctx, username, pwHashNew)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "failed to change password",
+				slog.String("err", err.Error()),
+			)
+			return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
+		}
+		s.InvalidateAdminAccount(username)
+	}
+
+	// Re-issue the token after the change committed, with the account's current authorization (a
+	// password change never widens or drops the caller's permissions) and, in teams mode, the new
+	// credential generation, so it is valid at once while every older token is not.
 	token, err := jwt.NewAdminToken(s.JwtAuth, s.jwtTTL, username,
-		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.jwtIssueOpts())
+		account.IsSuper, rbac.EncodePermissions(account.Permissions), s.issueOpts(gen))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "failed to create jwt token",
 			slog.String("err", err.Error()),
 		)
 		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
 	}
-
-	// Teams mode: the control plane is authoritative (changePasswordTeams, platform.go).
-	if teams {
-		handled, err := s.changePasswordTeams(ctx, username, req.CurrentPassword, pwHashNew)
-		if err != nil {
-			return nil, err
-		}
-		if handled {
-			return &auth.ChangePasswordResponse{AuthToken: token}, nil
-		}
-		// No platform user: the tenant row is the only hash, validated as in mode OFF.
-		if err := s.validateCurrentPassword(ctx, req.CurrentPassword, account.PasswordHash); err != nil {
-			return nil, err
-		}
-	}
-	err = s.adminRepository.ChangePassword(ctx, username, pwHashNew)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "failed to change password",
-			slog.String("err", err.Error()),
-		)
-		return nil, status.Errorf(codes.Unauthenticated, "not authenticated")
-	}
-	s.InvalidateAdminAccount(username)
 	return &auth.ChangePasswordResponse{
 		AuthToken: token,
 	}, nil

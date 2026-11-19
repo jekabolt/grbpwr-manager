@@ -47,8 +47,14 @@ type fakePlane struct {
 	overrides map[int64]map[string]bool
 	operators map[int64]bool
 	members   map[string]Membership
+	gens      map[string]int64 // handle → credential_gen
 	calls     int
 	err       error
+}
+
+func (p *fakePlane) LegacyCredGen(_ context.Context, handle string) (int64, error) {
+	p.calls++
+	return p.gens[handle], p.err
 }
 
 func (p *fakePlane) Directory() tenant.Directory { return p.dir }

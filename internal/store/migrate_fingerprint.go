@@ -30,6 +30,15 @@ func SchemaCurrent(t tenant.Team, latest string) bool {
 	return latest != "" && t.SchemaVersion == latest
 }
 
+// SchemaBehind is the edge predicate tenantbind.Binder.UseSchemaCheck takes: «team t's database is
+// behind the binary», the negation of SchemaCurrent with latest fixed (read LatestMigrationID once
+// at boot and pass it here). Team #1 is never behind, whatever its control-plane schema_version says:
+// nothing records team #1's version (store.New migrates it, the fleet migrator only fingerprints
+// it), so it stays NULL there and a version comparison would lock team #1 out on every deploy.
+func SchemaBehind(latest string) func(tenant.Team) bool {
+	return func(t tenant.Team) bool { return !SchemaCurrent(t, latest) }
+}
+
 // The schema of the connected database only (DATABASE()): no database name ever enters the SQL.
 // gorp_migrations is left out: it records history, not shape.
 const (

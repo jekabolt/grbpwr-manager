@@ -47,6 +47,10 @@ type controlPlane interface {
 	// tid (aud team) is not revoked, the platform user is active and the membership is active.
 	// ok=false when any part is missing; role is the membership role.
 	TeamSession(ctx context.Context, sid string, uid, tid int64) (role string, ok bool, err error)
+	// LegacyCredGen is the credential generation of the team #1 admin with this handle (the
+	// platform user linked through team #1 membership; 0 when none): a legacy team #1 token is
+	// valid only while it carries exactly this value.
+	LegacyCredGen(ctx context.Context, handle string) (int64, error)
 }
 
 // Membership is the live state behind a team token (TeamSession).
@@ -79,6 +83,11 @@ type boolEntry struct {
 	expires time.Time
 }
 
+type credGenEntry struct {
+	gen     int64
+	expires time.Time
+}
+
 // Binder is the edge binder.
 type Binder struct {
 	teamOne tenant.Team
@@ -97,6 +106,10 @@ type Binder struct {
 	sessions  map[string]boolEntry
 	operators map[int64]boolEntry
 	members   map[string]memberEntry
+	// credGens caches LegacyCredGen by lower-cased handle; credEpoch counts invalidations, so a
+	// lookup that raced one never stores the answer it read before the change.
+	credGens  map[string]credGenEntry
+	credEpoch uint64
 }
 
 // New returns the binder for team #1 with teams mode off. UsePlatform switches teams mode on.
@@ -117,6 +130,7 @@ func New(teamOne tenant.Team) (*Binder, error) {
 		sessions:     map[string]boolEntry{},
 		operators:    map[int64]boolEntry{},
 		members:      map[string]memberEntry{},
+		credGens:     map[string]credGenEntry{},
 	}, nil
 }
 
@@ -333,6 +347,51 @@ func (b *Binder) InvalidateSession(sid string) {
 	b.cacheMu.Lock()
 	delete(b.members, sid)
 	delete(b.sessions, sid)
+	b.cacheMu.Unlock()
+}
+
+// LegacyCredGen is the credential generation a legacy team #1 token of this handle must carry: the
+// linked platform user's credential_gen (every password change bumps it; 15 s cache, dropped on
+// this instance by InvalidateCredentials). Legacy tokens carry no session id, so this is how a
+// password change reaches them. atLeast is the generation the token carries: a cached value below
+// it is read again (generations only grow, so the cache can only be behind, and a token minted
+// after a change on another instance must not wait out the TTL). 0 = teams mode off or no linked
+// platform user.
+func (b *Binder) LegacyCredGen(ctx context.Context, handle string, atLeast int64) (int64, error) {
+	p, _ := b.state()
+	key := strings.ToLower(strings.TrimSpace(handle))
+	if p == nil || key == "" {
+		return 0, nil
+	}
+	now := b.now()
+	b.cacheMu.Lock()
+	e, hit := b.credGens[key]
+	epoch := b.credEpoch
+	b.cacheMu.Unlock()
+	if hit && now.Before(e.expires) && e.gen >= atLeast {
+		return e.gen, nil
+	}
+	gen, err := p.LegacyCredGen(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	b.cacheMu.Lock()
+	if b.credEpoch == epoch {
+		if len(b.credGens) >= sessionCacheMax {
+			b.credGens = map[string]credGenEntry{}
+		}
+		b.credGens[key] = credGenEntry{gen: gen, expires: now.Add(cacheTTL)}
+	}
+	b.cacheMu.Unlock()
+	return gen, nil
+}
+
+// InvalidateCredentials drops the cached LegacyCredGen of a handle on this instance (password
+// reset or change). Other instances see the change within cacheTTL.
+func (b *Binder) InvalidateCredentials(handle string) {
+	b.cacheMu.Lock()
+	delete(b.credGens, strings.ToLower(strings.TrimSpace(handle)))
+	b.credEpoch++
 	b.cacheMu.Unlock()
 }
 
@@ -600,6 +659,9 @@ func (p storePlane) FeatureOverrides(ctx context.Context, teamID int64) (map[str
 
 func (p storePlane) TeamSession(ctx context.Context, sid string, uid, tid int64) (string, bool, error) {
 	return p.st.TeamSession(ctx, sid, uid, tid)
+}
+func (p storePlane) LegacyCredGen(ctx context.Context, handle string) (int64, error) {
+	return p.st.LegacyCredGen(ctx, handle)
 }
 func (p storePlane) OperatorActive(ctx context.Context, userID int64) (bool, error) {
 	var row struct {
