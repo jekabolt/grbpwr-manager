@@ -116,6 +116,7 @@ func (s *Service) ListMyTeams(ctx context.Context, rootToken string, _ *auth.Lis
 		Email:         my.Email,
 		CanCreateTeam: my.Status == platformstore.UserActive,
 		TermsNeeded:   my.TermsVersion != s.d.TermsVersion,
+		Name:          platformstore.DisplayName(my.FirstName, my.LastName),
 	}, nil
 }
 

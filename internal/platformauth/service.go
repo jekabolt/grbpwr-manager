@@ -92,6 +92,8 @@ type Service struct {
 	codeIP, signUpIP, signInIP, signInLogin, slugIP, resetIP *ratelimit.Limiter
 	// createTeam: `new team` per account (MaxCreateTeamsPerHr); logoSet: logo changes per account.
 	createTeam, logoSet *ratelimit.Limiter
+	// profileRead, profileWrite, avatarSet: the account RPCs per account (P0 §1.4).
+	profileRead, profileWrite, avatarSet *ratelimit.Limiter
 	// logoSlots bounds the logos decoded at once (memory: a 4096-px image is tens of MB decoded).
 	logoSlots chan struct{}
 }
@@ -140,7 +142,11 @@ func New(d Deps) (*Service, error) {
 		createTeam:  ratelimit.NewLimiter(time.Hour, MaxCreateTeamsPerHr),
 		logoSet:     ratelimit.NewLimiter(time.Hour, MaxLogoSetsPerHr),
 		logoSlots:   make(chan struct{}, MaxLogoDecodes),
-		options:     d.SignInOptions,
+
+		profileRead:  ratelimit.NewLimiter(time.Minute, MaxProfileReadsPerMin),
+		profileWrite: ratelimit.NewLimiter(time.Hour, MaxProfileWritesPerHr),
+		avatarSet:    ratelimit.NewLimiter(time.Hour, MaxAvatarSetsPerHr),
+		options:      d.SignInOptions,
 	}
 	if s.options == nil {
 		s.options = OptionsFromConfig(d.Config.OAuth)
@@ -164,7 +170,8 @@ func (s *Service) Ready() error { return s.ready }
 
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
-	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet} {
+	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet,
+		s.profileRead, s.profileWrite, s.avatarSet} {
 		l.Stop()
 	}
 }
@@ -337,6 +344,10 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	if !req.GetTermsAccepted() {
 		return nil, errTerms()
 	}
+	first, last, err := SplitFullName(req.GetName())
+	if err != nil {
+		return nil, errProfileName(err)
+	}
 	brand, err := creationBrand(req.GetBrand())
 	if err != nil {
 		return nil, err
@@ -356,6 +367,7 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	now := s.now()
 	res, err := s.d.Store.SignUp(ctx, platformstore.SignUpParams{
 		Email: email, PasswordHash: hash, TeamName: name, Slug: slug, HandleBase: HandleBase(email),
+		FirstName: first, LastName: last,
 		Now: now, PendingTTL: PendingTeamTTL, MaxLettersPerHour: MaxLettersPerEmailHr,
 		PasswordMatches: s.passwordMatcher(req.GetPassword()),
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
@@ -498,7 +510,8 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 	if target == auth.SignInTarget_SIGN_IN_TARGET_UNKNOWN {
 		return nil, errBad("target is required")
 	}
-	login := strings.ToLower(strings.TrimSpace(req.GetLogin()))
+	// "@name" is a handle or an @username typed with its at sign; an email never starts with one.
+	login := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(req.GetLogin())), "@")
 	if !s.signInIP.Allow(middleware.GetClientIP(ctx)) || (login != "" && !s.signInLogin.Allow(login)) {
 		return nil, errBusy()
 	}
@@ -518,6 +531,11 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 		u, err = s.d.Store.UserByEmail(ctx, login)
 	} else {
 		u, err = s.d.Store.UserByHandle(ctx, login)
+		if errors.Is(err, platformstore.ErrUserNotFound) {
+			// The chosen @username signs in as the handle does (owner answer to P0 Q5); handles and
+			// @usernames share one namespace, so the two lookups never name two accounts.
+			u, err = s.d.Store.UserByPublicUsername(ctx, login)
+		}
 	}
 	if errors.Is(err, platformstore.ErrUserNotFound) {
 		_ = s.passwordOK(req.GetPassword(), "")
@@ -1000,7 +1018,17 @@ func (s *Service) GetInvite(ctx context.Context, req *auth.GetInviteRequest) (*a
 		s.log(ctx, "get invite", err)
 		return nil, errInternal()
 	}
-	return &auth.GetInviteResponse{TeamName: inv.TeamName, Email: inv.Email, AccountExists: inv.AccountExists}, nil
+	return &auth.GetInviteResponse{TeamName: inv.TeamName, Email: inv.Email, AccountExists: inv.AccountExists, Name: inv.Name}, nil
+}
+
+// inviteNames splits the name the inviter typed into first/last name for a new account; a stored
+// name the rule refuses (none should be) seeds nothing rather than blocking the join.
+func inviteNames(name string) (first, last string) {
+	first, last, err := SplitFullName(name)
+	if err != nil {
+		return "", ""
+	}
+	return first, last
 }
 
 // invitePermission is one entry of team_invite.permissions.
@@ -1063,9 +1091,16 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 	}
 	handle := ""
 	terms := ""
+	var first, last string
 	if !inv.AccountExists {
 		if !req.GetTermsAccepted() {
 			return nil, errTerms()
+		}
+		if first, last, err = SplitFullName(req.GetName()); err != nil {
+			return nil, errProfileName(err)
+		}
+		if first == "" && last == "" {
+			first, last = inviteNames(inv.Name)
 		}
 		terms = s.d.TermsVersion
 		if err := CheckPassword(pw); err != nil {
@@ -1101,6 +1136,8 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		NewPasswordHash: hash,
 		Handle:          handle,
 		HandleBase:      HandleBase(inv.Email),
+		FirstName:       first,
+		LastName:        last,
 		Handoff:         nt,
 		TermsVersion:    terms,
 		Stage:           s.stageInvite,

@@ -247,7 +247,7 @@ func (s *Store) completeProvider(ctx context.Context, in ProviderSignIn, p Provi
 				return err
 			}
 			now := p.Now
-			uid, _, err := insertUserTx(ctx, tx, p.Email, hash, UserActive, &now, false, p.HandleBase, false, "", p.Now)
+			uid, _, err := insertUserTx(ctx, tx, p.Email, hash, UserActive, &now, false, p.HandleBase, false, "", "", "", p.Now)
 			if errors.Is(err, ErrTokenInvalid) {
 				return errIdentityRace // the same email was created a moment ago: start over
 			}

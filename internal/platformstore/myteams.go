@@ -141,8 +141,9 @@ WHERE sid = ? AND user_id = ? AND aud = 'root' AND revoked_at IS NULL AND create
 		if err := putTeamBrandTx(ctx, tx, tid, p.Brand, u.ID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
-VALUES (?, ?, 'owner', 'active', ?)`, tid, u.ID, p.Now); err != nil {
+		// A new team's owner owes its first entry (P0 §4).
+		if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, entry_pending, created_at)
+VALUES (?, ?, 'owner', 'active', 1, ?)`, tid, u.ID, p.Now); err != nil {
 			return fmt.Errorf("platformstore: owner membership: %w", err)
 		}
 		if needTerms {
@@ -183,6 +184,8 @@ WHERE is_operator = 1 AND status = 'active' AND email IS NOT NULL ORDER BY id`);
 type MyTeams struct {
 	Email  string
 	Status string
+	// FirstName and LastName are the account's names ("" when not given).
+	FirstName, LastName string
 	// IsOperator: an operator's account.
 	IsOperator bool
 	// TermsVersion is the terms version the account accepted ("" = none).
@@ -200,8 +203,11 @@ func (s *Store) ListMyTeams(ctx context.Context, userID int64) (MyTeams, error) 
 		Status       string         `db:"status"`
 		IsOperator   bool           `db:"is_operator"`
 		TermsVersion sql.NullString `db:"terms_version"`
+		FirstName    string         `db:"first_name"`
+		LastName     string         `db:"last_name"`
 	}
-	if err := s.db.GetContext(ctx, &row, `SELECT email, status, is_operator, terms_version FROM platform_user WHERE id = ?`,
+	if err := s.db.GetContext(ctx, &row, `SELECT email, status, is_operator, terms_version, first_name, last_name
+FROM platform_user WHERE id = ?`,
 		userID); err != nil {
 		if isNoRows(err) {
 			return MyTeams{}, ErrUserNotFound
@@ -213,5 +219,5 @@ func (s *Store) ListMyTeams(ctx context.Context, userID int64) (MyTeams, error) 
 		return MyTeams{}, err
 	}
 	return MyTeams{Email: row.Email.String, Status: row.Status, IsOperator: row.IsOperator,
-		TermsVersion: row.TermsVersion.String, Teams: teams}, nil
+		TermsVersion: row.TermsVersion.String, FirstName: row.FirstName, LastName: row.LastName, Teams: teams}, nil
 }

@@ -1098,6 +1098,7 @@ func (a *App) Start(ctx context.Context) error {
 		adminS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetTeamOneCredentials(authS)
 		a.hs.SetTeamLogoHandler(authS.TeamLogoHandler())
+		a.hs.SetAvatarHandler(authS.AvatarHandler())
 		if err := authS.OAuthConfigErr(); err != nil {
 			return err
 		}

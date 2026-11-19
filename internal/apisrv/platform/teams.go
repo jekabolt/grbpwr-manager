@@ -201,7 +201,8 @@ func (s *Server) GetTeam(ctx context.Context, req *pb_admin.GetTeamRequest) (*pb
 	}
 	out := &pb_admin.GetTeamResponse{Team: teamPB(t, spend), Members: make([]*pb_admin.PlatformMember, 0, len(members))}
 	for _, m := range members {
-		pm := &pb_admin.PlatformMember{Handle: m.Handle, Email: m.Email.String, Role: m.Role}
+		pm := &pb_admin.PlatformMember{Handle: m.Handle, Email: m.Email.String, Role: m.Role,
+			Name: platformstore.DisplayName(m.FirstName, m.LastName)}
 		if m.LastSeenAt.Valid {
 			pm.LastSeenAt = timestamppb.New(m.LastSeenAt.Time)
 		}

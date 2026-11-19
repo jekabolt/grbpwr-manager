@@ -224,15 +224,25 @@ type ConsoleMember struct {
 	Email      sql.NullString `db:"email"`
 	Role       string         `db:"role"`
 	LastSeenAt sql.NullTime   `db:"last_seen_at"`
+	// Display (P0 §3.1): names, the public username (NULL = the handle), the avatar's sha256.
+	FirstName      string         `db:"first_name"`
+	LastName       string         `db:"last_name"`
+	PublicUsername sql.NullString `db:"public_username"`
+	AvatarSHA      sql.NullString `db:"avatar_sha"`
 }
+
+// Username is the member's effective @username: the public one, else the handle.
+func (m ConsoleMember) Username() string { return effectiveUsername(m.Handle, m.PublicUsername) }
 
 // TeamMembers lists the team's active members, owners first, with the last time any of their
 // sessions in this team was seen.
 func (s *Store) TeamMembers(ctx context.Context, teamID int64) ([]ConsoleMember, error) {
 	var out []ConsoleMember
 	if err := s.db.SelectContext(ctx, &out, `SELECT m.user_id, u.handle, u.email, m.role,
- (SELECT MAX(us.last_seen_at) FROM user_session us WHERE us.user_id = m.user_id AND us.team_id = m.team_id) AS last_seen_at
+ (SELECT MAX(us.last_seen_at) FROM user_session us WHERE us.user_id = m.user_id AND us.team_id = m.team_id) AS last_seen_at,
+ u.first_name, u.last_name, u.public_username, a.sha256 AS avatar_sha
 FROM team_member m JOIN platform_user u ON u.id = m.user_id
+LEFT JOIN account_avatar a ON a.user_id = u.id
 WHERE m.team_id = ? AND m.status = 'active'
 ORDER BY m.role = 'owner' DESC, u.handle`, teamID); err != nil {
 		return nil, fmt.Errorf("platformstore: team members: %w", err)

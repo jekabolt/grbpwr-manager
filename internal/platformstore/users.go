@@ -204,9 +204,14 @@ func dupKey(err error, key string) bool {
 // insertUserTx creates a user. With fixed, handle is used as is (ErrHandleTaken when held);
 // otherwise handle is a base tried as base, base-2, base-3 …
 // insertUserTx creates an account. terms is the terms version the person accepted now ("" = none:
-// operators and team #1 accounts carry NULLs).
+// operators and team #1 accounts carry NULLs). first and last seed its name ("" = none).
+//
+// Handles and @usernames share one namespace (P0 §3.1): a candidate some account holds as its public
+// username is skipped too. That check runs after the insert, as a locking read, so it sees a rename
+// committed a moment ago and keeps UpdateProfile's lock order (handle, then public username); a hit
+// deletes the row just inserted and moves on to the next candidate.
 func insertUserTx(ctx context.Context, tx *sqlx.Tx, email, hash, status string, verifiedAt *time.Time, operator bool,
-	handle string, fixed bool, terms string, now time.Time) (int64, string, error) {
+	handle string, fixed bool, terms, first, last string, now time.Time) (int64, string, error) {
 	termsVersion, termsAt := termsColumns(terms, now)
 	tries := maxHandleTries
 	if fixed {
@@ -218,13 +223,23 @@ func insertUserTx(ctx context.Context, tx *sqlx.Tx, email, hash, status string, 
 			cand = handle + "-" + strconv.Itoa(n)
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO platform_user
-(email, handle, password_hash, email_verified_at, is_operator, status, terms_version, terms_accepted_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			email, cand, hash, verifiedAt, operator, status, termsVersion, termsAt, now)
+(email, handle, password_hash, email_verified_at, is_operator, status, terms_version, terms_accepted_at, first_name, last_name, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			email, cand, hash, verifiedAt, operator, status, termsVersion, termsAt, first, last, now)
 		if err == nil {
 			id, err := res.LastInsertId()
 			if err != nil {
 				return 0, "", fmt.Errorf("platformstore: user id: %w", err)
+			}
+			held, err := publicUsernameHeldTx(ctx, tx, cand)
+			if err != nil {
+				return 0, "", err
+			}
+			if held {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM platform_user WHERE id = ?`, id); err != nil {
+					return 0, "", fmt.Errorf("platformstore: drop held handle: %w", err)
+				}
+				continue
 			}
 			return id, cand, nil
 		}
@@ -390,6 +405,9 @@ type SignUpParams struct {
 	// Brand is the new team's brand, already normalised (nil or empty = no row); stored with the team,
 	// updated_by = the person signing up.
 	Brand *TeamBrand
+	// FirstName and LastName are the name typed on the sheet, split and checked ("" = none); they
+	// name a new account and rename a still-pending one, never an active one.
+	FirstName, LastName string
 }
 
 // SignUpResult says what happened; the client sees the same empty answer either way.
@@ -453,7 +471,8 @@ WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pendin
 		var uid int64
 		switch {
 		case errors.Is(err, ErrUserNotFound):
-			uid, _, err = insertUserTx(ctx, tx, p.Email, p.PasswordHash, UserPending, nil, false, p.HandleBase, false, p.TermsVersion, p.Now)
+			uid, _, err = insertUserTx(ctx, tx, p.Email, p.PasswordHash, UserPending, nil, false, p.HandleBase, false, p.TermsVersion,
+				p.FirstName, p.LastName, p.Now)
 			if errors.Is(err, ErrTokenInvalid) {
 				res.Reason = "race"
 				return nil
@@ -481,6 +500,13 @@ WHERE user_id = ? AND purpose = 'verify' AND used_at IS NULL AND expires_at > ?`
 terms_version = COALESCE(?, terms_version), terms_accepted_at = COALESCE(?, terms_accepted_at) WHERE id = ?`,
 				p.PasswordHash, termsVersion, termsAt, uid); err != nil {
 				return fmt.Errorf("platformstore: replace pending password: %w", err)
+			}
+			if p.FirstName != "" || p.LastName != "" {
+				// The sheet typed again names the account again: nobody has signed in to it yet.
+				if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET first_name = ?, last_name = ? WHERE id = ?`,
+					p.FirstName, p.LastName, uid); err != nil {
+					return fmt.Errorf("platformstore: rename pending account: %w", err)
+				}
 			}
 			if _, err := deletePendingTeamsTx(ctx, tx, `created_by = ? AND status = 'pending'`, uid); err != nil {
 				return fmt.Errorf("platformstore: drop pending teams: %w", err)
@@ -619,7 +645,7 @@ func (s *Store) SyncOperators(ctx context.Context, emails []string, now time.Tim
 			if err != nil {
 				return err
 			}
-			if _, _, err := insertUserTx(ctx, tx, e, h, UserActive, nil, true, handleBase(e), false, "", now); err != nil {
+			if _, _, err := insertUserTx(ctx, tx, e, h, UserActive, nil, true, handleBase(e), false, "", "", "", now); err != nil {
 				return fmt.Errorf("platformstore: operator account: %w", err)
 			}
 			created++

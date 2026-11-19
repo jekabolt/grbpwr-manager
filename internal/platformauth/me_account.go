@@ -8,9 +8,25 @@ import (
 
 // Account lifecycle RPCs of the calling person (P0 design §3.5, §4). Contract stubs until lanes S4a / S4b.
 
-// FinishTeamEntry ends the first-entry screen of the calling team.
-func (s *Service) FinishTeamEntry(ctx context.Context, token string, req *auth.FinishTeamEntryRequest) (*auth.FinishTeamEntryResponse, error) {
-	return nil, errNotYet()
+// FinishTeamEntry ends the first-entry screen of the calling team (P0 §4): finished and skipped are
+// the same, and it sticks. A team token only (a root token has no team to enter); idempotent.
+func (s *Service) FinishTeamEntry(ctx context.Context, token string, _ *auth.FinishTeamEntryRequest) (*auth.FinishTeamEntryResponse, error) {
+	c, err := s.me(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if c.TeamID == 0 {
+		return nil, errNoAccess()
+	}
+	if !s.profileWrite.Allow(c.key()) {
+		return nil, errBusy()
+	}
+	if err := s.d.Store.FinishTeamEntry(ctx, c.TeamID, c.UserID); err != nil {
+		s.log(ctx, "finish team entry", err)
+		return nil, errInternal()
+	}
+	s.audit(ctx, c.UserID, c.TeamID, "team_entry_finish", nil)
+	return &auth.FinishTeamEntryResponse{}, nil
 }
 
 // DeleteMyAccount deletes the calling person's account; RestoreAccount brings it back for 30 days.

@@ -87,6 +87,7 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 	s.SetRunPackHandler(nop)
 	s.SetFileLinkHandler(nop)
 	s.SetTeamLogoHandler(nop)
+	s.SetAvatarHandler(nop)
 	oauthH := oauthflow.New(oauthflow.Deps{})
 	defer oauthH.Close()
 	s.SetOAuthHandler(oauthH)
@@ -129,6 +130,7 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 		"/api/p/{token}", "/api/pv/{token}", "/api/rp/{token}", "/api/f/{token}",
 		"/api/files/upload", "/api/files/{id}/preview", "/api/techcard-archive/upload",
 		"/api/files/proxy", "/api/webhooks/stripe", "/api/auth/team-logo/{slug}",
+		"/api/auth/avatar/{sha}",
 		"/api/auth/oauth/{provider}/start", "/api/auth/oauth/google/callback", "/api/auth/oauth/apple/callback",
 	} {
 		if !seen[r] {
@@ -147,6 +149,7 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 		"/api/p/{token}":                   tenantbind.ClassToken,
 		"/api/auth/*":                      tenantbind.ClassXTeam,
 		"/api/auth/team-logo/{slug}":       tenantbind.ClassXTeam,
+		"/api/auth/avatar/{sha}":           tenantbind.ClassXTeam,
 		"/api/auth/oauth/{provider}/start": tenantbind.ClassXTeam,
 		"/api/auth/oauth/google/callback":  tenantbind.ClassXTeam,
 		"/api/auth/oauth/apple/callback":   tenantbind.ClassXTeam,

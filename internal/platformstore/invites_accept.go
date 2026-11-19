@@ -22,12 +22,16 @@ type Invite struct {
 	Permissions []byte    `db:"permissions"` // JSON [{"section":"…","access":"read|write"}]
 	InvitedBy   int64     `db:"invited_by"`
 	ExpiresAt   time.Time `db:"expires_at"`
+	// Name is the person's name as the inviter typed it ("" = none); it seeds a new account's
+	// first and last name on accept.
+	Name string `db:"invite_name"`
 	// AccountExists: the invited email already has a verified account (the join form then asks only
 	// for its password, no handle).
 	AccountExists bool `db:"-"`
 }
 
-const inviteSelect = `SELECT i.id, i.team_id, t.slug, t.name, t.status, i.email, i.role, i.permissions, i.invited_by, i.expires_at
+const inviteSelect = `SELECT i.id, i.team_id, t.slug, t.name, t.status, i.email, i.role, i.permissions, i.invited_by, i.expires_at,
+i.name AS invite_name
 FROM team_invite i JOIN team t ON t.id = i.team_id
 WHERE i.token_hash = ? AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ? AND t.status <> 'deleted'`
 
@@ -75,6 +79,10 @@ type AcceptParams struct {
 	// TermsVersion is the terms version accepted on the join page ("" = not accepted). Required
 	// only when the invite creates a new account; an existing one is never asked again.
 	TermsVersion string
+	// FirstName and LastName name a new account, or a pending one that has no name yet ("" = none);
+	// an existing active account keeps its own. The caller split them from the join form's name, or
+	// from the invite's when the form had none.
+	FirstName, LastName string
 
 	// Provider, when set, accepts the invite with a verified provider sign-in instead of a password
 	// (teams O §2, lane O3): the provider must vouch for the invited email (verified, authoritative,
@@ -252,7 +260,8 @@ func (s *Store) reserveInvite(ctx context.Context, p AcceptParams) (AcceptResult
 			if handle == "" {
 				handle, fixed = p.HandleBase, false
 			}
-			id, h, err := insertUserTx(ctx, tx, inv.Email, p.NewPasswordHash, UserActive, &verified, false, handle, fixed, p.TermsVersion, p.Now)
+			id, h, err := insertUserTx(ctx, tx, inv.Email, p.NewPasswordHash, UserActive, &verified, false, handle, fixed, p.TermsVersion,
+				p.FirstName, p.LastName, p.Now)
 			if err != nil {
 				return err
 			}
@@ -278,6 +287,9 @@ WHERE team_id = ? AND user_id = ? AND status = 'active'`, inv.TeamID, u.ID); err
 			if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, status = 'active',
 email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, p.NewPasswordHash, p.Now, u.ID); err != nil {
 				return fmt.Errorf("platformstore: activate invited user: %w", err)
+			}
+			if err := setNamesIfEmptyTx(ctx, tx, u.ID, p.FirstName, p.LastName); err != nil {
+				return err
 			}
 			res.UserID, res.Handle = u.ID, u.Handle
 		default:
@@ -334,7 +346,8 @@ func reserveProviderAccountTx(ctx context.Context, tx *sqlx.Tx, inv Invite, p Ac
 			return AcceptResult{}, nil, err
 		}
 		verified := p.Now
-		id, h, err := insertUserTx(ctx, tx, inv.Email, hash, UserActive, &verified, false, p.HandleBase, false, p.TermsVersion, p.Now)
+		id, h, err := insertUserTx(ctx, tx, inv.Email, hash, UserActive, &verified, false, p.HandleBase, false, p.TermsVersion,
+			p.FirstName, p.LastName, p.Now)
 		if errors.Is(err, ErrTokenInvalid) {
 			return AcceptResult{}, nil, errIdentityRace // the same email was created a moment ago
 		}
@@ -365,6 +378,9 @@ WHERE team_id = ? AND user_id = ? AND status = 'active'`, inv.TeamID, u.ID); err
 		// unconfirmed sign-up loses it, its pending teams go.
 		sids, teams, err := claimPendingTx(ctx, tx, u.ID, ProviderParams{Now: p.Now, UnusableHash: p.UnusableHash})
 		if err != nil {
+			return AcceptResult{}, nil, err
+		}
+		if err := setNamesIfEmptyTx(ctx, tx, u.ID, p.FirstName, p.LastName); err != nil {
 			return AcceptResult{}, nil, err
 		}
 		res, swept = AcceptResult{UserID: u.ID, Handle: u.Handle, SIDs: sids}, teams
@@ -405,8 +421,11 @@ func (s *Store) activateInvite(ctx context.Context, p AcceptParams, reserved Inv
 			}
 		}
 		// Only the reservation (or a membership that was already active) turns active: a member removed
-		// between the steps stays removed.
-		r, err := tx.ExecContext(ctx, `UPDATE team_member SET role = ?, status = 'active'
+		// between the steps stays removed. A reservation turning active is a membership that starts, so
+		// it owes the first entry (P0 §4); an active one keeps its flag. entry_pending is assigned before
+		// status, so it reads the old status.
+		r, err := tx.ExecContext(ctx, `UPDATE team_member SET role = ?, entry_pending = IF(status = 'joining', 1, entry_pending),
+status = 'active'
 WHERE team_id = ? AND user_id = ? AND status IN ('joining', 'active')`, inv.Role, inv.TeamID, userID)
 		if err != nil {
 			return fmt.Errorf("platformstore: activate membership: %w", err)
