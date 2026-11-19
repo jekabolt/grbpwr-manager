@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/mock"
@@ -25,10 +27,12 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 		name    string
 		missing bool
 		folds   bool
+		private bool
 	}{
 		{name: "whole source"},
 		{name: "missing download capability", missing: true},
 		{name: "authored fold companion", folds: true},
+		{name: "private team sources", private: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -52,15 +56,21 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 			pocket.PatternLineKey = "01JABCDEFGHJKMNPQRSTVWXYZ1"
 			pocket.URL = "https://files.grbpwr.com/" + pocketKey
 			pocket.Filename = "pocket.dxf"
-			mainObject := entity.PatternObjectAccess{Id: 41, ObjectKey: mainKey}
-			access := map[entity.PatternObjectID]entity.PatternObjectAccess{mainObject.ID(): mainObject}
-			if !tc.missing {
-				pocketObject := entity.PatternObjectAccess{Id: 42, ObjectKey: pocketKey}
-				access[pocketObject.ID()] = pocketObject
+			if tc.private {
+				ctx = tenant.With(ctx, tenant.Team{ID: 2})
+				main.URL = "https://files.grbpwr.com/base/t/1234567890abcdef/tech-card-patterns/main.dxf"
+				pocket.URL = "https://files.grbpwr.com/base/t/1234567890abcdef/tech-card-patterns/pocket.dxf"
+			} else {
+				mainObject := entity.PatternObjectAccess{Id: 41, ObjectKey: mainKey}
+				access := map[entity.PatternObjectID]entity.PatternObjectAccess{mainObject.ID(): mainObject}
+				if !tc.missing {
+					pocketObject := entity.PatternObjectAccess{Id: 42, ObjectKey: pocketKey}
+					access[pocketObject.ID()] = pocketObject
+				}
+				objects.EXPECT().EnsureByKeys(mock.Anything, []entity.PatternObjectRef{
+					{Key: mainKey, Filename: "main.dxf"}, {Key: pocketKey, Filename: "pocket.dxf"},
+				}).Return(access, nil).Once()
 			}
-			objects.EXPECT().EnsureByKeys(mock.Anything, []entity.PatternObjectRef{
-				{Key: mainKey, Filename: "main.dxf"}, {Key: pocketKey, Filename: "pocket.dxf"},
-			}).Return(access, nil).Once()
 			digest := strings.Repeat("b", 64)
 			profile := entity.SavedAssemblySnapshotCompleteSourceV1
 			var foldSource *entity.SavedAssemblyAuthoredFoldSourceV1
@@ -136,8 +146,17 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 			require.Len(t, complete.GetRows(), 2)
 			require.Equal(t, complete.GetRows()[0].GetDownloadUrl(), res.GetRow().GetDownloadUrl())
 			for _, row := range complete.GetRows() {
-				require.True(t, strings.HasPrefix(row.GetDownloadUrl(), "https://backend.example/api/p/i"))
-				require.True(t, strings.HasSuffix(row.GetDownloadUrl(), "?dl=1"))
+				if tc.private {
+					download, err := url.Parse(row.GetDownloadUrl())
+					require.NoError(t, err)
+					require.Empty(t, download.Host)
+					require.Empty(t, download.Scheme)
+					require.Equal(t, "/api/files/proxy", download.Path)
+					require.Equal(t, url.Values{"url": {row.GetUrl()}}, download.Query())
+				} else {
+					require.True(t, strings.HasPrefix(row.GetDownloadUrl(), "https://backend.example/api/p/i"))
+					require.True(t, strings.HasSuffix(row.GetDownloadUrl(), "?dl=1"))
+				}
 			}
 			require.NotEqual(t, complete.GetRows()[0].GetDownloadUrl(), complete.GetRows()[1].GetDownloadUrl())
 			require.Equal(t, digest, complete.GetSourceSha256())

@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net/url"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/apierr"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -118,7 +120,7 @@ func (s *Server) PutTechCardPatternSemanticSidecar(ctx context.Context, req *pb_
 }
 
 // GetTechCardSavedAssemblySnapshot reads selected topology or the opt-in complete saved source in
-// one REPEATABLE READ snapshot. Download URLs are minted separately for those exact object URLs.
+// one REPEATABLE READ snapshot. Download URLs refer to those exact object URLs.
 func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_admin.GetTechCardSavedAssemblySnapshotRequest) (*pb_admin.GetTechCardSavedAssemblySnapshotResponse, error) {
 	in := entity.SavedAssemblySnapshotRequest{
 		ExpectedRow: entity.SavedPatternRowIdentity{
@@ -171,7 +173,7 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		for _, row := range source.Rows {
 			patterns = append(patterns, savedAssemblyPatternForDownload(row))
 		}
-		s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, patterns)
+		s.fillSavedAssemblyDownloadURLs(ctx, patterns)
 		for i, pattern := range patterns {
 			url := pattern.GetDownloadUrl()
 			if url == "" {
@@ -185,13 +187,27 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 		return response, nil
 	}
 	pattern := savedAssemblyPatternForDownload(snapshot.Row)
-	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, []*pb_common.TechCardSizePattern{pattern})
+	s.fillSavedAssemblyDownloadURLs(ctx, []*pb_common.TechCardSizePattern{pattern})
 	response.Row.DownloadUrl = pattern.GetDownloadUrl()
 	card := dto.ConvertEntityTechCardToPb(snapshot.Card, dto.CostingFx{})
 	if card != nil && card.GetTechCard() != nil {
 		response.Operations = card.GetTechCard().GetOperations()
 	}
 	return response, nil
+}
+
+func (s *Server) fillSavedAssemblyDownloadURLs(ctx context.Context, patterns []*pb_common.TechCardSizePattern) {
+	if patternaccess.PublicLinksAllowed(ctx) == nil {
+		s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, patterns)
+		return
+	}
+	// Public pattern tokens have no team binding. The authenticated proxy enforces the
+	// caller's storage prefix when opening the exact URL read from the saved row.
+	for _, pattern := range patterns {
+		if raw := pattern.GetUrl(); raw != "" {
+			pattern.DownloadUrl = "/api" + FileProxyPath + "?" + url.Values{"url": {raw}}.Encode()
+		}
+	}
 }
 
 func savedAssemblyPatternForDownload(row entity.SavedPatternRowIdentity) *pb_common.TechCardSizePattern {
