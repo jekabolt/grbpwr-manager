@@ -596,7 +596,7 @@ func (s *Server) ReceiveProductionRun(ctx context.Context, req *pb_admin.Receive
 // never a pre-read. B-grade transitions never notify: seconds are not listed on the storefront
 // and NotifyMe pins grade A, so no waitlist can exist for them.
 func (s *Server) fireStockWriteSideEffects(ctx context.Context, transitions []entity.StockTransition, notify bool) {
-	if len(transitions) == 0 {
+	if len(transitions) == 0 || s.noShop {
 		return
 	}
 	seen := make(map[int]bool, len(transitions))
