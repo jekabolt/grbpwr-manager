@@ -174,7 +174,15 @@ func TestValidation(t *testing.T) {
 	if CheckHandle("anna.k") != nil || CheckHandle("A") == nil || CheckHandle("-anna") == nil {
 		t.Fatal("CheckHandle")
 	}
-	for in, want := range map[string]string{"anna.k+work@x.io": "anna.k", "__@x.io": "user", "Ivan_P@x.io": "ivan_p"} {
+	// The operator-entry actor (and the ledger's pseudo-actors) can never be a person's handle:
+	// neither chosen on the join form nor derived from an email.
+	for _, h := range []string{OperatorActor, "system", "unknown"} {
+		if CheckHandle(h) == nil {
+			t.Errorf("CheckHandle(%q) accepted a reserved name", h)
+		}
+	}
+	for in, want := range map[string]string{"anna.k+work@x.io": "anna.k", "__@x.io": "user", "Ivan_P@x.io": "ivan_p",
+		"Lekalo+ops@x.io": "user", "system@x.io": "user"} {
 		if got := HandleBase(in); got != want {
 			t.Errorf("HandleBase(%q) = %q, want %q", in, got, want)
 		}

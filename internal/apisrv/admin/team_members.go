@@ -96,6 +96,24 @@ type peopleCtx struct {
 
 func (s *Server) teamsOn() bool { return s.platform.store != nil }
 
+// actor is who the store re-checks inside each change's transaction.
+func (p peopleCtx) actor() platformstore.Actor {
+	return platformstore.Actor{UserID: p.userID, Operator: p.w.Operator}
+}
+
+// changer resolves the caller of a people change: every change (invite, resend, revoke, remove,
+// role) is an owner's (or an entered operator's). The store re-checks it under lock.
+func (s *Server) changer(ctx context.Context) (peopleCtx, error) {
+	p, err := s.people(ctx)
+	if err != nil {
+		return peopleCtx{}, err
+	}
+	if !p.owner {
+		return peopleCtx{}, status.Error(codes.PermissionDenied, "owner_only")
+	}
+	return p, nil
+}
+
 // people resolves the caller (teams mode on). An entered operator counts as an owner.
 func (s *Server) people(ctx context.Context) (peopleCtx, error) {
 	w, ok := authsrv.GetWorkspace(ctx)
@@ -121,6 +139,8 @@ func peopleErr(ctx context.Context, op string, err error) error {
 	switch {
 	case errors.Is(err, platformstore.ErrLastOwner):
 		return status.Error(codes.FailedPrecondition, "last_owner")
+	case errors.Is(err, platformstore.ErrNotOwner):
+		return status.Error(codes.PermissionDenied, "owner_only")
 	case errors.Is(err, platformstore.ErrNotMember), errors.Is(err, platformstore.ErrUserNotFound):
 		return status.Error(codes.NotFound, "not_member")
 	case errors.Is(err, platformstore.ErrInviteNotFound):
@@ -226,7 +246,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
 	}
-	p, err := s.people(ctx)
+	p, err := s.changer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -241,9 +261,6 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	if role != roleOwner && role != roleMember {
 		return nil, status.Error(codes.InvalidArgument, "bad_role")
 	}
-	if role == roleOwner && !p.owner {
-		return nil, status.Error(codes.PermissionDenied, "owner_only")
-	}
 	perms, err := permissionsJSON(DefaultInvitePermissions(p.w.Features))
 	if err != nil {
 		return nil, peopleErr(ctx, "permissions", err)
@@ -255,7 +272,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	inv, err := s.platform.store.UpsertInvite(ctx, platformstore.InviteParams{
 		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, TokenHash: hash,
-		ExpiresAt: now.Add(InviteTTL), InvitedBy: p.userID, Now: now, MaxPerHour: inviteLettersPerHour,
+		ExpiresAt: now.Add(InviteTTL), Actor: p.actor(), Now: now, MaxPerHour: inviteLettersPerHour,
 		Letter: platformstore.Letter{
 			To: email, Template: "invite", Link: s.inviteLink(p.w.Team.Slug, token),
 			TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle,
@@ -291,7 +308,7 @@ func (s *Server) RevokeTeamInvite(ctx context.Context, req *pb_admin.RevokeTeamI
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
 	}
-	p, err := s.people(ctx)
+	p, err := s.changer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -299,10 +316,7 @@ func (s *Server) RevokeTeamInvite(ctx context.Context, req *pb_admin.RevokeTeamI
 	if err != nil {
 		return nil, err
 	}
-	if inv.Role == roleOwner && !p.owner {
-		return nil, status.Error(codes.PermissionDenied, "owner_only")
-	}
-	if err := s.platform.store.RevokeInvite(ctx, p.w.Team.ID, inv.ID, time.Now().UTC()); err != nil {
+	if err := s.platform.store.RevokeInvite(ctx, p.w.Team.ID, inv.ID, p.actor(), time.Now().UTC()); err != nil {
 		return nil, peopleErr(ctx, "revoke invite", err)
 	}
 	s.peopleAudit(ctx, p, "member_invite_revoke", map[string]string{"email": inv.Email})
@@ -314,16 +328,13 @@ func (s *Server) ResendTeamInvite(ctx context.Context, req *pb_admin.ResendTeamI
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
 	}
-	p, err := s.people(ctx)
+	p, err := s.changer(ctx)
 	if err != nil {
 		return nil, err
 	}
 	inv, err := s.openInvite(ctx, p, req.GetInviteRef())
 	if err != nil {
 		return nil, err
-	}
-	if inv.Role == roleOwner && !p.owner {
-		return nil, status.Error(codes.PermissionDenied, "owner_only")
 	}
 	token, hash, err := platformauth.NewToken()
 	if err != nil {
@@ -332,7 +343,7 @@ func (s *Server) ResendTeamInvite(ctx context.Context, req *pb_admin.ResendTeamI
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	link := s.inviteLink(p.w.Team.Slug, token)
 	if err := s.platform.store.ResendInvite(ctx, platformstore.ResendParams{
-		TeamID: p.w.Team.ID, InviteID: inv.ID, TokenHash: hash, ExpiresAt: now.Add(InviteTTL),
+		TeamID: p.w.Team.ID, InviteID: inv.ID, Actor: p.actor(), TokenHash: hash, ExpiresAt: now.Add(InviteTTL),
 		Now: now, MaxPerHour: inviteLettersPerHour,
 		Letter: func(platformstore.TeamInvite) platformstore.Letter {
 			return platformstore.Letter{Template: "invite", Link: link, TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle}
@@ -370,14 +381,49 @@ func (s *Server) dropSessions(sids []string) {
 	}
 }
 
-// RemoveTeamMember removes a member: membership removed and their team sessions revoked in one
-// transaction, their admins row disabled, the edge cache dropped. Never the last owner; only an
-// owner removes an owner.
+// mirrorOwners are the team's active owners (other than target) whose admins row in the team
+// database is confirmed super and enabled: only they count as the owner left behind when an owner
+// is demoted or removed.
+func (s *Server) mirrorOwners(ctx context.Context, p peopleCtx, target string) ([]int64, error) {
+	members, err := s.platform.store.TeamMembers(ctx, p.w.Team.ID)
+	if err != nil {
+		return nil, peopleErr(ctx, "members", err)
+	}
+	var out []int64
+	for _, m := range members {
+		if m.Role != roleOwner || strings.EqualFold(m.Handle, target) {
+			continue
+		}
+		acc, err := s.repo.Admin().GetAdminByUsername(ctx, m.Handle)
+		if err != nil || acc == nil || !acc.IsSuper || acc.Disabled {
+			continue
+		}
+		out = append(out, m.UserID)
+	}
+	return out, nil
+}
+
+// change builds the store's member change for target; an owner target carries the confirmed owners.
+func (s *Server) change(ctx context.Context, p peopleCtx, m platformstore.ConsoleMember) (platformstore.MemberChangeParams, error) {
+	ch := platformstore.MemberChangeParams{TeamID: p.w.Team.ID, UserID: m.UserID, Actor: p.actor(), Now: time.Now().UTC()}
+	if m.Role == roleOwner {
+		mirror, err := s.mirrorOwners(ctx, p, m.Handle)
+		if err != nil {
+			return ch, err
+		}
+		ch.MirrorOwners = mirror
+	}
+	return ch, nil
+}
+
+// RemoveTeamMember removes a member (owner only): membership removed and their team sessions
+// revoked in one transaction, their admins row disabled, the edge cache dropped. Never the last
+// working owner.
 func (s *Server) RemoveTeamMember(ctx context.Context, req *pb_admin.RemoveTeamMemberRequest) (*pb_admin.RemoveTeamMemberResponse, error) {
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
 	}
-	p, err := s.people(ctx)
+	p, err := s.changer(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -385,10 +431,11 @@ func (s *Server) RemoveTeamMember(ctx context.Context, req *pb_admin.RemoveTeamM
 	if err != nil {
 		return nil, err
 	}
-	if m.Role == roleOwner && !p.owner {
-		return nil, status.Error(codes.PermissionDenied, "owner_only")
+	params, err := s.change(ctx, p, m)
+	if err != nil {
+		return nil, err
 	}
-	ch, err := s.platform.store.RemoveMember(ctx, p.w.Team.ID, m.UserID, time.Now().UTC())
+	ch, err := s.platform.store.RemoveMember(ctx, params)
 	if err != nil {
 		return nil, peopleErr(ctx, "remove member", err)
 	}
@@ -402,31 +449,31 @@ func (s *Server) RemoveTeamMember(ctx context.Context, req *pb_admin.RemoveTeamM
 	return &pb_admin.RemoveTeamMemberResponse{}, nil
 }
 
-// SetTeamMemberRole changes a member's role (owner only). Never leaves the team without an owner.
-// The member's team sessions are revoked so the new claims apply on the next sign-in.
+// SetTeamMemberRole changes a member's role (owner only). Never leaves the team without a working
+// owner. The member's team sessions are revoked so the new claims apply on the next sign-in. The
+// team-side admins row is written after the control plane: a call with the role the member
+// already has re-writes that row, so a retry after a failed mirror repairs it.
 func (s *Server) SetTeamMemberRole(ctx context.Context, req *pb_admin.SetTeamMemberRoleRequest) (*pb_admin.SetTeamMemberRoleResponse, error) {
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
-	}
-	p, err := s.people(ctx)
-	if err != nil {
-		return nil, err
 	}
 	role := strings.ToLower(strings.TrimSpace(req.GetRole()))
 	if role != roleOwner && role != roleMember {
 		return nil, status.Error(codes.InvalidArgument, "bad_role")
 	}
-	if !p.owner {
-		return nil, status.Error(codes.PermissionDenied, "owner_only")
+	p, err := s.changer(ctx)
+	if err != nil {
+		return nil, err
 	}
 	m, err := s.member(ctx, p, req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
-	if m.Role == role {
-		return &pb_admin.SetTeamMemberRoleResponse{}, nil
+	params, err := s.change(ctx, p, m)
+	if err != nil {
+		return nil, err
 	}
-	ch, err := s.platform.store.SetMemberRole(ctx, p.w.Team.ID, m.UserID, role, time.Now().UTC())
+	ch, err := s.platform.store.SetMemberRole(ctx, params, role)
 	if err != nil {
 		return nil, peopleErr(ctx, "set role", err)
 	}
@@ -445,6 +492,8 @@ func (s *Server) SetTeamMemberRole(ctx context.Context, req *pb_admin.SetTeamMem
 		slog.Default().ErrorContext(ctx, "team members: ensure admin", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "internal error")
 	}
-	s.peopleAudit(ctx, p, "member_role", map[string]string{"handle": ch.Handle, "role": role})
+	if m.Role != role {
+		s.peopleAudit(ctx, p, "member_role", map[string]string{"handle": ch.Handle, "role": role})
+	}
 	return &pb_admin.SetTeamMemberRoleResponse{}, nil
 }

@@ -25,7 +25,8 @@ func (s *Server) monthStart() time.Time {
 	return time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
-// monthSpend is this month's AI spend of every team, by team id, in one control-plane query.
-func (s *Server) monthSpend(ctx context.Context) (map[int64]platformstore.AISpend, error) {
-	return s.st.AISpendSince(ctx, s.monthStart())
+// monthSpend is this month's AI spend of the given teams, by team id, in one control-plane query
+// that reads only those teams' rows.
+func (s *Server) monthSpend(ctx context.Context, teamIDs ...int64) (map[int64]platformstore.AISpend, error) {
+	return s.st.AISpendFor(ctx, s.monthStart(), teamIDs)
 }

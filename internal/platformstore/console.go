@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jmoiron/sqlx"
+	"github.com/shopspring/decimal"
 )
 
 // Console errors (PlatformService maps them to FAILED_PRECONDITION / NOT_FOUND).
@@ -65,7 +66,7 @@ func (s *Store) ConsoleTeams(ctx context.Context, query string) ([]ConsoleTeam, 
 	if len(teams) == 0 {
 		return teams, nil
 	}
-	if err := s.fillConsole(ctx, teams, 0); err != nil {
+	if err := s.fillConsole(ctx, teams); err != nil {
 		return nil, err
 	}
 	return teams, nil
@@ -85,25 +86,61 @@ func (s *Store) ConsoleTeam(ctx context.Context, slug string) (ConsoleTeam, erro
 		return ConsoleTeam{}, fmt.Errorf("platformstore: console team: %w", err)
 	}
 	teams := []ConsoleTeam{t}
-	if err := s.fillConsole(ctx, teams, t.ID); err != nil {
+	if err := s.fillConsole(ctx, teams); err != nil {
 		return ConsoleTeam{}, err
 	}
 	return teams[0], nil
 }
 
-// fillConsole sets Overrides and SchemaOK on teams in two queries. onlyTeam > 0 narrows the
-// override read to that team.
-func (s *Store) fillConsole(ctx context.Context, teams []ConsoleTeam, onlyTeam int64) error {
+func consoleIDs(teams []ConsoleTeam) []int64 {
+	ids := make([]int64, 0, len(teams))
+	for _, t := range teams {
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+// AISpendFor sums this span's AI spend (from day on, inclusive) of the given teams only, keyed by
+// team id; a team without rows is absent. No ids, no query.
+func (s *Store) AISpendFor(ctx context.Context, day time.Time, teamIDs []int64) (map[int64]AISpend, error) {
+	out := make(map[int64]AISpend, len(teamIDs))
+	if len(teamIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		TeamID   int64           `db:"team_id"`
+		CostUSD  decimal.Decimal `db:"cost_usd"`
+		Unpriced int64           `db:"unpriced_calls"`
+		Calls    int64           `db:"calls"`
+	}
+	q, args, err := sqlx.In(`SELECT team_id, COALESCE(SUM(cost_usd), 0) AS cost_usd,
+       CAST(COALESCE(SUM(unpriced_calls), 0) AS SIGNED) AS unpriced_calls, CAST(COALESCE(SUM(calls), 0) AS SIGNED) AS calls
+FROM team_ai_spend_daily WHERE team_id IN (?) AND day >= ? GROUP BY team_id`, teamIDs, day.Format(dayLayout))
+	if err != nil {
+		return nil, fmt.Errorf("platformstore: ai spend for teams: %w", err)
+	}
+	if err := s.db.SelectContext(ctx, &rows, s.db.Rebind(q), args...); err != nil {
+		return nil, fmt.Errorf("platformstore: ai spend for teams since %s: %w", day.Format(dayLayout), err)
+	}
+	for _, r := range rows {
+		out[r.TeamID] = AISpend{CostUSD: r.CostUSD, Unpriced: r.Unpriced, Calls: r.Calls}
+	}
+	return out, nil
+}
+
+// fillConsole sets Overrides and SchemaOK on teams in two queries; the override read covers only
+// these teams.
+func (s *Store) fillConsole(ctx context.Context, teams []ConsoleTeam) error {
 	var rows []struct {
 		TeamID  int64  `db:"team_id"`
 		Feature string `db:"feature"`
 		Enabled bool   `db:"enabled"`
 	}
-	q, args := `SELECT team_id, feature, enabled FROM team_feature`, []any(nil)
-	if onlyTeam > 0 {
-		q, args = q+` WHERE team_id = ?`, []any{onlyTeam}
+	q, args, err := sqlx.In(`SELECT team_id, feature, enabled FROM team_feature WHERE team_id IN (?)`, consoleIDs(teams))
+	if err != nil {
+		return fmt.Errorf("platformstore: console features: %w", err)
 	}
-	if err := s.db.SelectContext(ctx, &rows, q, args...); err != nil {
+	if err := s.db.SelectContext(ctx, &rows, s.db.Rebind(q), args...); err != nil {
 		return fmt.Errorf("platformstore: console features: %w", err)
 	}
 	over := make(map[int64]map[string]bool, len(teams))

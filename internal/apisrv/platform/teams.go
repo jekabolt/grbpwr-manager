@@ -146,7 +146,11 @@ func (s *Server) ListTeams(ctx context.Context, req *pb_admin.ListTeamsRequest) 
 	if err != nil {
 		return nil, storeErr(ctx, "list teams", err)
 	}
-	spend, err := s.monthSpend(ctx)
+	ids := make([]int64, 0, len(teams))
+	for _, t := range teams {
+		ids = append(ids, t.ID)
+	}
+	spend, err := s.monthSpend(ctx, ids...)
 	if err != nil {
 		return nil, storeErr(ctx, "month spend", err)
 	}
@@ -171,7 +175,7 @@ func (s *Server) GetTeam(ctx context.Context, req *pb_admin.GetTeamRequest) (*pb
 	if err != nil {
 		return nil, err
 	}
-	spend, err := s.monthSpend(ctx)
+	spend, err := s.monthSpend(ctx, t.ID)
 	if err != nil {
 		return nil, storeErr(ctx, "month spend", err)
 	}
@@ -196,7 +200,7 @@ func (s *Server) refreshed(ctx context.Context, slug string) (*pb_admin.Platform
 	if err != nil {
 		return nil, err
 	}
-	spend, err := s.monthSpend(ctx)
+	spend, err := s.monthSpend(ctx, t.ID)
 	if err != nil {
 		return nil, storeErr(ctx, "month spend", err)
 	}

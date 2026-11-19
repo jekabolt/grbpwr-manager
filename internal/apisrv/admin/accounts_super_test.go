@@ -352,7 +352,7 @@ func TestCreateAccountRefusesReservedAIActors(t *testing.T) {
 	ph, err := pwhash.New(16, 1000)
 	require.NoError(t, err)
 
-	for _, name := range []string{entity.AIActorSystem, entity.AIActorUnknown, "System", " UNKNOWN ", "sYsTeM"} {
+	for _, name := range []string{entity.AIActorSystem, entity.AIActorUnknown, "System", " UNKNOWN ", "sYsTeM", entity.OperatorActor, " Lekalo "} {
 		t.Run(name, func(t *testing.T) {
 			// No expectations on repo: a refusal that came after the store call fails here.
 			s := &Server{repo: mocks.NewMockRepository(t), pwhash: ph}

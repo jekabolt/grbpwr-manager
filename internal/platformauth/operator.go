@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
@@ -18,7 +19,7 @@ const (
 	// and never contains '.', so the two can never be confused; the prefix is part of the hashed code.
 	OperatorCodePrefix = "op."
 	// OperatorActor is the subject of an operator-entry token: writes in such a session carry it.
-	OperatorActor = "lekalo"
+	OperatorActor = entity.OperatorActor
 	// OperatorTTL bounds an operator-entry token (and never exceeds the team token TTL).
 	OperatorTTL = time.Hour
 )

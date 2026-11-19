@@ -193,6 +193,9 @@ type Server struct {
 	platformOn bool
 	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
 	noShop bool
+	// budgetZone: the owner's AI budget zone, read live (SetBudgetZone); the console counts the
+	// month of AI spend in it.
+	budgetZone func() string
 }
 
 // TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
@@ -200,6 +203,12 @@ type TenantBinder interface {
 	Unary() grpc.UnaryServerInterceptor
 	Stream() grpc.StreamServerInterceptor
 	Middleware(next http.Handler) http.Handler
+}
+
+// SetBudgetZone hands PlatformService the owner's budget zone (read on every call). Call before
+// Start; unset = the default zone.
+func (s *Server) SetBudgetZone(fn func() string) {
+	s.budgetZone = fn
 }
 
 // SetTenantBinder installs the edge team binder. Unset = requests carry no team (tests).
@@ -1221,6 +1230,7 @@ func (s *Server) Start(ctx context.Context,
 	if st, pcfg, ok := authServer.PlatformStore(); ok {
 		ps := platform.New(st)
 		ps.SetConfig(pcfg)
+		ps.SetBudgetZone(s.budgetZone)
 		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 			ps.SetInvalidator(b.InvalidateTeam)
 		}

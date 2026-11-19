@@ -231,6 +231,18 @@ func (s *Store) activateInvite(ctx context.Context, p AcceptParams, reserved Inv
 		if inv.ID != reserved.ID {
 			return ErrTokenInvalid
 		}
+		// A membership coming back (joining → active) starts clean: every older session of the person
+		// in this team is revoked, so nothing from before a removal comes back to life with it.
+		var prev string
+		if err := tx.GetContext(ctx, &prev, `SELECT status FROM team_member WHERE team_id = ? AND user_id = ? FOR UPDATE`,
+			inv.TeamID, userID); err != nil && !isNoRows(err) {
+			return fmt.Errorf("platformstore: lock membership: %w", err)
+		}
+		if prev == "joining" {
+			if _, err := revokeTeamSessionsTx(ctx, tx, userID, inv.TeamID, p.Now); err != nil {
+				return err
+			}
+		}
 		// Only the reservation (or a membership that was already active) turns active: a member removed
 		// between the steps stays removed.
 		r, err := tx.ExecContext(ctx, `UPDATE team_member SET role = ?, status = 'active'

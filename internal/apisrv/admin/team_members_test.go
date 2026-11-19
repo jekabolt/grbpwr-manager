@@ -184,6 +184,20 @@ func TestTeamMembersFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.DB().Get(&after, `SELECT token_hash FROM team_invite WHERE email = 'new@x.io'`))
 	require.NotEqual(t, before, after, "resend kills the old token")
+	// Every people change is owner only: a member with accounts rights still cannot invite, resend,
+	// revoke or remove.
+	_, err = s.InviteTeamMember(bob, &pb_admin.InviteTeamMemberRequest{Email: "y@x.io", Role: "member"})
+	require.Equal(t, "PermissionDenied owner_only", msg(err))
+	_, err = s.ResendTeamInvite(bob, &pb_admin.ResendTeamInviteRequest{InviteRef: inv.Invite.InviteRef})
+	require.Equal(t, "PermissionDenied owner_only", msg(err))
+	_, err = s.RevokeTeamInvite(bob, &pb_admin.RevokeTeamInviteRequest{InviteRef: inv.Invite.InviteRef})
+	require.Equal(t, "PermissionDenied owner_only", msg(err))
+	_, err = s.RemoveTeamMember(bob, &pb_admin.RemoveTeamMemberRequest{Username: "carl"})
+	require.Equal(t, "PermissionDenied owner_only", msg(err))
+	// Listing stays open to the member.
+	_, err = s.ListTeamMembers(bob, &pb_admin.ListTeamMembersRequest{})
+	require.NoError(t, err)
+
 	_, err = s.RevokeTeamInvite(ann, &pb_admin.RevokeTeamInviteRequest{InviteRef: inv.Invite.InviteRef})
 	require.NoError(t, err)
 	_, err = s.RevokeTeamInvite(ann, &pb_admin.RevokeTeamInviteRequest{InviteRef: inv.Invite.InviteRef})
@@ -219,7 +233,20 @@ func TestTeamMembersFlow(t *testing.T) {
 	_, live, _ = b.TeamSession(ctx, "scarl000000000000000000000000000", 103, 2)
 	require.False(t, live, "re-roled member's token must be refused at once")
 
-	// With carl an owner, ann may step down: a former super gets the default grant.
+	// carl's team-side row did not become super (the mirror write failed): he is no working owner,
+	// so ann cannot step down yet.
+	adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl"}, nil).Once()
+	_, err = s.SetTeamMemberRole(ann, &pb_admin.SetTeamMemberRoleRequest{Username: "ann", Role: "member"})
+	require.Equal(t, "FailedPrecondition last_owner", msg(err))
+	// A retry with the role carl already has repairs his row instead of answering "same role".
+	adm.EXPECT().GetAdminByUsername(mock.Anything, "ann").Return(&entity.Admin{Username: "ann", IsSuper: true}, nil).Once()
+	adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl"}, nil).Once()
+	adm.EXPECT().SetAccountPermissions(mock.Anything, "carl", true, []entity.AdminPermission(nil)).Return(nil).Once()
+	_, err = s.SetTeamMemberRole(ann, &pb_admin.SetTeamMemberRoleRequest{Username: "carl", Role: "owner"})
+	require.NoError(t, err)
+
+	// With carl a confirmed owner, ann may step down: a former super gets the default grant.
+	adm.EXPECT().GetAdminByUsername(mock.Anything, "carl").Return(&entity.Admin{Username: "carl", IsSuper: true}, nil).Once()
 	adm.EXPECT().GetAccountWithPermissions(mock.Anything, "ann").Return(&entity.AdminAccount{Admin: entity.Admin{Username: "ann", IsSuper: true}}, nil).Once()
 	adm.EXPECT().GetAdminByUsername(mock.Anything, "ann").Return(&entity.Admin{Username: "ann", IsSuper: true}, nil).Once()
 	adm.EXPECT().SetAccountPermissions(mock.Anything, "ann", false, mock.MatchedBy(func(p []entity.AdminPermission) bool { return len(p) > 0 })).Return(nil).Once()
@@ -228,5 +255,5 @@ func TestTeamMembersFlow(t *testing.T) {
 
 	var audits int
 	require.NoError(t, st.DB().Get(&audits, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action LIKE 'member_%'`))
-	require.Equal(t, 6, audits) // invite, resend, revoke, remove, role ×2
+	require.Equal(t, 6, audits) // invite, resend, revoke, remove, role ×2 (the repair is not a change)
 }

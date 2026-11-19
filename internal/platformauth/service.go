@@ -588,7 +588,18 @@ func (s *Service) session(ctx context.Context, u platformstore.User, teamID int6
 		s.log(ctx, "session id", err)
 		return "", errInternal()
 	}
-	if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, now); err != nil {
+	if aud == jwt.AudTeam {
+		// A team session exists only while the membership is active (checked under its row lock): a
+		// sign-in that started before a removal cannot leave an unrevoked session behind.
+		ok, err := s.d.Store.CreateTeamSession(ctx, sid, u.ID, teamID, now)
+		if err != nil {
+			s.log(ctx, "create team session", err)
+			return "", errInternal()
+		}
+		if !ok {
+			return "", errAuth()
+		}
+	} else if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, now); err != nil {
 		s.log(ctx, "create session", err)
 		return "", errInternal()
 	}

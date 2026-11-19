@@ -407,11 +407,17 @@ const (
 	AIActorUnknown = "unknown"
 )
 
-// AIActorIsReserved reports whether name is one of the ledger's pseudo-actors, compared the way a
-// username is stored (trimmed, lower-cased), so "System " cannot slip past as a different account.
+// OperatorActor is the actor name of an operator-entry session (a console operator inside a team
+// they are not a member of): the team's writes in such a session carry it. RESERVED like the
+// ledger's pseudo-actors: an account with this name would take the operator's writes as its own.
+const OperatorActor = "lekalo"
+
+// AIActorIsReserved reports whether name is reserved — one of the ledger's pseudo-actors or the
+// operator-entry actor — compared the way a username is stored (trimmed, lower-cased), so
+// "System " cannot slip past as a different account.
 func AIActorIsReserved(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case AIActorSystem, AIActorUnknown:
+	case AIActorSystem, AIActorUnknown, OperatorActor:
 		return true
 	}
 	return false
