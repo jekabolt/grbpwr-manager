@@ -5,6 +5,8 @@
 package platform
 
 import (
+	"time"
+
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
@@ -17,6 +19,11 @@ type Server struct {
 	// invalidate drops a team's cached directory row and feature switches after an operator
 	// changes them (tenantbind.Binder.InvalidateTeam). nil = nothing to drop.
 	invalidate func(teamID int64)
+	// cfg is the platform config (team addresses); budgetZone the owner's budget zone; now the
+	// clock (tests). Set by SetConfig / SetBudgetZone (teams.go).
+	cfg        platformstore.Config
+	budgetZone func() string
+	now        func() time.Time
 }
 
 // New returns the server over the control plane.

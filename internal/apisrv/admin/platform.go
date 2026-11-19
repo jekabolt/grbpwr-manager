@@ -9,10 +9,12 @@ import (
 type platformHandle struct {
 	store *platformstore.Store
 	cfg   platformstore.Config
+	// invalidateSession drops one revoked sid from the edge's session cache (team_members.go).
+	invalidateSession func(sid string)
 }
 
 // SetPlatform hands the server the control plane and the platform config (teams mode on). Not
 // called with teams mode off.
 func (s *Server) SetPlatform(st *platformstore.Store, cfg platformstore.Config) {
-	s.platform = platformHandle{store: st, cfg: cfg}
+	s.platform = platformHandle{store: st, cfg: cfg, invalidateSession: s.platform.invalidateSession}
 }

@@ -1153,6 +1153,8 @@ func (s *Server) Start(ctx context.Context,
 	if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 		if st, cfg, on := authServer.PlatformStore(); on {
 			b.UsePlatform(st, cfg)
+			// A member removed or re-roled is refused on the next call, not after the cache TTL.
+			adminServer.SetSessionInvalidator(b.InvalidateSession)
 		}
 		authServer.SetEdge(b)
 	}
@@ -1212,8 +1214,9 @@ func (s *Server) Start(ctx context.Context,
 	pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
 	// PlatformService exists only in teams mode (a control plane is set).
-	if st, _, ok := authServer.PlatformStore(); ok {
+	if st, pcfg, ok := authServer.PlatformStore(); ok {
 		ps := platform.New(st)
+		ps.SetConfig(pcfg)
 		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 			ps.SetInvalidator(b.InvalidateTeam)
 		}

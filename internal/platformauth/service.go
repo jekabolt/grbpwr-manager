@@ -694,6 +694,9 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 	if err != nil {
 		return nil, errCode()
 	}
+	if isOperatorCode(code) {
+		return s.exchangeOperator(ctx, team, code)
+	}
 	sid, err := NewSessionID()
 	if err != nil {
 		s.log(ctx, "session id", err)

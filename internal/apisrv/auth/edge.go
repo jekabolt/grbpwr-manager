@@ -62,6 +62,10 @@ type Workspace struct {
 	Role     string        // "owner" (super) or "member"
 	Features []feature.Key // effective feature keys that are on, in catalog order
 	ReadOnly bool          // the team is suspended
+	// Operator: the caller is a console operator who entered the team (teams §23), not a member.
+	Operator bool
+	// UserID is the caller's platform user id (teams mode, platform token); 0 for a legacy token.
+	UserID int64
 }
 
 const workspaceKey adminContextKey = "admin_workspace"
@@ -70,6 +74,16 @@ const workspaceKey adminContextKey = "admin_workspace"
 func GetWorkspace(ctx context.Context) (Workspace, bool) {
 	w, ok := ctx.Value(workspaceKey).(Workspace)
 	return w, ok
+}
+
+// PutWorkspace returns ctx carrying w, as the admin chain leaves it (tests, in-process callers).
+func PutWorkspace(ctx context.Context, w Workspace) context.Context {
+	return context.WithValue(ctx, workspaceKey, w)
+}
+
+// PutPlatformCaller returns ctx carrying c, as the platform chain leaves it (tests).
+func PutPlatformCaller(ctx context.Context, c PlatformCaller) context.Context {
+	return context.WithValue(ctx, platformCallerKey, c)
 }
 
 // PlatformCaller is the operator a PlatformService call runs for (aud=console token).
@@ -213,7 +227,13 @@ func (s *Server) adminChain(ctx context.Context, call adminCall) (context.Contex
 		slog.String("origin", call.origin),
 		slog.String("method", call.method),
 	)
-	return s.populateAdmin(ctx, claims.Handle, authz, workspaceOf(team, authz.Super, eff)), nil
+	w := workspaceOf(team, authz.Super, eff)
+	// teamAccess let an op token through only on its operator branch.
+	w.Operator = claims.Operator
+	if !claims.Legacy {
+		w.UserID = claims.UserID
+	}
+	return s.populateAdmin(ctx, claims.Handle, authz, w), nil
 }
 
 // claimOperator marks a team token minted by operator entry (a console operator opening a team's
@@ -226,20 +246,44 @@ const claimOperator = "op"
 // authenticate for WithAuth) calls it, no handler looks membership up on its own. ctx carries the
 // team already (the account lookup reads the team's admins table).
 //
-// Today, in this order: an op token is refused; in teams mode a team token's live control tuple must
+// In this order: an op token takes the operator branch; in teams mode a team token's live control tuple must
 // hold (session unrevoked and matching sid / uid / tid, platform user active, membership active —
 // a removed member or a disabled user is refused within the binder's cache TTL, at once on the
 // instance that removed them); the subject's admins row in the team must exist and be enabled. The
 // authorization is the token's perms and its super claim, the latter only while the membership is
 // still owner (a demoted owner loses super at once). Mode OFF a pre-RBAC token keeps full non-super
-// access. Operator entry is added HERE when the console lane lands (an op
-// token: check the platform user is a live operator and the hand-off grant, skip the admins row,
-// decide its authorization); until then an op token is refused, fail closed.
+// access.
+//
+// Operator entry (teams §23): an op token is accepted only in teams mode, only as a platform team
+// token whose op claim is true, while its session is unrevoked and its user is still an active
+// operator (both re-checked through the edge's 15 s caches) — instead of a membership and an admins
+// row, which the operator does not have. It acts as super in the team; a suspended team stays
+// read-only (statusGate ran before). Any other token carrying op is refused, fail closed.
 func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string, claims jwt.TeamClaims) (AdminAuthz, error) {
 	if hasClaim(s.JwtAuth, token, claimOperator) {
-		slog.Default().WarnContext(ctx, "operator-entry token refused: not supported yet",
-			slog.Int64("tid", team.ID), slog.String("sub", claims.Handle))
-		return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+		if !s.teamsMode() || claims.Legacy || !claims.Operator || claims.Audience != jwt.AudTeam {
+			slog.Default().WarnContext(ctx, "operator-entry token refused",
+				slog.Int64("tid", team.ID), slog.String("sub", claims.Handle))
+			return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+		}
+		live, err := s.edge.SessionActive(ctx, claims.SessionID)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "operator entry: session check failed", slog.String("err", err.Error()))
+			return AdminAuthz{}, status.Error(codes.Unavailable, "session check unavailable")
+		}
+		op := false
+		if live {
+			if op, err = s.edge.Operator(ctx, claims.UserID); err != nil {
+				slog.Default().ErrorContext(ctx, "operator entry: operator check failed", slog.String("err", err.Error()))
+				return AdminAuthz{}, status.Error(codes.Unavailable, "operator check unavailable")
+			}
+		}
+		if !live || !op {
+			slog.Default().WarnContext(ctx, "operator entry: session or operator not live",
+				slog.Int64("tid", team.ID), slog.Int64("uid", claims.UserID))
+			return AdminAuthz{}, status.Error(codes.Unauthenticated, "unauthorized")
+		}
+		return AdminAuthz{Super: true}, nil
 	}
 	super := claims.Super
 	if s.teamsMode() && !claims.Legacy {
