@@ -43,7 +43,10 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 	if err != nil {
 		return "", "", fmt.Errorf("can't get file extension")
 	}
-	fp := b.constructFullPath(folder, imageName, ext)
+	fp, err := b.constructFullPath(ctx, folder, imageName, ext)
+	if err != nil {
+		return "", "", err
+	}
 
 	data, err := io.ReadAll(img)
 	if err != nil {

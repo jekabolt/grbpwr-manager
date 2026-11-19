@@ -89,7 +89,10 @@ func (b *Bucket) UploadLibraryObject(ctx context.Context, r io.Reader, contentTy
 	if err != nil {
 		return "", "", 0, err
 	}
-	key := b.constructFullPath(libraryFolder, name, sanitizeExt(ext))
+	key, err := b.constructFullPath(ctx, libraryFolder, name, sanitizeExt(ext))
+	if err != nil {
+		return "", "", 0, err
+	}
 
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "application/octet-stream"
@@ -139,7 +142,10 @@ func (b *Bucket) UploadLibraryPreview(ctx context.Context, raw []byte, ext strin
 	if err != nil {
 		return "", err
 	}
-	key := b.constructFullPath(libraryPreviewFolder, name, previewExt)
+	key, err := b.constructFullPath(ctx, libraryPreviewFolder, name, previewExt)
+	if err != nil {
+		return "", err
+	}
 
 	r := bytes.NewReader(raw)
 	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, int64(r.Len()),

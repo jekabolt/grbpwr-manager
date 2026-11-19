@@ -39,7 +39,10 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 			slog.String("err", err.Error()))
 		return nil, err
 	}
-	fp := b.constructFullPath(folder, objectName, ext)
+	fp, err := b.constructFullPath(ctx, folder, objectName, ext)
+	if err != nil {
+		return nil, err
+	}
 
 	r := bytes.NewReader(mp4Data)
 

@@ -52,6 +52,26 @@ func (f *readS3) log() []string {
 
 func (f *readS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/"+f.bucket+"/")
+	if r.Method == http.MethodPut && key != "" && r.URL.Query().Get("partNumber") == "" {
+		// A single-part PutObject (teamprefix_test.go): keep the object as sent.
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.requests = append(f.requests, "PUT "+key)
+		f.objects[key] = proxyObj{body: body, contentType: r.Header.Get("Content-Type")}
+		f.mu.Unlock()
+		w.Header().Set("ETag", `"abc"`)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method == http.MethodGet && strings.Trim(key, "/") == strings.Trim(f.bucket, "/") || r.Method == http.MethodGet && key == "" || r.URL.Query().Has("list-type") {
+		// ListObjects: record the prefix asked for, answer with nothing.
+		f.mu.Lock()
+		f.requests = append(f.requests, "LIST "+r.URL.Query().Get("prefix"))
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>`+f.bucket+`</Name><IsTruncated>false</IsTruncated></ListBucketResult>`)
+		return
+	}
 	f.mu.Lock()
 	f.requests = append(f.requests, r.Method+" "+key)
 	o, ok := f.objects[key]

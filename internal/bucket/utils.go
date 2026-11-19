@@ -1,6 +1,7 @@
 package bucket
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"strings"
@@ -66,11 +67,19 @@ func fileExtensionFromContentType(contentType ContentType) (string, error) {
 	return "", fmt.Errorf("unsupported MIME type %s", contentType)
 }
 
-func (b *Bucket) constructFullPath(folder, fileName, ext string) string {
+// constructFullPath is the key of a new object: {base}/{folder}/{yyyy}/{month}/{name}.{ext} for team
+// #1 and teams mode off (today's keys), {base}/t/{file_key}/{folder}/… for another team (teamprefix.go).
+func (b *Bucket) constructFullPath(ctx context.Context, folder, fileName, ext string) (string, error) {
+	team, err := b.Config.teamKeyParts(ctx)
+	if err != nil {
+		return "", err
+	}
 	now := time.Now().UTC()
 	year := fmt.Sprintf("%d", now.Year())
 	month := strings.ToLower(now.Month().String())
-	return path.Clean(strings.Join([]string{b.BaseFolder, folder, year, month, fileName + "." + ext}, "/"))
+	parts := append([]string{b.BaseFolder}, team...)
+	parts = append(parts, folder, year, month, fileName+"."+ext)
+	return path.Clean(strings.Join(parts, "/")), nil
 }
 
 func (b *Bucket) getOriginEndpoint(filePath string) string {
