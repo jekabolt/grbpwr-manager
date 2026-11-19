@@ -32,26 +32,27 @@ func (f *fakeInfoSrc) GetDictionaryInfo(context.Context) (*entity.DictionaryInfo
 	return &entity.DictionaryInfo{}, nil
 }
 
-func resetRevisions() { SetDictionaryRevisions(map[entity.DictionaryNamespace]int64{}) }
+func resetRevisions(t *testing.T) { resetForTest(t) }
 
 func TestDictionaryRevisionsStale(t *testing.T) {
-	resetRevisions()
-	SetDictionaryRevisions(map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 2})
+	resetRevisions(t)
+	ctx := context.Background()
+	SetDictionaryRevisions(ctx, map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 2})
 
-	if DictionaryRevisionsStale(map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 2}) {
+	if DictionaryRevisionsStale(ctx, map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 2}) {
 		t.Error("equal revision should not be stale")
 	}
-	if !DictionaryRevisionsStale(map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 3}) {
+	if !DictionaryRevisionsStale(ctx, map[entity.DictionaryNamespace]int64{entity.DictNamespaceColor: 3}) {
 		t.Error("higher DB revision should be stale")
 	}
-	if !DictionaryRevisionsStale(map[entity.DictionaryNamespace]int64{entity.DictNamespaceCollection: 1}) {
+	if !DictionaryRevisionsStale(ctx, map[entity.DictionaryNamespace]int64{entity.DictNamespaceCollection: 1}) {
 		t.Error("never-seen namespace should be stale")
 	}
 }
 
 func TestEnsureDictionaryFresh(t *testing.T) {
 	ctx := context.Background()
-	resetRevisions()
+	resetRevisions(t)
 
 	rev := &fakeRevSrc{revs: map[entity.DictionaryNamespace]int64{
 		entity.DictNamespaceColor:      1,
@@ -87,7 +88,7 @@ func TestEnsureDictionaryFresh(t *testing.T) {
 
 func TestEnsureDictionaryFreshErrors(t *testing.T) {
 	ctx := context.Background()
-	resetRevisions()
+	resetRevisions(t)
 
 	revErr := &fakeRevSrc{err: errors.New("db down")}
 	info := &fakeInfoSrc{}
@@ -104,7 +105,7 @@ func TestEnsureDictionaryFreshErrors(t *testing.T) {
 		t.Error("reload error must propagate")
 	}
 	// Cache revisions must remain unset so a later successful call still reloads.
-	if !DictionaryRevisionsStale(map[entity.DictionaryNamespace]int64{entity.DictNamespaceTag: 5}) {
+	if !DictionaryRevisionsStale(ctx, map[entity.DictionaryNamespace]int64{entity.DictNamespaceTag: 5}) {
 		t.Error("failed reload must not advance cached revisions")
 	}
 }

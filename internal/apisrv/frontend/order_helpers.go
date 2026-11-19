@@ -19,8 +19,8 @@ import (
 )
 
 // getOrderExpirationDuration returns configurable expiration from settings, or handler default when not set.
-func (s *Server) getOrderExpirationDuration(handler dependency.Invoicer) time.Duration {
-	if sec := cache.GetOrderExpirationSeconds(); sec > 0 {
+func (s *Server) getOrderExpirationDuration(ctx context.Context, handler dependency.Invoicer) time.Duration {
+	if sec := cache.GetOrderExpirationSeconds(ctx); sec > 0 {
 		return time.Duration(sec) * time.Second
 	}
 	return handler.ExpirationDuration()

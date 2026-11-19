@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 )
@@ -215,7 +216,7 @@ func SendOrderDeliveredForUUID(ctx context.Context, rep dependency.Repository, m
 	if of.Buyer.Email == "" {
 		return fmt.Errorf("order %s has no buyer email", orderUUID)
 	}
-	return mailer.SendOrderDelivered(ctx, rep, of.Buyer.Email, dto.OrderFullToOrderDelivered(of))
+	return mailer.SendOrderDelivered(ctx, rep, of.Buyer.Email, dto.OrderFullToOrderDelivered(of, cache.ShipmentCarrierLookup(ctx)))
 }
 
 // SendRefundInitiated sends a refund initiated email.

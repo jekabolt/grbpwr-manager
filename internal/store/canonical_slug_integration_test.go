@@ -104,7 +104,7 @@ func TestCanonicalSlugUsesDefaultLanguage(t *testing.T) {
 		},
 	}
 	productSlug := func() string {
-		pb, err := dto.ConvertToPbProductFull(pf)
+		pb, err := dto.ConvertToPbProductFull(pf, cache.ColorDictFor(ctx))
 		require.NoError(t, err)
 		return pb.GetColorway().GetSlug() // R8: ColorwayFull.product→colorway
 	}

@@ -44,7 +44,7 @@ func (s *Store) SetShipmentCarrierAllowance(ctx context.Context, carrier string,
 		if err != nil {
 			return fmt.Errorf("failed to update shipment carrier allowance: %w", err)
 		}
-		cache.UpdateShipmentCarrierAllowance(carrier, allowance)
+		cache.UpdateShipmentCarrierAllowance(ctx, carrier, allowance)
 		return nil
 	})
 	if err != nil {
@@ -101,7 +101,7 @@ func (s *Store) AddShipmentCarrier(ctx context.Context, carrier *entity.Shipment
 		if err != nil {
 			return fmt.Errorf("failed to refresh shipment carriers: %w", err)
 		}
-		cache.UpdateShipmentCarriers(carriers)
+		cache.UpdateShipmentCarriers(ctx, carriers)
 		return nil
 	})
 	if err != nil {
@@ -161,7 +161,7 @@ func (s *Store) UpdateShipmentCarrier(ctx context.Context, id int, carrier *enti
 		if err != nil {
 			return fmt.Errorf("failed to refresh shipment carriers: %w", err)
 		}
-		cache.UpdateShipmentCarriers(carriers)
+		cache.UpdateShipmentCarriers(ctx, carriers)
 		return nil
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func (s *Store) DeleteShipmentCarrier(ctx context.Context, id int) error {
 		if err != nil {
 			return fmt.Errorf("failed to refresh shipment carriers: %w", err)
 		}
-		cache.UpdateShipmentCarriers(carriers)
+		cache.UpdateShipmentCarriers(ctx, carriers)
 		return nil
 	})
 	if err != nil {
@@ -236,7 +236,7 @@ func (s *Store) SetShipmentCarrierPrices(ctx context.Context, carrier string, pr
 		if err != nil {
 			return fmt.Errorf("failed to refresh shipment carriers: %w", err)
 		}
-		cache.UpdateShipmentCarriers(carriers)
+		cache.UpdateShipmentCarriers(ctx, carriers)
 		return nil
 	})
 	if err != nil {
@@ -247,8 +247,7 @@ func (s *Store) SetShipmentCarrierPrices(ctx context.Context, carrier string, pr
 
 // SetPaymentIsProd sets the payment mode.
 func (s *Store) SetPaymentIsProd(ctx context.Context, isProd bool) error {
-	cache.SetPaymentIsProd(isProd)
-	return nil
+	return cache.SetPaymentIsProd(ctx, isProd)
 }
 
 // SetPaymentMethodAllowance updates the allowed status of a payment method.
@@ -274,8 +273,8 @@ func (s *Store) SetPaymentMethodAllowance(ctx context.Context, paymentMethod ent
 		if err != nil {
 			return fmt.Errorf("failed to update payment method allowance: %w", err)
 		}
-		cache.UpdatePaymentMethodAllowance(paymentMethod, allowance)
-		cache.RefreshEntityPaymentMethods()
+		cache.UpdatePaymentMethodAllowance(ctx, paymentMethod, allowance)
+		cache.RefreshEntityPaymentMethods(ctx)
 		return nil
 	})
 	if err != nil {
@@ -286,26 +285,22 @@ func (s *Store) SetPaymentMethodAllowance(ctx context.Context, paymentMethod ent
 
 // SetSiteAvailability sets the site availability.
 func (s *Store) SetSiteAvailability(ctx context.Context, available bool) error {
-	cache.SetSiteAvailability(available)
-	return nil
+	return cache.SetSiteAvailability(ctx, available)
 }
 
 // SetMaxOrderItems sets the maximum number of order items.
 func (s *Store) SetMaxOrderItems(ctx context.Context, count int) error {
-	cache.SetMaxOrderItems(count)
-	return nil
+	return cache.SetMaxOrderItems(ctx, count)
 }
 
 // SetBigMenu sets the big menu flag.
 func (s *Store) SetBigMenu(ctx context.Context, bigMenu bool) error {
-	cache.SetBigMenu(bigMenu)
-	return nil
+	return cache.SetBigMenu(ctx, bigMenu)
 }
 
 // SetOrderExpirationSeconds sets the order expiration timeout.
 func (s *Store) SetOrderExpirationSeconds(ctx context.Context, seconds int) error {
-	cache.SetOrderExpirationSeconds(seconds)
-	return nil
+	return cache.SetOrderExpirationSeconds(ctx, seconds)
 }
 
 // SetAnnounce updates the announce link and translations.
@@ -336,7 +331,7 @@ func (s *Store) SetAnnounce(ctx context.Context, link string, translations []ent
 			}
 		}
 
-		cache.SetAnnounce(link, translations)
+		cache.SetAnnounce(ctx, link, translations)
 		return nil
 	})
 	if err != nil {
@@ -390,7 +385,7 @@ func (s *Store) SetComplimentaryShippingPrices(ctx context.Context, prices map[s
 		if err != nil {
 			return fmt.Errorf("failed to refresh complimentary shipping prices: %w", err)
 		}
-		cache.UpdateComplimentaryShippingPrices(pricesFromDB)
+		cache.UpdateComplimentaryShippingPrices(ctx, pricesFromDB)
 		return nil
 	})
 	if err != nil {

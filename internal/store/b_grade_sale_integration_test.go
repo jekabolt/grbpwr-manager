@@ -63,7 +63,7 @@ func TestBGradeManualPriceSale(t *testing.T) {
 	hf, err := s.Hero().GetHero(ctx)
 	require.NoError(t, err)
 	require.NoError(t, cache.InitConsts(ctx, di, hf))
-	cache.UpdatePaymentMethodAllowance(entity.CARD, true)
+	cache.UpdatePaymentMethodAllowance(ctx, entity.CARD, true)
 
 	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 1, FullSizeHeight: 1,
@@ -193,7 +193,7 @@ func TestBGradeManualPriceSale(t *testing.T) {
 	require.Equal(t, bVarID, b.VariantID)
 
 	// --- (4) stock: the invoice decrements B from its own row; a restock refund returns it there ---
-	pme, ok := cache.GetPaymentMethodByName(entity.CARD)
+	pme, ok := cache.GetPaymentMethodByName(ctx, entity.CARD)
 	require.True(t, ok, "card payment method must be cached")
 	_, err = s.Order().InsertFiatInvoice(ctx, o.UUID, "bgrade-secret-"+token, pme.Method, time.Now().UTC().Add(time.Hour))
 	require.NoError(t, err, "invoicing (which reduces stock) must accept a B line")

@@ -47,7 +47,7 @@ func (s *Store) GetOrderFactsForPosting(ctx context.Context, orderUUID string) (
 	if err != nil {
 		return nil, fmt.Errorf("accounting: get order facts %s: %w", orderUUID, err)
 	}
-	pm, ok := cache.GetPaymentMethodById(facts.PaymentMethodId)
+	pm, ok := cache.GetPaymentMethodById(ctx, facts.PaymentMethodId)
 	if !ok {
 		return nil, fmt.Errorf("accounting: payment method %d not found in cache for order %s", facts.PaymentMethodId, orderUUID)
 	}

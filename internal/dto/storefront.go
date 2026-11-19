@@ -305,11 +305,8 @@ func storefrontDisplay(c *entity.Colorway) *pb_frontend.StorefrontColorwayDispla
 		if !catID.Valid {
 			continue
 		}
-		for _, cat := range cache.GetCategories() {
-			if cat.ID == int(catID.Int32) {
-				d.CategoryLabels = append(d.CategoryLabels, cat.Name)
-				break
-			}
+		if cat, ok := cache.GetCategoryById(int(catID.Int32)); ok {
+			d.CategoryLabels = append(d.CategoryLabels, cat.Name)
 		}
 	}
 	return d

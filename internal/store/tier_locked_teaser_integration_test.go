@@ -199,7 +199,7 @@ func TestTierLockedTeaserPurchaseBlock(t *testing.T) {
 
 	// Payment-method allowance is config/cache-driven; force our method allowed AFTER InitConsts so the
 	// order path can reach and exercise the tier block.
-	cache.UpdatePaymentMethodAllowance(entity.BANK_INVOICE, true)
+	cache.UpdatePaymentMethodAllowance(ctx, entity.BANK_INVOICE, true)
 
 	mediaID, err := s.Media().AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL: "https://x/f.jpg", FullSizeWidth: 1, FullSizeHeight: 1,

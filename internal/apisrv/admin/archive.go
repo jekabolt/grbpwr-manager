@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
@@ -35,7 +36,7 @@ func (s *Server) AddArchive(ctx context.Context, req *pb_admin.AddArchiveRequest
 		return nil, status.Errorf(codes.Internal, "can't add archive")
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: archiveId,
 	})
 
@@ -71,7 +72,7 @@ func (s *Server) UpdateArchive(ctx context.Context, req *pb_admin.UpdateArchiveR
 		return nil, status.Errorf(codes.Internal, "can't update archive")
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})
@@ -88,7 +89,7 @@ func (s *Server) DeleteArchiveById(ctx context.Context, req *pb_admin.DeleteArch
 		return nil, status.Errorf(codes.Internal, "failed to delete archive: %v", err)
 	}
 
-	s.revalidateAsync(&dto.RevalidationData{
+	s.revalidateAsync(ctx, &dto.RevalidationData{
 		Archive: int(req.Id),
 		Hero:    true,
 	})
@@ -109,7 +110,7 @@ func (s *Server) GetArchiveByID(ctx context.Context, req *pb_admin.GetArchiveByI
 		return nil, status.Errorf(codes.Internal, "failed to get archive: %v", err)
 	}
 
-	pbAf, err := dto.ConvertArchiveFullEntityToPb(af)
+	pbAf, err := dto.ConvertArchiveFullEntityToPb(af, cache.ColorDictFor(ctx))
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't convert archive to pb",
 			slog.String("err", err.Error()),

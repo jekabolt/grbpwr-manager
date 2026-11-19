@@ -501,7 +501,7 @@ func TestPublishColorwayResponsePublishedAtPopulated(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, full.Product.PublishedAt.Valid)
 
-	pbFull, err := dto.ConvertToPbProductFull(full)
+	pbFull, err := dto.ConvertToPbProductFull(full, cache.ColorDictFor(ctx))
 	require.NoError(t, err)
 	require.NotNil(t, pbFull.Colorway.PublishedAt, "PublishColorwayResponse.colorway.published_at must be populated, not left unset")
 }

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 // cacheMu guard was added this panicked with "concurrent map read and map write"
 // (sizeById / paymentMethodsById). It must now complete cleanly.
 func TestCacheConcurrentAccess(t *testing.T) {
+	resetForTest(t)
+	ctx := context.Background()
 	const goroutines = 16
 	const iterations = 500
 
@@ -33,13 +36,13 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			for i := range iterations {
-				RefreshDictionary(dict(i))
-				UpdatePaymentMethodAllowance(entity.CARD, i%2 == 0)
-				RefreshEntityPaymentMethods()
-				SetSiteAvailability(i%2 == 0)
-				SetMaxOrderItems(i)
-				SetOrderExpirationSeconds(i)
-				UpdateHero(&entity.HeroFullWithTranslations{})
+				RefreshDictionary(ctx, dict(i))
+				UpdatePaymentMethodAllowance(ctx, entity.CARD, i%2 == 0)
+				RefreshEntityPaymentMethods(ctx)
+				_ = SetSiteAvailability(ctx, i%2 == 0)
+				_ = SetMaxOrderItems(ctx, i)
+				_ = SetOrderExpirationSeconds(ctx, i)
+				UpdateHero(ctx, &entity.HeroFullWithTranslations{})
 			}
 		})
 	}
@@ -48,18 +51,18 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			for range iterations {
-				_ = GetSizes()
+				_ = GetSizes(ctx)
 				_, _ = GetSizeById(1)
-				_ = GetCategories()
-				_ = GetCollections()
-				_, _ = GetPaymentMethodByName(entity.CARD)
-				_, _ = GetPaymentMethodById(1)
-				_ = GetPaymentMethods()
-				_ = GetPaymentMethodsFilteredByIsProd()
-				_ = GetSiteAvailability()
-				_ = GetMaxOrderItems()
-				_ = GetOrderExpirationSeconds()
-				_ = GetHero()
+				_ = GetCategories(ctx)
+				_ = GetCollections(ctx)
+				_, _ = GetPaymentMethodByName(ctx, entity.CARD)
+				_, _ = GetPaymentMethodById(ctx, 1)
+				_ = GetPaymentMethods(ctx)
+				_ = GetPaymentMethodsFilteredByIsProd(ctx)
+				_ = GetSiteAvailability(ctx)
+				_ = GetMaxOrderItems(ctx)
+				_ = GetOrderExpirationSeconds(ctx)
+				_ = GetHero(ctx)
 			}
 		})
 	}

@@ -60,7 +60,7 @@ func TestUpdatePromoCodeInPlaceAdditive(t *testing.T) {
 	require.True(t, decimal.NewFromInt(25).Equal(got.Discount), "discount updated, got %s", got.Discount)
 
 	// Cache reflects the DB truth (id preserved, allowed toggled on).
-	cached, ok := cache.GetPromoByCode(code)
+	cached, ok := cache.GetPromoByCode(ctx, code)
 	require.True(t, ok)
 	require.Equal(t, origID, cached.Id)
 	require.True(t, cached.Allowed)

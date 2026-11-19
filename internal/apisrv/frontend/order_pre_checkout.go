@@ -94,7 +94,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 		pbOii = append(pbOii, dto.ConvertEntityOrderItemToPb(&i, currency))
 	}
 
-	shipmentCarrier, scOk := cache.GetShipmentCarrierById(int(req.ShipmentCarrierId))
+	shipmentCarrier, scOk := cache.GetShipmentCarrierById(ctx, int(req.ShipmentCarrierId))
 	if scOk && !shipmentCarrier.Allowed {
 		slog.Default().ErrorContext(ctx, "shipment carrier not allowed",
 			slog.Any("shipmentCarrier", shipmentCarrier),
@@ -127,7 +127,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	freeShipping := false
 
 	// Complimentary shipping: waive shipping when subtotal meets threshold (threshold=0 means disabled for that currency)
-	complimentaryPrices := cache.GetComplimentaryShippingPrices()
+	complimentaryPrices := cache.GetComplimentaryShippingPrices(ctx)
 	if threshold, ok := complimentaryPrices[strings.ToUpper(currency)]; ok && threshold.GreaterThan(decimal.Zero) {
 		if oiv.SubtotalDecimal().GreaterThanOrEqual(threshold) {
 			freeShipping = true
@@ -140,7 +140,7 @@ func (s *Server) ValidateOrderItemsInsert(ctx context.Context, req *pb_frontend.
 	}
 
 	// Apply promo discount if present
-	promo, promoOk := cache.GetPromoByCode(req.PromoCode)
+	promo, promoOk := cache.GetPromoByCode(ctx, req.PromoCode)
 	if promoOk {
 		decimalPlaces := dto.DecimalPlacesForCurrency(currency)
 		promoTotal, promoFreeShipping := promo.CalculateTotalWithPromo(totalSale, effectiveShipmentPrice, decimalPlaces)

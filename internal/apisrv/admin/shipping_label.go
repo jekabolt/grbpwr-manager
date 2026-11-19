@@ -49,7 +49,7 @@ func (s *Server) PrepareShippingLabel(ctx context.Context, req *pb_admin.Prepare
 		TrackingCode:      orderFull.Shipment.TrackingCode.String,
 		LabelsEnabled:     s.labelProvider.Enabled(),
 	}
-	if carrier, ok := cache.GetShipmentCarrierById(orderFull.Shipment.CarrierId); ok {
+	if carrier, ok := cache.GetShipmentCarrierById(ctx, orderFull.Shipment.CarrierId); ok {
 		resp.CarrierId = int32(carrier.Id)
 		resp.CarrierName = carrier.Carrier
 	}
@@ -96,7 +96,7 @@ func (s *Server) GenerateShippingLabel(ctx context.Context, req *pb_admin.Genera
 	if !s.labelProvider.Enabled() {
 		return nil, status.Error(codes.FailedPrecondition, "shipping labels are not configured")
 	}
-	if _, ok := cache.GetShipmentCarrierById(orderFull.Shipment.CarrierId); !ok {
+	if _, ok := cache.GetShipmentCarrierById(ctx, orderFull.Shipment.CarrierId); !ok {
 		return nil, status.Error(codes.Internal, "can't resolve order shipment carrier")
 	}
 

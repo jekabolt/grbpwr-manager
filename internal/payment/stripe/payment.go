@@ -91,7 +91,7 @@ func New(ctx context.Context, c *Config, rep dependency.Repository, m dependency
 		return nil, fmt.Errorf("base currency not configured")
 	}
 
-	pm, ok := cache.GetPaymentMethodByName(pmn)
+	pm, ok := cache.GetPaymentMethodByName(ctx, pmn)
 	if !ok {
 		return nil, fmt.Errorf("payment method not found")
 	}
@@ -287,7 +287,7 @@ func (p *Processor) updateOrderAsPaid(ctx context.Context, rep dependency.Reposi
 		p.ga4mp.TrackPurchase(ctx, *of)
 	}
 
-	orderDetails := dto.OrderFullToOrderConfirmed(of)
+	orderDetails := dto.OrderFullToOrderConfirmed(of, cache.ShipmentCarrierLookup(ctx))
 	if err := p.mailer.QueueOrderConfirmation(ctx, rep, of.Buyer.Email, orderDetails); err != nil {
 		// Log but never fail payment update due to email - worker will retry queued emails
 		slog.Default().ErrorContext(ctx, "can't queue order confirmation email",
@@ -594,7 +594,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 		// PaymentIntent.Amount is in smallest currency unit (cents for most currencies, but not for zero-decimal like JPY, KRW)
 		paymentCurrencyAmount = AmountFromSmallestUnit(pi.Amount, string(pi.Currency))
 
-		of, err = rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().UTC().Add(p.expirationDuration()))
+		of, err = rep.Order().InsertFiatInvoice(ctx, orderUUID, pi.ClientSecret, p.pm, time.Now().UTC().Add(p.expirationDuration(ctx)))
 		if err != nil {
 			return fmt.Errorf("can't insert fiat invoice: %w", err)
 		}
@@ -627,7 +627,7 @@ func (p *Processor) GetOrderInvoice(ctx context.Context, orderUUID string) (*ent
 	}
 
 	payment.PaymentInsert.ExpiredAt = sql.NullTime{
-		Time:  time.Now().UTC().Add(p.expirationDuration()),
+		Time:  time.Now().UTC().Add(p.expirationDuration(ctx)),
 		Valid: true,
 	}
 
@@ -764,12 +764,14 @@ func (p *Processor) StopAllMonitors(ctx context.Context) {
 	}
 }
 
+// ExpirationDuration is the configured default. The per-team override (admin setting) is read by
+// the caller from its own team's cache (frontend getOrderExpirationDuration) before falling back here.
 func (p *Processor) ExpirationDuration() time.Duration {
-	return p.expirationDuration()
+	return p.c.InvoiceExpiration
 }
 
-func (p *Processor) expirationDuration() time.Duration {
-	if sec := cache.GetOrderExpirationSeconds(); sec > 0 {
+func (p *Processor) expirationDuration(ctx context.Context) time.Duration {
+	if sec := cache.GetOrderExpirationSeconds(ctx); sec > 0 {
 		return time.Duration(sec) * time.Second
 	}
 	return p.c.InvoiceExpiration

@@ -508,7 +508,7 @@ func (s *Store) CancelOrder(ctx context.Context, orderUUID string) error {
 		return err
 	})
 	if err == nil && voucherCodeToEnable != "" {
-		cache.EnablePromo(voucherCodeToEnable)
+		cache.EnablePromo(ctx, voucherCodeToEnable)
 	}
 	return err
 }
@@ -608,7 +608,7 @@ func (s *Store) CancelOrderByUser(ctx context.Context, orderUUID string, email s
 		return nil, err
 	}
 	if voucherCodeToEnable != "" {
-		cache.EnablePromo(voucherCodeToEnable)
+		cache.EnablePromo(ctx, voucherCodeToEnable)
 	}
 
 	orderFull, err := s.repFunc().Order().GetOrderByUUIDAndEmail(ctx, orderUUID, email)

@@ -38,7 +38,7 @@ func TestCreateCustomOrderRequiresPositivePrice(t *testing.T) {
 
 	// pick an allowed shipment carrier so the pre-tx carrier validation passes and we reach the items.
 	var carrierID int
-	for _, c := range cache.GetShipmentCarriers() {
+	for _, c := range cache.GetShipmentCarriers(ctx) {
 		if c.Allowed {
 			carrierID = c.Id
 			break

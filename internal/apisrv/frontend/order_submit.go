@@ -98,7 +98,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.Order.PaymentMethod)
 
-	pme, ok := cache.GetPaymentMethodByName(pm)
+	pme, ok := cache.GetPaymentMethodByName(ctx, pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
 		return nil, status.Errorf(codes.Internal, "payment method not configured")
@@ -121,7 +121,7 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 		return nil, status.Errorf(codes.Internal, "can't get payment handler")
 	}
 
-	expirationDuration := s.getOrderExpirationDuration(handler)
+	expirationDuration := s.getOrderExpirationDuration(ctx, handler)
 
 	// Check for idempotency: if PaymentIntent ID is provided, check if order already exists
 	if req.PaymentIntentId != "" && (pm == entity.CARD || pm == entity.CARD_TEST) {

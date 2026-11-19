@@ -136,9 +136,9 @@ func (s *Server) UpdateStyle(ctx context.Context, req *pb_admin.UpdateStyleReque
 		slog.Default().WarnContext(ctx, "style updated but dictionary cache refresh failed",
 			slog.Int("style_id", int(req.StyleId)), slog.String("err", err.Error()))
 	} else {
-		cache.RefreshDictionary(di)
+		cache.RefreshDictionary(ctx, di)
 	}
-	s.revalidateAsync(&dto.RevalidationData{Hero: true})
+	s.revalidateAsync(ctx, &dto.RevalidationData{Hero: true})
 	return &pb_admin.UpdateStyleResponse{LockVersion: int32(lockVersion)}, nil
 }
 

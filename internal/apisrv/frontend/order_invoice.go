@@ -40,7 +40,7 @@ func (s *Server) GetOrderInvoice(ctx context.Context, req *pb_frontend.GetOrderI
 
 	pm := dto.ConvertPbPaymentMethodToEntity(req.PaymentMethod)
 
-	pme, ok := cache.GetPaymentMethodByName(pm)
+	pme, ok := cache.GetPaymentMethodByName(ctx, pm)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "failed to retrieve payment method")
 		return nil, status.Errorf(codes.Internal, "payment method not configured")
@@ -117,7 +117,7 @@ func (s *Server) CancelOrderInvoice(ctx context.Context, req *pb_frontend.Cancel
 	// RELEASE RESERVATION: Free stock when order invoice is cancelled
 	s.reservationMgr.Release(ctx, req.OrderUuid)
 
-	pme, ok := cache.GetPaymentMethodById(payment.PaymentMethodID)
+	pme, ok := cache.GetPaymentMethodById(ctx, payment.PaymentMethodID)
 	if !ok {
 		slog.Default().ErrorContext(ctx, "payment method not found in cache",
 			slog.Int("payment_method_id", payment.PaymentMethodID),

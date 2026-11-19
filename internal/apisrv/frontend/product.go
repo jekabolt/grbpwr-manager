@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	pb_frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
@@ -71,7 +72,7 @@ func (s *Server) GetColorwaysPaged(ctx context.Context, req *pb_frontend.GetColo
 
 	of := dto.ConvertPBCommonOrderFactorToEntity(req.OrderFactor)
 
-	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions)
+	fc, err := dto.ConvertPBCommonFilterConditionsToEntity(req.FilterConditions, cache.ColorDictFor(ctx))
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}

@@ -64,7 +64,7 @@ func (s *Server) RestoreTechCardSnapshot(ctx context.Context, req *pb_admin.Rest
 		return nil, status.Error(codes.InvalidArgument, "snapshot id is required")
 	}
 	id := int(req.GetTechCardId())
-	if cache.IsModelPhotoTechCard(id) {
+	if cache.IsModelPhotoTechCard(ctx, id) {
 		return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 	}
 	snap, err := s.repo.TechCards().GetTechCardSnapshot(ctx, id, req.GetSnapshotId())

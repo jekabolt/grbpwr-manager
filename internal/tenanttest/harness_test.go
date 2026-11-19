@@ -197,6 +197,9 @@ WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`, dbOne
 	}); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
+	// The per-team cache loads each team from its own database on first use, as in production
+	// (store.New does this after InitConsts; NewForTest skips InitConsts, so team #1 loads lazily too).
+	x.st.EnableTeamCache()
 	if x.b, err = tenantbind.New(tenant.TeamOne(dbOne)); err != nil {
 		return err
 	}

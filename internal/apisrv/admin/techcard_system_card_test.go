@@ -23,9 +23,9 @@ const testModelPhotoCardID = 990417
 
 func armModelPhotoCard(t *testing.T) {
 	t.Helper()
-	prev := cache.GetModelPhotoTechCardID()
-	cache.SetModelPhotoTechCardID(testModelPhotoCardID)
-	t.Cleanup(func() { cache.SetModelPhotoTechCardID(prev) })
+	prev := cache.GetModelPhotoTechCardID(context.Background())
+	cache.SetModelPhotoTechCardID(context.Background(), testModelPhotoCardID)
+	t.Cleanup(func() { cache.SetModelPhotoTechCardID(context.Background(), prev) })
 }
 
 func TestCreateTechCardRefusesASystemKeyBeforeTheStore(t *testing.T) {

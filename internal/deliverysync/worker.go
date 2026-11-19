@@ -103,7 +103,7 @@ func (w *Worker) syncDeliveries(ctx context.Context) error {
 // (transition + email), otherwise apply the per-carrier timer safety net (silent transition, no
 // email). Per-order errors are logged and swallowed so one bad order doesn't fail the whole tick.
 func (w *Worker) processOrder(ctx context.Context, o entity.ShipmentToAutoDeliver, now time.Time) {
-	carrier, carrierOK := cache.GetShipmentCarrierById(o.CarrierId)
+	carrier, carrierOK := cache.GetShipmentCarrierById(ctx, o.CarrierId)
 	trackingCode := strings.TrimSpace(o.TrackingCode.String)
 
 	// 1) Real signal: poll AfterShip for trackable carriers that have a tracking code.

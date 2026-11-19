@@ -43,7 +43,7 @@ func (s *Store) AddPromo(ctx context.Context, promo *entity.PromoCodeInsert) err
 	if err != nil {
 		return fmt.Errorf("failed to add promo code: %w", err)
 	}
-	cache.AddPromo(entity.PromoCode{
+	cache.AddPromo(ctx, entity.PromoCode{
 		Id:              id,
 		PromoCodeInsert: *promo,
 	})
@@ -84,7 +84,7 @@ func (s *Store) UpdatePromoCode(ctx context.Context, promo *entity.PromoCodeInse
 	if err != nil {
 		return fmt.Errorf("failed to reload updated promo code: %w", err)
 	}
-	cache.AddPromo(updated)
+	cache.AddPromo(ctx, updated)
 
 	return nil
 }
@@ -115,7 +115,7 @@ func (s *Store) DeletePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete promo code: %w", err)
 	}
-	cache.DeletePromo(code)
+	cache.DeletePromo(ctx, code)
 
 	return nil
 }
@@ -128,7 +128,7 @@ func (s *Store) DisablePromoCode(ctx context.Context, code string) error {
 	if err != nil {
 		return fmt.Errorf("failed to disable promo code: %w", err)
 	}
-	cache.DisablePromo(code)
+	cache.DisablePromo(ctx, code)
 
 	return nil
 }
@@ -139,7 +139,7 @@ func (s *Store) DisableVoucher(ctx context.Context, promoID sql.NullInt32) error
 		return nil
 	}
 
-	promo, ok := cache.GetPromoById(int(promoID.Int32))
+	promo, ok := cache.GetPromoById(ctx, int(promoID.Int32))
 	if !ok {
 		return nil
 	}

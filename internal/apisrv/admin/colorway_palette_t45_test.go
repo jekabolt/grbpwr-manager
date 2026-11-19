@@ -48,8 +48,8 @@ func t45Dictionary() *entity.DictionaryInfo {
 
 func t45Server(t *testing.T) *t45Rig {
 	t.Helper()
-	cache.RefreshDictionary(t45Dictionary())
-	t.Cleanup(func() { cache.RefreshDictionary(&entity.DictionaryInfo{}) })
+	cache.RefreshDictionary(context.Background(), t45Dictionary())
+	t.Cleanup(func() { cache.RefreshDictionary(context.Background(), &entity.DictionaryInfo{}) })
 
 	repo := mocks.NewMockRepository(t)
 	products := mocks.NewMockProducts(t)

@@ -4110,8 +4110,8 @@ func compositionEntriesToPb(entries []entity.CompositionEntry) []*pb_common.Comp
 	return out
 }
 
-func dictionaryColorToPb(code string) *pb_common.Color {
-	color, ok := cache.GetColorByCode(code)
+func dictionaryColorToPb(code string, colors cache.ColorDict) *pb_common.Color {
+	color, ok := colors.ByCode(code)
 	if !ok {
 		// The DB foreign key makes this impossible for persisted rows. Keeping the canonical code
 		// in the response is more diagnosable than silently returning an empty object if cache state

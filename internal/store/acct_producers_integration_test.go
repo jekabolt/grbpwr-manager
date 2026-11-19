@@ -61,7 +61,7 @@ func TestAcctEventProducers(t *testing.T) {
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM order_status WHERE name = ?", string(entity.AwaitingPayment)).Scan(&awaitingID))
 	require.NoError(t, testDB.QueryRowContext(ctx, "SELECT id FROM order_status WHERE name = ?", string(entity.Delivered)).Scan(&deliveredID))
 	var carrierID int
-	for _, c := range cache.GetShipmentCarriers() {
+	for _, c := range cache.GetShipmentCarriers(ctx) {
 		if c.Allowed {
 			carrierID = c.Id
 			break

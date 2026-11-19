@@ -863,7 +863,7 @@ func (s *Server) UpdateTechCard(ctx context.Context, req *pb_admin.UpdateTechCar
 	}
 	// Early, so a payload validation error never masks it; the store refuses it again in the
 	// transaction (UpdateTechCardTx) for a cache that has not loaded the id.
-	if cache.IsModelPhotoTechCard(int(req.Id)) {
+	if cache.IsModelPhotoTechCard(ctx, int(req.Id)) {
 		return nil, status.Error(codes.FailedPrecondition, entity.ErrTechCardSystem.Error())
 	}
 	snapshotReason := strings.TrimSpace(req.GetSnapshotReason())
@@ -1872,7 +1872,7 @@ func (s *Server) costingFx(ctx context.Context) dto.CostingFx {
 	// from the in-memory cache (loaded at boot, refreshed by UpsertAlertSettings) rather than the
 	// settings table — this runs on every tech-card read, and a per-read query for a single number
 	// that changes a few times a year would be a poor trade.
-	if house := cache.GetTargetMarginPct(); house > 0 {
+	if house := cache.GetTargetMarginPct(ctx); house > 0 {
 		fx.HouseTargetMarginPct = decimal.NullDecimal{Decimal: decimal.NewFromFloat(house), Valid: true}
 	}
 	return fx

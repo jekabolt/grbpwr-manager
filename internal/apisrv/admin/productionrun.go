@@ -512,7 +512,7 @@ func (s *Server) ReverseProductionRunReceipt(ctx context.Context, req *pb_admin.
 	// transient failure must not leave the storefront advertising units that just left the shelf
 	// (adversarial #3).
 	if linked := card.LinkedProductIDs(); len(linked) > 0 {
-		s.revalidateAsync(&dto.RevalidationData{Products: linked, Hero: true})
+		s.revalidateAsync(ctx, &dto.RevalidationData{Products: linked, Hero: true})
 	}
 	// Echo the post-command run, same best-effort contract as the receipt command.
 	if run, err := s.repo.ProductionRuns().GetProductionRun(ctx, int(req.RunId)); err == nil {
@@ -645,7 +645,7 @@ func (s *Server) fireStockWriteSideEffects(ctx context.Context, transitions []en
 			}
 		}
 	}
-	s.revalidateAsync(&dto.RevalidationData{Products: products, Hero: true})
+	s.revalidateAsync(ctx, &dto.RevalidationData{Products: products, Hero: true})
 }
 
 // executeRunReceipt is the shared core of both receive RPCs: permission gates, tech-card linkage

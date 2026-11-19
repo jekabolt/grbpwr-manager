@@ -91,7 +91,7 @@ func ConvertPBCommonSortFactorToEntity(sf pb_common.SortFactor) entity.SortFacto
 }
 
 // ConvertPBCommonFilterConditionsToEntity converts FilterConditions from pb_common to entity
-func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) (*entity.FilterConditions, error) {
+func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions, colors cache.ColorDict) (*entity.FilterConditions, error) {
 	if fc == nil {
 		return nil, nil
 	}
@@ -100,7 +100,7 @@ func ConvertPBCommonFilterConditionsToEntity(fc *pb_common.FilterConditions) (*e
 		if len(code) != 3 || code != strings.ToUpper(code) || strings.TrimSpace(code) != code {
 			return nil, fmt.Errorf("color_codes[%d] must be exactly 3 uppercase characters", i)
 		}
-		if _, ok := cache.GetColorByCode(code); !ok {
+		if _, ok := colors.ByCode(code); !ok {
 			return nil, fmt.Errorf("color_codes[%d] %q is not in the color dictionary", i, code)
 		}
 	}

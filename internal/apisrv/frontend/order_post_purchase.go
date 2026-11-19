@@ -51,7 +51,7 @@ func (s *Server) GetOrderByUUIDAndEmail(ctx context.Context, req *pb_frontend.Ge
 	}
 
 	if os.Status.Name == entity.AwaitingPayment {
-		pm, ok := cache.GetPaymentMethodById(o.Payment.PaymentMethodID)
+		pm, ok := cache.GetPaymentMethodById(ctx, o.Payment.PaymentMethodID)
 		if !ok {
 			slog.Default().ErrorContext(ctx, "can't get payment method by id",
 				slog.Any("paymentMethodId", o.Payment.PaymentMethodID),
@@ -193,7 +193,7 @@ func (s *Server) CancelOrderByUser(ctx context.Context, req *pb_frontend.CancelO
 			return nil, status.Errorf(codes.Internal, "can't cancel order")
 		}
 
-		pm, ok := cache.GetPaymentMethodById(orderFull.Payment.PaymentMethodID)
+		pm, ok := cache.GetPaymentMethodById(ctx, orderFull.Payment.PaymentMethodID)
 		if !ok {
 			return nil, status.Error(codes.Internal, "can't get payment method by id")
 		}

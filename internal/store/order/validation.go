@@ -642,7 +642,7 @@ func validateOrderItemsTierAccess(ctx context.Context, rep dependency.Repository
 }
 
 func (s *Store) validateOrderItemsInsert(ctx context.Context, items []entity.OrderItemInsert, currency string) ([]entity.OrderItem, []entity.OrderItemAdjustment, error) {
-	items, capAdjustments := adjustQuantities(cache.GetMaxOrderItems(), items)
+	items, capAdjustments := adjustQuantities(cache.GetMaxOrderItems(ctx), items)
 
 	slog.Default().InfoContext(ctx, "items", slog.Any("items", items))
 
@@ -810,8 +810,8 @@ func validateAndUpdateOrderIfNeededWithLock(ctx context.Context, rep dependency.
 	return false, changes, nil
 }
 
-func validatePaymentMethod(pmn entity.PaymentMethodName) (*cache.PaymentMethod, error) {
-	pm, ok := cache.GetPaymentMethodByName(pmn)
+func validatePaymentMethod(ctx context.Context, pmn entity.PaymentMethodName) (*cache.PaymentMethod, error) {
+	pm, ok := cache.GetPaymentMethodByName(ctx, pmn)
 	if !ok {
 		return nil, fmt.Errorf("payment method '%s' does not exist", pmn)
 	}
@@ -828,8 +828,8 @@ func validatePaymentMethodAllowed(pm *entity.PaymentMethod) error {
 	return nil
 }
 
-func validateShipmentCarrier(carrierId int, shippingCountry string) (*entity.ShipmentCarrier, error) {
-	carrier, ok := cache.GetShipmentCarrierById(carrierId)
+func validateShipmentCarrier(ctx context.Context, carrierId int, shippingCountry string) (*entity.ShipmentCarrier, error) {
+	carrier, ok := cache.GetShipmentCarrierById(ctx, carrierId)
 	if !ok {
 		return nil, fmt.Errorf("shipment carrier does not exist: carrier id %d", carrierId)
 	}
@@ -890,7 +890,7 @@ func (s *Store) ValidateOrderByUUID(ctx context.Context, uuid string) (*entity.O
 	if err != nil {
 		return nil, err
 	}
-	voucherChanges.apply()
+	voucherChanges.apply(ctx)
 
 	if itemsChanged {
 		return nil, ErrOrderItemsUpdated

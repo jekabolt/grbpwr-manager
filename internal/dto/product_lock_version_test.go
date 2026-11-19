@@ -13,11 +13,11 @@ import (
 func TestColorwayProjectionsCarryLockVersion(t *testing.T) {
 	c := &entity.Colorway{Id: 39, StyleId: 49, LockVersion: 2}
 
-	full, err := ConvertToPbProductFull(&entity.ColorwayFull{Product: c})
+	full, err := ConvertToPbProductFull(&entity.ColorwayFull{Product: c}, testColors)
 	require.NoError(t, err)
 	require.Equal(t, int32(2), full.GetColorway().GetLockVersion())
 
-	common, err := ConvertEntityProductToCommon(c)
+	common, err := ConvertEntityProductToCommon(c, testColors)
 	require.NoError(t, err)
 	require.Equal(t, int32(2), common.GetLockVersion())
 }
