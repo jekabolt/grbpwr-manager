@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 )
 
 // Brand limits (runes), as the team_brand columns.
@@ -86,7 +87,8 @@ func cleanWebsite(s string) (string, bool) {
 // NormalizeTeamBrand is the one normalisation of a brand write (teams W §1). Refusals (InvalidArgument):
 // bad_text (a control character or line break, or over the limit: name 64, entity 96, address line 64),
 // bad_address (more than three non-blank lines; blank lines are dropped and the rest move up),
-// bad_email (not empty and not an address NormalizeEmail accepts), bad_website. A nil in is all empty.
+// bad_email (not empty and not an address NormalizeEmail accepts), bad_website. A nil message is all
+// empty.
 func NormalizeTeamBrand(in BrandFields) (platformstore.TeamBrand, error) {
 	bad := func(key string) (platformstore.TeamBrand, error) {
 		return platformstore.TeamBrand{}, errBad(key)
@@ -123,4 +125,17 @@ func NormalizeTeamBrand(in BrandFields) (platformstore.TeamBrand, error) {
 		return bad(KeyBadWebsite)
 	}
 	return b, nil
+}
+
+// creationBrand is the brand a team's creation (sign-up, create team) carries, normalised by
+// NormalizeTeamBrand: nil when it carries none or only empty values (no row is written then).
+func creationBrand(in *pb_admin.TeamBrand) (*platformstore.TeamBrand, error) {
+	b, err := NormalizeTeamBrand(in)
+	if err != nil {
+		return nil, err
+	}
+	if b.Empty() {
+		return nil, nil
+	}
+	return &b, nil
 }

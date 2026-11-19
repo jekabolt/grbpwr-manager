@@ -38,8 +38,10 @@ type DeletedTeam struct {
 //     inserted), every delete of a team row (the pending sweep, SignUp's pending replace,
 //     DeclineTeam, the provider claim of a pending account) deletes the logo first;
 //     1b. the team's brand (team_brand), right after the logo, by the same rule: SetTeamBrand (FOR
-//     UPDATE), EnsureTeamOne (the team #1 seed, a no-op upsert), and every delete of a team row deletes
-//     it beside the logo (DeleteTeam is soft and keeps it; removing a logo never touches it);
+//     UPDATE), EnsureTeamOne (the team #1 seed, a no-op upsert), the team-creating transactions
+//     (SignUp and CreateTeam write the brand of the row they inserted, right after its logo), and
+//     every delete of a team row deletes it beside the logo (DeleteTeam is soft and keeps it;
+//     removing a logo never touches it);
 //  2. the account (platform_user);
 //     2a. its provider identities (platform_identity), right after the account: the provider
 //     completion holds the account before it writes an identity (FOR UPDATE before it inserts one,
@@ -67,7 +69,9 @@ type DeletedTeam struct {
 // AcceptInvite locks its invite right after the team row, before the account and the membership
 // (it learns the account from the invite; nothing that holds an account, membership or session
 // asks for an invite after it); the sign-up confirm locks its token before its team, which is
-// still pending then (DeleteTeam stops at the status check before it touches a token).
+// still pending then (DeleteTeam stops at the status check before it touches a token). After the
+// membership the confirm inserts its new root session (a row no one else can hold yet), as the
+// sign-in code exchange inserts one after its token.
 
 // DeleteTeam hides a team (teams D1): in one transaction the team row is locked, the status goes
 // active / suspended → deleted with deleted_at = now, purge_at = now + retention and deleted_from =

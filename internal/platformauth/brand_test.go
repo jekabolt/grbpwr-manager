@@ -83,3 +83,46 @@ func TestUnitNormalizeBrand(t *testing.T) {
 		require.Equal(t, "InvalidArgument bad_website", brandRefusal(err), site)
 	}
 }
+
+// TestUnitNormalizeBrandMessage: the brand a team's creation carries (admin.TeamBrand) goes through the
+// same function with the same answers; a missing brand is all empty, and the read-only fields
+// (first_team, unavailable) are ignored.
+func TestUnitNormalizeBrandMessage(t *testing.T) {
+	var none *pb_admin.TeamBrand
+	b, err := NormalizeTeamBrand(none)
+	require.NoError(t, err)
+	require.True(t, b.Empty())
+	b, err = NormalizeTeamBrand(&pb_admin.TeamBrand{BrandName: " Acme ", Website: "https://Acme.io/", FirstTeam: true, Unavailable: true})
+	require.NoError(t, err)
+	require.Equal(t, platformstore.TeamBrand{BrandName: "Acme", Website: "acme.io"}, b)
+	require.False(t, b.Empty())
+	for key, in := range map[string]*pb_admin.TeamBrand{
+		KeyBadText:    {BrandName: "a\nb"},
+		KeyBadAddress: {LegalAddress: []string{"a", "b", "c", "d"}},
+		KeyBadEmail:   {ContactEmail: "nope"},
+		KeyBadWebsite: {Website: "localhost"},
+	} {
+		_, err := NormalizeTeamBrand(in)
+		require.Equal(t, "InvalidArgument "+key, brandRefusal(err), key)
+	}
+}
+
+// TestUnitCreationBrand: a team's creation writes a brand only when it carries a value; a bad value
+// is the refusal, with its key.
+func TestUnitCreationBrand(t *testing.T) {
+	for name, in := range map[string]*pb_admin.TeamBrand{
+		"none":         nil,
+		"empty":        {},
+		"blank":        {BrandName: "  ", LegalAddress: []string{"", " "}, Website: " "},
+		"only markers": {FirstTeam: true, Unavailable: true},
+	} {
+		b, err := creationBrand(in)
+		require.NoError(t, err, name)
+		require.Nil(t, b, name)
+	}
+	b, err := creationBrand(&pb_admin.TeamBrand{LegalEntity: " Acme  Ltd "})
+	require.NoError(t, err)
+	require.Equal(t, &platformstore.TeamBrand{LegalEntity: "Acme Ltd"}, b)
+	_, err = creationBrand(&pb_admin.TeamBrand{ContactEmail: "nope"})
+	require.Equal(t, "InvalidArgument bad_email", brandRefusal(err))
+}

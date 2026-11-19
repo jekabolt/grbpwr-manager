@@ -172,6 +172,10 @@ type VerifyResult struct {
 	TeamSlug string
 	// AwaitingApproval: the team went to review; no hand-off was inserted.
 	AwaitingApproval bool
+	// RootSession: this confirmation opened the root session the caller named (a first-time
+	// confirmation of a non-operator account); the caller mints its token. Never set on the repeat
+	// of a used link (verifiedAwaiting).
+	RootSession bool
 }
 
 // Review is the sign-up approval switch (PLATFORM_SIGNUP_APPROVAL). On: a confirmed team waits in
@@ -184,7 +188,13 @@ type Review struct {
 // verifyTx activates the user and adds the owner membership. Without review it moves the letter's
 // team to provisioning (B4 claims it from there) and inserts the hand-off; with review the team
 // goes to review instead, the operators get a team_request letter each, and no hand-off is made.
-func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, review Review,
+//
+// Either way, when rootSID is set and the account is not an operator, it opens the root session
+// rootSID (the row the password sign-in opens, on the credential generation read under the
+// account's lock): the person is signed in by the code. An operator signs in with the password
+// only, as on the provider path. Reached only through a letter consumed in this transaction, so a
+// used, expired or wrong code or link never gets here.
+func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, rootSID string, review Review,
 	now time.Time) (VerifyResult, error) {
 	if u.Status == UserDisabled || !t.TeamID.Valid {
 		return VerifyResult{}, ErrTokenInvalid
@@ -215,6 +225,13 @@ FROM team WHERE id = ? FOR UPDATE`, t.TeamID.Int64); err != nil {
 VALUES (?, ?, 'owner', 'active', ?) ON DUPLICATE KEY UPDATE role = 'owner', status = 'active'`, team.ID, u.ID, now); err != nil {
 		return VerifyResult{}, fmt.Errorf("platformstore: owner membership: %w", err)
 	}
+	root := false
+	if rootSID != "" && !u.IsOperator {
+		if err := createSessionTx(ctx, tx, rootSID, u.ID, 0, SessionRoot, "", u.CredGen, now); err != nil {
+			return VerifyResult{}, err
+		}
+		root = true
+	}
 	if review.On {
 		var operators []string
 		if err := tx.SelectContext(ctx, &operators, `SELECT email FROM platform_user
@@ -228,25 +245,28 @@ WHERE is_operator = 1 AND status = 'active' AND email IS NOT NULL ORDER BY id`);
 				return VerifyResult{}, err
 			}
 		}
-		return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug, AwaitingApproval: true}, nil
+		return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug, AwaitingApproval: true,
+			RootSession: root}, nil
 	}
 	handoff.TeamID = team.ID
 	if err := insertTokenTx(ctx, tx, u.ID, handoff, now); err != nil {
 		return VerifyResult{}, err
 	}
-	return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug}, nil
+	return VerifyResult{UserID: u.ID, Handle: u.Handle, TeamID: team.ID, TeamSlug: team.Slug, RootSession: root}, nil
 }
 
 // VerifyByLink confirms a sign-up by its link token hash and inserts the hand-off row (or, under
-// review, queues the operators' letters). With review on, a second click on a used, unexpired link
-// whose team still waits in review answers the same result again and writes nothing.
-func (s *Store) VerifyByLink(ctx context.Context, tokenHash string, now time.Time, handoff NewToken, review Review) (VerifyResult, error) {
+// review, queues the operators' letters), and opens the root session rootSID (see verifyTx). With
+// review on, a second click on a used, unexpired link whose team still waits in review answers the
+// same result again and writes nothing: no session.
+func (s *Store) VerifyByLink(ctx context.Context, tokenHash string, now time.Time, handoff NewToken, rootSID string,
+	review Review) (VerifyResult, error) {
 	var res VerifyResult
 	err := s.withLink(ctx, "verify", tokenHash, now, func(tx *sqlx.Tx, t tokenRow, u User) error {
 		if err := clearCodeFailuresTx(ctx, tx, u.ID); err != nil {
 			return err
 		}
-		r, err := verifyTx(ctx, tx, t, u, handoff, review, now)
+		r, err := verifyTx(ctx, tx, t, u, handoff, rootSID, review, now)
 		res = r
 		return err
 	})
@@ -286,12 +306,12 @@ WHERE e.token_hash = ? AND e.purpose = 'verify' AND e.used_at IS NOT NULL AND e.
 }
 
 // VerifyByCode confirms a sign-up by (email, code) and inserts the hand-off row (or, under review,
-// queues the operators' letters).
-func (s *Store) VerifyByCode(ctx context.Context, a CodeAttempt, handoff NewToken, review Review) (VerifyResult, error) {
+// queues the operators' letters), and opens the root session rootSID (see verifyTx).
+func (s *Store) VerifyByCode(ctx context.Context, a CodeAttempt, handoff NewToken, rootSID string, review Review) (VerifyResult, error) {
 	var res VerifyResult
 	a.Purpose = "verify"
 	err := s.withCode(ctx, a, func(tx *sqlx.Tx, t tokenRow, u User) error {
-		r, err := verifyTx(ctx, tx, t, u, handoff, review, a.Now)
+		r, err := verifyTx(ctx, tx, t, u, handoff, rootSID, review, a.Now)
 		res = r
 		return err
 	})
