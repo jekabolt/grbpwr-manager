@@ -155,10 +155,13 @@ type App struct {
 	teamOne tenant.Team
 	// platform is the control plane; nil with teams mode off (PLATFORM_MYSQL_DSN empty).
 	platform *platformstore.Store
-	// stopTeamsMail / stopProvisioner / stopAIRollup stop the teams-mode workers; nil with teams mode off.
-	stopTeamsMail   func()
-	stopProvisioner func()
-	stopAIRollup    func()
+	// workerTeams is the live directory in teams mode and a static team #1 directory otherwise.
+	workerTeams tenant.Directory
+	// These stop the control-plane workers plus the delayed per-team board repair before DB close.
+	stopTeamsMail     func()
+	stopProvisioner   func()
+	stopAIRollup      func()
+	stopTaskBoardHeal func()
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
 }
@@ -368,10 +371,18 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := a.initWorkerTeams(); err != nil {
+		return err
+	}
+	// The immediate legacy repair in store.New has already run for team #1. This second pass waits
+	// past rolling-deploy overlap and visits every active team without extending the boot path.
+	a.stopTaskBoardHeal = a.startDelayedTaskBoardHeal(ctx)
+
 	// Keep DONE bounded without inventing a second archive implementation: the worker discovers
 	// cards from status history, then calls the same task store ArchiveTask path as the admin RPC.
 	if a.shopGate(ctx, "taskarchive") {
 		a.taw = taskarchive.New(&a.c.TaskAutoArchive, a.db.Tasks())
+		a.taw.SetTeamLoop(a.workerTeamLoop("taskarchive", activeTeams))
 		if err = a.taw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start task auto-archive worker",
 				slog.String("err", err.Error()),
@@ -417,6 +428,7 @@ func (a *App) Start(ctx context.Context) error {
 	// configured base via cache.GetBaseCurrency().
 	if a.shopGate(ctx, "fxsync") && a.c.FxSync.Enabled {
 		a.fxw = fxsync.New(&a.c.FxSync, a.db.TechCards())
+		a.fxw.SetTeamLoop(a.workerTeamLoop("fxsync", activeTeams))
 		if err = a.fxw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start fx sync worker",
 				slog.String("err", err.Error()),
@@ -473,6 +485,7 @@ func (a *App) Start(ctx context.Context) error {
 	// config, and no second place for seven days to be true.
 	if a.shopGate(ctx, "archivecleanup") {
 		a.acw = archivecleanup.New(nil, a.db, a.b)
+		a.acw.SetTeamLoop(a.workerTeamLoop("archivecleanup", activeAndSuspendedTeams))
 		if err = a.acw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start archive cleanup worker",
 				slog.String("err", err.Error()),
@@ -1419,6 +1432,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	if a.stopTeamsMail != nil {
 		a.stopTeamsMail()
+	}
+	if a.stopTaskBoardHeal != nil {
+		a.stopTaskBoardHeal()
 	}
 	if a.db != nil {
 		a.db.Close()

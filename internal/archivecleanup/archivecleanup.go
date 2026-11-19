@@ -93,6 +93,7 @@ type Worker struct {
 	repo    dependency.Repository
 	files   dependency.FileStore
 	c       *Config
+	teams   func(context.Context, func(context.Context) bool) bool
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -134,6 +135,12 @@ func New(c *Config, repo dependency.Repository, files dependency.FileStore) *Wor
 	}
 }
 
+// SetTeamLoop makes one cleanup tick visit every team selected by the application. The team-bound
+// context also selects that team's private bucket prefix. Nil keeps the original behaviour.
+func (w *Worker) SetTeamLoop(loop func(context.Context, func(context.Context) bool) bool) {
+	w.teams = loop
+}
+
 // Start starts the worker.
 func (w *Worker) Start(ctx context.Context) error {
 	if w.ctx != nil && w.stop != nil {
@@ -173,7 +180,7 @@ func (w *Worker) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if w.runCleanup(ctx) {
+			if w.runTick(ctx) {
 				consecutiveFailures = 0
 				continue
 			}
@@ -198,6 +205,17 @@ func (w *Worker) worker(ctx context.Context) {
 	}
 }
 
+func (w *Worker) runTick(ctx context.Context) bool {
+	if w.teams == nil {
+		return w.runCleanup(ctx)
+	}
+	ok := w.teams(ctx, w.runTeamCleanup)
+	if ok {
+		w.tracker.MarkSuccess()
+	}
+	return ok
+}
+
 // backoffDelay returns the extra inter-iteration delay for the given number of consecutive
 // failures: base * 2^(n-1), capped at backoffMax.
 func backoffDelay(consecutiveFailures int) time.Duration {
@@ -219,6 +237,14 @@ func backoffDelay(consecutiveFailures int) time.Duration {
 // widen the interval during which they disagree. Both feed one verdict, so a partial tick never
 // reads as a healthy one on /statusz.
 func (w *Worker) runCleanup(ctx context.Context) bool {
+	ok := w.runTeamCleanup(ctx)
+	if ok {
+		w.tracker.MarkSuccess()
+	}
+	return ok
+}
+
+func (w *Worker) runTeamCleanup(ctx context.Context) bool {
 	defer saferun.Recover(ctx, "archivecleanup")
 
 	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
@@ -239,11 +265,6 @@ func (w *Worker) runCleanup(ctx context.Context) bool {
 		ok = false
 	}
 
-	// Record success only when both halves completed without error, so staleness on /statusz
-	// reflects real failures.
-	if ok {
-		w.tracker.MarkSuccess()
-	}
 	return ok
 }
 

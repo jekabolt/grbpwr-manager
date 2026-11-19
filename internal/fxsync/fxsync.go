@@ -70,6 +70,7 @@ type Worker struct {
 	c       *Config
 	src     ratesSource
 	store   ratesStore
+	teams   func(context.Context, func(context.Context) bool) bool
 	ctx     context.Context
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
@@ -96,6 +97,13 @@ func New(c *Config, store ratesStore) *Worker {
 		src:   newECBClient(c.SourceURL, c.HTTPTimeout),
 		store: store,
 	}
+}
+
+// SetTeamLoop makes the database half of each tick visit every team selected by the application.
+// The provider half stays outside the loop, so one tick always performs exactly one external fetch.
+// Nil keeps the original single-context behaviour. Call before Start.
+func (w *Worker) SetTeamLoop(loop func(context.Context, func(context.Context) bool) bool) {
+	w.teams = loop
 }
 
 // Start launches the worker goroutine.
@@ -195,12 +203,24 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 		w.tracker.MarkSuccess()
 		return true
 	}
-	if err := w.store.UpsertCostingFxRates(ctx, rates); err != nil {
-		w.tracker.MarkError(err)
-		slog.Default().ErrorContext(ctx, "fxsync: upsert failed", slog.String("err", err.Error()))
+	upsert := func(teamCtx context.Context) bool {
+		if err := w.store.UpsertCostingFxRates(teamCtx, rates); err != nil {
+			w.tracker.MarkError(err)
+			slog.Default().ErrorContext(teamCtx, "fxsync: upsert failed", slog.String("err", err.Error()))
+			return false
+		}
+		slog.Default().InfoContext(teamCtx, "fxsync: upserted external fx rates", slog.Int("count", len(rates)))
+		return true
+	}
+	ok := false
+	if w.teams == nil {
+		ok = upsert(ctx)
+	} else {
+		ok = w.teams(ctx, upsert)
+	}
+	if !ok {
 		return false
 	}
-	slog.Default().InfoContext(ctx, "fxsync: upserted external fx rates", slog.Int("count", len(rates)))
 	w.tracker.MarkSuccess()
 	return true
 }
