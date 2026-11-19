@@ -86,7 +86,7 @@ func openFresh(t *testing.T) *platformstore.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	var n int
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 1 {
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 2 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 13 {
