@@ -86,11 +86,12 @@ func openFresh(t *testing.T) *platformstore.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	var n int
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 2 {
+	// 0001 control plane + 0002 team_review (B3, columns only) + 0003 provision_lease (B4, one table).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 3 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 13 {
-		t.Fatalf("tables = %d (want 12 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 14 {
+		t.Fatalf("tables = %d (want 13 + platform_migrations), %v", n, err)
 	}
 	return st
 }
