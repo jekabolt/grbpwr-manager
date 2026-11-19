@@ -26,7 +26,7 @@ func TestIdentityLookupsAreByteExact(t *testing.T) {
 	}
 	letter := func(hash, typed string) platformstore.MakeLetter {
 		return func(int64, *platformstore.TeamBrief) (platformstore.NewToken, platformstore.Letter, error) {
-			return platformstore.NewToken{TokenHash: hash, ExpiresAt: now.Add(time.Hour)},
+			return platformstore.NewToken{Purpose: "reset", TokenHash: hash, ExpiresAt: now.Add(time.Hour)},
 				platformstore.Letter{To: typed, Template: "reset"}, nil
 		}
 	}
