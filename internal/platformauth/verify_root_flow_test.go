@@ -419,9 +419,14 @@ func TestVerifyLetterDiesWithPasswordChange(t *testing.T) {
 	if err := e.st.DB().Get(&bobHandle, `SELECT handle FROM platform_user WHERE id = ?`, bobID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.st.DB().Exec(`INSERT INTO team_member (team_id, user_id, role, status, created_at) VALUES (1, ?, 'member', 'active', ?)`,
-		bobID, e.clock); err != nil {
+	// The write finds its account through a team #1 membership. The flow's database is fresh, so bob's
+	// own first team may well be id 1 (and bob its owner already): link him only when he is not.
+	if _, err := e.st.DB().Exec(`INSERT INTO team_member (team_id, user_id, role, status, created_at) VALUES (1, ?, 'member', 'active', ?)
+ON DUPLICATE KEY UPDATE user_id = user_id`, bobID, e.clock); err != nil {
 		t.Fatal(err)
+	}
+	if n := e.count(`SELECT COUNT(*) FROM team_member WHERE team_id = 1 AND user_id = ?`, bobID); n != 1 {
+		t.Fatalf("bob's team #1 memberships = %d", n)
 	}
 	hash, err := e.svc.d.Hasher.HashPassword("e1-password-3")
 	if err != nil {
