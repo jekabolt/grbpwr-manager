@@ -1048,6 +1048,12 @@ var allowlist = map[string]entity.AccessLevel{
 	// Послабление кончается на записи: УДАЛЕНИЕ позиции общего словаря
 	// (DeleteAccountSpecialty) стоит в methodRequirements как wr(SectionAccounts) — см. довод там.
 	"SetAccountSpecialties": entity.AccessWrite,
+	// TranslateFields (teams V2) — the ✦ translate button of the shared translation fields, used by
+	// the product, hero, archive and email editors: four sections that do not contain one another, and
+	// methodRequirements allows one section per method (the GetWorkshopSettings argument). It stores
+	// nothing; what it can do is spend the AI key, so it is WRITE class (a suspended team cannot) and
+	// the feature gate asks for `ai`. The per-admin hourly window in the handler bounds the spend.
+	"TranslateFields": entity.AccessWrite,
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings

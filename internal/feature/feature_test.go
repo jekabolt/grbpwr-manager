@@ -159,6 +159,7 @@ func TestAISpendingRPCsRequireDomainAndAI(t *testing.T) {
 		{name: "SuggestDesignParts", domain: TechCards},
 		{name: "SuggestDesignPartsCard", domain: TechCards},
 		{name: "GenerateDesignJoins", domain: TechCards},
+		{name: "TranslateFields", domain: Core},
 	}
 
 	seen := make(map[string]bool, len(want))
