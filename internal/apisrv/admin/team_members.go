@@ -53,22 +53,13 @@ func InviteRef(pepper string, id int64) string {
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))[:inviteRefLen]
 }
 
-// DefaultInvitePermissions is a new member's grant (teams §3): write on every section whose
-// feature is on for the team or is core, except accounts. on is the team's switched-on features.
+// DefaultInvitePermissions is a new member's grant (teams §3): write on every section of the
+// team's grantable set (teamSections: every section whose feature is on for the team or is core,
+// except accounts), in screen order. on is the team's switched-on features.
 func DefaultInvitePermissions(on []feature.Key) []entity.AdminPermission {
-	enabled := make(map[feature.Key]bool, len(on))
-	for _, k := range on {
-		enabled[k] = true
-	}
-	var out []entity.AdminPermission
-	for _, sec := range rbac.Sections() {
-		if sec.Key == rbac.SectionAccounts {
-			continue
-		}
-		k, ok := feature.SectionFeature(sec.Key)
-		if !ok || (k != feature.Core && !enabled[k]) {
-			continue
-		}
+	sections := teamSections(on)
+	out := make([]entity.AdminPermission, 0, len(sections))
+	for _, sec := range sections {
 		out = append(out, entity.AdminPermission{Section: sec.Key, Access: entity.AccessWrite})
 	}
 	return out
@@ -149,6 +140,10 @@ func peopleErr(ctx context.Context, op string, err error) error {
 		return status.Error(codes.AlreadyExists, "already_member")
 	case errors.Is(err, platformstore.ErrLetterCap):
 		return status.Error(codes.ResourceExhausted, "letter_cap")
+	case errors.Is(err, platformstore.ErrTeamReadOnly):
+		return status.Error(codes.FailedPrecondition, "team_read_only")
+	case errors.Is(err, platformstore.ErrOwnerTarget):
+		return status.Error(codes.FailedPrecondition, "owner_full")
 	case errors.Is(err, platformstore.ErrWrongTeamStatus):
 		return status.Error(codes.FailedPrecondition, "wrong_status")
 	case errors.Is(err, platformstore.ErrTeamNotFound):
@@ -188,11 +183,31 @@ func invitePB(pepper string, inv platformstore.TeamInvite, now time.Time) *pb_ad
 	}
 }
 
-// ListTeamMembers: the caller's team's active members and open invites. Teams mode off: team #1's
-// admins rows (super → owner), no invites.
+// accountsReadAccess is the gate ListTeamMembers had at the edge while it was rd(accounts), kept
+// for teams mode off: a legacy token, a super, or accounts read. Fails closed without authz.
+func accountsReadAccess(ctx context.Context) bool {
+	az, ok := authsrv.GetAdminAuthz(ctx)
+	if !ok {
+		return false
+	}
+	if az.FullAccess() {
+		return true
+	}
+	lvl, ok := az.Perms[rbac.SectionAccounts]
+	return ok && lvl.Covers(entity.AccessRead)
+}
+
+// ListTeamMembers: the caller's team's active members (a member's grants inside the grantable set,
+// none for an owner), open invites and the grantable set in screen order. It is on the rbac
+// allowlist so a member can open the workspace screen. Teams mode off: team #1's admins rows (super
+// → owner), no invites, behind the edge's old accounts-read gate with the edge's exact refusal, so
+// prod answers as before.
 func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMembersRequest) (*pb_admin.ListTeamMembersResponse, error) {
 	me := authsrv.GetAdminUsername(ctx)
 	if !s.teamsOn() {
+		if !accountsReadAccess(ctx) {
+			return nil, status.Errorf(codes.PermissionDenied, "insufficient permissions for %s", rbac.MethodPrefix+"ListTeamMembers")
+		}
 		accounts, err := s.repo.Admin().ListAccounts(ctx)
 		if err != nil {
 			return nil, peopleErr(ctx, "list accounts", err)
@@ -222,13 +237,29 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	if err != nil {
 		return nil, peopleErr(ctx, "invites", err)
 	}
+	// Grants live in the team database's admins rows. A failed read fails the call: rights shown as
+	// none would be saved back as none by the screen's next click (a full-set write).
+	accounts, err := s.repo.Admin().ListAccounts(ctx)
+	if err != nil {
+		return nil, peopleErr(ctx, "list accounts", err)
+	}
+	grants := make(map[string][]entity.AdminPermission, len(accounts))
+	for _, a := range accounts {
+		grants[strings.ToLower(a.Username)] = a.Permissions
+	}
+	sections := teamSections(p.w.Features)
 	now := time.Now().UTC()
 	out := &pb_admin.ListTeamMembersResponse{
-		Members: make([]*pb_admin.TeamMember, 0, len(members)),
-		Invites: make([]*pb_admin.TeamInvite, 0, len(invites)),
+		Members:  make([]*pb_admin.TeamMember, 0, len(members)),
+		Invites:  make([]*pb_admin.TeamInvite, 0, len(invites)),
+		Sections: sectionsPB(sections),
 	}
 	for _, m := range members {
-		tm := &pb_admin.TeamMember{Username: m.Handle, Email: m.Email.String, Role: m.Role, You: m.Handle == me && !p.w.Operator}
+		tm := &pb_admin.TeamMember{Username: m.Handle, Email: m.Email.String, Role: m.Role, You: m.Handle == me && !p.w.Operator,
+			Permissions: []*pb_admin.AdminPermission{}}
+		if m.Role != roleOwner {
+			tm.Permissions = grantsPB(sections, grants[strings.ToLower(m.Handle)])
+		}
 		if m.LastSeenAt.Valid {
 			tm.LastSeenAt = timestamppb.New(m.LastSeenAt.Time)
 		}
@@ -240,8 +271,10 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	return out, nil
 }
 
-// InviteTeamMember invites an email into the caller's team. An open invite for the email is
-// re-used (its role and permissions updated, the old link dead) and re-sent.
+// InviteTeamMember invites an email into the caller's team. An open invite for the email (an
+// expired one included) is re-used (its role updated, its permissions too when the request names
+// rights, the old link dead) and re-sent. An active member of this team with that email is
+// already_member; three letters an hour to one address is letter_cap.
 func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamMemberRequest) (*pb_admin.InviteTeamMemberResponse, error) {
 	if !s.teamsOn() {
 		return nil, errTeamsOff()
@@ -261,7 +294,16 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	if role != roleOwner && role != roleMember {
 		return nil, status.Error(codes.InvalidArgument, "bad_role")
 	}
-	perms, err := permissionsJSON(DefaultInvitePermissions(p.w.Features))
+	// Rights named by the request follow SetTeamMemberAccess's rule; none named = the team's default
+	// for a new invite, and a re-invite of an open one keeps what it holds.
+	grants := DefaultInvitePermissions(p.w.Features)
+	named := len(req.GetPermissions()) > 0
+	if named {
+		if grants, err = teamGrants(teamSections(p.w.Features), req.GetPermissions()); err != nil {
+			return nil, err
+		}
+	}
+	perms, err := permissionsJSON(grants)
 	if err != nil {
 		return nil, peopleErr(ctx, "permissions", err)
 	}
@@ -271,7 +313,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	inv, err := s.platform.store.UpsertInvite(ctx, platformstore.InviteParams{
-		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, TokenHash: hash,
+		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, KeepPermissions: !named, TokenHash: hash,
 		ExpiresAt: now.Add(InviteTTL), Actor: p.actor(), Now: now, MaxPerHour: inviteLettersPerHour,
 		Letter: platformstore.Letter{
 			To: email, Template: "invite", Link: s.inviteLink(p.w.Team.Slug, token),
@@ -281,7 +323,11 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	if err != nil {
 		return nil, peopleErr(ctx, "invite", err)
 	}
-	s.peopleAudit(ctx, p, "member_invite", map[string]string{"email": email, "role": role})
+	detail := map[string]string{"email": email, "role": role}
+	if named {
+		detail["grants"] = grantsDetail(grants)
+	}
+	s.peopleAudit(ctx, p, "member_invite", detail)
 	return &pb_admin.InviteTeamMemberResponse{Invite: invitePB(s.platform.cfg.TokenPepper, inv, now)}, nil
 }
 

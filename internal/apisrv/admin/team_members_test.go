@@ -61,6 +61,8 @@ func TestTeamMembersOff(t *testing.T) {
 	repo.EXPECT().Admin().Return(adm)
 	s := &Server{repo: repo}
 	ctx := authsrv.PutAdminUsername(context.Background(), "kim")
+	// The edge's old rd(accounts) gate now lives in the handler (TestTeamMembersOffGate).
+	ctx = authsrv.PutAdminAuthz(ctx, authsrv.AdminAuthz{Perms: map[string]entity.AccessLevel{rbac.SectionAccounts: entity.AccessRead}})
 	res, err := s.ListTeamMembers(ctx, &pb_admin.ListTeamMembersRequest{})
 	require.NoError(t, err)
 	require.Len(t, res.Members, 2)
@@ -135,6 +137,8 @@ func TestTeamMembersFlow(t *testing.T) {
 	adm := mocks.NewMockAdmin(t)
 	repo := mocks.NewMockRepository(t)
 	repo.EXPECT().Admin().Return(adm).Maybe()
+	// The list reads each member's grants from the team database (teams W); none here.
+	adm.EXPECT().ListAccounts(mock.Anything).Return(nil, nil).Maybe()
 	s := &Server{repo: repo}
 	s.SetSessionInvalidator(b.InvalidateSession)
 	s.SetPlatform(st, cfg) // after the invalidator: SetPlatform keeps it
