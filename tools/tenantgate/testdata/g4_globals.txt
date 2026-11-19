@@ -733,6 +733,9 @@ internal/openrouter/openrouter.go	ErrNotConfigured
 internal/openrouter/openrouter.go	ErrResponseTooLarge
 internal/payment/stripe/methods.go	paymentMethodCurrencies
 internal/payment/stripe/payment.go	settledTopUpBackoff
+internal/platformauth/oauth/errors.go	ErrCancelled
+internal/platformauth/oauth/errors.go	ErrProviderUnreachable
+internal/platformauth/oauth/errors.go	ErrTokenInvalid
 internal/rbac/rbac.go	allowlist
 internal/rbac/rbac.go	catalog
 internal/rbac/rbac.go	methodRequirements
