@@ -524,8 +524,14 @@ func (b *Binder) Operator(ctx context.Context, userID int64) (bool, error) {
 
 // Features returns the effective feature switches of a team (15 s cache, InvalidateTeam drops it).
 // Teams mode off: team #1, profile all, no overrides.
+//
+// Teams mode on: profile and overrides both come from the control plane — the same inputs the
+// console uses (platform teams list), so the two lists are equal by construction. For team #1
+// that means the stored team row, not the boot-time team TeamByID returns (its profile is always
+// "all": it is fixed at boot for the database binding, never for features). A failed directory
+// read is an error, never a fall back to "all".
 func (b *Binder) Features(ctx context.Context, t tenant.Team) (map[feature.Key]bool, error) {
-	p, _ := b.state()
+	p, dir := b.state()
 	if p == nil {
 		return feature.Effective(t.ID, profileOf(t), nil), nil
 	}
@@ -536,11 +542,22 @@ func (b *Binder) Features(ctx context.Context, t tenant.Team) (map[feature.Key]b
 		return e.eff, nil
 	}
 	b.cacheMu.Unlock()
+	profile := profileOf(t)
+	if t.ID == tenant.TeamOneID {
+		row, err := dir.ByID(ctx, tenant.TeamOneID)
+		if err != nil {
+			return nil, fmt.Errorf("tenantbind: team #1 profile: %w", err)
+		}
+		if row.Profile == "" {
+			return nil, fmt.Errorf("tenantbind: team #1 row has no profile")
+		}
+		profile = row.Profile
+	}
 	overrides, err := p.FeatureOverrides(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}
-	eff := feature.Effective(t.ID, profileOf(t), overrides)
+	eff := feature.Effective(t.ID, profile, overrides)
 	b.cacheMu.Lock()
 	b.features[t.ID] = featureEntry{eff: eff, expires: now.Add(cacheTTL)}
 	b.cacheMu.Unlock()
