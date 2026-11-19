@@ -12,6 +12,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/teamlogo"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
@@ -49,13 +50,15 @@ func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAc
 		acc.Permissions = permsToProto(authz.Perms)
 	}
 	acc.Specialties = s.currentAccountSpecialties(ctx, username)
-	return &pb_admin.GetCurrentAccountResponse{Account: acc, Workspace: workspaceToProto(ctx)}, nil
+	return &pb_admin.GetCurrentAccountResponse{Account: acc, Workspace: s.workspaceToProto(ctx)}, nil
 }
 
 // workspaceToProto is the team the call runs in, as the admin chain resolved it (teams §6): slug,
-// name, role, the feature keys that are on, read-only when the team is suspended. nil outside the
-// chain (an in-process caller).
-func workspaceToProto(ctx context.Context) *pb_admin.Workspace {
+// name, role, the feature keys that are on, read-only when the team is suspended, and the team's
+// logo URL (teams O §11, §14: filled, though the top bar does not draw it; "" without a logo, with
+// teams mode off, or when the control plane cannot be read). nil outside the chain (an in-process
+// caller).
+func (s *Server) workspaceToProto(ctx context.Context) *pb_admin.Workspace {
 	w, ok := authsrv.GetWorkspace(ctx)
 	if !ok {
 		return nil
@@ -70,7 +73,22 @@ func workspaceToProto(ctx context.Context) *pb_admin.Workspace {
 		Role:     w.Role,
 		Features: features,
 		ReadOnly: w.ReadOnly,
+		LogoUrl:  s.teamLogoURL(ctx, w.Team.ID, w.Team.Slug),
 	}
+}
+
+// teamLogoURL is the public URL of a team's logo with its version; "" when it has none or with teams
+// mode off. A read error leaves it empty (logged): the panel must not go dark over a picture.
+func (s *Server) teamLogoURL(ctx context.Context, teamID int64, slug string) string {
+	if s.platform.store == nil || teamID <= 0 || slug == "" {
+		return ""
+	}
+	sha, err := s.platform.store.TeamLogoSHA(ctx, teamID)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "team logo", slog.String("err", err.Error()))
+		return ""
+	}
+	return teamlogo.URL(s.platform.cfg.APIBase(), slug, sha)
 }
 
 // currentAccountSpecialties reads the caller's own specialties, and ONLY them.

@@ -94,6 +94,9 @@ type NewToken struct {
 	TokenHash string
 	CodeHash  string // "" = no code (hand-off)
 	ExpiresAt time.Time
+	// ParentSID is the root session a hand-off or sign-in code was issued from ("" = none); the
+	// team session it opens carries it, and the root's sign-out expires the unused code.
+	ParentSID string
 }
 
 // TeamBrief is what a letter needs to know about the team it is about.
@@ -233,24 +236,29 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 // insertTokenTx inserts a token row. A verify or reset letter retires the user's older live rows of
-// the same purpose; hand-offs live side by side (one per target team).
+// the same purpose; hand-offs live side by side (one per target team), and so do provider sign-in
+// codes (two tabs may sign in at once).
 func insertTokenTx(ctx context.Context, tx *sqlx.Tx, userID int64, t NewToken, now time.Time) error {
-	if t.Purpose != "handoff" {
+	if t.Purpose != "handoff" && t.Purpose != "signin" {
 		if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
 WHERE user_id = ? AND purpose = ? AND used_at IS NULL`, now, userID, t.Purpose); err != nil {
 			return fmt.Errorf("platformstore: retire tokens: %w", err)
 		}
 	}
-	var team, code any
+	var team, code, parent any
 	if t.TeamID > 0 {
 		team = t.TeamID
 	}
 	if t.CodeHash != "" {
 		code = t.CodeHash
 	}
+	if t.ParentSID != "" {
+		parent = t.ParentSID
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO email_token
-(user_id, team_id, purpose, token_hash, code_hash, code_attempts, expires_at, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
-		userID, team, t.Purpose, t.TokenHash, code, t.ExpiresAt, now); err != nil {
+(user_id, team_id, purpose, token_hash, code_hash, code_attempts, expires_at, created_at, parent_sid)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+		userID, team, t.Purpose, t.TokenHash, code, t.ExpiresAt, now, parent); err != nil {
 		return fmt.Errorf("platformstore: insert token: %w", err)
 	}
 	return nil
@@ -359,7 +367,7 @@ type SignUpParams struct {
 	Email, PasswordHash, TeamName, Slug, HandleBase string
 	Now                                             time.Time
 	PendingTTL                                      time.Duration
-	MaxOwnedTeams, MaxLettersPerHour                int
+	MaxLettersPerHour                               int
 	// PasswordMatches checks the typed password against an account's stored hash. "" must cost the
 	// same as a real check and answer false (the caller compares against a dummy hash).
 	PasswordMatches func(hash string) bool
@@ -367,6 +375,8 @@ type SignUpParams struct {
 	// TermsVersion is the terms version the person accepted on this sheet; stored on a new or
 	// re-keyed pending account.
 	TermsVersion string
+	// Logo is the new team's logo, already processed (nil = none); stored with the team.
+	Logo *TeamLogo
 }
 
 // SignUpResult says what happened; the client sees the same empty answer either way.
@@ -381,16 +391,17 @@ type SignUpResult struct {
 //
 // A pending (unverified) email signing up again replaces its pending teams; its password only when
 // the typed one matches or no verify letter of it is still live (a stranger cannot re-key a sign-up
-// in progress). An active account gets a new team only when the typed password is its password and
-// it owns fewer than MaxOwnedTeams; otherwise nothing happens. ErrSlugTaken when the address is held
-// — also for the pending owner of that address unless the typed password is its password.
+// in progress). An active account gets a new team only when the typed password is its password
+// (there is no cap on own teams: only the operator's approval limits); otherwise nothing happens.
+// ErrSlugTaken when the address is held — also for the pending owner of that address unless the
+// typed password is its password. A replaced or expired pending team goes with its logo.
 func (s *Store) SignUp(ctx context.Context, p SignUpParams) (SignUpResult, error) {
 	var res SignUpResult
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
 		res = SignUpResult{}
 		// The address first, before anything that depends on the email: a taken address answers the
 		// same for a known and an unknown email, so it never tells whether an account exists.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM team WHERE slug = ? AND status = 'pending' AND pending_expires_at < ?`,
+		if _, err := deletePendingTeamsTx(ctx, tx, `slug = ? AND status = 'pending' AND pending_expires_at < ?`,
 			p.Slug, p.Now); err != nil {
 			return fmt.Errorf("platformstore: drop expired pending team: %w", err)
 		}
@@ -455,24 +466,12 @@ terms_version = COALESCE(?, terms_version), terms_accepted_at = COALESCE(?, term
 				p.PasswordHash, termsVersion, termsAt, uid); err != nil {
 				return fmt.Errorf("platformstore: replace pending password: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM team WHERE created_by = ? AND status = 'pending'`, uid); err != nil {
+			if _, err := deletePendingTeamsTx(ctx, tx, `created_by = ? AND status = 'pending'`, uid); err != nil {
 				return fmt.Errorf("platformstore: drop pending teams: %w", err)
 			}
 		case u.Status == UserActive:
 			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {
 				res.Reason = "existing_account"
-				return nil
-			}
-			var owned int
-			if err := tx.GetContext(ctx, &owned, `SELECT
- (SELECT COUNT(*) FROM team_member m JOIN team t ON t.id = m.team_id
-   WHERE m.user_id = ? AND m.role = 'owner' AND m.status = 'active' AND t.status <> 'deleted')
- + (SELECT COUNT(*) FROM team WHERE created_by = ? AND status = 'pending' AND pending_expires_at > ?)`,
-				u.ID, u.ID, p.Now); err != nil {
-				return fmt.Errorf("platformstore: count owned teams: %w", err)
-			}
-			if owned >= p.MaxOwnedTeams {
-				res.Reason = "team_cap"
 				return nil
 			}
 			uid = u.ID
@@ -492,6 +491,9 @@ VALUES (?, ?, 'pending', ?, ?, ?)`, p.Slug, p.TeamName, p.Now.Add(p.PendingTTL),
 		tid, err := r.LastInsertId()
 		if err != nil {
 			return fmt.Errorf("platformstore: team id: %w", err)
+		}
+		if err := putTeamLogoTx(ctx, tx, tid, p.Logo); err != nil {
+			return err
 		}
 		team := &TeamBrief{ID: tid, Slug: p.Slug, Name: p.TeamName, Status: "pending", CreatedBy: uid}
 		if err := sendLetterTx(ctx, tx, uid, team, p.Letter, p.Now); err != nil {

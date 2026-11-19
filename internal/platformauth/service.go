@@ -41,6 +41,10 @@ type Hooks struct {
 	// The edge drops them and the handle's cached «not before» so old platform sessions, team
 	// tokens and legacy team #1 tokens fail on their next call.
 	PasswordChanged func(ctx context.Context, handle string, sids []string)
+	// SessionsRevoked runs after a transaction revoked these sessions without a password change (a
+	// root sign-out with its children, a provider claim of a pending account): the edge drops them
+	// from its cache. nil = the edge's TTL bounds a stale entry.
+	SessionsRevoked func(ctx context.Context, sids []string)
 }
 
 // TeamAccount is what a team token needs from the team's admins row.
@@ -70,6 +74,9 @@ type Deps struct {
 	// (tenantbind.Binder.SchemaBehind). A sign-in, hand-off or invite into such a team is refused
 	// before any code is spent, session opened or team database touched. nil = every team current.
 	SchemaBehind func(tenant.Team) bool
+	// SignInOptions says which provider buttons GetSignInOptions offers. nil = OptionsFromConfig over
+	// Config.OAuth (lane O3 passes its provider registry).
+	SignInOptions SignInOptions
 }
 
 // Service is the identity logic behind the AuthService platform RPCs.
@@ -80,7 +87,13 @@ type Service struct {
 	ready     error // non-nil: the platform config is unusable, every RPC answers UNAVAILABLE
 	dummyHash string
 
+	options SignInOptions
+
 	codeIP, signUpIP, signInIP, signInLogin, slugIP, resetIP *ratelimit.Limiter
+	// createTeam: `new team` per account (MaxCreateTeamsPerHr); logoSet: logo changes per account.
+	createTeam, logoSet *ratelimit.Limiter
+	// logoSlots bounds the logos decoded at once (memory: a 4096-px image is tens of MB decoded).
+	logoSlots chan struct{}
 }
 
 // Error answers. Built per call: the gate counts package-level values.
@@ -124,6 +137,13 @@ func New(d Deps) (*Service, error) {
 		signInLogin: ratelimit.NewLimiter(time.Minute, 5),
 		slugIP:      ratelimit.NewLimiter(time.Minute, 60),
 		resetIP:     ratelimit.NewLimiter(time.Minute, 10),
+		createTeam:  ratelimit.NewLimiter(time.Hour, MaxCreateTeamsPerHr),
+		logoSet:     ratelimit.NewLimiter(time.Hour, MaxLogoSetsPerHr),
+		logoSlots:   make(chan struct{}, MaxLogoDecodes),
+		options:     d.SignInOptions,
+	}
+	if s.options == nil {
+		s.options = OptionsFromConfig(d.Config.OAuth)
 	}
 	if err := CheckPepper(s.pepper); err != nil {
 		s.ready = err
@@ -144,7 +164,7 @@ func (s *Service) Ready() error { return s.ready }
 
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
-	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP} {
+	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet} {
 		l.Stop()
 	}
 }
@@ -318,6 +338,10 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
 		return &auth.SignUpResponse{}, nil
 	}
+	logo, err := s.processLogo(ctx, req.GetLogo())
+	if err != nil {
+		return nil, err
+	}
 	hash, err := s.d.Hasher.HashPassword(req.GetPassword())
 	if err != nil {
 		s.log(ctx, "hash password", err)
@@ -326,13 +350,14 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	now := s.now()
 	res, err := s.d.Store.SignUp(ctx, platformstore.SignUpParams{
 		Email: email, PasswordHash: hash, TeamName: name, Slug: slug, HandleBase: HandleBase(email),
-		Now: now, PendingTTL: PendingTeamTTL, MaxOwnedTeams: MaxOwnedTeams, MaxLettersPerHour: MaxLettersPerEmailHr,
+		Now: now, PendingTTL: PendingTeamTTL, MaxLettersPerHour: MaxLettersPerEmailHr,
 		PasswordMatches: s.passwordMatcher(req.GetPassword()),
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
 		TermsVersion:    s.d.TermsVersion,
+		Logo:            logo,
 	})
 	if errors.Is(err, platformstore.ErrSlugTaken) {
-		return nil, status.Error(codes.AlreadyExists, "address taken")
+		return nil, errSlugTaken()
 	}
 	if err != nil {
 		s.log(ctx, "sign-up", err)
@@ -510,7 +535,7 @@ func (s *Service) isListedOperator(u platformstore.User) bool {
 }
 
 func (s *Service) signInRoot(ctx context.Context, u platformstore.User, now time.Time) (*auth.SignInResponse, error) {
-	tok, err := s.session(ctx, u, 0, jwt.AudRoot, RootTokenTTL, false, nil, now)
+	tok, err := s.session(ctx, u, 0, jwt.AudRoot, RootSessionTTL, false, nil, now)
 	if err != nil {
 		return nil, err
 	}
@@ -519,17 +544,7 @@ func (s *Service) signInRoot(ctx context.Context, u platformstore.User, now time
 		s.log(ctx, "member teams", err)
 		return nil, errInternal()
 	}
-	resp := &auth.SignInResponse{Token: tok, Teams: make([]*auth.TeamRef, 0, len(teams))}
-	for _, t := range teams {
-		resp.Teams = append(resp.Teams, &auth.TeamRef{
-			Slug:             t.Slug,
-			Name:             t.Name,
-			Role:             t.Role,
-			ReadOnly:         t.Status == string(tenant.StatusSuspended),
-			Ready:            t.Status != string(tenant.StatusProvisioning) && t.Status != string(tenant.StatusReview),
-			AwaitingApproval: t.Status == string(tenant.StatusReview),
-		})
-	}
+	resp := &auth.SignInResponse{Token: tok, Teams: s.teamRefs(teams)}
 	s.audit(ctx, u.ID, 0, "signin", map[string]string{"target": "root"})
 	return resp, nil
 }
@@ -654,21 +669,9 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 	if err := s.usable(); err != nil {
 		return nil, err
 	}
-	claims, err := jwt.VerifyTeamToken(s.d.JWT, rootToken, &jwt.Expectations{Audience: jwt.AudRoot})
-	if err != nil || claims.Legacy || claims.Audience != jwt.AudRoot {
-		return nil, errAuth()
-	}
-	active, err := s.d.Store.SessionActive(ctx, claims.SessionID)
+	u, rootSID, err := s.rootCaller(ctx, rootToken)
 	if err != nil {
-		s.log(ctx, "session", err)
-		return nil, errInternal()
-	}
-	if !active {
-		return nil, errAuth()
-	}
-	u, err := s.d.Store.UserByID(ctx, claims.UserID)
-	if err != nil || u.Status != platformstore.UserActive {
-		return nil, errAuth()
+		return nil, err
 	}
 	slug := strings.ToLower(strings.TrimSpace(req.GetTeamSlug()))
 	if slug == "" || len(slug) > maxSlugLen {
@@ -696,7 +699,7 @@ func (s *Service) IssueHandoff(ctx context.Context, rootToken string, req *auth.
 		return nil, errInternal()
 	}
 	nt.TeamID = team.ID
-	if err := s.d.Store.IssueHandoff(ctx, u.ID, claims.SessionID, nt, now); err != nil {
+	if err := s.d.Store.IssueHandoff(ctx, u.ID, rootSID, nt, now); err != nil {
 		if errors.Is(err, platformstore.ErrTokenInvalid) {
 			return nil, errAuth()
 		}
@@ -805,13 +808,23 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 	return &auth.ExchangeHandoffResponse{Token: tok}, nil
 }
 
-// SignOut revokes the session of a platform token. Always {}.
+// SignOut revokes the session of a platform token. A root token's sign-out also ends every session
+// opened from it (hand-offs into teams) and spends its unused hand-off and sign-in codes; a team
+// token's ends only that team session. Always {}.
 func (s *Service) SignOut(ctx context.Context, token string) (*auth.SignOutResponse, error) {
 	if token == "" {
 		return &auth.SignOutResponse{}, nil
 	}
 	claims, err := jwt.VerifyTeamToken(s.d.JWT, token, nil)
 	if err != nil || claims.Legacy || claims.SessionID == "" {
+		return &auth.SignOutResponse{}, nil
+	}
+	if claims.Audience == jwt.AudRoot && claims.UserID > 0 {
+		sids, err := s.d.Store.SignOutRoot(ctx, claims.SessionID, claims.UserID, s.now())
+		if err != nil {
+			s.log(ctx, "sign-out", err)
+		}
+		s.revoked(ctx, sids)
 		return &auth.SignOutResponse{}, nil
 	}
 	if err := s.d.Store.RevokeSession(ctx, claims.SessionID, s.now()); err != nil {

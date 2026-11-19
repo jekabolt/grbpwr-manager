@@ -80,7 +80,8 @@ FROM platform_user u JOIN team_member m ON m.user_id = u.id AND m.team_id = 1
 WHERE u.handle = ?`
 
 // changeCredentialsTx is the one credential write: the hash (when given), credential_gen + 1, every
-// live session revoked, every unused hand-off code expired. Inside the caller's transaction.
+// live session revoked, every unused hand-off and provider sign-in code expired. Inside the caller's
+// transaction.
 func changeCredentialsTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash string, now time.Time) (CredentialChange, error) {
 	now = now.UTC()
 	if hash != "" {
@@ -106,8 +107,8 @@ func changeCredentialsTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash st
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose = 'handoff' AND used_at IS NULL`, now, userID); err != nil {
-		return CredentialChange{}, fmt.Errorf("platformstore: expire hand-offs: %w", err)
+		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose IN ('handoff', 'signin') AND used_at IS NULL`, now, userID); err != nil {
+		return CredentialChange{}, fmt.Errorf("platformstore: expire hand-offs and sign-in codes: %w", err)
 	}
 	return c, nil
 }

@@ -85,6 +85,7 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 	s.SetPatternViewerHandler(nop)
 	s.SetRunPackHandler(nop)
 	s.SetFileLinkHandler(nop)
+	s.SetTeamLogoHandler(nop)
 	s.SetFileUploadHandler(nop)
 	s.SetFilePreviewHandler(nop)
 	s.SetTechCardArchiveUploadHandler(nop)
@@ -123,7 +124,7 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 		"/api/admin/*", "/api/frontend/*", "/api/auth/*", "/api/platform/*",
 		"/api/p/{token}", "/api/pv/{token}", "/api/rp/{token}", "/api/f/{token}",
 		"/api/files/upload", "/api/files/{id}/preview", "/api/techcard-archive/upload",
-		"/api/files/proxy", "/api/webhooks/stripe",
+		"/api/files/proxy", "/api/webhooks/stripe", "/api/auth/team-logo/{slug}",
 	} {
 		if !seen[r] {
 			t.Errorf("route %s not walked", r)
@@ -131,16 +132,17 @@ func TestEveryChiRouteHasABindingClass(t *testing.T) {
 	}
 
 	expect := map[string]tenantbind.Class{
-		"/api/admin/*":            tenantbind.ClassClaim,
-		"/api/files/{id}/preview": tenantbind.ClassClaim,
-		"/api/files/proxy":        tenantbind.ClassClaim,
-		"/statusz":                tenantbind.ClassClaim,
-		"/api/platform/*":         tenantbind.ClassPlatform,
-		"/api/frontend/*":         tenantbind.ClassStorefront,
-		"/api/webhooks/stripe":    tenantbind.ClassStorefront,
-		"/api/p/{token}":          tenantbind.ClassToken,
-		"/api/auth/*":             tenantbind.ClassXTeam,
-		"/livez":                  tenantbind.ClassHealth,
+		"/api/admin/*":               tenantbind.ClassClaim,
+		"/api/files/{id}/preview":    tenantbind.ClassClaim,
+		"/api/files/proxy":           tenantbind.ClassClaim,
+		"/statusz":                   tenantbind.ClassClaim,
+		"/api/platform/*":            tenantbind.ClassPlatform,
+		"/api/frontend/*":            tenantbind.ClassStorefront,
+		"/api/webhooks/stripe":       tenantbind.ClassStorefront,
+		"/api/p/{token}":             tenantbind.ClassToken,
+		"/api/auth/*":                tenantbind.ClassXTeam,
+		"/api/auth/team-logo/{slug}": tenantbind.ClassXTeam,
+		"/livez":                     tenantbind.ClassHealth,
 	}
 	for r, want := range expect {
 		if got := tenantbind.ClassifyPath(r); got != want {

@@ -125,6 +125,10 @@ func (c Config) OAuthCallbackBase() string {
 	return "https://api." + strings.TrimSpace(c.BaseDomain)
 }
 
+// APIBase is the scheme and host of the API (the public team-logo URL): OAuthCallbackBase, which is
+// https://api.<BaseDomain> unless OAUTH_CALLBACK_BASE points local development elsewhere.
+func (c Config) APIBase() string { return c.OAuthCallbackBase() }
+
 // DefaultTermsVersion is the terms version stored when PLATFORM_TERMS_VERSION is not set.
 const DefaultTermsVersion = "2026-11"
 

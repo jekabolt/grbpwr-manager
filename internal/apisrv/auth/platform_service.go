@@ -118,6 +118,17 @@ func (s *Server) platformHooks() platformauth.Hooks {
 			return nil
 		},
 		PasswordChanged: s.dropRevokedCredentials,
+		SessionsRevoked: s.dropRevokedSessions,
+	}
+}
+
+// dropRevokedSessions drops revoked sessions from the edge cache (best effort: the edge's TTL bounds
+// a miss); a root sign-out's tree and a provider claim of a pending account land here.
+func (s *Server) dropRevokedSessions(_ context.Context, sids []string) {
+	if inv, ok := s.edge.(interface{ InvalidateSession(sid string) }); ok {
+		for _, sid := range sids {
+			inv.InvalidateSession(sid)
+		}
 	}
 }
 

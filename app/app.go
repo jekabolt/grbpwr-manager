@@ -1096,6 +1096,7 @@ func (a *App) Start(ctx context.Context) error {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetTeamOneCredentials(authS)
+		a.hs.SetTeamLogoHandler(authS.TeamLogoHandler())
 	}
 
 	// Set up database health checker if store supports it
