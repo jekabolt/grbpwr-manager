@@ -201,7 +201,7 @@ func (a *App) Start(ctx context.Context) error {
 	// in-memory merch dictionaries within DefaultDictionaryPollInterval of a colour/collection/tag/
 	// country change made on any instance. ctx is app-lifetime, so it stops on shutdown.
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
-		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval)
+		go cache.PollDictionaryRevisions(ctx, mysqlStore.Dictionary(), mysqlStore.Cache(), cache.DefaultDictionaryPollInterval, a.dictionaryPollTeams(ctx)...)
 	}
 
 	// ─── AI providers: the key registry every provider client reads its key through ───────────

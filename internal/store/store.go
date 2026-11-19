@@ -309,6 +309,7 @@ func New(ctx context.Context, cfg Config) (*MYSQLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("can't init consts: %w", err)
 	}
+	ss.EnableTeamCache()
 
 	// КАТАЛОГ РАБОТ (0329) В ПАМЯТЬ ПРОЦЕССА — ровно там же и по той же причине, что словари выше.
 	// Он правится ТОЛЬКО миграцией, то есть только вместе с перезапуском: кэша с инвалидацией здесь
