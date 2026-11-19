@@ -117,6 +117,8 @@ message PlatformMember {
   string email = 2;
   string role = 3;
   google.protobuf.Timestamp last_seen_at = 4;
+  // name is the member's account name; empty when none.
+  string name = 5;
 }
 
 // FeatureInfo is one entry of the feature catalog.

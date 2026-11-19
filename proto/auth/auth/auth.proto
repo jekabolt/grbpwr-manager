@@ -276,6 +276,9 @@ message SignUpRequest {
   // brand is optional brand data of the new team; empty = nothing is stored; a bad value refuses the
   // whole request with the same keys as SetTeamBrand.
   admin.TeamBrand brand = 7;
+  // name is the optional name of the person creating the account; empty = no name; at most 80 characters after
+  // trimming; a bad value refuses the request with bad_name.
+  string name = 8;
 }
 
 message SignUpResponse {}
@@ -368,6 +371,9 @@ message GetInviteResponse {
   string team_name = 1;
   string email = 2;
   bool account_exists = 3;
+  // name prefills the sheet: the account's name when the account exists and has one, else the name the
+  // inviter typed, else empty.
+  string name = 4;
 }
 
 message AcceptInviteRequest {
@@ -377,6 +383,10 @@ message AcceptInviteRequest {
   string handle = 3;
   // terms_accepted must be true for a new account; the server refuses otherwise.
   bool terms_accepted = 4;
+  // name is the person's optional name, stored when the invited email has no account yet or the account
+  // has no name; at most 80 characters after
+  // trimming; a bad value refuses the request with bad_name.
+  string name = 5;
 }
 
 message AcceptInviteResponse {
@@ -395,6 +405,8 @@ message ListMyTeamsResponse {
   bool can_create_team = 3;
   // terms_needed is true when CreateTeam must carry terms_accepted (the current terms are not accepted yet).
   bool terms_needed = 4;
+  // name is the account's name; empty when none.
+  string name = 5;
 }
 
 message CreateTeamRequest {

@@ -4698,6 +4698,14 @@ service AdminService {
       body: "*"
     };
   }
+
+  // SetMyName sets or clears the calling person's own account name (one name in every team).
+  rpc SetMyName(SetMyNameRequest) returns (SetMyNameResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/members/me/name"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -15508,6 +15516,8 @@ message TeamMember {
   bool you = 5;
   // permissions are the member's grants inside the grantable set; empty for an owner (full access).
   repeated AdminPermission permissions = 6;
+  // name is the member's account name; empty when none.
+  string name = 7;
 }
 
 // TeamInvite is one invite of the calling team.
@@ -15520,6 +15530,8 @@ message TeamInvite {
   google.protobuf.Timestamp expires_at = 5;
   // status is pending, accepted, revoked or expired.
   string status = 6;
+  // name is the name the inviter typed; empty when none.
+  string name = 7;
 }
 
 message ListTeamMembersRequest {}
@@ -15536,6 +15548,9 @@ message InviteTeamMemberRequest {
   string role = 2;
   // permissions are the rights the invited person gets on joining; empty = the team's default.
   repeated AdminPermission permissions = 3;
+  // name is the invited person's optional name; it prefills their invite sheet; at most 80 characters after
+  // trimming; a bad value refuses the request with bad_name.
+  string name = 4;
 }
 
 message InviteTeamMemberResponse {
@@ -15588,6 +15603,17 @@ message SetTeamMemberAccessRequest {
 
 message SetTeamMemberAccessResponse {
   TeamMember member = 1;
+}
+
+message SetMyNameRequest {
+  // name is the new account name; empty clears it; at most 80 characters after
+  // trimming; a bad value refuses the request with bad_name.
+  string name = 1;
+}
+
+message SetMyNameResponse {
+  // name is the stored (trimmed) name; empty when cleared.
+  string name = 1;
 }
 
 // TranslateFieldsRequest — the admin client's /api/translate body
