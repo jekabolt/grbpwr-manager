@@ -136,19 +136,19 @@ func TestDeleteAndRestoreTeam(t *testing.T) {
 		t.Fatalf("delete missing: %v", err)
 	}
 	for _, id := range []int64{tenant.TeamOneID, 3, 4, 6} {
-		if err := st.RestoreTeam(ctx, id, now); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+		if _, err := st.RestoreTeam(ctx, id, now); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
 			t.Fatalf("restore team %d: %v", id, err)
 		}
 	}
-	if err := st.RestoreTeam(ctx, 99, now); !errors.Is(err, platformstore.ErrTeamNotFound) {
+	if _, err := st.RestoreTeam(ctx, 99, now); !errors.Is(err, platformstore.ErrTeamNotFound) {
 		t.Fatalf("restore missing: %v", err)
 	}
-	if err := st.RestoreTeam(ctx, 2, del.PurgeAt); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+	if _, err := st.RestoreTeam(ctx, 2, del.PurgeAt); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
 		t.Fatalf("restore when the wipe is due: %v", err)
 	}
 
 	// Restore: back to active, columns cleared, sessions and invites stay revoked.
-	if err := st.RestoreTeam(ctx, 2, now.Add(time.Hour)); err != nil {
+	if _, err := st.RestoreTeam(ctx, 2, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Get(&row, `SELECT status, deleted_at, purge_at, deleted_from FROM team WHERE id = 2`); err != nil {
@@ -165,7 +165,7 @@ func TestDeleteAndRestoreTeam(t *testing.T) {
 	if got, err := st.Directory().BySlug(ctx, "acme"); err != nil || got.Status != tenant.StatusActive {
 		t.Fatalf("directory after restore %+v %v", got, err)
 	}
-	if err := st.RestoreTeam(ctx, 2, now); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
+	if _, err := st.RestoreTeam(ctx, 2, now); !errors.Is(err, platformstore.ErrWrongTeamStatus) {
 		t.Fatalf("restore an active team: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestDeleteAndRestoreTeam(t *testing.T) {
 	if _, err := st.DeleteTeam(ctx, 2, now, platformstore.DeleteRetention); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RestoreTeam(ctx, 2, now); err != nil {
+	if _, err := st.RestoreTeam(ctx, 2, now); err != nil {
 		t.Fatal(err)
 	}
 	if tm, err := st.ConsoleTeam(ctx, "acme"); err != nil || tm.Status != "suspended" {

@@ -138,16 +138,26 @@ WHERE m.status = 'joining' AND NOT EXISTS (
 	return r.RowsAffected()
 }
 
-// lockLiveInviteTx locks the live invite of tokenHash and checks its team takes members.
-func lockLiveInviteTx(ctx context.Context, tx *sqlx.Tx, tokenHash string, now time.Time) (Invite, error) {
+// lockLiveInviteTx locks the team row FOR SHARE, then the live invite of tokenHash (lock order at
+// DeleteTeam), and checks that the invite belongs to teamID and its team takes members. A delete
+// either commits first (the invite is revoked, the team deleted: refused) or waits for this commit.
+func lockLiveInviteTx(ctx context.Context, tx *sqlx.Tx, teamID int64, tokenHash string, now time.Time) (Invite, error) {
+	st, err := shareTeamTx(ctx, tx, teamID)
+	if err != nil {
+		return Invite{}, err
+	}
 	var inv Invite
-	if err := tx.GetContext(ctx, &inv, inviteSelect+` FOR UPDATE`, tokenHash, now); err != nil {
+	if err := tx.GetContext(ctx, &inv, inviteSelect+` FOR UPDATE OF i`, tokenHash, now); err != nil {
 		if isNoRows(err) {
 			return Invite{}, ErrTokenInvalid
 		}
 		return Invite{}, fmt.Errorf("platformstore: lock invite: %w", err)
 	}
-	switch inv.TeamStatus {
+	if inv.TeamID != teamID {
+		return Invite{}, ErrTokenInvalid
+	}
+	inv.TeamStatus = st // as locked above
+	switch st {
 	case "active":
 		return inv, nil
 	case "suspended":
@@ -157,16 +167,33 @@ func lockLiveInviteTx(ctx context.Context, tx *sqlx.Tx, tokenHash string, now ti
 	}
 }
 
+// inviteTeam reads, outside any transaction, which team the invite of tokenHash belongs to, so
+// the accept can lock the team row before the invite. ErrTokenInvalid when there is none.
+func (s *Store) inviteTeam(ctx context.Context, tokenHash string) (int64, error) {
+	var teamID int64
+	if err := s.db.GetContext(ctx, &teamID, `SELECT team_id FROM team_invite WHERE token_hash = ?`, tokenHash); err != nil {
+		if isNoRows(err) {
+			return 0, ErrTokenInvalid
+		}
+		return 0, fmt.Errorf("platformstore: find invite: %w", err)
+	}
+	return teamID, nil
+}
+
 // reserveInvite is step 1 of AcceptInvite.
 func (s *Store) reserveInvite(ctx context.Context, p AcceptParams) (AcceptResult, Invite, error) {
+	teamID, err := s.inviteTeam(ctx, p.TokenHash)
+	if err != nil {
+		return AcceptResult{}, Invite{}, err
+	}
 	var (
 		res AcceptResult
 		inv Invite
 	)
-	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = s.inTx(ctx, func(tx *sqlx.Tx) error {
 		res = AcceptResult{}
 		var err error
-		if inv, err = lockLiveInviteTx(ctx, tx, p.TokenHash, p.Now); err != nil {
+		if inv, err = lockLiveInviteTx(ctx, tx, teamID, p.TokenHash, p.Now); err != nil {
 			return err
 		}
 		u, err := lockUserByEmail(ctx, tx, inv.Email)
@@ -221,10 +248,10 @@ VALUES (?, ?, ?, 'joining', ?) ON DUPLICATE KEY UPDATE status = IF(status = 'act
 	return res, inv, err
 }
 
-// activateInvite is step 3 of AcceptInvite: the invite and its team are re-checked under lock.
+// activateInvite is step 3 of AcceptInvite: the team and the invite are re-checked under lock.
 func (s *Store) activateInvite(ctx context.Context, p AcceptParams, reserved Invite, userID int64) error {
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
-		inv, err := lockLiveInviteTx(ctx, tx, p.TokenHash, p.Now)
+		inv, err := lockLiveInviteTx(ctx, tx, reserved.TeamID, p.TokenHash, p.Now)
 		if err != nil {
 			return err
 		}

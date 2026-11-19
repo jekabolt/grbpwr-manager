@@ -50,10 +50,12 @@ func (s *Server) DeleteTeam(ctx context.Context, req *pb_admin.DeleteTeamRequest
 			s.dropSession(sid)
 		}
 	}
+	// The audit and the answer follow the team as the transaction locked it, by id: a rename that
+	// committed after the read above does not turn a committed delete into NOT_FOUND.
 	s.audit(ctx, c.UserID, t.ID, "team_delete", map[string]string{
-		"slug": t.Slug, "name": t.Name, "purge_at": del.PurgeAt.UTC().Format(time.RFC3339),
+		"slug": del.Slug, "name": del.Name, "purge_at": del.PurgeAt.UTC().Format(time.RFC3339),
 	})
-	team, err := s.refreshed(ctx, t.Slug)
+	team, err := s.refreshedByID(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,15 +76,18 @@ func (s *Server) RestoreTeam(ctx context.Context, req *pb_admin.RestoreTeamReque
 	if t.Status != string(tenant.StatusDeleted) {
 		return nil, status.Error(codes.FailedPrecondition, "wrong_status")
 	}
-	if err := s.st.RestoreTeam(ctx, t.ID, s.nowUTC()); err != nil {
+	rs, err := s.st.RestoreTeam(ctx, t.ID, s.nowUTC())
+	if err != nil {
 		return nil, storeErr(ctx, "restore team", err)
 	}
 	s.forgetTeam(t.ID)
-	team, err := s.refreshed(ctx, t.Slug)
+	// Audited as the transaction restored it, before anything can fail; answered by id, so a rename
+	// right after the restore does not turn it into NOT_FOUND.
+	s.audit(ctx, c.UserID, t.ID, "team_restore", map[string]string{"slug": rs.Slug, "status": consoleStatus(rs.Status)})
+	team, err := s.refreshedByID(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}
-	s.audit(ctx, c.UserID, t.ID, "team_restore", map[string]string{"slug": t.Slug, "status": team.GetStatus()})
 	return &pb_admin.RestoreTeamResponse{Team: team}, nil
 }
 
