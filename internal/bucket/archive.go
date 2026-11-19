@@ -239,7 +239,11 @@ func (b *Bucket) UploadArchiveObject(ctx context.Context, r io.Reader, name stri
 	if err != nil {
 		return "", err
 	}
-	key := ArchiveSegment + "/" + entropy + "/" + fileName
+	root, err := b.Config.teamObjectRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	key := root + ArchiveSegment + "/" + entropy + "/" + fileName
 
 	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, -1,
 		minio.PutObjectOptions{
@@ -291,7 +295,11 @@ func (b *Bucket) UploadImportObject(ctx context.Context, r io.Reader, importID s
 	if !isValidImportID(importID) {
 		return "", fmt.Errorf("%w: import id %q is not a key-safe identifier", ErrInvalidArchiveUpload, importID)
 	}
-	key := ImportSegment + "/" + importID + archiveNameExt
+	root, err := b.Config.teamObjectRoot(ctx)
+	if err != nil {
+		return "", err
+	}
+	key := root + ImportSegment + "/" + importID + archiveNameExt
 
 	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, newCapReader(r, MaxArchiveObjectBytes), -1,
 		minio.PutObjectOptions{
@@ -397,11 +405,18 @@ func (b *Bucket) ListObjectsOlderThan(ctx context.Context, segment string, cutof
 
 	// Собственный отменяемый контекст: minio отдаёт листинг горутиной, которая пишет в канал и
 	// слушает ctx.Done. Выйти из цикла по ошибке, не отменив её, — оставить горутину висеть.
+	// The team in ctx lists only its own segment: team #1 the root one (today's), another team the
+	// one under its prefix — never another team's objects.
+	root, err := b.Config.teamObjectRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	listCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	return selectExpiredKeys(segment, cutoff, b.Client.ListObjects(listCtx, b.S3BucketName, minio.ListObjectsOptions{
-		Prefix:    segment + "/",
+		Prefix:    root + segment + "/",
 		Recursive: true,
 	}))
 }

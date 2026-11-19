@@ -43,7 +43,10 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 	if err != nil {
 		return "", "", fmt.Errorf("can't get file extension")
 	}
-	fp := b.constructFullPath(folder, imageName, ext)
+	fp, err := b.constructFullPath(ctx, folder, imageName, ext)
+	if err != nil {
+		return "", "", err
+	}
 
 	data, err := io.ReadAll(img)
 	if err != nil {
@@ -194,13 +197,13 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	if err := g.Wait(); err != nil {
 		// One or two variants may have uploaded before another failed; remove them so
 		// the partial upload doesn't orphan S3 objects with no DB row referencing them.
-		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
+		b.cleanupUploadedVariants(ctx, fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to upload image variants: %w", err)
 	}
 
 	h, err := getBlurHash(thumbImg)
 	if err != nil {
-		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
+		b.cleanupUploadedVariants(ctx, fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to get blurhash: %v", err)
 	}
 
@@ -219,7 +222,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	})
 	if err != nil {
 		// All three objects are in S3 but no row references them: clean them up.
-		b.cleanupUploadedVariants(fullSize, compressed, thumbnail)
+		b.cleanupUploadedVariants(ctx, fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to add media to db: %v", err)
 	}
 
@@ -384,7 +387,7 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 		compressed, _, err = b.uploadSingleImage(ctx, v.frame, 60, folder,
 			fmt.Sprintf("%s-%s", imageName, "compressed"))
 		if err != nil {
-			b.cleanupUploadedVariants(full)
+			b.cleanupUploadedVariants(ctx, full)
 			return nil, fmt.Errorf("failed to upload compressed variant: %w", err)
 		}
 	}
@@ -392,7 +395,7 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 	thumbImg := resizeImage(v.frame, 1080)
 	thumbnail, _, err := b.uploadSingleImage(ctx, thumbImg, 90, folder, fmt.Sprintf("%s-%s", imageName, "thumb"))
 	if err != nil {
-		b.cleanupUploadedVariants(full, compressed)
+		b.cleanupUploadedVariants(ctx, full, compressed)
 		return nil, fmt.Errorf("failed to upload thumbnail: %w", err)
 	}
 
@@ -421,7 +424,7 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 	})
 	if err != nil {
 		// The objects are in S3 but no row references them: clean them up.
-		b.cleanupUploadedVariants(full, compressed, thumbnail)
+		b.cleanupUploadedVariants(ctx, full, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to add media to db: %w", err)
 	}
 
@@ -445,9 +448,10 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 
 // cleanupUploadedVariants best-effort removes any variant objects that were
 // already uploaded when a later step (a sibling upload, blurhash, or the DB
-// insert) fails, so a partial upload does not orphan S3 objects. It uses a fresh
-// context because the errgroup context may already be cancelled.
-func (b *Bucket) cleanupUploadedVariants(variants ...*pb_common.MediaInfo) {
+// insert) fails, so a partial upload does not orphan S3 objects. It detaches from
+// the caller's cancellation (the errgroup context may already be cancelled) but
+// keeps its values, so the delete runs on the uploading team (refuseForeignKey).
+func (b *Bucket) cleanupUploadedVariants(ctx context.Context, variants ...*pb_common.MediaInfo) {
 	urls := make([]string, 0, len(variants))
 	for _, v := range variants {
 		if v != nil && v.MediaUrl != "" {
@@ -457,7 +461,7 @@ func (b *Bucket) cleanupUploadedVariants(variants ...*pb_common.MediaInfo) {
 	if len(urls) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	if err := b.DeleteObjects(ctx, urls...); err != nil {
 		slog.Default().ErrorContext(ctx, "failed to clean up orphaned image variants after upload failure",

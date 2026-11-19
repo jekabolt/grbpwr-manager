@@ -89,7 +89,10 @@ func (b *Bucket) UploadLibraryObject(ctx context.Context, r io.Reader, contentTy
 	if err != nil {
 		return "", "", 0, err
 	}
-	key := b.constructFullPath(libraryFolder, name, sanitizeExt(ext))
+	key, err := b.constructFullPath(ctx, libraryFolder, name, sanitizeExt(ext))
+	if err != nil {
+		return "", "", 0, err
+	}
 
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "application/octet-stream"
@@ -139,7 +142,10 @@ func (b *Bucket) UploadLibraryPreview(ctx context.Context, raw []byte, ext strin
 	if err != nil {
 		return "", err
 	}
-	key := b.constructFullPath(libraryPreviewFolder, name, previewExt)
+	key, err := b.constructFullPath(ctx, libraryPreviewFolder, name, previewExt)
+	if err != nil {
+		return "", err
+	}
 
 	r := bytes.NewReader(raw)
 	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, int64(r.Len()),
@@ -156,7 +162,8 @@ func (b *Bucket) UploadLibraryPreview(ctx context.Context, raw []byte, ext strin
 
 // RemoveObjectsByKeys best-effort deletes objects addressed by key. Library
 // files store keys rather than urls — a private object has no durable url to
-// store — so DeleteObjects (which parses urls) does not apply to them. Every key
+// store — so DeleteObjects (which parses urls) does not apply to them. In teams mode a key outside
+// the ctx team's space is refused with ErrNotTeamObject and not touched. Every key
 // is attempted and the first error is returned, so one transient failure does
 // not skip the rest.
 func (b *Bucket) RemoveObjectsByKeys(ctx context.Context, keys ...string) error {
@@ -171,6 +178,14 @@ func (b *Bucket) RemoveObjectsByKeys(ctx context.Context, keys ...string) error 
 			continue
 		}
 		seen[key] = struct{}{}
+		if err := b.refuseForeignKey(ctx, key); err != nil {
+			slog.Default().ErrorContext(ctx, "refusing to delete another team's object",
+				slog.String("key", key), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		if err := b.Client.RemoveObject(ctx, b.S3BucketName, key, minio.RemoveObjectOptions{}); err != nil {
 			slog.Default().ErrorContext(ctx, "can't remove object by key",
 				slog.String("key", key), slog.String("err", err.Error()))
