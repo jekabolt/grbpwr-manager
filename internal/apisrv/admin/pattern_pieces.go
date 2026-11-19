@@ -19,6 +19,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
@@ -165,7 +167,7 @@ func (s *Server) SuggestPatternPieces(ctx context.Context, req *pb_admin.Suggest
 		return nil, s.aiOffRefusal(purpose, patternPiecesNotConfiguredMsg)
 	}
 
-	key := patternPiecesDigest(req)
+	key := tenant.KeyHash(ctx, patternPiecesDigest(req))
 	force := req.GetForce()
 	if !force {
 		if hit, ok := s.patternPiecesCache.get(key, time.Now()); ok {
@@ -250,7 +252,7 @@ func (s *Server) patternPiecesCall(ctx context.Context, job patternPiecesJob, bu
 	default:
 		return nil, status.Error(codes.ResourceExhausted, "the assistant is busy right now — try again in a moment")
 	}
-	if !s.enhanceRuns.allow(job.admin) {
+	if !s.enhanceRuns.allow(tenant.Key(ctx, job.admin)) {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"this account has used the assistant %d times in the last hour (ideas, text improvements, the quiz, the parts and the pattern pieces share the limit); every call spends the AI key — try again later",
 			enhancePerAdminCalls)

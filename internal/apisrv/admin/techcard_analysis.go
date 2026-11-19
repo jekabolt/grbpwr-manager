@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov/router"
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -394,7 +396,7 @@ func (s *Server) AnalyzeTechCardConstruction(ctx context.Context, req *pb_admin.
 	// THE BELTS COME FIRST, BEFORE THE READ. A press that is refused here must cost nothing at all —
 	// not the key, and not a full hydrated tech-card read either, which is the most expensive query
 	// on this path.
-	release, err := s.analysisRuns.begin(analysisRunKey{admin: authsrv.GetAdminUsername(ctx), cardID: cardID})
+	release, err := s.analysisRuns.begin(analysisRunKey{admin: tenant.Key(ctx, authsrv.GetAdminUsername(ctx)), cardID: cardID})
 	if err != nil {
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
