@@ -249,3 +249,46 @@ func TestTranslateFieldsRefusesTokenWithoutName(t *testing.T) {
 	require.Empty(t, *calls)
 	require.Empty(t, store.Rows(), "no ledger row")
 }
+
+// context: TECHPACK sends _openrouter.js's factory role (a technologist reads it, not a shopper); no
+// context sends the shop role, as before. The rules after the role are the same in both.
+func TestTranslateFieldsTechpackContext(t *testing.T) {
+	answer := `{"translations":{"fr":{"name":"x","description":"y"},"de":{"name":"x","description":"y"}}}`
+	for name, tc := range map[string]struct {
+		ctx       pb_admin.TranslateContext
+		want, not []string
+	}{
+		"techpack": {
+			ctx: pb_admin.TranslateContext_TRANSLATE_CONTEXT_TECHPACK,
+			want: []string{
+				"You are a garment technologist translating a tech pack for a sewing factory (brand grbpwr).\n" +
+					"Fields are operation names, part names, notes, materials and measurement points.\n" +
+					"Use the factory floor's standard terms of the target language, terse like the source.\n" +
+					"- Keep codes like FRT_L_MAIN, abbreviations SA, CB, CF, TS, RS, WS, GSM, numbers and units exactly as written.\n" +
+					"Translate the provided fields from English into each requested target language.\nRules:\n",
+			},
+			not: []string{"fashion e-commerce translator"},
+		},
+		"no context": {
+			want: []string{"You are a professional fashion e-commerce translator for the brand grbpwr.\n" +
+				"Translate the provided fields from English into each requested target language.\nRules:\n"},
+			not: []string{"garment technologist", "FRT_L_MAIN"},
+		},
+	} {
+		client, calls := newTranslateOpenRouter(t, answer)
+		s := &Server{ai: newTestRouter(client), enhanceSem: make(chan struct{}, maxConcurrentEnhance)}
+		req := translateReq()
+		req.Context = tc.ctx
+		_, err := s.TranslateFields(signedIn(context.Background()), req)
+		require.NoErrorf(t, err, name)
+		require.Lenf(t, *calls, 1, name)
+		sys := (*calls)[0].System
+		for _, w := range tc.want {
+			require.Truef(t, strings.HasPrefix(sys, w), "%s: prompt starts with the role\n%s", name, sys)
+		}
+		for _, n := range tc.not {
+			require.NotContainsf(t, sys, n, name)
+		}
+		require.Containsf(t, sys, "Each target must contain exactly these fields: description, name.", name)
+	}
+}

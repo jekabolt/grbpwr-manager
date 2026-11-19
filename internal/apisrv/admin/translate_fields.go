@@ -60,6 +60,7 @@ type translateFieldsIn struct {
 	codes      []string
 	maxLength  map[string]int // field → cap (>0 only)
 	totalRunes int
+	techpack   bool // TRANSLATE_CONTEXT_TECHPACK: factory vocabulary, not shop copy
 }
 
 func validateTranslateFields(req *pb_admin.TranslateFieldsRequest) (*translateFieldsIn, error) {
@@ -68,6 +69,7 @@ func validateTranslateFields(req *pb_admin.TranslateFieldsRequest) (*translateFi
 		langName:  strings.TrimSpace(src.GetLangName()),
 		fields:    map[string]string{},
 		maxLength: map[string]int{},
+		techpack:  req.GetContext() == pb_admin.TranslateContext_TRANSLATE_CONTEXT_TECHPACK,
 	}
 	if in.langName == "" || utf8.RuneCountInString(in.langName) > maxTranslateLangRunes {
 		return nil, errors.New("source.lang_name is required")
@@ -129,11 +131,21 @@ func validateTranslateFields(req *pb_admin.TranslateFieldsRequest) (*translateFi
 	return in, nil
 }
 
-// translateFieldsSystemPrompt is _openrouter.js's system prompt, line for line.
+// translateFieldsSystemPrompt is _openrouter.js's system prompt, line for line: the role lines by
+// context (a tech pack goes to a sewing factory — the reader is a technologist, not a shopper), then
+// the shared rules.
 func translateFieldsSystemPrompt(in *translateFieldsIn) string {
-	return strings.Join([]string{
-		"You are a professional fashion e-commerce translator for the brand grbpwr.",
-		"Translate the provided fields from " + in.langName + " into each requested target language.",
+	role := []string{"You are a professional fashion e-commerce translator for the brand grbpwr."}
+	if in.techpack {
+		role = []string{
+			"You are a garment technologist translating a tech pack for a sewing factory (brand grbpwr).",
+			"Fields are operation names, part names, notes, materials and measurement points.",
+			"Use the factory floor's standard terms of the target language, terse like the source.",
+			"- Keep codes like FRT_L_MAIN, abbreviations SA, CB, CF, TS, RS, WS, GSM, numbers and units exactly as written.",
+		}
+	}
+	return strings.Join(append(role,
+		"Translate the provided fields from "+in.langName+" into each requested target language.",
 		"Rules:",
 		"- Preserve brand names, proper nouns, product/model names, sizes, measurements, and SKU-like tokens untranslated.",
 		"- Keep the tone concise, premium, and on-brand. Do not add, remove, or explain anything.",
@@ -141,9 +153,9 @@ func translateFieldsSystemPrompt(in *translateFieldsIn) string {
 		"- Translate every field for every target language. Never leave a field empty.",
 		"Output ONLY a JSON object, no markdown, with this exact shape:",
 		`{ "translations": { "<targetCode>": { "<fieldName>": "<translatedText>" } } }`,
-		"Use exactly these target codes as keys: " + strings.Join(in.codes, ", ") + ".",
-		"Each target must contain exactly these fields: " + strings.Join(in.names, ", ") + ".",
-	}, "\n")
+		"Use exactly these target codes as keys: "+strings.Join(in.codes, ", ")+".",
+		"Each target must contain exactly these fields: "+strings.Join(in.names, ", ")+".",
+	), "\n")
 }
 
 // translateFieldsUserPrompt is _openrouter.js's user payload.

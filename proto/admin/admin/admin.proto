@@ -15534,6 +15534,16 @@ message TranslateFieldsRequest {
   repeated TranslateTarget targets = 2;
   // constraints by field name; a field without an entry has no limit.
   map<string, TranslateConstraint> constraints = 3;
+  // context picks who reads the translation (the client's `context: 'techpack'`);
+  // unspecified = shop copy, as before.
+  TranslateContext context = 4;
+}
+
+enum TranslateContext {
+  // TRANSLATE_CONTEXT_UNSPECIFIED: shop copy (fashion e-commerce translator).
+  TRANSLATE_CONTEXT_UNSPECIFIED = 0;
+  // TRANSLATE_CONTEXT_TECHPACK: a tech pack for a sewing factory (garment technologist).
+  TRANSLATE_CONTEXT_TECHPACK = 1;
 }
 
 message TranslateSource {
