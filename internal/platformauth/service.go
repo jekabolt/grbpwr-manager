@@ -1065,29 +1065,8 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		HandleBase:      HandleBase(inv.Email),
 		Handoff:         nt,
 		TermsVersion:    terms,
-		Stage: func(ctx context.Context, inv platformstore.Invite, handle string) error {
-			super, perms, err := InvitePermissions(inv.Permissions, inv.Role)
-			if err != nil {
-				return err
-			}
-			team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID)
-			if err != nil {
-				return err
-			}
-			return s.d.Hooks.StageMember(ctx, team, handle, super, perms)
-		},
-		Enable: func(ctx context.Context, inv platformstore.Invite, userID int64, handle string) (bool, error) {
-			// Re-read: a member removed after step 3 is not enabled (their removal also clears the
-			// team-side marker, so even a stale read cannot enable the row).
-			if _, ok, err := s.d.Store.Membership(ctx, userID, inv.TeamID); err != nil || !ok {
-				return false, err
-			}
-			team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID)
-			if err != nil {
-				return false, err
-			}
-			return s.d.Hooks.EnableMember(ctx, team, handle)
-		},
+		Stage:           s.stageInvite,
+		Enable:          s.enableInvite,
 	})
 	switch {
 	case errors.Is(err, platformstore.ErrTeamReadOnly):
@@ -1112,6 +1091,34 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 	}
 	s.audit(ctx, res.UserID, res.TeamID, "invite_accept", map[string]string{"new_account": fmt.Sprint(res.Created)})
 	return &auth.AcceptInviteResponse{TeamSlug: res.TeamSlug, HandoffCode: code}, nil
+}
+
+// stageInvite is an invite's step 2 (AcceptParams.Stage): the member's admins row, disabled, with the
+// invite's rights.
+func (s *Service) stageInvite(ctx context.Context, inv platformstore.Invite, handle string) error {
+	super, perms, err := InvitePermissions(inv.Permissions, inv.Role)
+	if err != nil {
+		return err
+	}
+	team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID)
+	if err != nil {
+		return err
+	}
+	return s.d.Hooks.StageMember(ctx, team, handle, super, perms)
+}
+
+// enableInvite is an invite's last step (AcceptParams.Enable).
+func (s *Service) enableInvite(ctx context.Context, inv platformstore.Invite, userID int64, handle string) (bool, error) {
+	// Re-read: a member removed after step 3 is not enabled (their removal also clears the
+	// team-side marker, so even a stale read cannot enable the row).
+	if _, ok, err := s.d.Store.Membership(ctx, userID, inv.TeamID); err != nil || !ok {
+		return false, err
+	}
+	team, err := s.d.Store.Directory().ByID(ctx, inv.TeamID)
+	if err != nil {
+		return false, err
+	}
+	return s.d.Hooks.EnableMember(ctx, team, handle)
 }
 
 // --- operators ---

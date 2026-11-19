@@ -57,6 +57,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
@@ -1097,6 +1098,12 @@ func (a *App) Start(ctx context.Context) error {
 		adminS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetTeamOneCredentials(authS)
 		a.hs.SetTeamLogoHandler(authS.TeamLogoHandler())
+		if err := authS.OAuthConfigErr(); err != nil {
+			return err
+		}
+		if h := authS.OAuthHandler(); h != nil {
+			a.hs.SetOAuthHandler(h)
+		}
 	}
 
 	// Set up database health checker if store supports it
@@ -1634,6 +1641,11 @@ func (a *App) teamOneFromConfig() (tenant.Team, error) {
 func (a *App) startPlatform(ctx context.Context) error {
 	if !a.c.Platform.Enabled() {
 		return nil
+	}
+	// OAUTH_*: a half-set provider refuses the boot before anything opens (the error names the
+	// variable, never its value). Nothing set boots without provider sign-in.
+	if _, err := oauthflow.BuildConfig(a.c.Platform); err != nil {
+		return err
 	}
 	st, err := platformstore.Open(ctx, a.c.Platform.DSN)
 	if err != nil {

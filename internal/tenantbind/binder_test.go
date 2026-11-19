@@ -241,6 +241,50 @@ func TestOriginAllowed(t *testing.T) {
 	}
 }
 
+// The root host rule of a provider start: exactly https://<base>, and no browser is no pass.
+func TestRootOriginAllowed(t *testing.T) {
+	b, _ := teamsBinder(t)
+	for origin, want := range map[string]bool{
+		"https://beta.lekalo.studio":          true,
+		"HTTPS://Beta.Lekalo.Studio/":         true,
+		"":                                    false,
+		"http://beta.lekalo.studio":           false,
+		"https://acme.beta.lekalo.studio":     false,
+		"https://beta.lekalo.studio.evil.com": false,
+		"https://beta.lekalo.studio/auth":     false,
+		"https://admin.beta.grbpwr.com":       false,
+		"null":                                false,
+	} {
+		if got := b.RootOriginAllowed(origin); got != want {
+			t.Errorf("RootOriginAllowed(%q) = %v, want %v", origin, got, want)
+		}
+	}
+	if newBinder(t).RootOriginAllowed("https://beta.lekalo.studio") {
+		t.Error("a binder with no base domain admitted a root origin")
+	}
+}
+
+// CanonicalOrigin is the rules' own form: every case variant of an admitted origin maps to one key.
+func TestCanonicalOrigin(t *testing.T) {
+	b, _ := teamsBinder(t)
+	for origin, want := range map[string]string{
+		"https://beta.lekalo.studio":       "https://beta.lekalo.studio",
+		"HTTPS://Beta.Lekalo.STUDIO/":      "https://beta.lekalo.studio",
+		" https://ACME.beta.lekalo.studio": "https://acme.beta.lekalo.studio",
+		"https://beta.lekalo.studio/auth":  "",
+		"null":                             "",
+		"":                                 "",
+	} {
+		got := CanonicalOrigin(origin)
+		if got != want || b.CanonicalOrigin(origin) != got {
+			t.Errorf("CanonicalOrigin(%q) = %q, want %q", origin, got, want)
+		}
+		if got != "" && b.RootOriginAllowed(origin) != (got == "https://beta.lekalo.studio") {
+			t.Errorf("CanonicalOrigin(%q) disagrees with RootOriginAllowed", origin)
+		}
+	}
+}
+
 func TestCachesAndInvalidate(t *testing.T) {
 	b, p := teamsBinder(t)
 	ctx := context.Background()

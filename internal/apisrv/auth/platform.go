@@ -9,6 +9,8 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauth"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,6 +25,11 @@ type platformHandle struct {
 	// answer with it). StopRateLimiter closes svc.
 	svc    *platformauth.Service
 	svcErr error
+	// oauthReg is the provider registry (nil-safe); oauthErr is why the OAUTH_* settings refuse
+	// the boot; oauth serves the provider routes (oauth.go).
+	oauthReg *oauth.Registry
+	oauthErr error
+	oauth    *oauthflow.Handler
 }
 
 // SetPlatform hands the server the control plane and the platform config (teams mode on) and builds
@@ -33,7 +40,9 @@ func (s *Server) SetPlatform(st *platformstore.Store, cfg platformstore.Config) 
 		return
 	}
 	s.creds = st
+	s.setupOAuth()
 	s.platform.svc, s.platform.svcErr = s.newPlatformService()
+	s.buildOAuthHandler()
 }
 
 // credentialPlane is the control plane's side of team #1 admin credentials (platformstore.Store in

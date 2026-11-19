@@ -10,11 +10,16 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 // newPlatformService builds the identity service from the server's control plane (SetPlatform).
 func (s *Server) newPlatformService() (*platformauth.Service, error) {
+	var buttons platformauth.SignInOptions // nil: the default over the settings
+	if s.platform.oauthErr == nil {
+		buttons = oauthflow.Options(s.platform.oauthReg)
+	}
 	svc, err := platformauth.New(platformauth.Deps{
 		Store:          s.platform.store,
 		Config:         s.platform.cfg,
@@ -26,6 +31,7 @@ func (s *Server) newPlatformService() (*platformauth.Service, error) {
 		SignupApproval: s.platform.cfg.SignupApprovalOn(),
 		TermsVersion:   s.platform.cfg.Terms(),
 		SchemaBehind:   s.schemaBehind,
+		SignInOptions:  buttons,
 	})
 	if err != nil {
 		slog.Default().Error("platformauth: identity service not built", slog.String("err", err.Error()))
@@ -71,6 +77,7 @@ func (s *Server) closePlatformService() {
 	if s.platform.svc != nil {
 		s.platform.svc.Close()
 	}
+	s.closeOAuth()
 }
 
 // platformHooks reach the team databases through the admin repository under a team pin.
