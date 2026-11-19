@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
@@ -47,8 +48,15 @@ type fakePlane struct {
 	overrides map[int64]map[string]bool
 	operators map[int64]bool
 	members   map[string]Membership
+	changed   map[string]time.Time // handle → password_changed_at
 	calls     int
 	err       error
+}
+
+func (p *fakePlane) PasswordChangedAt(_ context.Context, handle string) (time.Time, bool, error) {
+	p.calls++
+	at, ok := p.changed[handle]
+	return at, ok, p.err
 }
 
 func (p *fakePlane) Directory() tenant.Directory { return p.dir }

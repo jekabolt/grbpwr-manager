@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
@@ -44,6 +45,9 @@ type Edge interface {
 	RequestedTeam(ctx context.Context, host, xteam string) (team tenant.Team, named bool, err error)
 	Features(ctx context.Context, t tenant.Team) (map[feature.Key]bool, error)
 	Operator(ctx context.Context, userID int64) (bool, error)
+	// LegacyNotBefore is the handle's last password change (zero: none recorded). A legacy
+	// team #1 token carries no session, so one issued before it is refused.
+	LegacyNotBefore(ctx context.Context, handle string) (time.Time, error)
 }
 
 // SetEdge wires the tenant binder into the admin chain. Called once at boot, before serving.
@@ -255,6 +259,11 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 		}
 		super = super && role == roleOwner
 	}
+	if s.teamsMode() && claims.Legacy {
+		if err := s.legacyNotRevoked(ctx, claims); err != nil {
+			return AdminAuthz{}, err
+		}
+	}
 	if err := s.checkAdminAccountState(ctx, claims.Handle); err != nil {
 		return AdminAuthz{}, err
 	}
@@ -264,6 +273,22 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 		return AdminAuthz{Legacy: true}, nil
 	}
 	return AdminAuthz{Super: super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
+}
+
+// legacyNotRevoked refuses a legacy team #1 token issued before its holder's last password change
+// (reset or admin-panel change). iat has second precision, so the change is compared truncated to
+// the second: the token a change hands back stays valid.
+func (s *Server) legacyNotRevoked(ctx context.Context, claims jwt.TeamClaims) error {
+	nb, err := s.edge.LegacyNotBefore(ctx, claims.Handle)
+	if err != nil {
+		slog.Default().ErrorContext(ctx, "admin call: password change lookup failed", slog.String("err", err.Error()))
+		return status.Error(codes.Unavailable, "session check unavailable")
+	}
+	if !nb.IsZero() && claims.IssuedAt.Before(nb.Truncate(time.Second)) {
+		slog.Default().WarnContext(ctx, "admin call: legacy token issued before a password change")
+		return status.Error(codes.Unauthenticated, "unauthorized")
+	}
+	return nil
 }
 
 // roleOwner is the team_member role that may carry super.

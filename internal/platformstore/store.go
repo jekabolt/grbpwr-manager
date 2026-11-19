@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,40 @@ type Config struct {
 	ProvisionPerHour int `mapstructure:"provision_per_hour"`
 	// AllowedOriginRegex: CORS origins of team hosts (HTTP_ALLOWED_ORIGIN_REGEX).
 	AllowedOriginRegex string `mapstructure:"allowed_origin_regex"`
+	// SignupApproval (PLATFORM_SIGNUP_APPROVAL, §21): kept as text so an unreadable value never
+	// stops a boot; read through SignupApprovalOn. Optional, read only in teams mode.
+	SignupApproval string `mapstructure:"signup_approval"`
+	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
+	// read through Terms. Optional, read only in teams mode.
+	TermsVersion string `mapstructure:"terms_version"`
+}
+
+// DefaultTermsVersion is the terms version stored when PLATFORM_TERMS_VERSION is not set.
+const DefaultTermsVersion = "2026-11"
+
+// maxTermsVersion is the width of platform_user.terms_version.
+const maxTermsVersion = 32
+
+// SignupApprovalOn reads SignupApproval: on unless it parses as false ("false", "0", "off", "no");
+// unset or unreadable keeps approval on.
+func (c Config) SignupApprovalOn() bool {
+	v := strings.ToLower(strings.TrimSpace(c.SignupApproval))
+	switch v {
+	case "off", "no":
+		return false
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	return true
+}
+
+// Terms reads TermsVersion: DefaultTermsVersion when empty or wider than the column.
+func (c Config) Terms() string {
+	if v := strings.TrimSpace(c.TermsVersion); v != "" && len(v) <= maxTermsVersion {
+		return v
+	}
+	return DefaultTermsVersion
 }
 
 // Enabled reports teams mode: a control-plane DSN is configured.

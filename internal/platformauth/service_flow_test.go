@@ -57,6 +57,8 @@ type fakeTeams struct {
 	onEnable func(handle string) error
 	// loseEnableResult: the enable commits in the team database, then its answer is lost.
 	loseEnableResult bool
+	// dropped: handle → sessions a password reset handed to the edge to drop.
+	dropped map[string][]string
 }
 
 // adminDisable is an admin (or a removal) disabling the row: the marker goes in the same write.
@@ -106,7 +108,7 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}},
+	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}, dropped: map[string][]string{}},
 		clock: time.Now().UTC().Truncate(time.Second)}
 	svc, err := New(Deps{
 		Store:   st,
@@ -161,6 +163,11 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 				defer f.teams.mu.Unlock()
 				f.teams.pwSet[handle] = hash
 				return nil
+			},
+			PasswordChanged: func(_ context.Context, handle string, sids []string) {
+				f.teams.mu.Lock()
+				defer f.teams.mu.Unlock()
+				f.teams.dropped[handle] = append(f.teams.dropped[handle], sids...)
 			},
 		},
 		SignupApproval: approval,
@@ -397,6 +404,19 @@ func TestIdentityFlow(t *testing.T) {
 	}
 	_, err = f.svc.IssueHandoff(sctx, si.GetToken(), &auth.IssueHandoffRequest{TeamSlug: "atelier-anna"})
 	wantCode(t, err, codes.Unauthenticated, "root token after reset")
+	// The edge is told which sessions died (root + team: its cache would keep them for its TTL),
+	// and the legacy team #1 «not before» is the reset's time.
+	var liveAfter int
+	if err := f.st.DB().Get(&liveAfter, `SELECT COUNT(*) FROM user_session s JOIN platform_user u ON u.id = s.user_id
+WHERE u.email = ? AND s.revoked_at IS NULL`, anna); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.teams.dropped[annaHandle]; len(got) < 2 || liveAfter != 0 {
+		t.Fatalf("reset dropped %d sessions, %d still live", len(got), liveAfter)
+	}
+	if at, ok, err := f.st.PasswordChangedAt(context.Background(), annaHandle); err != nil || !ok || !at.Equal(f.clock) {
+		t.Fatalf("password_changed_at = %v, %v, %v; want %v", at, ok, err, f.clock)
+	}
 	if _, err := f.svc.SignIn(sctx, &auth.SignInRequest{Login: anna, Password: "new-password-1", Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT}); err != nil {
 		t.Fatalf("sign-in with the new password: %v", err)
 	}

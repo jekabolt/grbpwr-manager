@@ -249,6 +249,7 @@ func (s *Server) StopRateLimiter() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.stop()
 	}
+	s.closePlatformService()
 }
 
 func (s *Server) jwtIssueOpts() *jwt.IssueOpts {

@@ -47,6 +47,9 @@ type controlPlane interface {
 	// tid (aud team) is not revoked, the platform user is active and the membership is active.
 	// ok=false when any part is missing; role is the membership role.
 	TeamSession(ctx context.Context, sid string, uid, tid int64) (role string, ok bool, err error)
+	// PasswordChangedAt is the last password change of the platform user with this handle (the
+	// «not before» of legacy team #1 tokens). ok=false: no such user or never changed.
+	PasswordChangedAt(ctx context.Context, handle string) (at time.Time, ok bool, err error)
 }
 
 // Membership is the live state behind a team token (TeamSession).
@@ -79,6 +82,11 @@ type boolEntry struct {
 	expires time.Time
 }
 
+type notBeforeEntry struct {
+	at      time.Time // zero = no password change recorded
+	expires time.Time
+}
+
 // Binder is the edge binder.
 type Binder struct {
 	teamOne tenant.Team
@@ -97,6 +105,10 @@ type Binder struct {
 	sessions  map[string]boolEntry
 	operators map[int64]boolEntry
 	members   map[string]memberEntry
+	// notBefore caches PasswordChangedAt by lower-cased handle; credGen counts invalidations, so a
+	// lookup that raced one never stores the answer it read before the change.
+	notBefore map[string]notBeforeEntry
+	credGen   uint64
 }
 
 // New returns the binder for team #1 with teams mode off. UsePlatform switches teams mode on.
@@ -117,6 +129,7 @@ func New(teamOne tenant.Team) (*Binder, error) {
 		sessions:     map[string]boolEntry{},
 		operators:    map[int64]boolEntry{},
 		members:      map[string]memberEntry{},
+		notBefore:    map[string]notBeforeEntry{},
 	}, nil
 }
 
@@ -333,6 +346,52 @@ func (b *Binder) InvalidateSession(sid string) {
 	b.cacheMu.Lock()
 	delete(b.members, sid)
 	delete(b.sessions, sid)
+	b.cacheMu.Unlock()
+}
+
+// LegacyNotBefore is the instant before which a legacy team #1 token of this handle is refused:
+// its platform user's last password change (reset or admin-panel change; 15 s cache, dropped on
+// this instance by InvalidateCredentials). Legacy tokens carry no session id, so this is how a
+// password change reaches them. Zero time = nothing to refuse (teams mode off, no platform user,
+// never changed).
+func (b *Binder) LegacyNotBefore(ctx context.Context, handle string) (time.Time, error) {
+	p, _ := b.state()
+	key := strings.ToLower(strings.TrimSpace(handle))
+	if p == nil || key == "" {
+		return time.Time{}, nil
+	}
+	now := b.now()
+	b.cacheMu.Lock()
+	e, hit := b.notBefore[key]
+	gen := b.credGen
+	b.cacheMu.Unlock()
+	if hit && now.Before(e.expires) {
+		return e.at, nil
+	}
+	at, ok, err := p.PasswordChangedAt(ctx, key)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !ok {
+		at = time.Time{}
+	}
+	b.cacheMu.Lock()
+	if b.credGen == gen {
+		if len(b.notBefore) >= sessionCacheMax {
+			b.notBefore = map[string]notBeforeEntry{}
+		}
+		b.notBefore[key] = notBeforeEntry{at: at, expires: now.Add(cacheTTL)}
+	}
+	b.cacheMu.Unlock()
+	return at, nil
+}
+
+// InvalidateCredentials drops the cached LegacyNotBefore of a handle on this instance (password
+// reset or change). Other instances see the change within cacheTTL.
+func (b *Binder) InvalidateCredentials(handle string) {
+	b.cacheMu.Lock()
+	delete(b.notBefore, strings.ToLower(strings.TrimSpace(handle)))
+	b.credGen++
 	b.cacheMu.Unlock()
 }
 
@@ -600,6 +659,9 @@ func (p storePlane) FeatureOverrides(ctx context.Context, teamID int64) (map[str
 
 func (p storePlane) TeamSession(ctx context.Context, sid string, uid, tid int64) (string, bool, error) {
 	return p.st.TeamSession(ctx, sid, uid, tid)
+}
+func (p storePlane) PasswordChangedAt(ctx context.Context, handle string) (time.Time, bool, error) {
+	return p.st.PasswordChangedAt(ctx, handle)
 }
 func (p storePlane) OperatorActive(ctx context.Context, userID int64) (bool, error) {
 	var row struct {

@@ -2,6 +2,7 @@ package platformstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -83,7 +84,7 @@ func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash s
 		return nil, fmt.Errorf("%w: %w", ErrPasswordMismatch, err)
 	}
 	id := u.ID
-	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, hash, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, password_changed_at = ? WHERE id = ?`, hash, now.UTC(), id); err != nil {
 		return nil, fmt.Errorf("platformstore: set password: %w", err)
 	}
 	var sids []string
@@ -101,4 +102,19 @@ func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash s
 		return nil, fmt.Errorf("platformstore: commit password tx: %w", err)
 	}
 	return sids, nil
+}
+
+// PasswordChangedAt is the last password change of the platform user with this handle (reset or
+// admin-panel change): the «not before» of legacy team #1 tokens, which carry no session to revoke.
+// ok=false: no such user, or the password never changed through the control plane.
+func (s *Store) PasswordChangedAt(ctx context.Context, handle string) (at time.Time, ok bool, err error) {
+	var ts []sql.NullTime
+	if err := s.db.SelectContext(ctx, &ts,
+		`SELECT password_changed_at FROM platform_user WHERE handle = ?`, handle); err != nil {
+		return time.Time{}, false, fmt.Errorf("platformstore: password changed at: %w", err)
+	}
+	if len(ts) == 0 || !ts[0].Valid {
+		return time.Time{}, false, nil
+	}
+	return ts[0].Time.UTC(), true, nil
 }

@@ -469,6 +469,8 @@ func bindEnvVars() {
 	viper.BindEnv("platform.spares", "TENANT_SPARES")
 	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
 	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
+	viper.BindEnv("platform.signup_approval", "PLATFORM_SIGNUP_APPROVAL")
+	viper.BindEnv("platform.terms_version", "PLATFORM_TERMS_VERSION")
 
 	// MySQL
 	viper.BindEnv("mysql.dsn", "MYSQL_DSN")

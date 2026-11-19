@@ -37,6 +37,10 @@ type Hooks struct {
 	EnableMember func(ctx context.Context, team tenant.Team, handle string) (bool, error)
 	// TeamOnePassword writes a new password hash onto team #1's admins row of the handle.
 	TeamOnePassword func(ctx context.Context, handle, hash string) error
+	// PasswordChanged runs after a password reset committed: sids are the sessions it revoked.
+	// The edge drops them and the handle's cached «not before» so old platform sessions, team
+	// tokens and legacy team #1 tokens fail on their next call.
+	PasswordChanged func(ctx context.Context, handle string, sids []string)
 }
 
 // TeamAccount is what a team token needs from the team's admins row.
@@ -845,6 +849,9 @@ func (s *Service) ResetPassword(ctx context.Context, req *auth.ResetPasswordRequ
 	if err != nil {
 		s.log(ctx, "reset password", err)
 		return nil, errInternal()
+	}
+	if s.d.Hooks.PasswordChanged != nil {
+		s.d.Hooks.PasswordChanged(ctx, res.Handle, res.SIDs)
 	}
 	if res.TeamOneMem && s.d.Hooks.TeamOnePassword != nil {
 		if err := s.d.Hooks.TeamOnePassword(ctx, res.Handle, hash); err != nil {

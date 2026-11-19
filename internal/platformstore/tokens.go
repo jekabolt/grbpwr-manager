@@ -306,6 +306,9 @@ type ResetResult struct {
 	Handle     string
 	TeamOneMem bool
 	Revoked    int64
+	// SIDs are the sessions the reset revoked: the caller drops them from the edge cache
+	// (tenantbind.Binder.InvalidateSession), which otherwise keeps them live for its TTL.
+	SIDs []string
 }
 
 func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.Time) (ResetResult, error) {
@@ -314,9 +317,15 @@ func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.
 		return ResetResult{}, ErrTokenInvalid
 	}
 	// A reset proves the inbox: a pending account (an operator seeded at boot is active) stays as is.
-	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?,
-email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, newHash, now, u.ID); err != nil {
+	// password_changed_at is the «not before» of legacy team #1 tokens (they carry no session).
+	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, password_changed_at = ?,
+email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, newHash, now, now, u.ID); err != nil {
 		return ResetResult{}, fmt.Errorf("platformstore: set password: %w", err)
+	}
+	var sids []string
+	if err := tx.SelectContext(ctx, &sids,
+		`SELECT sid FROM user_session WHERE user_id = ? AND revoked_at IS NULL FOR UPDATE`, u.ID); err != nil {
+		return ResetResult{}, fmt.Errorf("platformstore: live sessions: %w", err)
 	}
 	r, err := tx.ExecContext(ctx, `UPDATE user_session SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, u.ID)
 	if err != nil {
@@ -327,7 +336,7 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, newHash, now, 
 	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM team_member WHERE team_id = 1 AND user_id = ? AND status = 'active'`, u.ID); err != nil {
 		return ResetResult{}, fmt.Errorf("platformstore: team one membership: %w", err)
 	}
-	return ResetResult{UserID: u.ID, Handle: u.Handle, TeamOneMem: n > 0, Revoked: revoked}, nil
+	return ResetResult{UserID: u.ID, Handle: u.Handle, TeamOneMem: n > 0, Revoked: revoked, SIDs: sids}, nil
 }
 
 // ResetLinkLive is a read-only check that tokenHash is a live reset link of an account that is not

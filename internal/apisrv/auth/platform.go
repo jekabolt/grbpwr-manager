@@ -6,25 +6,32 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// platformHandle is the control plane as the server sees it. Wave 1 only stores it; nothing reads
-// it yet (wave 2 wires sign-in, membership and features through it).
+// platformHandle is the control plane as the server sees it, and the identity service built on it
+// (the platform RPCs). Zero = teams mode off.
 type platformHandle struct {
 	store *platformstore.Store
 	cfg   platformstore.Config
+	// svc is built once in SetPlatform; svcErr is why it could not be (the platform RPCs then
+	// answer with it). StopRateLimiter closes svc.
+	svc    *platformauth.Service
+	svcErr error
 }
 
-// SetPlatform hands the server the control plane and the platform config (teams mode on). Not
-// called with teams mode off.
+// SetPlatform hands the server the control plane and the platform config (teams mode on) and builds
+// the identity service on them. Not called with teams mode off. Call it after New, before serving.
 func (s *Server) SetPlatform(st *platformstore.Store, cfg platformstore.Config) {
 	s.platform = platformHandle{store: st, cfg: cfg}
-	if st != nil {
-		s.creds = st
+	if st == nil {
+		return
 	}
+	s.creds = st
+	s.platform.svc, s.platform.svcErr = s.newPlatformService()
 }
 
 // credentialPlane is the control plane's password write (platformstore.Store in teams mode): the
@@ -65,11 +72,7 @@ func (s *Server) changePasswordTeams(ctx context.Context, username, current, has
 			slog.String("username", username), slog.String("err", err.Error()))
 		return true, status.Error(codes.Unavailable, "password not changed, try again")
 	}
-	if inv, ok := s.edge.(interface{ InvalidateSession(sid string) }); ok {
-		for _, sid := range revoked {
-			inv.InvalidateSession(sid)
-		}
-	}
+	s.dropRevokedCredentials(ctx, username, revoked)
 	for attempt := 1; attempt <= passwordMirrorAttempts; attempt++ {
 		if err = s.adminRepository.ChangePassword(ctx, username, hash); err == nil {
 			s.InvalidateAdminAccount(username)

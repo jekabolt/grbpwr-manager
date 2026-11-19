@@ -1013,6 +1013,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.hs.SetTenantBinder(binder)
+	a.useSchemaGate(binder)
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)

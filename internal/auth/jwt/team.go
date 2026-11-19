@@ -39,6 +39,9 @@ type TeamClaims struct {
 	Super     bool
 	Perms     []string
 	Legacy    bool
+	// IssuedAt is the token's iat (zero when absent). The edge refuses a legacy token issued
+	// before the holder's last password change.
+	IssuedAt time.Time
 }
 
 var errTeamClaims = errors.New("jwt: bad platform token claims")
@@ -112,7 +115,7 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 	_, hasUID := m[claimUserID]
 	_, hasTID := m[claimTeamID]
 
-	c := TeamClaims{Handle: t.Subject()}
+	c := TeamClaims{Handle: t.Subject(), IssuedAt: t.IssuedAt()}
 	c.Super, c.Perms = authzClaims(m)
 
 	if !hasUID && platformAud == "" {
