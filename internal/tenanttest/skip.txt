@@ -1,0 +1,2 @@
+# Read methods the tenanttest matrix cannot run (handler panics on a nil harness dependency).
+# Ratchet: regenerate with TENANTTEST_UPDATE_SKIP=1 only after looking at why.

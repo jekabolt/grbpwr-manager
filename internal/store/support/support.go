@@ -108,19 +108,9 @@ func (s *Store) GetSupportTicketsPaged(ctx context.Context, limit, offset int, o
 	}
 
 	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM support_ticket %s`, whereClause)
-	var totalCount int
-	rows, err := s.DB.NamedQuery(countQuery, args)
+	totalCount, err := storeutil.QueryCountNamed(ctx, s.DB, countQuery, args)
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't get total count: %w", err)
-	}
-	defer rows.Close()
-	if rows.Next() {
-		if err := rows.Scan(&totalCount); err != nil {
-			return nil, 0, fmt.Errorf("can't scan total count: %w", err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("count rows iteration error: %w", err)
 	}
 
 	return tickets, totalCount, nil
