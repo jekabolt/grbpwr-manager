@@ -2,9 +2,12 @@ package platformstore
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // TeamSession reads the live tuple behind a team token in one query: the session sid belongs to
@@ -51,70 +54,191 @@ func (s *Store) RevokeTeamSessions(ctx context.Context, uid, tid int64, now time
 	return sids, nil
 }
 
-// SetPasswordAndRevokeSessions is the authoritative password write in teams mode: the platform
-// user's row is locked, verify checks the current password against ITS hash (the tenant admins hash
-// is only a mirror and may lag), then the hash changes and every live session of that user is
-// revoked, all in ONE transaction, so no session minted under the old password outlives the change.
-// ErrUserNotFound when no platform user has the handle; ErrPasswordMismatch (wrapping verify's
-// error) when verify refuses, and nothing changes. Returns the revoked sids so the caller drops them
-// from its session cache.
-func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, verify func(current string) error, now time.Time) ([]string, error) {
-	if verify == nil {
-		return nil, fmt.Errorf("platformstore: password change without a current-password check")
-	}
-	if hash == "" {
-		return nil, fmt.Errorf("platformstore: empty password hash")
-	}
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("platformstore: begin password tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	var u struct {
-		ID   int64  `db:"id"`
-		Hash string `db:"password_hash"`
-	}
-	if err := tx.GetContext(ctx, &u, `SELECT id, password_hash FROM platform_user WHERE handle = ? FOR UPDATE`, handle); err != nil {
-		if isNoRows(err) {
-			return nil, ErrUserNotFound
-		}
-		return nil, fmt.Errorf("platformstore: find user: %w", err)
-	}
-	if err := verify(u.Hash); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrPasswordMismatch, err)
-	}
-	id := u.ID
-	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, password_changed_at = ? WHERE id = ?`, hash, now.UTC(), id); err != nil {
-		return nil, fmt.Errorf("platformstore: set password: %w", err)
-	}
-	var sids []string
-	if err := tx.SelectContext(ctx, &sids,
-		`SELECT sid FROM user_session WHERE user_id = ? AND revoked_at IS NULL FOR UPDATE`, id); err != nil {
-		return nil, fmt.Errorf("platformstore: live sessions: %w", err)
-	}
-	if len(sids) > 0 {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE user_session SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, id); err != nil {
-			return nil, fmt.Errorf("platformstore: revoke sessions: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("platformstore: commit password tx: %w", err)
-	}
-	return sids, nil
+// ErrCredentialsChanged: the account's credential generation moved (a password change committed)
+// between reading the account and writing what the old password was supposed to buy.
+var ErrCredentialsChanged = errors.New("platformstore: credentials changed")
+
+// CredentialChange is a committed password change: the account's new credential generation (legacy
+// team #1 tokens carry it) and the sessions it revoked, which the caller drops from its cache.
+type CredentialChange struct {
+	Gen  int64
+	SIDs []string
 }
 
-// PasswordChangedAt is the last password change of the platform user with this handle (reset or
-// admin-panel change): the «not before» of legacy team #1 tokens, which carry no session to revoke.
-// ok=false: no such user, or the password never changed through the control plane.
-func (s *Store) PasswordChangedAt(ctx context.Context, handle string) (at time.Time, ok bool, err error) {
-	var ts []sql.NullTime
-	if err := s.db.SelectContext(ctx, &ts,
-		`SELECT password_changed_at FROM platform_user WHERE handle = ?`, handle); err != nil {
-		return time.Time{}, false, fmt.Errorf("platformstore: password changed at: %w", err)
+// teamOneUser is the platform user behind a team #1 admin.
+type teamOneUser struct {
+	ID     int64  `db:"id"`
+	Hash   string `db:"password_hash"`
+	Gen    int64  `db:"credential_gen"`
+	Status string `db:"status"`
+}
+
+// teamOneUserSQL finds the platform user of a team #1 admin by handle THROUGH team #1 membership
+// (any membership status): a platform user who only shares the handle is never touched.
+const teamOneUserSQL = `SELECT u.id, u.password_hash, u.credential_gen, u.status
+FROM platform_user u JOIN team_member m ON m.user_id = u.id AND m.team_id = 1
+WHERE u.handle = ?`
+
+// changeCredentialsTx is the one credential write: the hash (when given), credential_gen + 1, every
+// live session revoked, every unused hand-off code expired. Inside the caller's transaction.
+func changeCredentialsTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash string, now time.Time) (CredentialChange, error) {
+	now = now.UTC()
+	if hash != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1 WHERE id = ?`,
+			hash, userID); err != nil {
+			return CredentialChange{}, fmt.Errorf("platformstore: set password: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET credential_gen = credential_gen + 1 WHERE id = ?`, userID); err != nil {
+		return CredentialChange{}, fmt.Errorf("platformstore: bump credentials: %w", err)
 	}
-	if len(ts) == 0 || !ts[0].Valid {
-		return time.Time{}, false, nil
+	var c CredentialChange
+	if err := tx.GetContext(ctx, &c.Gen, `SELECT credential_gen FROM platform_user WHERE id = ?`, userID); err != nil {
+		return CredentialChange{}, fmt.Errorf("platformstore: read credential generation: %w", err)
 	}
-	return ts[0].Time.UTC(), true, nil
+	if err := tx.SelectContext(ctx, &c.SIDs,
+		`SELECT sid FROM user_session WHERE user_id = ? AND revoked_at IS NULL FOR UPDATE`, userID); err != nil {
+		return CredentialChange{}, fmt.Errorf("platformstore: live sessions: %w", err)
+	}
+	if len(c.SIDs) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE user_session SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, userID); err != nil {
+			return CredentialChange{}, fmt.Errorf("platformstore: revoke sessions: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose = 'handoff' AND used_at IS NULL`, now, userID); err != nil {
+		return CredentialChange{}, fmt.Errorf("platformstore: expire hand-offs: %w", err)
+	}
+	return c, nil
+}
+
+// SetPasswordAndRevokeSessions is the authoritative password write of a team #1 admin in teams
+// mode: the platform user linked to team #1 under this handle is locked, verify checks the current
+// password against ITS hash (the tenant admins hash is only a mirror and may lag), then
+// changeCredentialsTx runs, all in ONE transaction. ErrUserNotFound when no team #1 member has the
+// handle (a platform user who only shares it is never touched); ErrPasswordMismatch (wrapping
+// verify's error) when verify refuses, and nothing changes. verify nil = an admin resetting
+// another account (the caller checked its right to).
+func (s *Store) SetPasswordAndRevokeSessions(ctx context.Context, handle, hash string, verify func(current string) error, now time.Time) (CredentialChange, error) {
+	if strings.TrimSpace(hash) == "" {
+		return CredentialChange{}, fmt.Errorf("platformstore: empty password hash")
+	}
+	var c CredentialChange
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		var u teamOneUser
+		if err := tx.GetContext(ctx, &u, teamOneUserSQL+` FOR UPDATE`, handle); err != nil {
+			if isNoRows(err) {
+				return ErrUserNotFound
+			}
+			return fmt.Errorf("platformstore: find team #1 user: %w", err)
+		}
+		if verify != nil {
+			if err := verify(u.Hash); err != nil {
+				return fmt.Errorf("%w: %w", ErrPasswordMismatch, err)
+			}
+		}
+		var err error
+		c, err = changeCredentialsTx(ctx, tx, u.ID, hash, now)
+		return err
+	})
+	if err != nil {
+		return CredentialChange{}, err
+	}
+	return c, nil
+}
+
+// TeamOneCred is the control-plane side of a team #1 admin's credentials.
+type TeamOneCred struct {
+	Hash     string
+	Gen      int64
+	Disabled bool
+}
+
+// TeamOneCredentials reads the control-plane hash, credential generation and status of the team #1
+// admin with this handle: the old /api/auth/login checks the password against it (the tenant
+// admins row is only a mirror). linked=false: no team #1 member has the handle.
+func (s *Store) TeamOneCredentials(ctx context.Context, handle string) (TeamOneCred, bool, error) {
+	var u teamOneUser
+	if err := s.db.GetContext(ctx, &u, teamOneUserSQL, handle); err != nil {
+		if isNoRows(err) {
+			return TeamOneCred{}, false, nil
+		}
+		return TeamOneCred{}, false, fmt.Errorf("platformstore: team #1 credentials: %w", err)
+	}
+	return TeamOneCred{Hash: u.Hash, Gen: u.Gen, Disabled: u.Status == UserDisabled}, true, nil
+}
+
+// LegacyCredGen is the credential generation a legacy team #1 token must carry to be valid: the
+// linked platform user's credential_gen, 0 for a team #1 admin with no linked platform user.
+func (s *Store) LegacyCredGen(ctx context.Context, handle string) (int64, error) {
+	var gens []int64
+	if err := s.db.SelectContext(ctx, &gens, `SELECT u.credential_gen
+FROM platform_user u JOIN team_member m ON m.user_id = u.id AND m.team_id = 1
+WHERE u.handle = ?`, handle); err != nil {
+		return 0, fmt.Errorf("platformstore: credential generation: %w", err)
+	}
+	if len(gens) == 0 {
+		return 0, nil
+	}
+	return gens[0], nil
+}
+
+// LinkTeamOneAdmin gives a team #1 admin created in the admin panel its control-plane account, in
+// one transaction: a free handle → a new platform user (no email) with a team #1 membership (owner
+// for super, else member); a handle already linked to team #1 (an account re-created after a
+// delete) → its password is set like a reset (changeCredentialsTx); a handle that belongs to a
+// platform user outside team #1 → ErrHandleTaken and nothing changes. A disabled linked user stays
+// disabled (an operator decided that).
+func (s *Store) LinkTeamOneAdmin(ctx context.Context, handle, hash string, super bool, now time.Time) (CredentialChange, error) {
+	handle = strings.TrimSpace(handle)
+	if handle == "" || len(handle) > 64 {
+		return CredentialChange{}, fmt.Errorf("platformstore: admin handle %q does not fit", handle)
+	}
+	if strings.TrimSpace(hash) == "" {
+		return CredentialChange{}, fmt.Errorf("platformstore: empty password hash")
+	}
+	var c CredentialChange
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		var u struct {
+			ID int64 `db:"id"`
+		}
+		err := tx.GetContext(ctx, &u, `SELECT id FROM platform_user WHERE handle = ? FOR UPDATE`, handle)
+		switch {
+		case err == nil:
+			var member int
+			if err := tx.GetContext(ctx, &member, `SELECT COUNT(*) FROM team_member WHERE team_id = 1 AND user_id = ?`, u.ID); err != nil {
+				return fmt.Errorf("platformstore: team #1 membership: %w", err)
+			}
+			if member == 0 {
+				return ErrHandleTaken
+			}
+			c, err = changeCredentialsTx(ctx, tx, u.ID, hash, now)
+			return err
+		case isNoRows(err):
+			res, err := tx.ExecContext(ctx, `INSERT INTO platform_user (email, handle, password_hash, status, created_at)
+VALUES (NULL, ?, ?, 'active', ?)`, handle, hash, now.UTC())
+			if err != nil {
+				return fmt.Errorf("platformstore: insert team #1 user: %w", err)
+			}
+			id, err := res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("platformstore: team #1 user id: %w", err)
+			}
+			role := "member"
+			if super {
+				role = "owner"
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
+VALUES (1, ?, ?, 'active', ?)`, id, role, now.UTC()); err != nil {
+				return fmt.Errorf("platformstore: team #1 member: %w", err)
+			}
+			return nil
+		default:
+			return fmt.Errorf("platformstore: find user: %w", err)
+		}
+	})
+	if err != nil {
+		return CredentialChange{}, err
+	}
+	return c, nil
 }

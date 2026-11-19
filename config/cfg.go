@@ -376,6 +376,14 @@ func loadConfig(cfgFile string, validate func(*Config) error) (*Config, error) {
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config into struct: %v", err)
 	}
+	// viper skips an empty env var and falls through to the config file; for these two an explicitly
+	// empty variable means the built-in default (approval on, terms 2026-11), not the file's value.
+	if v, ok := os.LookupEnv("PLATFORM_SIGNUP_APPROVAL"); ok && strings.TrimSpace(v) == "" {
+		config.Platform.SignupApproval = ""
+	}
+	if v, ok := os.LookupEnv("PLATFORM_TERMS_VERSION"); ok && strings.TrimSpace(v) == "" {
+		config.Platform.TermsVersion = ""
+	}
 
 	// Handle MySQL DSN construction from individual env vars if DSN is not set
 	// Supports both MYSQL_* env vars and DigitalOcean's db.* env vars

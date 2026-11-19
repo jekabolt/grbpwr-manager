@@ -233,20 +233,22 @@ func (s *Store) Directory() tenant.Directory { return s.dir }
 // Close closes the pool.
 func (s *Store) Close() error { return s.db.Close() }
 
-// SetPasswordHashByHandle mirrors a password change of a team-1 admin onto its platform user.
+// SetPasswordHashByHandle mirrors a password change of a team-1 admin onto its platform user, found
+// through team #1 membership: a platform user who only shares the handle is ErrUserNotFound.
 func (s *Store) SetPasswordHashByHandle(ctx context.Context, handle, hash string) error {
 	if strings.TrimSpace(hash) == "" {
 		return errors.New("platformstore: empty password hash")
 	}
 	var id int64
-	err := s.db.GetContext(ctx, &id, `SELECT id FROM platform_user WHERE handle = ?`, handle)
+	err := s.db.GetContext(ctx, &id, `SELECT u.id FROM platform_user u
+JOIN team_member m ON m.user_id = u.id AND m.team_id = 1 WHERE u.handle = ?`, handle)
 	if err != nil {
 		if isNoRows(err) {
 			return ErrUserNotFound
 		}
 		return fmt.Errorf("platformstore: find user: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE platform_user SET password_hash = ? WHERE id = ?`, hash, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1 WHERE id = ?`, hash, id); err != nil {
 		return fmt.Errorf("platformstore: set password: %w", err)
 	}
 	return nil

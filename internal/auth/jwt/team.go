@@ -39,9 +39,9 @@ type TeamClaims struct {
 	Super     bool
 	Perms     []string
 	Legacy    bool
-	// IssuedAt is the token's iat (zero when absent). The edge refuses a legacy token issued
-	// before the holder's last password change.
-	IssuedAt time.Time
+	// CredGen is a legacy token's credential generation (claim "cg", 0 when absent). The edge in
+	// teams mode refuses a legacy token whose generation is not the account's current one.
+	CredGen int64
 }
 
 var errTeamClaims = errors.New("jwt: bad platform token claims")
@@ -115,7 +115,7 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 	_, hasUID := m[claimUserID]
 	_, hasTID := m[claimTeamID]
 
-	c := TeamClaims{Handle: t.Subject(), IssuedAt: t.IssuedAt()}
+	c := TeamClaims{Handle: t.Subject()}
 	c.Super, c.Perms = authzClaims(m)
 
 	if !hasUID && platformAud == "" {
@@ -134,6 +134,11 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 		if exp != nil && isPlatformAud(exp.Audience) && exp.Audience != AudTeam {
 			// A console or root endpoint never takes a legacy (team #1 admin) token.
 			return TeamClaims{}, ErrInvalidClaims
+		}
+		if v, ok := m[claimCredGen]; ok {
+			if c.CredGen, err = int64Claim(v); err != nil || c.CredGen < 0 {
+				return TeamClaims{}, fmt.Errorf("%w: cg", errTeamClaims)
+			}
 		}
 		c.Legacy = true
 		return c, nil

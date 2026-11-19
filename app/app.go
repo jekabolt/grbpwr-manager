@@ -1081,6 +1081,7 @@ func (a *App) Start(ctx context.Context) error {
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)
+		adminS.SetTeamOneCredentials(authS)
 	}
 
 	// Set up database health checker if store supports it

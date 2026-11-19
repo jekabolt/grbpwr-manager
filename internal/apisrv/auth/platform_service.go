@@ -25,6 +25,7 @@ func (s *Server) newPlatformService() (*platformauth.Service, error) {
 		Hooks:          s.platformHooks(),
 		SignupApproval: s.platform.cfg.SignupApprovalOn(),
 		TermsVersion:   s.platform.cfg.Terms(),
+		SchemaBehind:   s.schemaBehind,
 	})
 	if err != nil {
 		slog.Default().Error("platformauth: identity service not built", slog.String("err", err.Error()))
@@ -34,6 +35,12 @@ func (s *Server) newPlatformService() (*platformauth.Service, error) {
 		slog.Default().Error("platformauth: identity RPCs unavailable", slog.String("err", err.Error()))
 	}
 	return svc, nil
+}
+
+// schemaBehind is the edge's schema predicate (set at boot by SetEdge, before serving); no edge =
+// every team current.
+func (s *Server) schemaBehind(t tenant.Team) bool {
+	return s.edge != nil && s.edge.SchemaBehind(t)
 }
 
 // platformService is the identity service built in SetPlatform. nil, nil = teams mode off (the

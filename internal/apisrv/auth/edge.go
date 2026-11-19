@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
@@ -45,9 +44,10 @@ type Edge interface {
 	RequestedTeam(ctx context.Context, host, xteam string) (team tenant.Team, named bool, err error)
 	Features(ctx context.Context, t tenant.Team) (map[feature.Key]bool, error)
 	Operator(ctx context.Context, userID int64) (bool, error)
-	// LegacyNotBefore is the handle's last password change (zero: none recorded). A legacy
-	// team #1 token carries no session, so one issued before it is refused.
-	LegacyNotBefore(ctx context.Context, handle string) (time.Time, error)
+	// LegacyCredGen is the credential generation of the team #1 admin with this handle (0: no
+	// linked platform user). A legacy team #1 token carries no session, so one whose generation
+	// is not this one is refused. atLeast is the token's own: a cache behind it reads again.
+	LegacyCredGen(ctx context.Context, handle string, atLeast int64) (int64, error)
 }
 
 // SetEdge wires the tenant binder into the admin chain. Called once at boot, before serving.
@@ -275,17 +275,18 @@ func (s *Server) teamAccess(ctx context.Context, team tenant.Team, token string,
 	return AdminAuthz{Super: super, Perms: rbac.ParsePermissions(claims.Perms)}, nil
 }
 
-// legacyNotRevoked refuses a legacy team #1 token issued before its holder's last password change
-// (reset or admin-panel change). iat has second precision, so the change is compared truncated to
-// the second: the token a change hands back stays valid.
+// legacyNotRevoked refuses a legacy team #1 token whose credential generation (claim cg, absent =
+// 0) is not its account's current one: every password change (reset, change, admin reset,
+// re-created account) bumps it in the same transaction, and the token a change hands back is
+// minted after the commit with the new generation. Equality, not ordering: no clock involved.
 func (s *Server) legacyNotRevoked(ctx context.Context, claims jwt.TeamClaims) error {
-	nb, err := s.edge.LegacyNotBefore(ctx, claims.Handle)
+	gen, err := s.edge.LegacyCredGen(ctx, claims.Handle, claims.CredGen)
 	if err != nil {
-		slog.Default().ErrorContext(ctx, "admin call: password change lookup failed", slog.String("err", err.Error()))
+		slog.Default().ErrorContext(ctx, "admin call: credential generation lookup failed", slog.String("err", err.Error()))
 		return status.Error(codes.Unavailable, "session check unavailable")
 	}
-	if !nb.IsZero() && claims.IssuedAt.Before(nb.Truncate(time.Second)) {
-		slog.Default().WarnContext(ctx, "admin call: legacy token issued before a password change")
+	if claims.CredGen != gen {
+		slog.Default().WarnContext(ctx, "admin call: legacy token of an old credential generation")
 		return status.Error(codes.Unauthenticated, "unauthorized")
 	}
 	return nil

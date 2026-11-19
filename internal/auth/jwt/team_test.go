@@ -185,3 +185,37 @@ func TestExpiredTeamTokenRefused(t *testing.T) {
 		t.Fatal("expired token accepted")
 	}
 }
+
+// The legacy token's credential generation ("cg"): written only above 0 (mode-off tokens stay as
+// they were), read back as is, absent = 0, anything but a non-negative integer refused.
+func TestLegacyTokenCredGen(t *testing.T) {
+	a := teamAuth()
+	tok, err := NewAdminTokenAt(a, time.Hour, "boss", true, nil, &IssueOpts{CredGen: 3}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := VerifyTeamToken(a, tok, nil); err != nil || !got.Legacy || got.CredGen != 3 {
+		t.Fatalf("cg 3 read as %+v, %v", got, err)
+	}
+	plain, err := NewAdminTokenAt(a, time.Hour, "boss", true, nil, &IssueOpts{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk, err := a.Decode(plain); err != nil {
+		t.Fatal(err)
+	} else if _, has := tk.PrivateClaims()[claimCredGen]; has {
+		t.Fatal("generation 0 written into the token")
+	}
+	if got, err := VerifyTeamToken(a, plain, nil); err != nil || got.CredGen != 0 {
+		t.Fatalf("no cg read as %+v, %v", got, err)
+	}
+	for name, v := range map[string]any{"negative": -1, "fraction": 1.5, "string": "2"} {
+		_, bad, err := a.Encode(map[string]any{"sub": "boss", "super": true, claimCredGen: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := VerifyTeamToken(a, bad, nil); err == nil {
+			t.Errorf("cg %s accepted", name)
+		}
+	}
+}

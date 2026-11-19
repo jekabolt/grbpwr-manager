@@ -8,146 +8,63 @@ import (
 	"time"
 
 	authjwt "github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
-	pb_auth "github.com/jekabolt/grbpwr-manager/proto/gen/auth"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// cachingEdge caches like tenantbind.Binder: a session it saw live, and a handle's «not before»,
-// stay as they were until invalidated, however the control plane moved since.
-type cachingEdge struct {
-	*fakeEdge
-	planeRevoked map[string]bool
-	planeChanged map[string]time.Time
-}
-
-func (e *cachingEdge) InvalidateSession(sid string) {
-	if e.planeRevoked[sid] {
-		e.sessions[sid] = false
-	}
-}
-
-func (e *cachingEdge) InvalidateCredentials(handle string) {
-	if at, ok := e.planeChanged[handle]; ok {
-		e.changed[handle] = at
-	}
-}
-
-// revokePlane is the control plane's password write: new hash, every session of the user revoked,
-// password_changed_at = now (one tx).
-type revokePlane struct {
-	e    *cachingEdge
-	sids []string
-}
-
-func (p *revokePlane) SetPasswordAndRevokeSessions(_ context.Context, handle, _ string, _ func(string) error, now time.Time) ([]string, error) {
-	p.reset(handle, now)
-	return p.sids, nil
-}
-
-func (p *revokePlane) reset(handle string, now time.Time) {
-	for _, sid := range p.sids {
-		p.e.planeRevoked[sid] = true
-	}
-	p.e.planeChanged[handle] = now
-}
-
-func revokeServer(t *testing.T) (*Server, *mocks.MockAdmin, *cachingEdge, *revokePlane) {
-	t.Helper()
-	as := mocks.NewMockAdmin(t)
-	srv, err := New(&Config{
-		JWTSecret: jwtSecret, MasterPassword: masterPassword,
-		PasswordHasherSaltSize: 16, PasswordHasherIterations: 1000, JWTTTL: "60m",
-	}, as)
-	require.NoError(t, err)
-	fe := newEdge()
-	fe.changed = map[string]time.Time{}
-	e := &cachingEdge{fakeEdge: fe, planeRevoked: map[string]bool{}, planeChanged: map[string]time.Time{}}
-	srv.SetEdge(e)
-	plane := &revokePlane{e: e, sids: []string{"live"}}
-	srv.creds = plane
-	hash, err := srv.pwhash.HashPassword(password)
-	require.NoError(t, err)
-	as.EXPECT().GetAccountWithPermissions(mock.Anything, "u").Return(account("u", hash, true), nil).Maybe()
-	as.EXPECT().GetAdminByUsername(mock.Anything, mock.Anything).Return(&entity.Admin{Id: 1}, nil).Maybe()
-	return srv, as, e, plane
-}
-
-// oldCredentials are what the holder had before the change: a platform session, a team token on
-// it, and a legacy team #1 token (old /api/auth/login) issued a minute earlier.
+// oldCredentials are what the holder had before the change: a team token on the platform session
+// "live" and a legacy team #1 token (old /api/auth/login) of generation 0.
 type oldCredentials struct{ team, legacy string }
 
 func issueOld(t *testing.T, srv *Server) oldCredentials {
 	t.Helper()
-	legacy, err := authjwt.NewAdminTokenAt(srv.JwtAuth, time.Hour, "u", true, nil, nil, time.Now().Add(-time.Minute))
-	require.NoError(t, err)
 	c := oldCredentials{
 		team:   teamToken(t, srv, authjwt.TeamClaims{TeamID: 7, Audience: authjwt.AudTeam, Super: true}),
-		legacy: legacy,
+		legacy: legacyToken(t, srv),
 	}
-	_, err = callAdmin(srv, readMethod, c.team, acmeOrigin)
+	_, err := callAdmin(srv, readMethod, c.team, acmeOrigin)
 	require.NoError(t, err, "team token before the change")
-	_, err = callAdmin(srv, readMethod, c.legacy, legacyOrigin)
-	require.NoError(t, err, "legacy token before the change")
+	requireLegacyOK(t, srv, c.legacy, "legacy token before the change")
 	return c
 }
 
-// requireKilled: on their next call the old platform session, team token and legacy token are
-// refused, while a fresh sign-in (new session, new legacy token) works.
-func requireKilled(t *testing.T, srv *Server, e *cachingEdge, old oldCredentials) {
-	t.Helper()
+// A reset (platformauth.ResetPassword) commits the control-plane write, then runs the
+// PasswordChanged hook with the revoked sessions; the flow test pins that ResetPassword calls it.
+// On their next call the old platform session, team token and legacy token are refused.
+func TestPasswordResetHookKillsOldCredentials(t *testing.T) {
+	srv, _, e, creds := passwordServer(t)
+	old := issueOld(t, srv)
+	c := creds.change(creds.users["u"], "reset-hash")
+	srv.platformHooks().PasswordChanged(context.Background(), "u", c.SIDs)
+
 	live, err := e.SessionActive(context.Background(), "live")
 	require.NoError(t, err)
 	require.False(t, live, "old platform session still live at the edge")
 	_, err = callAdmin(srv, readMethod, old.team, acmeOrigin)
 	require.Equal(t, codes.Unauthenticated, status.Code(err), "old team token")
-	_, err = callAdmin(srv, readMethod, old.legacy, legacyOrigin)
-	require.Equal(t, codes.Unauthenticated, status.Code(err), "old legacy team #1 token")
+	requireLegacyRefused(t, srv, old.legacy, "old legacy team #1 token")
 
 	e.sessions["fresh"] = true
 	_, err = callAdmin(srv, readMethod, teamToken(t, srv, authjwt.TeamClaims{TeamID: 7, Audience: authjwt.AudTeam, Super: true, SessionID: "fresh"}), acmeOrigin)
 	require.NoError(t, err, "team token of a new sign-in")
-	_, err = callAdmin(srv, readMethod, legacyToken(t, srv), legacyOrigin)
-	require.NoError(t, err, "legacy token issued after the change")
-}
-
-func TestAdminPasswordChangeKillsOldCredentials(t *testing.T) {
-	srv, as, e, _ := revokeServer(t)
-	old := issueOld(t, srv)
-	as.EXPECT().ChangePassword(mock.Anything, "u", mock.Anything).Return(nil).Once()
-	_, err := srv.ChangePassword(context.Background(), &pb_auth.ChangePasswordRequest{
-		Username: "u", CurrentPassword: password, NewPassword: newPassword,
-	})
+	tok, err := authjwt.NewAdminToken(srv.JwtAuth, time.Hour, "u", true, nil, &authjwt.IssueOpts{CredGen: c.Gen})
 	require.NoError(t, err)
-	requireKilled(t, srv, e, old)
-}
-
-// A reset (platformauth.ResetPassword) commits the same control-plane write, then runs the
-// PasswordChanged hook with the revoked sessions; the flow test pins that ResetPassword calls it.
-func TestPasswordResetHookKillsOldCredentials(t *testing.T) {
-	srv, _, e, plane := revokeServer(t)
-	old := issueOld(t, srv)
-	plane.reset("u", time.Now().UTC())
-	srv.platformHooks().PasswordChanged(context.Background(), "u", plane.sids)
-	requireKilled(t, srv, e, old)
+	requireLegacyOK(t, srv, tok, "legacy token of the new generation")
 }
 
 // The edge's lookup failing refuses a legacy token (fails closed), never lets it through.
-func TestLegacyNotBeforeLookupFailsClosed(t *testing.T) {
-	srv := newEdgeServer(t, &failingNotBefore{fakeEdge: newEdge()})
+func TestLegacyCredGenLookupFailsClosed(t *testing.T) {
+	srv := newEdgeServer(t, &failingCredGen{fakeEdge: newEdge()})
 	_, err := callAdmin(srv, readMethod, legacyToken(t, srv), legacyOrigin)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
-type failingNotBefore struct{ *fakeEdge }
+type failingCredGen struct{ *fakeEdge }
 
-func (failingNotBefore) LegacyNotBefore(context.Context, string) (time.Time, error) {
-	return time.Time{}, context.DeadlineExceeded
+func (failingCredGen) LegacyCredGen(context.Context, string, int64) (int64, error) {
+	return 0, context.DeadlineExceeded
 }
 
 // StopRateLimiter stops the identity service's limiters too (their cleanup goroutines exit).

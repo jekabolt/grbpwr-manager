@@ -1,8 +1,11 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -41,4 +44,51 @@ func TestPlatformSignupAndTermsEnv(t *testing.T) {
 			assert.Equal(t, tc.wantTerms, cfg.Platform.Terms())
 		})
 	}
+}
+
+// An explicitly empty PLATFORM_SIGNUP_APPROVAL / PLATFORM_TERMS_VERSION means the built-in default
+// (approval on, terms 2026-11), not the config file's value; unset leaves the file's value.
+func TestPlatformSignupEmptyEnvMeansDefault(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, os.WriteFile(file, []byte("[platform]\nsignup_approval = \"false\"\nterms_version = \"2027-05\"\n"), 0o600))
+	t.Cleanup(viper.Reset) // the file stays in the global viper otherwise
+
+	load := func(t *testing.T) *Config {
+		t.Helper()
+		viper.Reset()
+		cfg, err := LoadConfig(file)
+		require.NoError(t, err)
+		return cfg
+	}
+	t.Run("unset: the file's values", func(t *testing.T) {
+		clearDBParts(t)
+		unsetEnv(t, "PLATFORM_SIGNUP_APPROVAL")
+		unsetEnv(t, "PLATFORM_TERMS_VERSION")
+		cfg := load(t)
+		assert.False(t, cfg.Platform.SignupApprovalOn())
+		assert.Equal(t, "2027-05", cfg.Platform.Terms())
+	})
+	t.Run("explicitly empty: the defaults", func(t *testing.T) {
+		clearDBParts(t)
+		t.Setenv("PLATFORM_SIGNUP_APPROVAL", "")
+		t.Setenv("PLATFORM_TERMS_VERSION", "")
+		cfg := load(t)
+		assert.True(t, cfg.Platform.SignupApprovalOn())
+		assert.Equal(t, platformstore.DefaultTermsVersion, cfg.Platform.Terms())
+	})
+	t.Run("set: the variable wins", func(t *testing.T) {
+		clearDBParts(t)
+		t.Setenv("PLATFORM_SIGNUP_APPROVAL", "true")
+		t.Setenv("PLATFORM_TERMS_VERSION", "2027-09")
+		cfg := load(t)
+		assert.True(t, cfg.Platform.SignupApprovalOn())
+		assert.Equal(t, "2027-09", cfg.Platform.Terms())
+	})
+}
+
+// unsetEnv removes a variable for one test and puts it back after.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "") // registers the restore
+	require.NoError(t, os.Unsetenv(key))
 }

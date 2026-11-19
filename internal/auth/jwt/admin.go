@@ -15,6 +15,8 @@ import (
 const (
 	claimSuper = "super"
 	claimPerms = "perms"
+	// claimCredGen is the credential generation of a legacy team #1 token (IssueOpts.CredGen).
+	claimCredGen = "cg"
 )
 
 // NewAdminToken mints an admin JWT carrying the account's authorization: a super
@@ -51,6 +53,9 @@ func NewAdminTokenAt(jwtAuth *jwtauth.JWTAuth, ttl time.Duration, subject string
 		}
 		if opts.IncludeJti {
 			claims["jti"] = uuid.New().String()
+		}
+		if opts.CredGen > 0 {
+			claims[claimCredGen] = opts.CredGen
 		}
 	}
 	_, ts, err := jwtAuth.Encode(claims)

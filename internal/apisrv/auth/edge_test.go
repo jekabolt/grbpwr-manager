@@ -32,9 +32,9 @@ type fakeEdge struct {
 	features map[int64]map[feature.Key]bool
 	sessions map[string]bool
 	ops      map[int64]bool
-	removed  map[int64]bool       // uid → membership removed / user disabled
-	roles    map[int64]string     // uid → membership role (default owner)
-	changed  map[string]time.Time // handle → last password change
+	removed  map[int64]bool   // uid → membership removed / user disabled
+	roles    map[int64]string // uid → membership role (default owner)
+	gens     map[string]int64 // handle → credential generation
 }
 
 const (
@@ -110,8 +110,8 @@ func (e *fakeEdge) RequestedTeam(_ context.Context, host, xteam string) (tenant.
 }
 
 func (e *fakeEdge) Operator(_ context.Context, id int64) (bool, error) { return e.ops[id], nil }
-func (e *fakeEdge) LegacyNotBefore(_ context.Context, h string) (time.Time, error) {
-	return e.changed[h], nil
+func (e *fakeEdge) LegacyCredGen(_ context.Context, h string, _ int64) (int64, error) {
+	return e.gens[h], nil
 }
 
 var (

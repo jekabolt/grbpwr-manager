@@ -87,7 +87,7 @@ func openFresh(t *testing.T) *platformstore.Store {
 	t.Cleanup(func() { st.Close() })
 	var n int
 	// 0001 control plane + 0002 team_review (B3, columns only) + 0003 provision_lease (B4, one table)
-	// + 0004 password_changed_at (I1, one column).
+	// + 0004 credential_gen (I1, one column).
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 4 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
