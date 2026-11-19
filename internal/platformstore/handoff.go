@@ -119,7 +119,8 @@ type HandoffResult struct {
 	Member MemberTeam
 }
 
-// ExchangeHandoff consumes a hand-off for teamID and opens a team session sid. A team still being
+// ExchangeHandoff consumes a hand-off for teamID and opens a team session sid; the membership row is
+// locked, so a concurrent removal either wins (refused) or sees and revokes the session. A team still being
 // provisioned answers ErrTeamNotReady and leaves the hand-off alive (the page retries); everything
 // else wrong is ErrTokenInvalid.
 func (s *Store) ExchangeHandoff(ctx context.Context, tokenHash string, teamID int64, sid string, now time.Time) (HandoffResult, error) {
@@ -139,7 +140,7 @@ WHERE token_hash = ? AND purpose = 'handoff' FOR UPDATE`, tokenHash); err != nil
 		var m MemberTeam
 		err := tx.GetContext(ctx, &m, `SELECT m.team_id, t.slug, t.name, m.role, t.status
 FROM team_member m JOIN team t ON t.id = m.team_id
-WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active'`, t.UserID, teamID)
+WHERE m.user_id = ? AND m.team_id = ? AND m.status = 'active' FOR UPDATE OF m`, t.UserID, teamID)
 		if isNoRows(err) {
 			return ErrTokenInvalid
 		}

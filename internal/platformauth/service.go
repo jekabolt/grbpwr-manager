@@ -612,9 +612,21 @@ func (s *Service) session(ctx context.Context, u platformstore.User, teamID int6
 		s.log(ctx, "session id", err)
 		return "", errInternal()
 	}
-	// u.CredGen is the generation read with the password the caller checked: a password change
-	// that committed since refuses the session (the sign-in used the old password).
-	if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, u.CredGen, now); err != nil {
+	// A team session exists only while the membership is active (checked under its row lock), and
+	// only on the credential generation read with the password the caller checked: neither a sign-in
+	// that started before a removal nor one that used a password changed since leaves a session.
+	if aud == jwt.AudTeam {
+		ok, err := s.d.Store.CreateTeamSession(ctx, sid, u.ID, teamID, u.CredGen, now)
+		switch {
+		case errors.Is(err, platformstore.ErrCredentialsChanged):
+			return "", errAuth()
+		case err != nil:
+			s.log(ctx, "create team session", err)
+			return "", errInternal()
+		case !ok:
+			return "", errAuth()
+		}
+	} else if err := s.d.Store.CreateSession(ctx, sid, u.ID, teamID, aud, u.CredGen, now); err != nil {
 		if errors.Is(err, platformstore.ErrCredentialsChanged) {
 			return "", errAuth()
 		}
@@ -735,6 +747,9 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 	}
 	if s.schemaBehind(team) {
 		return nil, errUpdating()
+	}
+	if isOperatorCode(code) {
+		return s.exchangeOperator(ctx, team, code)
 	}
 	sid, err := NewSessionID()
 	if err != nil {

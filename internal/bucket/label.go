@@ -43,7 +43,10 @@ func (b *Bucket) UploadLabelPDF(ctx context.Context, raw []byte, objectName stri
 	if err != nil {
 		return "", 0, err
 	}
-	fp := b.constructFullPath(labelFolder, objectName, ext)
+	fp, err := b.constructFullPath(ctx, labelFolder, objectName, ext)
+	if err != nil {
+		return "", 0, err
+	}
 
 	r := bytes.NewReader(raw)
 	_, err = b.Client.PutObject(ctx, b.S3BucketName, fp, r, int64(r.Len()),

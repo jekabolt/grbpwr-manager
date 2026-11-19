@@ -155,6 +155,12 @@ func Effective(teamID int64, profile string, overrides map[string]bool) map[Key]
 	return effective
 }
 
+// SectionFeature is the feature key an rbac section belongs to (Core = always on).
+func SectionFeature(section string) (Key, bool) {
+	k, ok := sectionFeatures[section]
+	return k, ok
+}
+
 var sectionFeatures = map[string]Key{
 	rbac.SectionProducts:     Products,
 	rbac.SectionPromo:        Promo,

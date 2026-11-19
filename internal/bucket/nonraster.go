@@ -192,7 +192,7 @@ func (b *Bucket) UploadContentNonRaster(ctx context.Context, raw []byte, content
 		// The object is in the bucket and no row references it. The caller gets nil back and would
 		// have no url to compensate with, so it is taken back here — the same remedy, and for the
 		// same reason, as the video path.
-		b.cleanupUploadedVariants(info)
+		b.cleanupUploadedVariants(ctx, info)
 		slog.Default().ErrorContext(ctx, "can't add non-raster media to db",
 			slog.String("content_type", string(ct)), slog.String("err", err.Error()))
 		return nil, fmt.Errorf("failed to add media to db: %w", err)
@@ -328,14 +328,14 @@ func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, fo
 	compressed, _, err := b.uploadSingleImage(ctx, pv.frame, 60, folder,
 		fmt.Sprintf("%s-%s", objectName, "compressed"))
 	if err != nil {
-		b.cleanupUploadedVariants(model)
+		b.cleanupUploadedVariants(ctx, model)
 		return nil, fmt.Errorf("failed to upload the model preview: %w", err)
 	}
 	thumbImg := resizeImage(pv.frame, 1080)
 	thumbnail, _, err := b.uploadSingleImage(ctx, thumbImg, 90, folder,
 		fmt.Sprintf("%s-%s", objectName, "thumb"))
 	if err != nil {
-		b.cleanupUploadedVariants(model, compressed)
+		b.cleanupUploadedVariants(ctx, model, compressed)
 		return nil, fmt.Errorf("failed to upload the model preview thumbnail: %w", err)
 	}
 	h, err := getBlurHash(thumbImg)
@@ -362,7 +362,7 @@ func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, fo
 		ContentHash: sql.NullString{String: sha, Valid: sha != ""},
 	})
 	if err != nil {
-		b.cleanupUploadedVariants(model, compressed, thumbnail)
+		b.cleanupUploadedVariants(ctx, model, compressed, thumbnail)
 		slog.Default().ErrorContext(ctx, "can't add model media to db",
 			slog.String("err", err.Error()))
 		return nil, fmt.Errorf("failed to add media to db: %w", err)

@@ -22,6 +22,9 @@ const (
 	claimUserID    = "uid"
 	claimTeamID    = "tid"
 	claimSessionID = "sid"
+	// claimOperator marks an operator-entry team token (teams §23): a console operator in a team
+	// they are not a member of. Only ever true; absent otherwise.
+	claimOperator = "op"
 )
 
 // TeamClaims are the claims of a platform token.
@@ -39,6 +42,8 @@ type TeamClaims struct {
 	Super     bool
 	Perms     []string
 	Legacy    bool
+	// Operator: an operator-entry team token (claim op). Read only from a platform team token.
+	Operator bool
 	// CredGen is a legacy token's credential generation (claim "cg", 0 when absent). The edge in
 	// teams mode refuses a legacy token whose generation is not the account's current one.
 	CredGen int64
@@ -80,6 +85,12 @@ func NewTeamTokenAt(a *jwtauth.JWTAuth, ttl time.Duration, c TeamClaims, now tim
 	}
 	if c.TeamID > 0 {
 		claims[claimTeamID] = c.TeamID
+	}
+	if c.Operator {
+		if c.Audience != AudTeam {
+			return "", fmt.Errorf("%w: only a team token carries the operator claim", errTeamClaims)
+		}
+		claims[claimOperator] = true
 	}
 	_, ts, err := a.Encode(claims)
 	if err != nil {
@@ -171,6 +182,7 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 		return TeamClaims{}, fmt.Errorf("%w: sid", errTeamClaims)
 	}
 	c.SessionID = sid
+	c.Operator, _ = m[claimOperator].(bool)
 	if c.Handle == "" {
 		return TeamClaims{}, fmt.Errorf("%w: sub", errTeamClaims)
 	}

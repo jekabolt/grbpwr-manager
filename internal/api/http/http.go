@@ -194,6 +194,9 @@ type Server struct {
 	platformOn bool
 	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
 	noShop bool
+	// budgetZone: the owner's AI budget zone, read live (SetBudgetZone); the console counts the
+	// month of AI spend in it.
+	budgetZone func() string
 }
 
 // TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
@@ -201,6 +204,12 @@ type TenantBinder interface {
 	Unary() grpc.UnaryServerInterceptor
 	Stream() grpc.StreamServerInterceptor
 	Middleware(next http.Handler) http.Handler
+}
+
+// SetBudgetZone hands PlatformService the owner's budget zone (read on every call). Call before
+// Start; unset = the default zone.
+func (s *Server) SetBudgetZone(fn func() string) {
+	s.budgetZone = fn
 }
 
 // SetTenantBinder installs the edge team binder. Unset = requests carry no team (tests).
@@ -1167,6 +1176,8 @@ func (s *Server) Start(ctx context.Context,
 	if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 		if st, cfg, on := authServer.PlatformStore(); on {
 			b.UsePlatform(st, cfg)
+			// A member removed or re-roled is refused on the next call, not after the cache TTL.
+			adminServer.SetSessionInvalidator(b.InvalidateSession)
 		}
 		authServer.SetEdge(b)
 	}
@@ -1231,8 +1242,10 @@ func (s *Server) Start(ctx context.Context,
 	}
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)
 	// PlatformService exists only in teams mode (a control plane is set).
-	if st, _, ok := authServer.PlatformStore(); ok {
+	if st, pcfg, ok := authServer.PlatformStore(); ok {
 		ps := platform.New(st)
+		ps.SetConfig(pcfg)
+		ps.SetBudgetZone(s.budgetZone)
 		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 			ps.SetInvalidator(b.InvalidateTeam)
 		}

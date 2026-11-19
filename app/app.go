@@ -1072,6 +1072,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
 	a.hs.SetNoShop(a.c.Platform.NoShop())
+	a.hs.SetBudgetZone(a.aireg.BudgetTimezone)
 	binder, err := tenantbind.NewCompat(a.teamOne)
 	if err != nil {
 		return err

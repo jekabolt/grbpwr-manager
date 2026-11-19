@@ -10,9 +10,11 @@ import (
 // platformHandle is the control plane as the server sees it, and the auth server's control-plane
 // side of team #1 credentials (teamOneCreds). Zero = teams mode off.
 type platformHandle struct {
-	store        *platformstore.Store
-	cfg          platformstore.Config
-	teamOneCreds TeamOneCredentials
+	store *platformstore.Store
+	cfg   platformstore.Config
+	// invalidateSession drops one revoked sid from the edge's session cache (team_members.go).
+	invalidateSession func(sid string)
+	teamOneCreds      TeamOneCredentials
 }
 
 // TeamOneCredentials is the auth server's control-plane side of team #1 admin credentials in teams
@@ -30,6 +32,7 @@ type TeamOneCredentials interface {
 // SetPlatform hands the server the control plane and the platform config (teams mode on). Not
 // called with teams mode off.
 func (s *Server) SetPlatform(st *platformstore.Store, cfg platformstore.Config) {
+	// Keeps the session invalidator and team #1 credentials wired before it.
 	s.platform.store, s.platform.cfg = st, cfg
 }
 

@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 )
 
 // Lifetimes (02-DESIGN §4, §5, §8).
@@ -102,14 +104,15 @@ func CleanTeamName(s string) (string, error) {
 
 // CheckHandle validates a handle a person chose.
 func CheckHandle(h string) error {
-	if !handlePattern.MatchString(h) {
+	if !handlePattern.MatchString(h) || entity.AIActorIsReserved(h) {
 		return errBadHandle
 	}
 	return nil
 }
 
 // HandleBase derives a handle from an email's local part: lowercase, only [a-z0-9._-], starting
-// with a letter or digit, 2–63 characters; "user" when nothing usable is left.
+// with a letter or digit, 2–63 characters; "user" when nothing usable is left or the result is a
+// reserved name (system, unknown, the operator actor).
 func HandleBase(email string) string {
 	local := email
 	if at := strings.LastIndexByte(email, '@'); at >= 0 {
