@@ -10,15 +10,15 @@ import (
 
 // ListMySessions lists the live devices.
 func (s *Service) ListMySessions(ctx context.Context, token string, req *auth.ListMySessionsRequest) (*auth.ListMySessionsResponse, error) {
-	return nil, errNotYet
+	return nil, errNotYet()
 }
 
 // RevokeMySession signs one device out.
 func (s *Service) RevokeMySession(ctx context.Context, token string, req *auth.RevokeMySessionRequest) (*auth.RevokeMySessionResponse, error) {
-	return nil, errNotYet
+	return nil, errNotYet()
 }
 
 // RevokeMyOtherSessions signs out every other device.
 func (s *Service) RevokeMyOtherSessions(ctx context.Context, token string, req *auth.RevokeMyOtherSessionsRequest) (*auth.RevokeMyOtherSessionsResponse, error) {
-	return nil, errNotYet
+	return nil, errNotYet()
 }

@@ -13,11 +13,13 @@ option go_package = "github.com/jekabolt/grbpwr-products-manager/auth/proto;auth
 //        invite_token and terms_accepted) starts a provider sign-in;
 //   GET  /api/auth/oauth/google/callback and POST /api/auth/oauth/apple/callback end it with a 303 to
 //        https://<base>/auth/oauth#code=<one-time code for ExchangeSignInCode> or #error=<fixed key>
-//        (cancelled, expired, unverified, invite_mismatch, disabled, try_again);
+//        (cancelled, expired, unverified, invite_mismatch, disabled, try_again, account_deleted — the
+//        account is deleted and can still be restored: RequestAccountRestore);
 //   GET  /api/auth/team-logo/{slug} serves a team's logo as PNG (public; 404 when there is none);
 //   GET|HEAD /api/auth/avatar/{sha256} serves an account avatar as PNG (public, immutable; 404 when gone).
 // Google connect: StartGoogleLink, then the HTML form POST /api/auth/oauth/google/start with
 //   target=link&ticket=<ticket>; the callback redirects to https://<slug>.<base>/profile?google=linked|taken|unverified.
+// Restore letters link to https://<base>/restore#token=<token> (RestoreAccount).
 // "root session" below = a Bearer token from SignIn target root or ExchangeSignInCode.
 service AuthService {
   // Authenticate a user. Returns a JWT token if the user is authenticated.
@@ -186,6 +188,24 @@ service AuthService {
     };
   }
 
+  // RequestAccountRestore emails a restore letter (code + link, 1 hour) when login names an account deleted
+  // less than 30 days ago (public; always {}, whatever the login is; on the per-email letter cap).
+  rpc RequestAccountRestore(RequestAccountRestoreRequest) returns (RequestAccountRestoreResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/request-account-restore"
+      body: "*"
+    };
+  }
+
+  // RestoreAccount brings a deleted account back while its 30 days run, by the restore letter's link token
+  // or by (login, code), and signs the person in on the root site (public). Errors: invalid or expired code.
+  rpc RestoreAccount(RestoreAccountRequest) returns (RestoreAccountResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/restore-account"
+      body: "*"
+    };
+  }
+
   // The account RPCs below act on the calling person's own account: a team token (any role, any team
   // status except deleted) or a root token. Console, operator-entered and legacy tokens get sign_in_again.
   // Every one answers Unimplemented outside teams mode.
@@ -263,7 +283,9 @@ service AuthService {
     };
   }
 
-  // DeleteMyAccount deletes the calling person's account. Errors: bad_confirm, sole_owner.
+  // DeleteMyAccount deletes the calling person's account: sign-in closes at once, the teams where the person
+  // is the only member close with it, and RestoreAccount brings everything back for 30 days.
+  // Errors: bad_confirm, sole_owner, try_again (a closing team is still provisioning), operator.
   rpc DeleteMyAccount(DeleteMyAccountRequest) returns (DeleteMyAccountResponse) {
     option (google.api.http) = {
       post: "/api/auth/delete-my-account"
@@ -424,6 +446,9 @@ message SignInRequest {
 message SignInResponse {
   string token = 1;
   repeated TeamRef teams = 2;
+  // account_deleted_until is set, with no token and no teams, when the password is right but the account is
+  // deleted and can still be restored until this time (RequestAccountRestore).
+  google.protobuf.Timestamp account_deleted_until = 3;
 }
 
 message IssueHandoffRequest {
@@ -580,6 +605,9 @@ message MyProfile {
   // sole_owner_teams are the teams where the person is the only active owner and others are members;
   // DeleteMyAccount is refused while this is not empty.
   repeated TeamRef sole_owner_teams = 9;
+  // closing_teams are the teams where the person is the only active member: they close with the account
+  // and come back with it while its 30 days run.
+  repeated TeamRef closing_teams = 10;
 }
 
 // MySession is one signed-in device: a root session plus the team sessions opened from it.
@@ -676,8 +704,33 @@ message DeleteMyAccountRequest {
   string confirm_username = 1;
 }
 
-message DeleteMyAccountResponse {}
+message DeleteMyAccountResponse {
+  // purge_at is when the account is erased; until then RestoreAccount brings it back.
+  google.protobuf.Timestamp purge_at = 1;
+}
 
 message FinishTeamEntryRequest {}
 
 message FinishTeamEntryResponse {}
+
+message RequestAccountRestoreRequest {
+  // login is an email, a handle or an @username.
+  string login = 1;
+}
+
+message RequestAccountRestoreResponse {}
+
+message RestoreAccountRequest {
+  // token is the restore letter's link token; without it, login + code from the same letter.
+  string token = 1;
+  // login is an email, a handle or an @username.
+  string login = 2;
+  string code = 3;
+}
+
+message RestoreAccountResponse {
+  // root_token is a root token, valid for 30 days.
+  string root_token = 1;
+  // teams are the account's teams after the restore, the teams that closed with it included.
+  repeated TeamRef teams = 2;
+}

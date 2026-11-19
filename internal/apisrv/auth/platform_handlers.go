@@ -257,3 +257,21 @@ func (s *Server) FinishTeamEntry(ctx context.Context, req *auth.FinishTeamEntryR
 	}
 	return svc.FinishTeamEntry(ctx, bearer(ctx), req)
 }
+
+// The account restore RPCs are public (no session: the deleted account has none).
+
+func (s *Server) RequestAccountRestore(ctx context.Context, req *auth.RequestAccountRestoreRequest) (*auth.RequestAccountRestoreResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.RequestAccountRestore(ctx, req)
+}
+
+func (s *Server) RestoreAccount(ctx context.Context, req *auth.RestoreAccountRequest) (*auth.RestoreAccountResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.RestoreAccount(ctx, req)
+}
