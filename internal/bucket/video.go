@@ -78,7 +78,7 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 		// path, the caller gets nil back here — it has no urls to put in a compensation
 		// plan, so nobody would ever be able to remove it. Same remedy as the image path:
 		// take it back on the spot.
-		b.cleanupUploadedVariants(&pb_common.MediaInfo{MediaUrl: url})
+		b.cleanupUploadedVariants(ctx, &pb_common.MediaInfo{MediaUrl: url})
 		slog.Default().ErrorContext(ctx, "can't add media to db",
 			slog.String("err", err.Error()))
 		return nil, err

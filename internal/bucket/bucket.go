@@ -252,7 +252,8 @@ func canonicalHost(scheme, host string) string {
 }
 
 // DeleteObjects best-effort removes the S3 objects behind the given media URLs. Only URLs on the
-// configured CDN or bucket-origin host are eligible. Empty and duplicate URLs are skipped (a video
+// configured CDN or bucket-origin host are eligible, and in teams mode only keys of the team in ctx
+// (refuseForeignKey: an error, the object is not touched). Empty and duplicate URLs are skipped (a video
 // row stores the same URL in all three variant fields). It attempts every distinct key and returns
 // the first error, so a transient failure on one object does not skip the others.
 func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
@@ -282,6 +283,14 @@ func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
 			continue
 		}
 		seen[key] = struct{}{}
+		if err := b.refuseForeignKey(ctx, key); err != nil {
+			slog.Default().ErrorContext(ctx, "refusing to delete another team's object",
+				slog.String("key", key), slog.String("err", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		if err := b.Client.RemoveObject(ctx, b.S3BucketName, key, minio.RemoveObjectOptions{}); err != nil {
 			slog.Default().ErrorContext(ctx, "can't remove object from bucket",
 				slog.String("key", key), slog.String("err", err.Error()))

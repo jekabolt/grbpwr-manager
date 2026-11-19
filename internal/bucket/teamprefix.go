@@ -22,6 +22,23 @@ import (
 // refused (the app root ctx carries team #1, so a worker or boot step never lands here).
 var ErrNoTeamFileKey = errors.New("bucket: no team file key for this write")
 
+// ErrNotTeamObject: a delete names a key outside the space of the team in ctx (TeamOwnsKey). A URL
+// the client sent can point at any object on the shared host, so a delete is refused, never tried.
+var ErrNotTeamObject = errors.New("bucket: object belongs to another team")
+
+// refuseForeignKey reports ErrNotTeamObject when the team in ctx may not delete key. Teams mode off
+// (or no config) deletes as today; team #1 deletes everything outside {base}/t/.
+func (b *Bucket) refuseForeignKey(ctx context.Context, key string) error {
+	if b.Config == nil || !b.Config.TeamsMode || TeamOwnsKey(ctx, b.Config, key) {
+		return nil
+	}
+	team := int64(0)
+	if t, ok := tenant.From(ctx); ok {
+		team = t.ID
+	}
+	return fmt.Errorf("%w: team %d, key %s", ErrNotTeamObject, team, key)
+}
+
 // teamKeyParts are the key segments between the base folder and the object's own folder for the team
 // in ctx: nil for team #1 and teams mode off; [t, file_key] for another team.
 func (c *Config) teamKeyParts(ctx context.Context) ([]string, error) {

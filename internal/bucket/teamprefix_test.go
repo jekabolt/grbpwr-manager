@@ -119,3 +119,39 @@ func TestListObjectsOlderThanIsTeamScoped(t *testing.T) {
 		"LIST probe/t/" + fileKeyA + "/" + ImportSegment + "/",
 	}, store.log())
 }
+
+// A delete is decided by the team in ctx, never by the URL or key the client sent: team 2 cannot
+// remove team 3's object nor team #1's, through either deleter, and no request reaches S3 for them.
+// Its own object goes; team #1 still deletes its legacy keys and teams mode off deletes as today.
+func TestDeleteRefusesAnotherTeamsObject(t *testing.T) {
+	b, store := newProxyBucket(t, true)
+	own := "probe/t/" + fileKeyA + "/tech-card-patterns/2026/july/a.dxf"
+	other := "probe/t/" + fileKeyB + "/tech-card-patterns/2026/july/b.dxf"
+	legacy := "probe/tech-card-patterns/2026/july/one.dxf"
+	two, three := teamCtx(2, fileKeyA), teamCtx(3, fileKeyB)
+
+	for name, key := range map[string]string{"team 3": other, "team #1": legacy} {
+		before := len(store.log())
+		err := b.DeleteObjects(two, cdnURL(key))
+		require.ErrorIsf(t, err, ErrNotTeamObject, "url of %s", name)
+		err = b.RemoveObjectsByKeys(two, key)
+		require.ErrorIsf(t, err, ErrNotTeamObject, "key of %s", name)
+		require.Lenf(t, store.log(), before, "no request reached S3 for %s", name)
+	}
+	before := len(store.log())
+	require.ErrorIs(t, b.RemoveObjectsByKeys(context.Background(), legacy), ErrNotTeamObject, "no team in ctx")
+	require.Len(t, store.log(), before)
+
+	// A refused key does not stop the rest of the batch.
+	err := b.DeleteObjects(two, cdnURL(other), cdnURL(own))
+	require.ErrorIs(t, err, ErrNotTeamObject)
+	require.NoError(t, b.RemoveObjectsByKeys(three, other))
+	require.NoError(t, b.RemoveObjectsByKeys(teamCtx(1, ""), legacy))
+	require.ErrorIs(t, b.RemoveObjectsByKeys(teamCtx(1, ""), own), ErrNotTeamObject, "team #1 stays out of {base}/t/")
+	require.Equal(t, []string{"DELETE " + own, "DELETE " + other, "DELETE " + legacy}, store.log()[before:])
+
+	off, offStore := newProxyBucket(t, false)
+	require.NoError(t, off.DeleteObjects(context.Background(), cdnURL(legacy)))
+	require.NoError(t, off.RemoveObjectsByKeys(context.Background(), other))
+	require.Equal(t, []string{"DELETE " + legacy, "DELETE " + other}, offStore.log())
+}

@@ -63,6 +63,15 @@ func (f *readS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if r.Method == http.MethodDelete && key != "" {
+		// RemoveObject (teamprefix_test.go): forget the object, answer as S3 does.
+		f.mu.Lock()
+		f.requests = append(f.requests, "DELETE "+key)
+		delete(f.objects, key)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method == http.MethodGet && strings.Trim(key, "/") == strings.Trim(f.bucket, "/") || r.Method == http.MethodGet && key == "" || r.URL.Query().Has("list-type") {
 		// ListObjects: record the prefix asked for, answer with nothing.
 		f.mu.Lock()
