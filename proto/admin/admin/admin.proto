@@ -15540,8 +15540,8 @@ message TranslateFieldsRequest {
 }
 
 enum TranslateContext {
-  // TRANSLATE_CONTEXT_UNSPECIFIED: shop copy (fashion e-commerce translator).
-  TRANSLATE_CONTEXT_UNSPECIFIED = 0;
+  // TRANSLATE_CONTEXT_UNKNOWN: shop copy (fashion e-commerce translator).
+  TRANSLATE_CONTEXT_UNKNOWN = 0;
   // TRANSLATE_CONTEXT_TECHPACK: a tech pack for a sewing factory (garment technologist).
   TRANSLATE_CONTEXT_TECHPACK = 1;
 }
