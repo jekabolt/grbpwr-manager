@@ -7,11 +7,12 @@
 //   - claimer (2 s): a team in provisioning gets a ready spare (or, with none, one made on the
 //     spot inside the worker — never in a request), is seeded and activated, all under the team's
 //     lease (one owner per team: only the holder may scrub or activate);
-//   - fleet migrator (after boot, then every 30 min): active and suspended teams and ready spares
-//     behind the binary are migrated one at a time, each under its database's lease (one migrator
-//     per database across instances), their schema fingerprint compared with the
-//     reference (G8, warn only); team #1 is migrated synchronously at boot by store.New and only
-//     fingerprinted here;
+//   - fleet migrator (10 s after boot, then a tick every minute, X3): ready spares, then teams
+//     behind the binary — a canary team alone, the rest at most fleetParallel at once — each
+//     under its database's lease (one migrator per database across instances); a failed team is
+//     retried with backoff and reported once; teams ahead of the binary (a rollback) are never
+//     touched; schema fingerprints compared with the reference (G8, warn only); team #1 is
+//     migrated synchronously at boot by store.New and only fingerprinted here;
 //   - pending sweep (10 min): sign-ups never confirmed are removed, their slug freed.
 //
 // Every spare database, the keeper's and the cold path's alike, is reserved through
@@ -40,6 +41,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
+	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
@@ -69,7 +71,7 @@ func DefaultIntervals() Intervals {
 	return Intervals{
 		Keeper:     30 * time.Second,
 		Claim:      2 * time.Second,
-		Fleet:      30 * time.Minute,
+		Fleet:      time.Minute,
 		Sweep:      10 * time.Minute,
 		FleetDelay: 10 * time.Second,
 	}
@@ -86,6 +88,7 @@ type Platform interface {
 	ClaimSpare(ctx context.Context, teamID int64, version string) (dbName string, claimed bool, err error)
 	ActivateTeam(ctx context.Context, teamID int64, token, version, fingerprint string) error
 	SetTeamSchema(ctx context.Context, teamID int64, dbName, token, version, fingerprint string) error
+	RaiseTeamMinCode(ctx context.Context, teamID int64, minCode string) error
 	AcquireLease(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error)
 	ExtendLease(ctx context.Context, key, token string, ttl time.Duration) error
 	ReleaseLease(ctx context.Context, key, token string) error
@@ -107,6 +110,10 @@ type Schema interface {
 	Migrate(ctx context.Context, dbName string) (version string, err error)
 	Lines(ctx context.Context, dbName string) ([]string, error)
 	Latest() string
+	// Compat is the binary's migration declarations (X3), read once when the worker is built.
+	Compat() schemacompat.Set
+	// Applied is the newest migration recorded in the database's gorp_migrations ("" = none).
+	Applied(ctx context.Context, dbName string) (string, error)
 	// Lock takes the database's fence (store.TeamDBLock) without waiting; ok false = held by
 	// another worker, nothing held.
 	Lock(ctx context.Context, dbName string) (lock DBLock, ok bool, err error)
@@ -137,6 +144,21 @@ func (s StoreSchema) Lines(ctx context.Context, dbName string) ([]string, error)
 	return store.SchemaLines(ctx, s.BaseDSN, dbName)
 }
 func (s StoreSchema) Latest() string { return store.LatestMigrationID() }
+
+// Compat reads the declarations; unreadable (the lint refuses that before a build) falls back to
+// strict equality: every migration needed, none breaking.
+func (s StoreSchema) Compat() schemacompat.Set {
+	set, err := store.LoadSchemaSet()
+	if err != nil {
+		slog.Default().Error("provision: migration declarations unreadable; strict schema gate", slog.String("err", err.Error()))
+		l := store.LatestMigrationID()
+		return schemacompat.Set{Latest: l, Need: l}
+	}
+	return set
+}
+func (s StoreSchema) Applied(ctx context.Context, dbName string) (string, error) {
+	return store.AppliedVersion(ctx, s.BaseDSN, dbName)
+}
 func (s StoreSchema) Lock(ctx context.Context, dbName string) (DBLock, bool, error) {
 	l, ok, err := store.LockTeamDB(ctx, s.BaseDSN, s.Prefix, dbName)
 	if err != nil || !ok {
@@ -170,9 +192,16 @@ type Worker struct {
 	seed func(ctx context.Context, exec Execer, ownerHandle string, guard func(context.Context) error) error
 
 	mu      sync.Mutex
-	backoff map[int64]retry // team id → next attempt
-	capLog  time.Time       // last "cap reached" log
-	tripLog time.Time       // last "spare breaker open" log
+	backoff map[int64]retry  // team id → next attempt
+	set     schemacompat.Set // the binary's migration declarations (X3)
+
+	// fleet (X3): per-team retry after a failed migration, the target version whose failure was
+	// already reported as an error (one event per team per version), the last team #1 fingerprint.
+	fleetRetry  map[int64]retry
+	fleetFailed map[int64]string
+	teamOneAt   time.Time
+	capLog      time.Time // last "cap reached" log
+	tripLog     time.Time // last "spare breaker open" log
 }
 
 type retry struct {
@@ -222,6 +251,10 @@ func New(cfg Config, pf Platform, schema Schema, db dependency.DB) (*Worker, err
 		now:     time.Now,
 		log:     slog.Default(),
 		backoff: map[int64]retry{},
+		set:     schema.Compat(),
+
+		fleetRetry:  map[int64]retry{},
+		fleetFailed: map[int64]string{},
 	}
 	w.seed = func(ctx context.Context, exec Execer, owner string, guard func(context.Context) error) error {
 		return Seed(ctx, exec, owner, guard)
@@ -586,6 +619,11 @@ func (w *Worker) seedAndActivate(ctx context.Context, t platformstore.Provisioni
 	}
 	if err := lock.Alive(ctx); err != nil {
 		return err
+	}
+	// X3: record the newest breaking migration the database carries before the team is served, so
+	// an older binary never serves a schema it predates (dormant until a breaking migration ships).
+	if err := w.pf.RaiseTeamMinCode(ctx, t.ID, w.set.MinCodeAt(version)); err != nil {
+		return fmt.Errorf("min code: %w", err)
 	}
 	if err := w.pf.ActivateTeam(ctx, t.ID, token, version, store.FingerprintOf(lines)); err != nil {
 		return fmt.Errorf("activate: %w", err)

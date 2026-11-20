@@ -189,6 +189,8 @@ type Server struct {
 	teamLogoHandler         http.Handler
 	avatarHandler           http.Handler
 	oauthHandler            http.Handler
+	signupChallengeHandler  http.Handler // X6, platform_mail.go
+	platformMailHandler     http.Handler // X6, platform_mail.go
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
@@ -552,7 +554,9 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 // from a team host (teams §6). A function, not a package var (tenantgate G4).
 func corsAllowedHeaders() []string {
 	return []string{"Content-Type", "Authorization", "X-Requested-With", "Accept",
-		"Grpc-Metadata-Authorization", "Grpc-Metadata-X-Team", "Origin"}
+		"Grpc-Metadata-Authorization", "Grpc-Metadata-X-Team", "Origin",
+		// The sign-up bot check (X6): the solved challenge and the honeypot.
+		"Grpc-Metadata-X-Signup-Proof", "Grpc-Metadata-X-Signup-Trap"}
 }
 
 // compileOriginRegex checks HTTP_ALLOWED_ORIGIN_REGEX: empty is off; otherwise it must be anchored
@@ -806,6 +810,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.oauthHandler != nil {
 			r.Mount("/auth/oauth", s.oauthHandler)
 		}
+		// The sign-up proof-of-work challenge (teams mode, X6): a GET with no body.
+		if s.signupChallengeHandler != nil {
+			r.Method(http.MethodGet, "/auth/signup-challenge", s.signupChallengeHandler)
+		}
 		// The operator console (teams mode only): PlatformService over the gateway; the gRPC
 		// interceptor checks the console token on the loopback hop.
 		if platformHandler != nil {
@@ -877,6 +885,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	})
 
 	// Webhook routes — no CORS, no auth. Must accept POST from external services.
+	// The platform letters' delivery events (X6) are teams-mode, not shop: a static route chi prefers
+	// over the no-shop catch-all below; authenticated by its Svix signature only.
+	if s.platformMailHandler != nil {
+		r.Method(http.MethodPost, "/api/webhooks/platform-mail", s.platformMailHandler)
+	}
 	// No shop: every webhook path answers the fixed 503 instead.
 	if s.noShop {
 		r.HandleFunc("/api/webhooks/*", noShopHTTP)
@@ -1261,6 +1274,8 @@ func (s *Server) Start(ctx context.Context,
 			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
 			// Team of the call, before auth (auth reads the team's admins).
 			s.tenantUnary(),
+			// Right after the team binder: the call's Sentry hub carries the team (panics too).
+			observability.TeamUnaryInterceptor(),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
 			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
@@ -1272,6 +1287,7 @@ func (s *Server) Start(ctx context.Context,
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
 			s.noShopStreamInterceptor(),
 			s.tenantStream(),
+			observability.TeamStreamInterceptor(),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.StreamAdminAuthInterceptor(),
 		),

@@ -56,8 +56,10 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
+	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
+	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
@@ -1092,6 +1094,12 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.hs.SetTenantBinder(binder)
+	// Public links carry their team signed in the token (patterntoken v2, lane X1): the edge binds
+	// each /api/p|pv|rp|f request to that team. Same pepper as the link services below, which fail
+	// the boot on an empty one.
+	if linkTokens, err := patterntoken.NewMinter(a.c.PatternToken.Pepper); err == nil {
+		binder.UseTokenTeams(linkTokens.TokenTeam)
+	}
 	a.useSchemaGate(binder)
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
@@ -1105,11 +1113,24 @@ func (a *App) Start(ctx context.Context) error {
 		if h := authS.OAuthHandler(); h != nil {
 			a.hs.SetOAuthHandler(h)
 		}
+		if h := authS.SignupChallengeHandler(); h != nil {
+			a.hs.SetSignupChallengeHandler(h)
+		}
+		// Resend's delivery events for the platform letters (X6): mounted only with a signing secret.
+		if secret := strings.TrimSpace(a.c.Platform.MailWebhookSecret); secret != "" {
+			h, err := platformmail.NewEventHandler(a.platform.DB(), secret)
+			if err != nil {
+				return err
+			}
+			a.hs.SetPlatformMailHandler(h)
+		} else {
+			slog.Default().WarnContext(ctx, "teams: PLATFORM_MAIL_WEBHOOK_SECRET is empty; bounces and complaints are not recorded")
+		}
 	}
 
 	// Set up database health checker if store supports it
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
-		healthChecker := httpapi.NewDatabaseHealthChecker(mysqlStore.Ping)
+		healthChecker := httpapi.NewDatabaseHealthChecker(readinessPing(mysqlStore.Ping, a.platform))
 		a.hs.SetHealthChecker(healthChecker)
 	}
 

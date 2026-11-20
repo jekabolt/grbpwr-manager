@@ -51,6 +51,7 @@ type teamRow struct {
 	Profile       string         `db:"profile"`
 	Status        string         `db:"status"`
 	SchemaVersion sql.NullString `db:"schema_version"`
+	SchemaMinCode sql.NullString `db:"schema_min_code"`
 }
 
 func (r teamRow) team() tenant.Team {
@@ -63,10 +64,11 @@ func (r teamRow) team() tenant.Team {
 		Profile:       r.Profile,
 		Status:        tenant.Status(r.Status),
 		SchemaVersion: r.SchemaVersion.String,
+		SchemaMinCode: r.SchemaMinCode.String,
 	}
 }
 
-const teamColumns = `id, slug, name, db_name, file_key, profile, status, schema_version`
+const teamColumns = `id, slug, name, db_name, file_key, profile, status, schema_version, schema_min_code`
 
 func (d *directory) cached(m map[int64]cachedTeam, id int64) (tenant.Team, bool) {
 	d.mu.Lock()

@@ -159,6 +159,9 @@ func (s *Server) hydrateLibraryItems(ctx context.Context, rows []entity.LibraryI
 			return nil, err
 		}
 		pbs := s.libraryFilesToPb(ctx, list)
+		if err := s.fillPublicMediaIDs(ctx, list, pbs); err != nil {
+			return nil, err
+		}
 		for i := range list {
 			files[list[i].Id] = list[i]
 			filesPb[list[i].Id] = pbs[i]

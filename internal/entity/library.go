@@ -94,6 +94,17 @@ const (
 	LibraryUsageFree
 )
 
+// LibraryItemAccess filters the list by who can see a row. Unspecified means both. Private is a
+// library file without a public media twin (a published original is not private any more); public is
+// a media row.
+type LibraryItemAccess int
+
+const (
+	LibraryItemAccessUnspecified LibraryItemAccess = iota
+	LibraryItemAccessPrivate
+	LibraryItemAccessPublic
+)
+
 // LibrarySort orders the list. Unspecified means newest first.
 type LibrarySort int
 
@@ -127,6 +138,7 @@ type LibraryItemFilter struct {
 	CreatedTo         time.Time // zero = open; the range is [from, to)
 	Usage             LibraryUsage
 	Ratios            []string
+	Access            LibraryItemAccess
 }
 
 // LibraryBranches says which tables a library read may touch, decided by the handler from the
@@ -192,6 +204,10 @@ type LibraryFacets struct {
 	Free   int
 	Ratios []LibraryRatioCount
 	Total  int
+	// AccessPrivate / AccessPublic count the filter minus its access axis: files without a public
+	// twin and media. Their sum is the total of the same filter without access.
+	AccessPrivate int
+	AccessPublic  int
 }
 
 // Folder rules (store internal/store/library/folders.go).
@@ -272,11 +288,13 @@ func FileKindOf(contentType string) LibraryKind {
 	}
 }
 
-// CopyableToMediaContentTypes are the file content types CopyLibraryFileToMedia accepts: raster
-// types the image pipeline can re-encode into three sizes, svg as a vector, mp4/webm as a video.
-// gif, avif and dxf stay documents.
+// CopyableToMediaContentTypes are the file content types CopyLibraryFileToMedia accepts: every type
+// a media upload door stores through the bucket verb the copy calls. Raster jpeg/png/webp/heic go
+// through the 3-size re-encode, gif through the same image verb's verbatim path (it keeps the
+// animation, exactly as the image door does), svg as a vector, mp4/webm as a video. avif, heif and
+// dxf are refused by every door; a glb model needs a client-rendered preview the copy cannot make.
 var CopyableToMediaContentTypes = []string{
-	"image/jpeg", "image/png", "image/webp", "image/heic",
+	"image/jpeg", "image/png", "image/webp", "image/heic", "image/gif",
 	"image/svg+xml",
 	"video/mp4", "video/webm",
 }

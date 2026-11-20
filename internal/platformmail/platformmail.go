@@ -60,6 +60,12 @@ type Sender interface {
 	Send(ctx context.Context, m Message, idempotencyKey string) error
 }
 
+// IDSender is a Sender that also returns the provider's id of the accepted letter; the worker keeps
+// it (platform_email.provider_id) so a delivery event can be matched to its letter.
+type IDSender interface {
+	SendID(ctx context.Context, m Message, idempotencyKey string) (providerID string, err error)
+}
+
 // PermanentError is a send failure retrying cannot fix (a 4xx other than 408/429).
 type PermanentError struct{ Err error }
 
@@ -71,7 +77,17 @@ type Config struct {
 	Enabled    bool   // PLATFORM_MAILER_ENABLED
 	From       string // PLATFORM_MAIL_FROM, e.g. "lekalo <no-reply@lekalo.studio>"
 	BaseDomain string // PLATFORM_BASE_DOMAIN: the letters' footer and address line
+	// SuppressBounceFor / SuppressComplaintFor: how long an address stays on the suppression list
+	// after its last permanent bounce / spam complaint (X6). Zero = the defaults (30 / 180 days).
+	SuppressBounceFor, SuppressComplaintFor time.Duration
 }
+
+// Default suppression windows (X6): a mailbox that bounced may be fixed; a complaint is a person's
+// own wish and lasts longer. Both run from the last event, so a repeat extends them.
+const (
+	DefaultSuppressBounceFor    = 30 * 24 * time.Hour
+	DefaultSuppressComplaintFor = 180 * 24 * time.Hour
+)
 
 // ErrNotConfigured: the mailer is on but has no sender or from-address; rows stay pending.
 var ErrNotConfigured = errors.New("platformmail: PLATFORM_MAILER_ENABLED is on but PLATFORM_MAIL_FROM or the Resend key is missing; letters wait")
@@ -155,6 +171,9 @@ type outboxRow struct {
 	Template string `db:"template"`
 	Payload  []byte `db:"payload"`
 	Attempts int    `db:"attempts"`
+	// Suppressed is the suppression reason of the recipient ("" = none), read only for the letters
+	// that honour the list (SuppressionApplies).
+	Suppressed string `db:"suppressed"`
 }
 
 // Payload is a platform_email payload (written by platformstore).
@@ -209,14 +228,22 @@ func (w *Worker) one(ctx context.Context, afterID int64) (id int64, changed bool
 	}
 	// The row is leased and committed: no transaction or row lock is held during the call.
 	sctx, cancel := context.WithTimeout(ctx, sendTimeout)
-	serr := w.sender.Send(sctx, m, fmt.Sprintf("platform-email-%d", r.ID))
+	var providerID string
+	var serr error
+	key := fmt.Sprintf("platform-email-%d", r.ID)
+	if ids, ok := w.sender.(IDSender); ok {
+		providerID, serr = ids.SendID(sctx, m, key)
+	} else {
+		serr = w.sender.Send(sctx, m, key)
+	}
 	cancel()
 	attempts := r.Attempts + 1
 	done := w.clock()
 	var perm *PermanentError
 	switch {
 	case serr == nil:
-		return r.ID, true, w.finish(ctx, r.ID, lease, `status = 'sent', sent_at = ?, last_error = NULL`, done)
+		return r.ID, true, w.finish(ctx, r.ID, lease, `status = 'sent', sent_at = ?, last_error = NULL, provider_id = ?`, done,
+			nullable(providerID))
 	case errors.As(serr, &perm) || attempts >= maxAttempts:
 		slog.Default().ErrorContext(ctx, "platformmail: letter failed", slog.Int64("id", r.ID), slog.String("template", r.Template),
 			slog.String("err", truncate(serr.Error())))
@@ -230,15 +257,32 @@ func (w *Worker) one(ctx context.Context, afterID int64) (id int64, changed bool
 // claim locks the next due row in a short transaction. A disabled mailer marks it skipped; a
 // payload that cannot be sent marks it failed (changed=true). Otherwise it counts the attempt,
 // leases the row until lease and commits, returning the rendered message.
+func (w *Worker) suppressBounceFor() time.Duration {
+	if w.cfg.SuppressBounceFor > 0 {
+		return w.cfg.SuppressBounceFor
+	}
+	return DefaultSuppressBounceFor
+}
+
+func (w *Worker) suppressComplaintFor() time.Duration {
+	if w.cfg.SuppressComplaintFor > 0 {
+		return w.cfg.SuppressComplaintFor
+	}
+	return DefaultSuppressComplaintFor
+}
+
 func (w *Worker) claim(ctx context.Context, afterID int64, now time.Time) (r outboxRow, m Message, lease time.Time, changed bool, err error) {
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return r, m, lease, false, fmt.Errorf("platformmail: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := tx.GetContext(ctx, &r, `SELECT id, to_email, template, payload, attempts FROM platform_email
-WHERE status = 'pending' AND id > ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND (lease_until IS NULL OR lease_until <= ?)
-ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`, afterID, now, now); err != nil {
+	if err := tx.GetContext(ctx, &r, `SELECT e.id, e.to_email, e.template, e.payload, e.attempts,
+  COALESCE((SELECT s.reason FROM platform_mail_suppression s WHERE s.email = e.to_email
+    AND s.last_at >= IF(s.reason = 'complaint', ?, ?)), '') AS suppressed
+FROM platform_email e
+WHERE e.status = 'pending' AND e.id > ? AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ?) AND (e.lease_until IS NULL OR e.lease_until <= ?)
+ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, now.Add(-w.suppressComplaintFor()), now.Add(-w.suppressBounceFor()), afterID, now, now); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return outboxRow{}, m, lease, false, nil
 		}
@@ -255,6 +299,10 @@ ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`, afterID, now, now); err != nil {
 	}
 	if !w.cfg.Enabled {
 		return r, m, lease, true, set(`UPDATE platform_email SET status = 'skipped' WHERE id = ?`, r.ID)
+	}
+	if r.Suppressed != "" && SuppressionApplies(r.Template) {
+		return r, m, lease, true, set(`UPDATE platform_email SET status = 'failed', last_error = ?, lease_until = NULL WHERE id = ?`,
+			SuppressedError+r.Suppressed, r.ID)
 	}
 	var p Payload
 	if err := json.Unmarshal(r.Payload, &p); err != nil || p.Link == "" {
@@ -298,6 +346,14 @@ WHERE JSON_CONTAINS_PATH(payload, 'one', '$.code', '$.link')
 		return 0, fmt.Errorf("platformmail: sweep: %w", err)
 	}
 	return r.RowsAffected()
+}
+
+// nullable is s, or SQL NULL when s is empty.
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func truncate(s string) string {
@@ -473,6 +529,13 @@ func NewResendSender(apiKey string) (Sender, error) {
 }
 
 func (s *resendSender) Send(ctx context.Context, m Message, key string) error {
+	_, err := s.SendID(ctx, m, key)
+	return err
+}
+
+// SendID sends m and returns Resend's id of the accepted letter ("" when its answer carried none:
+// the letter is sent all the same, only its delivery events cannot be matched).
+func (s *resendSender) SendID(ctx context.Context, m Message, key string) (string, error) {
 	html, text := m.HTML, m.Text
 	resp, err := s.cli.PostEmails(ctx, resend.SendEmailRequest{From: m.From, To: []string{m.To}, Subject: m.Subject,
 		Html: &html, Text: &text}, func(_ context.Context, r *http.Request) error {
@@ -480,19 +543,25 @@ func (s *resendSender) Send(ctx context.Context, m Message, key string) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("platformmail: send: %w", err)
+		return "", fmt.Errorf("platformmail: send: %w", err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil
-	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var ok struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(body, &ok) != nil || len(ok.ID) > 64 {
+			ok.ID = ""
+		}
+		return ok.ID, nil
+	}
 	herr := &mail.HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
 	if resp.StatusCode == http.StatusTooManyRequests || mail.IsTransientSendFailure(herr) {
-		return herr
+		return "", herr
 	}
-	return &PermanentError{Err: herr}
+	return "", &PermanentError{Err: herr}
 }

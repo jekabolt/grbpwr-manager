@@ -19,7 +19,8 @@ const (
 	ClassLegacyAuth Class = "legacy-auth"
 	// ClassStorefront: FrontendService, /api/frontend, the webhooks — TENANT_STOREFRONT_TEAM_ID.
 	ClassStorefront Class = "storefront"
-	// ClassToken: public token reads /api/p|pv|rp|f/{token} — team #1 for v1 tokens (B6 signs v2).
+	// ClassToken: public token reads /api/p|pv|rp|f/{token} — the team signed in the token (v2), team
+	// #1 for v1 tokens (token.go).
 	ClassToken Class = "token"
 	// ClassPlatform: PlatformService and its gateway /api/platform — control plane only,
 	// aud=console, no team in ctx.

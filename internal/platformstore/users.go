@@ -359,11 +359,19 @@ func insertLetterTx(ctx context.Context, tx *sqlx.Tx, l Letter, now time.Time) e
 	if err != nil {
 		return fmt.Errorf("platformstore: letter payload: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO platform_email (to_email, template, payload, status, created_at)
-VALUES (?, ?, ?, 'pending', ?)`, l.To, l.Template, string(payload), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO platform_email (to_email, template, payload, status, created_at, team_id, invite_id)
+VALUES (?, ?, ?, 'pending', ?, ?, ?)`, l.To, l.Template, string(payload), now, nullID(l.TeamID), nullID(l.InviteID)); err != nil {
 		return fmt.Errorf("platformstore: enqueue letter: %w", err)
 	}
 	return nil
+}
+
+// nullID is NULL for zero.
+func nullID(id int64) any {
+	if id <= 0 {
+		return nil
+	}
+	return id
 }
 
 func lettersSinceTx(ctx context.Context, tx *sqlx.Tx, email string, since time.Time) (int, error) {

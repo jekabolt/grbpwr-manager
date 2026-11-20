@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
@@ -27,3 +28,6 @@ func (w *Worker) SeedAndActivateForTest(ctx context.Context, t platformstore.Pro
 
 // SetNowForTest replaces the clock.
 func (w *Worker) SetNowForTest(now func() time.Time) { w.now = now }
+
+// SetLoggerForTest replaces the logger (X3: count the fleet's error events).
+func (w *Worker) SetLoggerForTest(l *slog.Logger) { w.log = l }
