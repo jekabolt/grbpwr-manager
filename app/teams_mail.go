@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
@@ -37,16 +38,24 @@ func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 
 	var sender platformmail.Sender
 	if a.c.Platform.MailerEnabled {
-		if sender, err = platformmail.NewResendSender(a.c.Mailer.APIKey); err != nil {
+		// The platform letters' own Resend key (PLATFORM_RESEND_API_KEY, X6) when set: a lekalo
+		// account apart from the shop's, so lekalo's bounces never pause order mail. Else the shared key.
+		key := a.c.Platform.ResendAPIKey
+		if strings.TrimSpace(key) == "" {
+			key = a.c.Mailer.APIKey
+		}
+		if sender, err = platformmail.NewResendSender(key); err != nil {
 			slog.Default().ErrorContext(ctx, "teams: platform letters cannot be sent", slog.String("err", err.Error()))
 			sender = nil
 		}
 	}
-	w, err := platformmail.New(a.platform.DB(), sender, platformmail.Config{
+	mc := platformmail.Config{
 		Enabled:    a.c.Platform.MailerEnabled,
 		From:       a.c.Platform.MailFrom,
 		BaseDomain: a.c.Platform.BaseDomain,
-	})
+	}
+	mc.SuppressBounceFor, mc.SuppressComplaintFor = a.c.Platform.MailSuppressFor()
+	w, err := platformmail.New(a.platform.DB(), sender, mc)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,9 @@ import (
 type Letter struct {
 	To, Template, Link, Code, TeamName, Slug, From string
 	Until, Deleted                                 time.Time
+	// TeamID, InviteID: set by the store on invite letters (X6: per-team cap, the invite's own
+	// delivery state). Zero elsewhere.
+	TeamID, InviteID int64
 }
 
 type letterPayload struct {
