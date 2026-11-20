@@ -98,6 +98,18 @@ func (a *teamAdmins) FinishJoin(_ context.Context, username string) (bool, error
 	return true, nil
 }
 
+// FreezeJoin follows *admin.Store: only an enabled row is frozen, and it gets the join marker.
+func (a *teamAdmins) FreezeJoin(_ context.Context, username string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r, ok := a.rows[username]
+	if !ok || r.Disabled {
+		return false, nil
+	}
+	r.Disabled, r.JoinPending = true, true
+	return true, nil
+}
+
 // TestInviteCrashAfterStagingKeepsLegacyLoginOut: a removed member keeps a usable password in their
 // disabled admins row. The join's step 2 raises the row's rights but leaves it disabled, so if the
 // join stops there (crash, or activation refused) legacy Login still refuses that password. Only

@@ -280,6 +280,8 @@ func (s *Store) completeProvider(ctx context.Context, in ProviderSignIn, p Provi
 			return ErrProviderOperator
 		case u.Status == UserDisabled:
 			return ErrProviderDisabled
+		case u.Status == UserDeleted:
+			return deletedAccountErr(u, p.Now)
 		case u.Status == UserActive:
 			res = ProviderResult{UserID: u.ID, Linked: true}
 		case u.Status == UserPending:
@@ -323,6 +325,8 @@ func (s *Store) signInKnownIdentity(ctx context.Context, in ProviderSignIn, uid 
 			return ErrProviderOperator
 		case u.Status == UserDisabled:
 			return ErrProviderDisabled
+		case u.Status == UserDeleted:
+			return deletedAccountErr(u, p.Now)
 		case u.Status != UserActive:
 			return ErrTokenInvalid
 		}

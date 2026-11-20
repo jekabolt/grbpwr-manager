@@ -24,6 +24,7 @@ func TestAdminJoinMarker(t *testing.T) {
 	joins, ok := s.Admin().(interface {
 		StageJoin(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error
 		FinishJoin(ctx context.Context, username string) (bool, error)
+		FreezeJoin(ctx context.Context, username string) (bool, error)
 	})
 	require.True(t, ok, "the admin store stages team joins")
 	const user = "join-marker-test"
@@ -72,4 +73,22 @@ func TestAdminJoinMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, done)
 	require.True(t, read().Disabled)
+
+	// An account delete freezes only an enabled row (a disabled one stays as an admin left it) and
+	// marks it, so the restore's finish enables exactly the row the delete froze.
+	done, err = joins.FreezeJoin(ctx, user)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.False(t, read().JoinPending)
+	require.NoError(t, s.Admin().SetAccountDisabled(ctx, user, false))
+	done, err = joins.FreezeJoin(ctx, user)
+	require.NoError(t, err)
+	require.True(t, done)
+	acc = read()
+	require.True(t, acc.Disabled)
+	require.True(t, acc.JoinPending)
+	done, err = joins.FinishJoin(ctx, user)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.False(t, read().Disabled)
 }

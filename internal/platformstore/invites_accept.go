@@ -292,6 +292,12 @@ email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?`, p.NewPasswordH
 				return err
 			}
 			res.UserID, res.Handle = u.ID, u.Handle
+		case u.Status == UserDeleted:
+			// After the password, as for an active account: only its holder learns it is deleted.
+			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {
+				return ErrWrongPassword
+			}
+			return deletedAccountErr(u, p.Now)
 		default:
 			return ErrTokenInvalid
 		}
@@ -363,6 +369,8 @@ func reserveProviderAccountTx(ctx context.Context, tx *sqlx.Tx, inv Invite, p Ac
 		return AcceptResult{}, nil, ErrProviderOperator
 	case u.Status == UserDisabled:
 		return AcceptResult{}, nil, ErrProviderDisabled
+	case u.Status == UserDeleted:
+		return AcceptResult{}, nil, deletedAccountErr(u, p.Now)
 	case u.Status == UserActive:
 		var active int
 		if err := tx.GetContext(ctx, &active, `SELECT COUNT(*) FROM team_member
@@ -406,6 +414,23 @@ func (s *Store) activateInvite(ctx context.Context, p AcceptParams, reserved Inv
 			return err
 		}
 		if inv.ID != reserved.ID {
+			return ErrTokenInvalid
+		}
+		// The account again, FOR SHARE (after the invite: AcceptInvite's exception to the lock order):
+		// a delete that committed after step 1 left the reservation 'joining', and it must not turn
+		// active for a deleted account; a delete that comes later waits for this commit and freezes
+		// the membership it finds active.
+		u, err := shareUserByID(ctx, tx, userID)
+		if errors.Is(err, ErrUserNotFound) {
+			return ErrTokenInvalid
+		}
+		if err != nil {
+			return err
+		}
+		if u.Status == UserDeleted {
+			return deletedAccountErr(u, p.Now)
+		}
+		if u.Status != UserActive {
 			return ErrTokenInvalid
 		}
 		// A membership coming back (joining → active) starts clean: every older session of the person

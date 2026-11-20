@@ -121,6 +121,8 @@ func (s *Service) AcceptInviteWithProvider(ctx context.Context, inviteHash, term
 		return "", KeyUsePassword
 	case errors.Is(err, platformstore.ErrProviderDisabled):
 		return "", KeyDisabled
+	case errors.Is(err, platformstore.ErrAccountDeleted):
+		return "", KeyAccountDeleted
 	case errors.Is(err, platformstore.ErrAlreadyMember):
 		return s.CompleteProviderSignIn(ctx, in)
 	case errors.Is(err, platformstore.ErrTokenInvalid):

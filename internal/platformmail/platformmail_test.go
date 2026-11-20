@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
 )
@@ -14,6 +15,8 @@ func TestRenderLetters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	until := time.Date(2026, 12, 20, 23, 30, 0, 0, time.UTC)
+	deleted := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	cases := []struct {
 		kind    string
 		p       Payload
@@ -30,6 +33,10 @@ func TestRenderLetters(t *testing.T) {
 			"new team · Atelier Anna", []string{"Atelier Anna", "atelier-anna.beta.lekalo.studio", "anna@example.com", "console.beta.lekalo.studio"}},
 		{KindTeamApproved, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Link: "https://atelier-anna.beta.lekalo.studio/"},
 			"Atelier Anna · approved", []string{"open workspace", "https://atelier-anna.beta.lekalo.studio/"}},
+		{KindRestore, Payload{Code: "120934", Link: "https://beta.lekalo.studio/restore#token=jkl", Until: &until, Deleted: &deleted},
+			"120 934 · restore account", []string{"120 934", "restore#token=jkl", "restore until dec 20", "deleted nov 20"}},
+		{KindAccountDeleted, Payload{Link: "https://beta.lekalo.studio/restore", Until: &until},
+			"account deleted", []string{"restore until dec 20", "https://beta.lekalo.studio/restore"}},
 	}
 	for _, c := range cases {
 		m, err := tpl.render(c.kind, c.p, "beta.lekalo.studio")
@@ -64,7 +71,9 @@ func TestRenderRefusesIncompletePayload(t *testing.T) {
 		kind string
 		p    Payload
 	}{{KindVerify, Payload{Link: "l"}}, {KindReset, Payload{Link: "l"}}, {KindInvite, Payload{Link: "l"}},
-		{KindTeamRequest, Payload{Link: "l", TeamName: "x"}}, {KindTeamApproved, Payload{Link: "l"}}, {"nope", Payload{Link: "l", Code: "123456"}}} {
+		{KindTeamRequest, Payload{Link: "l", TeamName: "x"}}, {KindTeamApproved, Payload{Link: "l"}},
+		{KindRestore, Payload{Link: "l", Code: "123456"}}, {KindRestore, Payload{Link: "l", Until: &time.Time{}}},
+		{KindAccountDeleted, Payload{Link: "l"}}, {"nope", Payload{Link: "l", Code: "123456"}}} {
 		if _, err := tpl.render(c.kind, c.p, "b"); err == nil {
 			t.Fatalf("%s: want an error", c.kind)
 		}

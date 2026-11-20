@@ -71,6 +71,9 @@ func (s *Store) EnsureTeamOne(ctx context.Context, dbName string, admins []TeamO
 type TeamOneAdmin struct {
 	Username, PasswordHash string
 	Super, Disabled        bool
+	// JoinPending: the row is disabled only until a team join or an account restore finishes it
+	// (staged by an invite, or frozen by an account delete), not by a decision about the person.
+	JoinPending bool
 }
 
 // EnsureTeamOne adopts today's grbpwr database as team #1 (02-DESIGN §13): the team row (slug
@@ -154,7 +157,9 @@ VALUES (?, ?, ?, ?, NULL, ?, 'active', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
 					slog.String("handle", handle))
 				continue
 			}
-			if a.Disabled && u.Status != "disabled" {
+			// A row disabled for a join or a restore still in flight is not a decision about the
+			// person, and a deleted account keeps its status (its restore window runs on it).
+			if a.Disabled && !a.JoinPending && u.Status != UserDisabled && u.Status != UserDeleted {
 				if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET status = 'disabled' WHERE id = ?`, u.ID); err != nil {
 					return fmt.Errorf("platformstore: ensure team #1: disable %s: %w", handle, err)
 				}

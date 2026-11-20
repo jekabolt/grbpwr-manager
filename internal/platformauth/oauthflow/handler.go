@@ -64,6 +64,8 @@ const (
 	KeyDisabled       = "disabled"
 	KeyTryAgain       = "try_again"
 	KeyUsePassword    = "use_password"
+	// KeyAccountDeleted: the account is deleted and can still be restored (RequestAccountRestore).
+	KeyAccountDeleted = "account_deleted"
 	// A Google connect's ?google= keys besides cancelled, expired, unverified and try_again
 	// (platformauth's link completion answers with the same strings).
 	KeyLinked        = "linked"
@@ -95,6 +97,7 @@ const (
 	outInviteGone                             // the invite is no longer live
 	outDisabled                               // the account is disabled
 	outUsePassword                            // an operator's account: password only
+	outAccountDeleted                         // the account is deleted, its restore window still runs
 	outLimited                                // the per-IP limiter
 	outInternal                               // anything else
 )
@@ -113,6 +116,8 @@ func (o outcome) key() string {
 		return KeyDisabled
 	case outUsePassword:
 		return KeyUsePassword
+	case outAccountDeleted:
+		return KeyAccountDeleted
 	default: // outTokenInvalid, outProviderUnreachable, outLimited, outInternal
 		return KeyTryAgain
 	}
@@ -131,6 +136,8 @@ func completionOutcome(key string) outcome {
 		return outDisabled
 	case KeyUsePassword:
 		return outUsePassword
+	case KeyAccountDeleted:
+		return outAccountDeleted
 	default:
 		return outInternal
 	}

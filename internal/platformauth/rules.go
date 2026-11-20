@@ -16,6 +16,7 @@ import (
 const (
 	VerifyTTL      = 24 * time.Hour
 	ResetTTL       = time.Hour
+	RestoreTTL     = time.Hour // a restore letter (RequestAccountRestore, a sign-up with a deleted account's email)
 	HandoffTTL     = 60 * time.Second
 	HandoffLongTTL = 10 * time.Minute // issued by VerifyEmail / AcceptInvite
 	// RootSessionTTL is the root session's absolute lifetime from sign-in (password or provider); it

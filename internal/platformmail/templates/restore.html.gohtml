@@ -1,0 +1,5 @@
+{{define "body"}}<tr><td style="font-size:20px;padding:0 0 16px 0;">restore account</td></tr>
+{{if .Deleted}}<tr><td style="font-size:15px;padding:0 0 8px 0;">deleted {{.Deleted}}</td></tr>
+{{end}}<tr><td style="font-size:34px;letter-spacing:0.12em;padding:8px 0;font-variant-numeric:tabular-nums;">{{.Code}}</td></tr>
+{{template "button" (button .Link "restore account")}}
+<tr><td style="font-size:12px;color:#777777;">valid 1 h · restore until {{.Until}}</td></tr>{{end}}

@@ -1664,6 +1664,7 @@ func (a *App) startPlatform(ctx context.Context) error {
 			PasswordHash: acc.PasswordHash,
 			Super:        acc.IsSuper,
 			Disabled:     acc.Disabled,
+			JoinPending:  acc.JoinPending,
 		})
 	}
 	// TENANT_TEAM1_PROFILE: applied on every boot; operator overrides (updated_by set) survive.

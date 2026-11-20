@@ -1,4 +1,4 @@
-// Package platformmail sends the platform's own letters (verify, reset, invite) from the
+// Package platformmail sends the platform's own letters (verify, reset, invite, restore, ...) from the
 // control-plane outbox platform_email through Resend, and blanks codes and links in the outbox once
 // their letter has expired (02-DESIGN §5).
 //
@@ -165,6 +165,10 @@ type Payload struct {
 	Slug     string `json:"slug"`
 	From     string `json:"from"`
 	Email    string `json:"email"` // team_request: who asked for the team
+	// Until is the end of a deleted account's restore window (restore, account_deleted); Deleted is
+	// when it was deleted (only the restore letter a sign-up with the account's email asked for).
+	Until   *time.Time `json:"until"`
+	Deleted *time.Time `json:"deleted"`
 }
 
 // Tick handles up to one batch of due pending rows (FOR UPDATE SKIP LOCKED plus the lease: two
@@ -280,14 +284,15 @@ WHERE id = ? AND status = 'pending' AND lease_until = ?`, args...)
 	return nil
 }
 
-// Sweep blanks code and link in payloads whose letter has expired: verify after 24 h, reset after
-// 1 h, invite after 7 days. No live secret sits in plain text past its expiry.
+// Sweep blanks code and link in payloads whose letter has expired: verify after 24 h, reset and
+// restore after 1 h, invite after 7 days. No live secret sits in plain text past its expiry.
 func (w *Worker) Sweep(ctx context.Context) (int64, error) {
 	now := w.clock()
 	r, err := w.db.ExecContext(ctx, `UPDATE platform_email SET payload = JSON_REMOVE(payload, '$.code', '$.link')
 WHERE JSON_CONTAINS_PATH(payload, 'one', '$.code', '$.link')
-  AND ((template = 'verify' AND created_at < ?) OR (template = 'reset' AND created_at < ?) OR (template = 'invite' AND created_at < ?))`,
-		now.Add(-24*time.Hour), now.Add(-time.Hour), now.Add(-7*24*time.Hour))
+  AND ((template = 'verify' AND created_at < ?) OR (template = 'reset' AND created_at < ?) OR (template = 'invite' AND created_at < ?)
+    OR (template = 'restore' AND created_at < ?))`,
+		now.Add(-24*time.Hour), now.Add(-time.Hour), now.Add(-7*24*time.Hour), now.Add(-time.Hour))
 	if err != nil {
 		return 0, fmt.Errorf("platformmail: sweep: %w", err)
 	}
@@ -317,18 +322,32 @@ const (
 	KindTeamRequest = "team_request"
 	// KindTeamApproved goes to the team's owner when an operator approves it.
 	KindTeamApproved = "team_approved"
+	// KindRestore carries the code and link that bring a deleted account back.
+	KindRestore = "restore"
+	// KindAccountDeleted confirms an account delete and says until when it can be restored.
+	KindAccountDeleted = "account_deleted"
 )
 
 type buttonData struct{ Link, Label string }
 
 type letterData struct {
 	Subject, Address, Code, Link, Team, From, Base, Email string
+	// Until and Deleted are dates as the letters show them ("dec 19"); "" = none.
+	Until, Deleted string
+}
+
+// day renders a date as the letters show it: "dec 19" (UTC).
+func day(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	return strings.ToLower(t.UTC().Format("Jan 2"))
 }
 
 func parseTemplates() (*templates, error) {
 	t := &templates{html: map[string]*htmltemplate.Template{}, text: map[string]*texttemplate.Template{}}
 	funcs := htmltemplate.FuncMap{"button": func(link, label string) buttonData { return buttonData{link, label} }}
-	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved} {
+	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved, KindRestore, KindAccountDeleted} {
 		h, err := htmltemplate.New("layout").Funcs(funcs).ParseFS(templateFS, "templates/layout.html.gohtml", "templates/"+k+".html.gohtml")
 		if err != nil {
 			return nil, fmt.Errorf("platformmail: parse %s html: %w", k, err)
@@ -355,7 +374,8 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 	if !ok {
 		return Message{}, fmt.Errorf("platformmail: unknown template %q", kind)
 	}
-	d := letterData{Code: spaced(p.Code), Link: p.Link, Team: p.TeamName, From: p.From, Base: base, Email: p.Email}
+	d := letterData{Code: spaced(p.Code), Link: p.Link, Team: p.TeamName, From: p.From, Base: base, Email: p.Email,
+		Until: day(p.Until), Deleted: day(p.Deleted)}
 	if p.Slug != "" && base != "" {
 		d.Address = p.Slug + "." + base
 	}
@@ -385,6 +405,16 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 			return Message{}, errors.New("platformmail: team approved letter without a team")
 		}
 		d.Subject = p.TeamName + " · approved"
+	case KindRestore:
+		if p.Code == "" || d.Until == "" {
+			return Message{}, errors.New("platformmail: restore letter without a code or a date")
+		}
+		d.Subject = d.Code + " · restore account"
+	case KindAccountDeleted:
+		if d.Until == "" {
+			return Message{}, errors.New("platformmail: account deleted letter without a date")
+		}
+		d.Subject = "account deleted"
 	}
 	var hb, tb bytes.Buffer
 	if err := h.ExecuteTemplate(&hb, "layout", d); err != nil {
