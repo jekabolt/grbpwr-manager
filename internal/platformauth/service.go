@@ -95,6 +95,8 @@ type Service struct {
 	options SignInOptions
 
 	codeIP, signUpIP, signInIP, signInLogin, slugIP, resetIP *ratelimit.Limiter
+	// joinIP: join-link sign-ups and JoinTeam per IP (MaxJoinsPerIPHr), apart from signUpIP.
+	joinIP *ratelimit.Limiter
 	// restoreIP: restore letters and link restores per IP; accountDelete: delete tries per account.
 	restoreIP, accountDelete *ratelimit.Limiter
 	// createTeam: `new team` per account (MaxCreateTeamsPerHr); logoSet: logo changes per account.
@@ -147,6 +149,7 @@ func New(d Deps) (*Service, error) {
 		pepper:      d.Config.TokenPepper,
 		codeIP:      ratelimit.NewLimiter(time.Hour, MaxCodeTriesPerIPHr),
 		signUpIP:    ratelimit.NewLimiter(time.Hour, MaxSignUpsPerIPHr),
+		joinIP:      ratelimit.NewLimiter(time.Hour, MaxJoinsPerIPHr),
 		signInIP:    ratelimit.NewLimiter(time.Minute, 10),
 		signInLogin: ratelimit.NewLimiter(time.Minute, 5),
 		slugIP:      ratelimit.NewLimiter(time.Minute, 60),
@@ -195,7 +198,7 @@ func (s *Service) Ready() error { return s.ready }
 
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
-	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet,
+	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.joinIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet,
 		s.profileRead, s.profileWrite, s.avatarSet, s.sessionRead, s.sessionWrite, s.passwordChange, s.googleLink,
 		s.restoreIP, s.accountDelete} {
 		l.Stop()

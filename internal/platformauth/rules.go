@@ -36,6 +36,9 @@ const (
 	MaxCodeTriesPerIPHr  = 30
 	MaxLettersPerEmailHr = 3
 	MaxSignUpsPerIPHr    = 5
+	// MaxJoinsPerIPHr bounds join-link sign-ups and JoinTeam per client IP: a studio office is one
+	// address, so the join path has its own budget and never eats the workspace sign-up one.
+	MaxJoinsPerIPHr = 30
 	// MaxCreateTeamsPerHr bounds CreateTeam per account (abuse, not a product cap: own teams have
 	// none, only the operator's approval limits them).
 	MaxCreateTeamsPerHr = 5

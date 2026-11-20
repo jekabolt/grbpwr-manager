@@ -30,8 +30,8 @@ func (s *Service) signUpForJoin(ctx context.Context, req *auth.SignUpRequest, em
 	if err != nil {
 		return nil, errProfileName(err)
 	}
-	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
-		return &auth.SignUpResponse{}, nil
+	if !s.joinIP.Allow(middleware.GetClientIP(ctx)) {
+		return nil, errJoinRateLimited()
 	}
 	if drop, err := s.guardSignUp(ctx, email); err != nil || drop {
 		if err != nil {
@@ -92,8 +92,8 @@ func (s *Service) JoinTeam(ctx context.Context, rootToken string, teamID int64, 
 	if err != nil {
 		return nil, err
 	}
-	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
-		return nil, errBusy()
+	if !s.joinIP.Allow(middleware.GetClientIP(ctx)) {
+		return nil, errJoinRateLimited()
 	}
 	team, err := s.d.Store.Directory().ByID(ctx, teamID)
 	if err != nil {
@@ -148,6 +148,12 @@ func (s *Service) ConfirmJoinCode(ctx context.Context, req *auth.ConfirmJoinCode
 	return &auth.ConfirmJoinCodeResponse{State: string(res.State)}, nil
 }
 
+// errJoinRateLimited is the join path's per-IP refusal. The limit is by IP, so it says nothing about
+// any address (unlike a silent success, which hid that no letter went out).
+func errJoinRateLimited() error {
+	return status.Error(codes.ResourceExhausted, "join_rate_limited")
+}
+
 func (s *Service) joinError(ctx context.Context, op string, err error) error {
 	switch {
 	case errors.Is(err, platformstore.ErrJoinLinkInvalid):
@@ -159,7 +165,7 @@ func (s *Service) joinError(ctx context.Context, op string, err error) error {
 	case errors.Is(err, platformstore.ErrJoinQueueFull):
 		return status.Error(codes.ResourceExhausted, "join_queue_full")
 	case errors.Is(err, platformstore.ErrJoinRateLimited):
-		return status.Error(codes.ResourceExhausted, "join_rate_limited")
+		return errJoinRateLimited()
 	case errors.Is(err, platformstore.ErrJoinOperator), errors.Is(err, platformstore.ErrJoinDisabled):
 		return status.Error(codes.PermissionDenied, "no_access")
 	}
