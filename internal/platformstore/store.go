@@ -247,6 +247,9 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 func migrateUp(ctx context.Context, db *sqlx.DB) error {
 	src := &migrate.EmbedFileSystemMigrationSource{FileSystem: migrations, Root: "sql"}
 	set := migrate.MigrationSet{TableName: migrationsTable}
+	if err := tolerateAhead(ctx, db.DB, &set, src); err != nil {
+		return fmt.Errorf("platformstore: migrations: read applied: %w", err)
+	}
 	type result struct {
 		n   int
 		err error
