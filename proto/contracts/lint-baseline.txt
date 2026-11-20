@@ -2,6 +2,7 @@ ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"ACCE
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"ALERT_SEVERITY_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"COMPARE_MODE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"LIBRARY_ACCEPT_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
+ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"LIBRARY_ACCESS_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"LIBRARY_KIND_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"LIBRARY_SORT_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".
 ENUM_ZERO_VALUE_SUFFIX|proto/admin/admin/admin.proto|Enum zero value name \"LIBRARY_SOURCE_UNSPECIFIED\" should be suffixed with \"_UNKNOWN\".

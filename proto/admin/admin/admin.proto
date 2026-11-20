@@ -7197,6 +7197,12 @@ message LibraryFile {
   // whole feature: a file may be «исходники» in one shoot and «идея» in another,
   // and a flat set would make «съёмка × идея» find it in the shoot too.
   repeated LibraryFileRole roles = 20;
+  // public_media_id is the public media made from this file (CopyLibraryFileToMedia), by the
+  // same twin rule the library list uses: a media row whose lib_source_sha256 or content_hash is
+  // this file's sha256, the lowest id if several. 0 = not published, a blank sha, or a caller
+  // without media read access. Filled by GetLibraryFile, ListLibraryFiles and the file rows of
+  // ListLibraryItems; 0 everywhere else.
+  int32 public_media_id = 21;
 }
 
 // FileTopic is a topic LABEL, not a folder.
@@ -15938,6 +15944,14 @@ enum LibraryUsage {
   LIBRARY_USAGE_FREE = 2;
 }
 
+// LibraryAccess filters the unified list by who can see an item: PRIVATE = library files that
+// have no public media twin; PUBLIC = media rows.
+enum LibraryAccess {
+  LIBRARY_ACCESS_UNSPECIFIED = 0; // = both
+  LIBRARY_ACCESS_PRIVATE = 1;
+  LIBRARY_ACCESS_PUBLIC = 2;
+}
+
 enum LibrarySort {
   LIBRARY_SORT_UNSPECIFIED = 0; // = NEW
   LIBRARY_SORT_NEW = 1;
@@ -15967,6 +15981,7 @@ message LibraryItemFilter {
   google.protobuf.Timestamp created_to = 12;
   LibraryUsage usage = 13;
   repeated string ratios = 14; // "4:5" reduced named ratios or "other"; => files dropped
+  LibraryAccess access = 15; // PRIVATE: files without a public twin; PUBLIC: media; ANDed with sources
 }
 
 message LibraryItem {
@@ -16020,6 +16035,8 @@ message GetLibraryFacetsResponse {
   int32 free = 4; // filter minus `usage`
   repeated LibraryRatioCount ratios = 5; // filter minus `ratios`, media only
   int32 total = 6;
+  int32 access_private = 7; // filter minus `access`: files without a public twin
+  int32 access_public = 8; // filter minus `access`: media
 }
 
 message LibraryFolder {

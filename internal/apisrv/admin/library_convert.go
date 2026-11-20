@@ -90,6 +90,17 @@ func libraryUsageFromPb(v pb_admin.LibraryUsage) entity.LibraryUsage {
 	}
 }
 
+func libraryAccessFromPb(v pb_admin.LibraryAccess) entity.LibraryItemAccess {
+	switch v {
+	case pb_admin.LibraryAccess_LIBRARY_ACCESS_PRIVATE:
+		return entity.LibraryItemAccessPrivate
+	case pb_admin.LibraryAccess_LIBRARY_ACCESS_PUBLIC:
+		return entity.LibraryItemAccessPublic
+	default:
+		return entity.LibraryItemAccessUnspecified
+	}
+}
+
 func librarySortFromPb(v pb_admin.LibrarySort) entity.LibrarySort {
 	switch v {
 	case pb_admin.LibrarySort_LIBRARY_SORT_NEW:
@@ -132,6 +143,7 @@ func libraryFilterFromPb(f *pb_admin.LibraryItemFilter) entity.LibraryItemFilter
 		ProjectTopicId:    int(f.GetProjectTopicId()),
 		UploadedById:      int(f.GetUploadedById()),
 		Usage:             libraryUsageFromPb(f.GetUsage()),
+		Access:            libraryAccessFromPb(f.GetAccess()),
 	}
 	for _, k := range f.GetKinds() {
 		out.Kinds = append(out.Kinds, libraryKindFromPb(k))
@@ -178,9 +190,11 @@ func libraryFacetsToPb(f *entity.LibraryFacets) *pb_admin.GetLibraryFacetsRespon
 		return &pb_admin.GetLibraryFacetsResponse{}
 	}
 	out := &pb_admin.GetLibraryFacetsResponse{
-		Used:  int32(f.Used),
-		Free:  int32(f.Free),
-		Total: int32(f.Total),
+		Used:          int32(f.Used),
+		Free:          int32(f.Free),
+		Total:         int32(f.Total),
+		AccessPrivate: int32(f.AccessPrivate),
+		AccessPublic:  int32(f.AccessPublic),
 	}
 	for _, m := range f.Months {
 		out.Months = append(out.Months, &pb_admin.MonthCount{Year: int32(m.Year), Month: int32(m.Month), Count: int32(m.Count)})
