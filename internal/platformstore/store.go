@@ -99,6 +99,19 @@ type Config struct {
 	SignupBlockedDomains string `mapstructure:"signup_blocked_domains"`
 	SignupLettersPerHour string `mapstructure:"signup_letters_per_hour"`
 	SignupMaxBouncePct   string `mapstructure:"signup_max_bounce_pct"`
+	// SignupBounceMinSample (sent confirm letters before the share is judged), SignupPerDomainHour
+	// (sign-ups per email domain per hour), SignupBotCheckOnAlert (the bot-check mode while the
+	// bounce-share alert is up; empty = SignupBotCheck): PLATFORM_SIGNUP_*.
+	SignupBounceMinSample string `mapstructure:"signup_bounce_min_sample"`
+	SignupPerDomainHour   string `mapstructure:"signup_per_domain_hour"`
+	SignupBotCheckOnAlert string `mapstructure:"signup_bot_check_on_alert"`
+	// InviteLettersPerTeamHour / Day (PLATFORM_INVITE_LETTERS_PER_TEAM_HOUR / _DAY): a team's invite
+	// letters; MailSuppressBounceDays / ComplaintDays (PLATFORM_MAIL_SUPPRESS_*_DAYS): how long an
+	// address stays suppressed. Empty or unreadable = the defaults (X6).
+	InviteLettersPerTeamHour  string `mapstructure:"invite_letters_per_team_hour"`
+	InviteLettersPerTeamDay   string `mapstructure:"invite_letters_per_team_day"`
+	MailSuppressBounceDays    string `mapstructure:"mail_suppress_bounce_days"`
+	MailSuppressComplaintDays string `mapstructure:"mail_suppress_complaint_days"`
 }
 
 // OAuthConfig is sign in with Google / Apple (OAUTH_*). Parsed only: nothing set (or teams mode
@@ -317,4 +330,45 @@ JOIN team_member m ON m.user_id = u.id AND m.team_id = 1 WHERE u.handle = ?`, ha
 		return fmt.Errorf("platformstore: set password: %w", err)
 	}
 	return nil
+}
+
+// Defaults of the X6 letter caps and suppression windows.
+const (
+	DefaultInviteLettersPerTeamHour  = 30
+	DefaultInviteLettersPerTeamDay   = 100
+	DefaultMailSuppressBounceDays    = 30
+	DefaultMailSuppressComplaintDays = 180
+)
+
+// cfgInt reads a non-negative integer setting; empty or unreadable = def (0 is a valid value).
+func cfgInt(v string, def int) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// InviteTeamCap is the per-team invite letter cap (0 in a field = no cap on that window).
+func (c Config) InviteTeamCap() TeamLetterCap {
+	return TeamLetterCap{PerHour: cfgInt(c.InviteLettersPerTeamHour, DefaultInviteLettersPerTeamHour),
+		PerDay: cfgInt(c.InviteLettersPerTeamDay, DefaultInviteLettersPerTeamDay)}
+}
+
+// MailSuppressFor is how long an address stays suppressed after a permanent bounce / a complaint
+// (a value of 0 days falls back to the default: the list cannot be switched off by config).
+func (c Config) MailSuppressFor() (bounce, complaint time.Duration) {
+	b := cfgInt(c.MailSuppressBounceDays, DefaultMailSuppressBounceDays)
+	if b == 0 {
+		b = DefaultMailSuppressBounceDays
+	}
+	k := cfgInt(c.MailSuppressComplaintDays, DefaultMailSuppressComplaintDays)
+	if k == 0 {
+		k = DefaultMailSuppressComplaintDays
+	}
+	return time.Duration(b) * 24 * time.Hour, time.Duration(k) * 24 * time.Hour
 }

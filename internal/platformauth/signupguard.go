@@ -29,8 +29,13 @@ import (
 )
 
 // Sign-up abuse guard (X6, lanes/X6-design.md): an invisible proof-of-work check (the ALTCHA v1
-// protocol), a honeypot, a time-to-submit floor, MX and disposable-domain checks, and a global
-// breaker on sign-up letters. Everything here answers only for SignUp.
+// protocol), a honeypot, a time-to-submit floor, MX and disposable-domain checks, a per-domain
+// sign-up limit, and a global breaker on sign-up letters. Everything here answers only for SignUp.
+//
+// The breaker has two parts. The hourly cap on confirm letters is the only thing that refuses
+// (signup_busy) and it heals within the hour. The bounce share (permanent bounces and complaints
+// of confirm letters) never refuses: it raises an alert that halves the per-IP and per-domain
+// sign-up limits (and can tighten the bot check, PLATFORM_SIGNUP_BOT_CHECK_ON_ALERT) while it is up.
 
 // Bot check modes (PLATFORM_SIGNUP_BOT_CHECK).
 const (
@@ -51,8 +56,10 @@ const (
 	DefaultSignupMinSubmit      = 2 * time.Second
 	DefaultSignupLettersPerHour = 60
 	DefaultSignupMaxBouncePct   = 4
-	// SignupBounceMinSample: below this many sent letters a day the bounce share is not judged.
-	SignupBounceMinSample = 20
+	// DefaultSignupBounceMinSample: below this many sent confirm letters a day the share is not judged.
+	DefaultSignupBounceMinSample = 50
+	// DefaultSignupPerDomainHour bounds sign-ups per email domain per hour (per replica).
+	DefaultSignupPerDomainHour = 30
 	// SignupChallengeTTL is how long a challenge can be solved and sent.
 	SignupChallengeTTL = 10 * time.Minute
 	// MaxSignupChallengesPerIPMin bounds GET /api/auth/signup-challenge per address.
@@ -75,14 +82,18 @@ type GuardConfig struct {
 	MXCheck        bool
 	Blocked        map[string]bool // extra blocked domains
 	LettersPerHour int             // 0 = no hourly cap
-	MaxBouncePct   int             // 0 = no bounce cap
+	MaxBouncePct   int             // 0 = no bounce-share alert
+	MinSample      int             // sent confirm letters a day before the share is judged
+	PerDomainHour  int             // sign-ups per email domain per hour; 0 = no limit
+	BotCheckAlert  string          // bot-check mode while the alert is up; "" = BotCheck
 }
 
 // GuardFromConfig reads PLATFORM_SIGNUP_*. An unreadable value falls back to its default (and
 // is logged once by the caller through the returned warnings), never stops a boot.
 func GuardFromConfig(c platformstore.Config) (GuardConfig, []string) {
 	g := GuardConfig{BotCheck: BotCheckLog, PowMax: DefaultSignupPowMax, MinSubmit: DefaultSignupMinSubmit, MXCheck: true,
-		Blocked: map[string]bool{}, LettersPerHour: DefaultSignupLettersPerHour, MaxBouncePct: DefaultSignupMaxBouncePct}
+		Blocked: map[string]bool{}, LettersPerHour: DefaultSignupLettersPerHour, MaxBouncePct: DefaultSignupMaxBouncePct,
+		MinSample: DefaultSignupBounceMinSample, PerDomainHour: DefaultSignupPerDomainHour}
 	var warn []string
 	switch v := strings.ToLower(strings.TrimSpace(c.SignupBotCheck)); v {
 	case "":
@@ -105,6 +116,15 @@ func GuardFromConfig(c platformstore.Config) (GuardConfig, []string) {
 	intOf(c.SignupPowMax, "PLATFORM_SIGNUP_POW_MAX", &g.PowMax, 1_000, 10_000_000)
 	intOf(c.SignupLettersPerHour, "PLATFORM_SIGNUP_LETTERS_PER_HOUR", &g.LettersPerHour, 0, 1_000_000)
 	intOf(c.SignupMaxBouncePct, "PLATFORM_SIGNUP_MAX_BOUNCE_PCT", &g.MaxBouncePct, 0, 100)
+	intOf(c.SignupBounceMinSample, "PLATFORM_SIGNUP_BOUNCE_MIN_SAMPLE", &g.MinSample, 1, 1_000_000)
+	intOf(c.SignupPerDomainHour, "PLATFORM_SIGNUP_PER_DOMAIN_HOUR", &g.PerDomainHour, 0, 1_000_000)
+	switch v := strings.ToLower(strings.TrimSpace(c.SignupBotCheckOnAlert)); v {
+	case "":
+	case BotCheckOff, BotCheckLog, BotCheckEnforce:
+		g.BotCheckAlert = v
+	default:
+		warn = append(warn, "PLATFORM_SIGNUP_BOT_CHECK_ON_ALERT")
+	}
 	if s := strings.TrimSpace(c.SignupMinSubmit); s != "" {
 		d, err := time.ParseDuration(s)
 		if err != nil || d < 0 || d > time.Minute {
@@ -137,15 +157,18 @@ type signupGuard struct {
 	resolver mxResolver
 	stats    func(context.Context, time.Time) (platformstore.SignupLetterStats, error)
 	issueIP  *ratelimit.Limiter
+	// Sign-up limits: per domain always; the halved per-IP / per-domain ones only bite while the
+	// bounce-share alert is up (they are fed on every sign-up so they are warm when it trips).
+	domain, domainHalf, ipHalf *ratelimit.Limiter
 
 	mu      sync.Mutex
 	used    map[string]time.Time // signature → expiry: a proof is spent once (per process)
 	mxCache map[string]mxEntry
 
 	bmu       sync.Mutex
-	open      bool      // breaker latched open
+	busy      bool      // hourly cap reached: new sign-ups get signup_busy
+	alert     bool      // bounce share over the limit: halved sign-up limits
 	checkedAt time.Time // last stats read
-	reason    string
 }
 
 type mxEntry struct {
@@ -165,10 +188,29 @@ func newSignupGuard(cfg GuardConfig, pepper string, now func() time.Time,
 	m.Write([]byte("lekalo-signup-challenge-v1"))
 	return &signupGuard{cfg: cfg, key: m.Sum(nil), now: now, resolver: net.DefaultResolver, stats: stats,
 		issueIP: ratelimit.NewLimiter(time.Minute, MaxSignupChallengesPerIPMin),
-		used:    map[string]time.Time{}, mxCache: map[string]mxEntry{}}
+		domain:  hourLimiter(cfg.PerDomainHour), domainHalf: hourLimiter(cfg.PerDomainHour / 2),
+		ipHalf: hourLimiter(MaxSignUpsPerIPHr / 2),
+		used:   map[string]time.Time{}, mxCache: map[string]mxEntry{}}
 }
 
-func (g *signupGuard) stop() { g.issueIP.Stop() }
+// hourLimiter is a per-hour limiter, or nil (no limit) for max <= 0.
+func hourLimiter(maxPerHour int) *ratelimit.Limiter {
+	if maxPerHour <= 0 {
+		return nil
+	}
+	return ratelimit.NewLimiter(time.Hour, maxPerHour)
+}
+
+// allow is Limiter.Allow where a nil limiter allows everything.
+func allow(l *ratelimit.Limiter, key string) bool { return l == nil || l.Allow(key) }
+
+func (g *signupGuard) stop() {
+	for _, l := range []*ratelimit.Limiter{g.issueIP, g.domain, g.domainHalf, g.ipHalf} {
+		if l != nil {
+			l.Stop()
+		}
+	}
+}
 
 // --- proof of work (ALTCHA v1) ---
 
@@ -462,46 +504,86 @@ func notFound(err error) bool {
 
 // --- breaker ---
 
-// msgSignupBusy is the answer while the breaker is open.
+// msgSignupBusy is the answer while the hourly cap is reached.
 const msgSignupBusy = "signup_busy"
 
-// breaker reports whether new sign-up letters must stop now. The stats are re-read at most every
-// breakerRecheck; the open state is latched with one error event per open period (lane X12 alerts
-// on its message) and an info line when it closes. A stats read error keeps the last state.
-func (g *signupGuard) breaker(ctx context.Context) bool {
+// breakerTripped is the one error event of the breaker; lane X12 alerts on this exact text, so
+// keep it stable, numbers only in attrs, never an address.
+const breakerTripped = "sign-up letter breaker tripped"
+
+// breaker reports (busy, alert): busy = the hourly cap on confirm letters is reached and new
+// sign-ups get signup_busy; alert = the bounce share is over the limit and sign-up limits are
+// halved. The stats are re-read at most every breakerRecheck; each state is latched with one
+// error event when it opens and an info line when it closes. A stats read error keeps the last
+// states.
+func (g *signupGuard) breaker(ctx context.Context) (busy, alert bool) {
 	if g.cfg.LettersPerHour <= 0 && g.cfg.MaxBouncePct <= 0 {
-		return false
+		return false, false
 	}
 	now := g.now()
 	g.bmu.Lock()
 	defer g.bmu.Unlock()
 	if !g.checkedAt.IsZero() && now.Sub(g.checkedAt) < breakerRecheck {
-		return g.open
+		return g.busy, g.alert
 	}
 	st, err := g.stats(ctx, now)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "teams: sign-up letter stats", slog.String("err", err.Error()))
-		return g.open
+		return g.busy, g.alert
 	}
 	g.checkedAt = now
-	reason, count, limit := "", 0, 0
-	switch {
-	case g.cfg.LettersPerHour > 0 && st.VerifyLastHour >= g.cfg.LettersPerHour:
-		reason, count, limit = "letters_per_hour", st.VerifyLastHour, g.cfg.LettersPerHour
-	case g.cfg.MaxBouncePct > 0 && st.Sent24h >= SignupBounceMinSample && st.Bounced24h*100 >= g.cfg.MaxBouncePct*st.Sent24h:
-		reason, count, limit = "bounce_share", st.Bounced24h*100/st.Sent24h, g.cfg.MaxBouncePct
+	busyNow := g.cfg.LettersPerHour > 0 && st.VerifyLastHour >= g.cfg.LettersPerHour
+	alertNow := g.cfg.MaxBouncePct > 0 && st.Sent24h >= max(g.cfg.MinSample, 1) &&
+		st.Bounced24h*100 >= g.cfg.MaxBouncePct*st.Sent24h
+	g.busy = latch(ctx, g.busy, busyNow, "letters_per_hour", st, st.VerifyLastHour, g.cfg.LettersPerHour)
+	pct := 0
+	if st.Sent24h > 0 {
+		pct = st.Bounced24h * 100 / st.Sent24h
 	}
+	g.alert = latch(ctx, g.alert, alertNow, "bounce_share", st, pct, g.cfg.MaxBouncePct)
+	return g.busy, g.alert
+}
+
+// latch moves one breaker state and logs its edge: the error event on open, info on close.
+func latch(ctx context.Context, was, now bool, reason string, st platformstore.SignupLetterStats, count, limit int) bool {
 	switch {
-	case reason != "" && !g.open:
-		g.open, g.reason = true, reason
-		// X12 alerts on this exact message: keep it stable, numbers only in attrs.
-		slog.Default().ErrorContext(ctx, "sign-up letter breaker tripped", slog.String("reason", reason),
+	case now && !was:
+		slog.Default().ErrorContext(ctx, breakerTripped, slog.String("reason", reason),
 			slog.Int("sent_last_hour", st.VerifyLastHour), slog.Int("count", count), slog.Int("limit", limit))
-	case reason == "" && g.open:
-		slog.Default().InfoContext(ctx, "sign-up letter breaker closed", slog.String("reason", g.reason))
-		g.open, g.reason = false, ""
+	case !now && was:
+		slog.Default().InfoContext(ctx, "sign-up letter breaker closed", slog.String("reason", reason))
 	}
-	return g.open
+	return now
+}
+
+// limits applies the per-domain sign-up limit, and, while the alert is up, the halved per-IP and
+// per-domain ones. Every limiter is fed on every call so the halved ones are warm when it trips.
+func (g *signupGuard) limits(ip, email string, alert bool) bool {
+	domain := email[strings.LastIndexByte(email, '@')+1:]
+	okDomain := allow(g.domain, domain)
+	okDomainHalf := allow(g.domainHalf, domain)
+	okIPHalf := allow(g.ipHalf, ip)
+	if !okDomain {
+		return false
+	}
+	return !alert || (okDomainHalf && okIPHalf)
+}
+
+// botMode is the bot-check mode now: BotCheckAlert while the alert is up, when it is stricter.
+func (g *signupGuard) botMode(alert bool) string {
+	rank := func(m string) int {
+		switch m {
+		case BotCheckEnforce:
+			return 2
+		case BotCheckLog:
+			return 1
+		}
+		return 0
+	}
+	if alert && rank(g.cfg.BotCheckAlert) > rank(g.cfg.BotCheck) {
+		return g.cfg.BotCheckAlert
+	}
+	return g.cfg.BotCheck
 }
 
 // --- SignUp hook ---
@@ -510,11 +592,12 @@ func (g *signupGuard) breaker(ctx context.Context) bool {
 // write nothing (a bot that must not learn it was caught); err = the answer to return.
 func (s *Service) guardSignUp(ctx context.Context, email string) (drop bool, err error) {
 	g := s.guard
-	if g.cfg.BotCheck != BotCheckOff {
+	busy, alert := g.breaker(ctx)
+	if mode := g.botMode(alert); mode != BotCheckOff {
 		v, why := g.check(ctx)
 		if v != botOK {
-			s.audit(ctx, 0, 0, "signup_bot", map[string]string{"reason": why, "mode": g.cfg.BotCheck})
-			if g.cfg.BotCheck == BotCheckEnforce {
+			s.audit(ctx, 0, 0, "signup_bot", map[string]string{"reason": why, "mode": mode})
+			if mode == BotCheckEnforce {
 				if v == botTrap {
 					return true, nil
 				}
@@ -525,7 +608,10 @@ func (s *Service) guardSignUp(ctx context.Context, email string) (drop bool, err
 	if err := g.checkAddress(ctx, email); err != nil {
 		return false, errBad(msgEmailDomain)
 	}
-	if g.breaker(ctx) {
+	if !g.limits(middleware.GetClientIP(ctx), email, alert) {
+		return true, nil
+	}
+	if busy {
 		return false, status.Error(codes.Unavailable, msgSignupBusy)
 	}
 	return false, nil

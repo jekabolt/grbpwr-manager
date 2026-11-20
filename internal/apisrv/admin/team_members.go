@@ -140,6 +140,8 @@ func peopleErr(ctx context.Context, op string, err error) error {
 		return status.Error(codes.AlreadyExists, "already_member")
 	case errors.Is(err, platformstore.ErrLetterCap):
 		return status.Error(codes.ResourceExhausted, "letter_cap")
+	case errors.Is(err, platformstore.ErrTeamLetterCap):
+		return status.Error(codes.ResourceExhausted, "team_letter_cap")
 	case errors.Is(err, platformstore.ErrTeamReadOnly):
 		return status.Error(codes.FailedPrecondition, "team_read_only")
 	case errors.Is(err, platformstore.ErrOwnerTarget):
@@ -337,6 +339,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, KeepPermissions: !named, TokenHash: hash,
 		Name:      platformstore.DisplayName(first, last),
 		ExpiresAt: now.Add(InviteTTL), Actor: p.actor(), Now: now, MaxPerHour: inviteLettersPerHour,
+		TeamCap: s.platform.cfg.InviteTeamCap(),
 		Letter: platformstore.Letter{
 			To: email, Template: "invite", Link: s.inviteLink(p.w.Team.Slug, token),
 			TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle,
@@ -412,7 +415,7 @@ func (s *Server) ResendTeamInvite(ctx context.Context, req *pb_admin.ResendTeamI
 	link := s.inviteLink(p.w.Team.Slug, token)
 	if err := s.platform.store.ResendInvite(ctx, platformstore.ResendParams{
 		TeamID: p.w.Team.ID, InviteID: inv.ID, Actor: p.actor(), TokenHash: hash, ExpiresAt: now.Add(InviteTTL),
-		Now: now, MaxPerHour: inviteLettersPerHour,
+		Now: now, MaxPerHour: inviteLettersPerHour, TeamCap: s.platform.cfg.InviteTeamCap(),
 		Letter: func(platformstore.TeamInvite) platformstore.Letter {
 			return platformstore.Letter{Template: "invite", Link: link, TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle}
 		},

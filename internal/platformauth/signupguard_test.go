@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 )
@@ -220,45 +222,106 @@ func TestBreaker(t *testing.T) {
 		return st, statErr
 	})
 	ctx := context.Background()
-	if g.breaker(ctx) {
+	step := func() (bool, bool) { now = now.Add(breakerRecheck); return g.breaker(ctx) }
+	if busy, alert := g.breaker(ctx); busy || alert {
 		t.Fatal("open on zero")
 	}
 	st.VerifyLastHour = DefaultSignupLettersPerHour
-	if g.breaker(ctx) {
+	if busy, _ := g.breaker(ctx); busy {
 		t.Fatal("re-read before the recheck interval")
 	}
-	now = now.Add(breakerRecheck)
-	if !g.breaker(ctx) || g.reason != "letters_per_hour" {
-		t.Fatalf("hourly cap: open=%v reason=%s", g.open, g.reason)
+	if busy, alert := step(); !busy || alert {
+		t.Fatalf("hourly cap: busy=%v alert=%v", busy, alert)
 	}
-	// A read error keeps the open state.
+	// A read error keeps the states.
 	statErr = errors.New("db down")
-	now = now.Add(breakerRecheck)
-	if !g.breaker(ctx) {
+	if busy, _ := step(); !busy {
 		t.Fatal("closed on a read error")
 	}
 	statErr = nil
-	st = platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: 10, Bounced24h: 5}
-	now = now.Add(breakerRecheck)
-	if g.breaker(ctx) {
+	// The review's case: one bounce in 20 letters on a quiet day is not judged at all.
+	st = platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: 20, Bounced24h: 1}
+	if busy, alert := step(); busy || alert {
+		t.Fatalf("quiet day: busy=%v alert=%v", busy, alert)
+	}
+	st = platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: DefaultSignupBounceMinSample - 1, Bounced24h: 40}
+	if _, alert := step(); alert {
 		t.Fatal("bounce share judged below the minimum sample")
 	}
-	st = platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: 100, Bounced24h: 4}
-	now = now.Add(breakerRecheck)
-	if !g.breaker(ctx) || g.reason != "bounce_share" {
-		t.Fatalf("bounce share: open=%v reason=%s", g.open, g.reason)
+	// Over the share: an alert, never busy.
+	st = platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: 100, Bounced24h: 90}
+	if busy, alert := step(); busy || !alert {
+		t.Fatalf("bounce share: busy=%v alert=%v", busy, alert)
 	}
 	st.Bounced24h = 3
-	now = now.Add(breakerRecheck)
-	if g.breaker(ctx) {
-		t.Fatal("did not close")
+	if _, alert := step(); alert {
+		t.Fatal("alert did not close")
 	}
 	g.cfg.LettersPerHour, g.cfg.MaxBouncePct = 0, 0
 	n := reads
 	st.VerifyLastHour = 1 << 20
-	now = now.Add(breakerRecheck)
-	if g.breaker(ctx) || reads != n {
+	if busy, alert := step(); busy || alert || reads != n {
 		t.Fatal("disabled breaker read or opened")
+	}
+}
+
+func TestGuardLimits(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := defaultGuardCfg()
+	cfg.PerDomainHour = 4
+	g := testGuard(t, cfg, &now, nil)
+	// No alert: the per-domain limit only; the per-IP one lives in SignUp.
+	for i := range 4 {
+		if !g.limits("10.0.0."+strconv.Itoa(i), "a@one.example", false) {
+			t.Fatalf("sign-up %d refused", i)
+		}
+	}
+	if g.limits("10.0.0.9", "z@one.example", false) {
+		t.Fatal("per-domain limit not applied")
+	}
+	// Alert: halved per-IP (5/2 = 2) and per-domain (4/2 = 2) limits.
+	if !g.limits("10.1.0.1", "a@two.example", true) || !g.limits("10.1.0.1", "b@three.example", true) {
+		t.Fatal("refused under the halved limits")
+	}
+	if g.limits("10.1.0.1", "c@four.example", true) {
+		t.Fatal("halved per-IP limit not applied")
+	}
+	if !g.limits("10.2.0.1", "a@five.example", true) || !g.limits("10.2.0.2", "b@five.example", true) {
+		t.Fatal("refused under the halved domain limit")
+	}
+	if g.limits("10.2.0.3", "c@five.example", true) {
+		t.Fatal("halved per-domain limit not applied")
+	}
+	// The same counts without the alert pass: halved limits bite only while it is up.
+	if !g.limits("10.1.0.1", "d@six.example", false) {
+		t.Fatal("halved per-IP limit applied without the alert")
+	}
+	// Bot-check mode while the alert is up: only ever stricter.
+	g.cfg.BotCheck, g.cfg.BotCheckAlert = BotCheckLog, BotCheckEnforce
+	if g.botMode(false) != BotCheckLog || g.botMode(true) != BotCheckEnforce {
+		t.Fatal("alert bot-check mode")
+	}
+	g.cfg.BotCheck, g.cfg.BotCheckAlert = BotCheckEnforce, BotCheckOff
+	if g.botMode(true) != BotCheckEnforce {
+		t.Fatal("alert mode loosened the bot check")
+	}
+}
+
+// The bounce share never refuses a sign-up; only the hourly cap answers signup_busy.
+func TestGuardSignUpBreaker(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := defaultGuardCfg()
+	cfg.BotCheck, cfg.MXCheck = BotCheckOff, false
+	st := platformstore.SignupLetterStats{VerifyLastHour: 1, Sent24h: 1000, Bounced24h: 900}
+	g := testGuard(t, cfg, &now, func(context.Context, time.Time) (platformstore.SignupLetterStats, error) { return st, nil })
+	s := &Service{guard: g}
+	if drop, err := s.guardSignUp(context.Background(), "anna@good.example"); drop || err != nil {
+		t.Fatalf("bounce share refused: drop=%v err=%v", drop, err)
+	}
+	st = platformstore.SignupLetterStats{VerifyLastHour: DefaultSignupLettersPerHour}
+	now = now.Add(breakerRecheck)
+	if _, err := s.guardSignUp(context.Background(), "ola@good.example"); status.Code(err) != codes.Unavailable {
+		t.Fatalf("hourly cap: %v", err)
 	}
 }
 

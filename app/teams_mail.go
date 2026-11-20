@@ -49,11 +49,13 @@ func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 			sender = nil
 		}
 	}
-	w, err := platformmail.New(a.platform.DB(), sender, platformmail.Config{
+	mc := platformmail.Config{
 		Enabled:    a.c.Platform.MailerEnabled,
 		From:       a.c.Platform.MailFrom,
 		BaseDomain: a.c.Platform.BaseDomain,
-	})
+	}
+	mc.SuppressBounceFor, mc.SuppressComplaintFor = a.c.Platform.MailSuppressFor()
+	w, err := platformmail.New(a.platform.DB(), sender, mc)
 	if err != nil {
 		return nil, err
 	}

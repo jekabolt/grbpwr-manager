@@ -77,7 +77,17 @@ type Config struct {
 	Enabled    bool   // PLATFORM_MAILER_ENABLED
 	From       string // PLATFORM_MAIL_FROM, e.g. "lekalo <no-reply@lekalo.studio>"
 	BaseDomain string // PLATFORM_BASE_DOMAIN: the letters' footer and address line
+	// SuppressBounceFor / SuppressComplaintFor: how long an address stays on the suppression list
+	// after its last permanent bounce / spam complaint (X6). Zero = the defaults (30 / 180 days).
+	SuppressBounceFor, SuppressComplaintFor time.Duration
 }
+
+// Default suppression windows (X6): a mailbox that bounced may be fixed; a complaint is a person's
+// own wish and lasts longer. Both run from the last event, so a repeat extends them.
+const (
+	DefaultSuppressBounceFor    = 30 * 24 * time.Hour
+	DefaultSuppressComplaintFor = 180 * 24 * time.Hour
+)
 
 // ErrNotConfigured: the mailer is on but has no sender or from-address; rows stay pending.
 var ErrNotConfigured = errors.New("platformmail: PLATFORM_MAILER_ENABLED is on but PLATFORM_MAIL_FROM or the Resend key is missing; letters wait")
@@ -246,6 +256,20 @@ func (w *Worker) one(ctx context.Context, afterID int64) (id int64, changed bool
 // claim locks the next due row in a short transaction. A disabled mailer marks it skipped; a
 // payload that cannot be sent marks it failed (changed=true). Otherwise it counts the attempt,
 // leases the row until lease and commits, returning the rendered message.
+func (w *Worker) suppressBounceFor() time.Duration {
+	if w.cfg.SuppressBounceFor > 0 {
+		return w.cfg.SuppressBounceFor
+	}
+	return DefaultSuppressBounceFor
+}
+
+func (w *Worker) suppressComplaintFor() time.Duration {
+	if w.cfg.SuppressComplaintFor > 0 {
+		return w.cfg.SuppressComplaintFor
+	}
+	return DefaultSuppressComplaintFor
+}
+
 func (w *Worker) claim(ctx context.Context, afterID int64, now time.Time) (r outboxRow, m Message, lease time.Time, changed bool, err error) {
 	tx, err := w.db.BeginTxx(ctx, nil)
 	if err != nil {
@@ -253,10 +277,11 @@ func (w *Worker) claim(ctx context.Context, afterID int64, now time.Time) (r out
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := tx.GetContext(ctx, &r, `SELECT e.id, e.to_email, e.template, e.payload, e.attempts,
-  COALESCE((SELECT s.reason FROM platform_mail_suppression s WHERE s.email = e.to_email), '') AS suppressed
+  COALESCE((SELECT s.reason FROM platform_mail_suppression s WHERE s.email = e.to_email
+    AND s.last_at >= IF(s.reason = 'complaint', ?, ?)), '') AS suppressed
 FROM platform_email e
 WHERE e.status = 'pending' AND e.id > ? AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= ?) AND (e.lease_until IS NULL OR e.lease_until <= ?)
-ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, afterID, now, now); err != nil {
+ORDER BY e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED`, now.Add(-w.suppressComplaintFor()), now.Add(-w.suppressBounceFor()), afterID, now, now); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return outboxRow{}, m, lease, false, nil
 		}

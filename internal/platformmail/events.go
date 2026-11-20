@@ -33,7 +33,15 @@ const (
 	DeliveryBounced    = "bounced"
 	DeliveryComplained = "complained"
 	DeliveryDelayed    = "delayed"
+	// DeliverySoftBounce: a transient or undetermined bounce (mailbox full, greylisting). Not on the
+	// list, not counted by the sign-up breaker, not «bounced» on an invite.
+	DeliverySoftBounce = "soft_bounce"
+	// DeliveryFailed: Resend could not send (email.failed: our side, a bad key, a quota). Same.
+	DeliveryFailed = "failed"
 )
+
+// hardDelivery: a final bad outcome that a later, milder event never overwrites.
+func hardDelivery(d string) bool { return d == DeliveryBounced || d == DeliveryComplained }
 
 // SuppressionApplies reports whether a letter of this kind honours the suppression list: only the
 // letters that go to an address somebody typed (a sign-up's confirm letter, an invite). Letters to
@@ -143,16 +151,16 @@ func (h *EventHandler) Apply(ctx context.Context, typ, emailID string, to []stri
 	case "email.delivery_delayed":
 		delivery = DeliveryDelayed
 	case "email.bounced":
-		delivery = DeliveryBounced
+		delivery = DeliverySoftBounce
 		if strings.EqualFold(bounce, "Permanent") {
-			reason = ReasonBounce
+			delivery, reason = DeliveryBounced, ReasonBounce
 		}
 	case "email.suppressed":
 		// Resend refused the send itself: the address is on its own list after an earlier bounce or
 		// complaint (possibly from another product of the account).
 		delivery, reason = DeliveryBounced, ReasonBounce
 	case "email.failed":
-		delivery = DeliveryBounced
+		delivery = DeliveryFailed
 	case "email.complained":
 		delivery, reason = DeliveryComplained, ReasonComplaint
 	default:
@@ -177,9 +185,9 @@ func (h *EventHandler) Apply(ctx context.Context, typ, emailID string, to []stri
 	if !recipientMatches(row.To, to) {
 		return nil
 	}
-	// A late "delivered" or "delayed" never overwrites a bounce or complaint already recorded.
-	if row.Delivery != nil && (delivery == DeliveryDelivered || delivery == DeliveryDelayed) &&
-		(*row.Delivery == DeliveryBounced || *row.Delivery == DeliveryComplained) {
+	// A late milder event (delivered, delayed, a soft bounce, failed) never overwrites a permanent
+	// bounce or complaint already recorded.
+	if row.Delivery != nil && hardDelivery(*row.Delivery) && !hardDelivery(delivery) {
 		delivery = *row.Delivery
 	}
 	if row.Delivery != nil && *row.Delivery == DeliveryComplained && delivery == DeliveryBounced {

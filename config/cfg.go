@@ -585,6 +585,13 @@ func bindEnvVars() {
 	viper.BindEnv("platform.signup_blocked_domains", "PLATFORM_SIGNUP_BLOCKED_DOMAINS")
 	viper.BindEnv("platform.signup_letters_per_hour", "PLATFORM_SIGNUP_LETTERS_PER_HOUR")
 	viper.BindEnv("platform.signup_max_bounce_pct", "PLATFORM_SIGNUP_MAX_BOUNCE_PCT")
+	viper.BindEnv("platform.signup_bounce_min_sample", "PLATFORM_SIGNUP_BOUNCE_MIN_SAMPLE")
+	viper.BindEnv("platform.signup_per_domain_hour", "PLATFORM_SIGNUP_PER_DOMAIN_HOUR")
+	viper.BindEnv("platform.signup_bot_check_on_alert", "PLATFORM_SIGNUP_BOT_CHECK_ON_ALERT")
+	viper.BindEnv("platform.invite_letters_per_team_hour", "PLATFORM_INVITE_LETTERS_PER_TEAM_HOUR")
+	viper.BindEnv("platform.invite_letters_per_team_day", "PLATFORM_INVITE_LETTERS_PER_TEAM_DAY")
+	viper.BindEnv("platform.mail_suppress_bounce_days", "PLATFORM_MAIL_SUPPRESS_BOUNCE_DAYS")
+	viper.BindEnv("platform.mail_suppress_complaint_days", "PLATFORM_MAIL_SUPPRESS_COMPLAINT_DAYS")
 	// Sign in with Google / Apple (teams O). Optional, parsed only; none set = no provider buttons.
 	viper.BindEnv("platform.oauth.google_client_id", "OAUTH_GOOGLE_CLIENT_ID")
 	viper.BindEnv("platform.oauth.google_client_secret", "OAUTH_GOOGLE_CLIENT_SECRET")

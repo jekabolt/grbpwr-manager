@@ -20,6 +20,8 @@ var (
 	ErrInviteNotFound = errors.New("platformstore: invite not found")
 	// ErrLetterCap: the recipient already got the hourly maximum of letters.
 	ErrLetterCap = errors.New("platformstore: letter cap reached")
+	// ErrTeamLetterCap: the team already sent the hourly or daily maximum of invite letters (X6).
+	ErrTeamLetterCap = errors.New("platformstore: team letter cap reached")
 	// ErrNotOwner: the actor of a people change is not (or no longer) an active owner of the team,
 	// or not an active operator.
 	ErrNotOwner = errors.New("platformstore: actor is not an active owner")
@@ -71,8 +73,9 @@ type TeamInvite struct {
 	ExpiresAt time.Time `db:"expires_at"`
 	// Name is the person's name as the inviter typed it ("" = none).
 	Name string `db:"name"`
-	// Bounced: a letter of this invite (written with or after it) bounced, drew a spam complaint or
-	// was held back because the address is suppressed (X6).
+	// Bounced: this invite's own latest letter (written at its last send) bounced permanently, drew
+	// a spam complaint or was held back because the address is suppressed (X6). Letters of other
+	// teams or other invites to the same address never count.
 	Bounced bool `db:"bounced"`
 }
 
@@ -81,8 +84,7 @@ type TeamInvite struct {
 func (s *Store) OpenInvites(ctx context.Context, teamID int64) ([]TeamInvite, error) {
 	var out []TeamInvite
 	if err := s.db.SelectContext(ctx, &out, `SELECT i.id, i.email, i.role, i.created_at, i.expires_at, i.name,
-  EXISTS (SELECT 1 FROM platform_email e WHERE e.template = 'invite' AND e.to_email = i.email
-    AND e.created_at >= i.created_at - INTERVAL 5 SECOND
+  EXISTS (SELECT 1 FROM platform_email e WHERE e.invite_id = i.id AND e.created_at >= i.created_at
     AND (e.delivery IN ('bounced', 'complained') OR (e.status = 'failed' AND e.last_error LIKE 'suppressed:%'))) AS bounced
 FROM team_invite i
 WHERE i.team_id = ? AND i.accepted_at IS NULL AND i.revoked_at IS NULL ORDER BY i.created_at DESC, i.id DESC`, teamID); err != nil {
@@ -109,6 +111,8 @@ type InviteParams struct {
 	Now    time.Time
 	// MaxPerHour caps letters to one address per hour (verify, invite and reset together).
 	MaxPerHour int
+	// TeamCap caps the team's invite letters (X6; zero fields = no cap).
+	TeamCap TeamLetterCap
 	// Name is the person's name as the inviter typed it, checked by the caller ("" = none: a
 	// re-invite keeps the name the open invite holds).
 	Name string
@@ -149,6 +153,9 @@ func (s *Store) UpsertInvite(ctx context.Context, p InviteParams) (TeamInvite, e
 		if err := letterCapTx(ctx, tx, p.Email, p.Now, p.MaxPerHour); err != nil {
 			return err
 		}
+		if err := teamLetterCapTx(ctx, tx, p.TeamID, p.Now, p.TeamCap); err != nil {
+			return err
+		}
 		var existing struct {
 			ID    int64  `db:"id"`
 			Email string `db:"email"`
@@ -182,7 +189,9 @@ expires_at = ?, created_at = ?, name = COALESCE(NULLIF(?, ''), name) WHERE id = 
 				return fmt.Errorf("platformstore: update invite: %w", err)
 			}
 		}
-		if err := insertLetterTx(ctx, tx, p.Letter, p.Now); err != nil {
+		l := p.Letter
+		l.TeamID, l.InviteID = p.TeamID, id
+		if err := insertLetterTx(ctx, tx, l, p.Now); err != nil {
 			return err
 		}
 		name := p.Name
@@ -207,6 +216,7 @@ type ResendParams struct {
 	Letter     func(inv TeamInvite) Letter
 	Now        time.Time
 	MaxPerHour int
+	TeamCap    TeamLetterCap
 }
 
 // ResendInvite gives an open invite a new token (the old link dies) and expiry and queues a new
@@ -227,12 +237,15 @@ WHERE id = ? AND team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL FOR 
 		if err := letterCapTx(ctx, tx, inv.Email, p.Now, p.MaxPerHour); err != nil {
 			return err
 		}
+		if err := teamLetterCapTx(ctx, tx, p.TeamID, p.Now, p.TeamCap); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET token_hash = ?, expires_at = ?, created_at = ? WHERE id = ?`,
 			p.TokenHash, p.ExpiresAt, p.Now, inv.ID); err != nil {
 			return fmt.Errorf("platformstore: resend invite: %w", err)
 		}
 		l := p.Letter(inv)
-		l.To = inv.Email
+		l.To, l.TeamID, l.InviteID = inv.Email, p.TeamID, inv.ID
 		return insertLetterTx(ctx, tx, l, p.Now)
 	})
 }
