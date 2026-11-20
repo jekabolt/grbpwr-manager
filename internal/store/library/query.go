@@ -52,6 +52,17 @@ const fileUsedSQL = "(EXISTS (SELECT 1 FROM task_file tfu WHERE tfu.file_id = lf
 	" OR EXISTS (SELECT 1 FROM tech_card_garment_label_file glfu WHERE glfu.library_file_id = lf.id)" +
 	" OR EXISTS (SELECT 1 FROM tech_card_garment_label_print glpu WHERE glpu.library_file_id = lf.id))"
 
+// fileHasMediaTwinSQL is "this file already has a public media twin": exactly the dedup of
+// CopyLibraryFileToMedia (Store.FindMediaBySourceSha), a media row whose lib_source_sha256 or
+// content_hash is the file's sha, a blank sha never matching. When the list also shows media, such a
+// file is left out, so «make public» always ends with one item (the media), also after existed=true.
+// CONVERT(... USING ascii) lets both media columns use their own index: an ascii value is promoted to
+// the column's charset, while the bare utf8mb4_bin column would force the column to convert instead
+// (a re-planned range scan per file in EXPLAIN). A sha is hex, so nothing is lost in ascii.
+const fileHasMediaTwinSQL = "(lf.sha256 <> ''" +
+	" AND (EXISTS (SELECT 1 FROM media mtw WHERE mtw.lib_source_sha256 = CONVERT(lf.sha256 USING ascii))" +
+	" OR EXISTS (SELECT 1 FROM media mtc WHERE mtc.content_hash = CONVERT(lf.sha256 USING ascii))))"
+
 // mediaUsedSQL / mediaFreeSQL are the media used/free predicates over content.UsedMediaFilter's join.
 var (
 	mediaUsedSQL = "(" + content.MediaUsedJoinAlias + ".id IS NOT NULL OR m.id IN (:lib_json_used))"
@@ -376,6 +387,12 @@ func (s *Store) buildQuery(ctx context.Context, b entity.LibraryBranches, full i
 			return nil, invalid("%v", err)
 		}
 		where := []string{base}
+		// One item per picture: while the media branch runs in this same query, a file with a media
+		// twin is shown as that media only. A files-only list (sources=[FILE]: the notes and label
+		// pickers, whose FKs need the file row; a topic filter; a caller without media) keeps it.
+		if q.media {
+			where = append(where, "NOT "+fileHasMediaTwinSQL)
+		}
 		if len(kindValues) > 0 {
 			where = append(where, fileKindSQL+" IN (:lib_kinds)")
 		}
