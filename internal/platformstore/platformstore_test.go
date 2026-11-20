@@ -102,7 +102,7 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// + 0010 team_schema_min_code (X3, one column)
 	// + 0011 mail delivery (X6: platform_mail_suppression + platform_email delivery columns)
 	// + 0012 operator second step (operator_totp, operator_recovery_code, operator_second_step,
-	// platform_flag) + 0013 team join link (X6: team_join_link, team_join_request, platform_join_intent)
+	// platform_flag) + 0016 team join link (X6: team_join_link, team_join_request, platform_join_intent)
 	// + 0014 team_storage (X11, one table).
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 14 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)

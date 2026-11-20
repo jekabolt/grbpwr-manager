@@ -326,13 +326,20 @@ func lockJoinGenerationTx(ctx context.Context, tx *sqlx.Tx, teamID, gen int64) (
 
 func (s *Store) decideJoinTx(ctx context.Context, tx *sqlx.Tx, teamID, gen int64, u User, ip string, now time.Time,
 	requestLink string) (joinReservation, error) {
-	var active int
-	if err := tx.GetContext(ctx, &active, `SELECT COUNT(*) FROM team_member
-WHERE team_id = ? AND user_id = ? AND status = 'active'`, teamID, u.ID); err != nil {
+	var memberStatus []string
+	if err := tx.SelectContext(ctx, &memberStatus, `SELECT status FROM team_member
+WHERE team_id = ? AND user_id = ? FOR UPDATE`, teamID, u.ID); err != nil {
 		return joinReservation{}, fmt.Errorf("platformstore: join membership: %w", err)
 	}
-	if active > 0 {
-		return joinReservation{state: JoinAlreadyMember}, nil
+	if len(memberStatus) > 0 {
+		switch memberStatus[0] {
+		case "active":
+			return joinReservation{state: JoinAlreadyMember}, nil
+		case "joining":
+			// A join already in its four steps (approved request or accepted invite): another press
+			// must not open a second request that a later approve would re-stage over the first.
+			return joinReservation{state: JoinPending}, nil
+		}
 	}
 
 	var invites []Invite
@@ -512,12 +519,31 @@ WHERE id = ? AND team_id = ? AND user_id = ? AND gen = ? FOR UPDATE`,
 				}
 				return ErrJoinLinkInvalid
 			}
+			if err := closePendingJoinRequestsTx(ctx, tx, r.member.TeamID, r.member.UserID, p.Now); err != nil {
+				return err
+			}
+			if err := revokeLiveInvitesTx(ctx, tx, r.member.TeamID, u.Email.String, p.Now); err != nil {
+				return err
+			}
 			if prev == "joining" {
 				return insertJoinApprovedLetterTx(ctx, tx, u.Email.String, r.member.TeamID, p.RequestLink, p.Now)
 			}
 		}
 		return nil
 	})
+}
+
+// revokeLiveInvitesTx revokes the team's open invites for an address: once a person joined through a
+// request or was removed, an older invite must not (re)admit them with its own role later.
+func revokeLiveInvitesTx(ctx context.Context, tx *sqlx.Tx, teamID int64, email string, now time.Time) error {
+	if email == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET revoked_at = ?
+WHERE team_id = ? AND email = ? AND accepted_at IS NULL AND revoked_at IS NULL`, now, teamID, email); err != nil {
+		return fmt.Errorf("platformstore: revoke live invites: %w", err)
+	}
+	return nil
 }
 
 func closePendingJoinRequestsTx(ctx context.Context, tx *sqlx.Tx, teamID, userID int64, now time.Time) error {
@@ -861,6 +887,27 @@ WHERE id = ? AND team_id = ? FOR UPDATE`, p.RequestID, p.TeamID); err != nil {
 		}
 		if err := joinableUser(u); err != nil {
 			return err
+		}
+		var memberStatus []string
+		if err := tx.SelectContext(ctx, &memberStatus, `SELECT status FROM team_member
+WHERE team_id = ? AND user_id = ? FOR UPDATE`, p.TeamID, row.UserID); err != nil {
+			return fmt.Errorf("platformstore: approve membership: %w", err)
+		}
+		if len(memberStatus) > 0 && memberStatus[0] == "active" {
+			// Already in the team (another request or an invite won): never re-stage, which would
+			// reset the admins row's rights or demote an owner. Close a stale pending row and stop.
+			if row.Status == "pending" {
+				if _, err := tx.ExecContext(ctx, `UPDATE team_join_request SET status = 'closed', decided_at = ?, decided_by = ?
+WHERE id = ?`, p.Now, p.Actor.UserID, p.RequestID); err != nil {
+					return fmt.Errorf("platformstore: close stale join request: %w", err)
+				}
+			}
+			r = joinReservation{state: JoinAlreadyMember}
+			return nil
+		}
+		if len(memberStatus) > 0 && memberStatus[0] == "joining" && row.Status == "pending" {
+			// Another join of this person is mid-way; this row is a duplicate.
+			return ErrJoinRequestNotFound
 		}
 		if row.Status == "pending" {
 			if _, err := tx.ExecContext(ctx, `UPDATE team_join_request SET status = 'approved', decided_at = ?, decided_by = ?

@@ -514,7 +514,7 @@ WHERE t.slug = ? AND t.status = 'pending' AND u.email = ? AND u.status = 'pendin
 			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {
 				var live int
 				if err := tx.GetContext(ctx, &live, `SELECT COUNT(*) FROM email_token
-WHERE user_id = ? AND purpose = 'verify' AND used_at IS NULL AND expires_at > ?`, uid, p.Now); err != nil {
+WHERE user_id = ? AND purpose IN ('verify','verify_join') AND used_at IS NULL AND expires_at > ?`, uid, p.Now); err != nil {
 					return fmt.Errorf("platformstore: live verify letters: %w", err)
 				}
 				if live > 0 {

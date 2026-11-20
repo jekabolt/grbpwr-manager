@@ -380,7 +380,7 @@ func claimPendingTx(ctx context.Context, tx *sqlx.Tx, userID int64, p ProviderPa
 		return nil, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
-WHERE user_id = ? AND purpose IN ('verify', 'reset') AND used_at IS NULL`, p.Now, userID); err != nil {
+WHERE user_id = ? AND purpose IN ('verify', 'verify_join', 'reset') AND used_at IS NULL`, p.Now, userID); err != nil {
 		return nil, nil, fmt.Errorf("platformstore: claim: expire letters: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET status = 'active', email_verified_at = ?,
