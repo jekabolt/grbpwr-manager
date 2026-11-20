@@ -2,11 +2,16 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -41,8 +46,12 @@ const maxMediaUsageIds = 500
 // GIF are stored byte for byte, and everything else is refused rather than quietly re-encoded
 // under a flag that says the opposite (see uploadContentImageVerbatim).
 func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadContentImageRequest) (*pb_admin.UploadContentImageResponse, error) {
+	fileName, err := uploadFileName(req.GetFileName())
+	if err != nil {
+		return nil, err
+	}
 	if req.GetPreserveOriginal() {
-		return s.uploadContentImageVerbatim(ctx, req.GetRawB64Image())
+		return s.uploadContentImageVerbatim(ctx, req.GetRawB64Image(), fileName)
 	}
 	m, err := s.bucket.UploadContentImage(ctx, req.RawB64Image, s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
@@ -51,6 +60,8 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 		)
 		return nil, status.Errorf(codes.Internal, "failed to upload image: %v", err)
 	}
+	size, sha := dataURLSizeAndSha(req.GetRawB64Image())
+	s.recordUploadMeta(ctx, m, fileName, size, sha)
 	return &pb_admin.UploadContentImageResponse{
 		Media: m,
 	}, nil
@@ -71,7 +82,7 @@ func (s *Server) UploadContentImage(ctx context.Context, req *pb_admin.UploadCon
 // re-written: it already mirrors the bucket's sniffer for exactly this kind of routing decision,
 // and an `ftyp` box — HEIC, AVIF, mp4 — is ambiguous to it, which is precisely the answer wanted
 // here, since none of the three has a verbatim path.
-func (s *Server) uploadContentImageVerbatim(ctx context.Context, rawB64Image string) (*pb_admin.UploadContentImageResponse, error) {
+func (s *Server) uploadContentImageVerbatim(ctx context.Context, rawB64Image, fileName string) (*pb_admin.UploadContentImageResponse, error) {
 	raw, declared, err := rawImageFromDataURL(rawB64Image)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
@@ -90,6 +101,7 @@ func (s *Server) uploadContentImageVerbatim(ctx context.Context, rawB64Image str
 		)
 		return nil, status.Errorf(codes.Internal, "failed to upload image: %v", err)
 	}
+	s.recordUploadMeta(ctx, m, fileName, int64(len(raw)), sha256Hex(raw))
 	return &pb_admin.UploadContentImageResponse{
 		Media: m,
 	}, nil
@@ -135,6 +147,10 @@ func verbatimPayloadName(declared string) string {
 
 // UploadContentVideo
 func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadContentVideoRequest) (*pb_admin.UploadContentVideoResponse, error) {
+	fileName, err := uploadFileName(req.GetFileName())
+	if err != nil {
+		return nil, err
+	}
 	media, err := s.bucket.UploadContentVideo(ctx, req.GetRaw(), s.bucket.GetBaseFolder(), bucket.GetMediaName(), req.ContentType)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload content video",
@@ -142,6 +158,7 @@ func (s *Server) UploadContentVideo(ctx context.Context, req *pb_admin.UploadCon
 		)
 		return nil, status.Errorf(codes.Internal, "failed to upload video: %v", err)
 	}
+	s.recordUploadMeta(ctx, media, fileName, int64(len(req.GetRaw())), sha256Hex(req.GetRaw()))
 	return &pb_admin.UploadContentVideoResponse{
 		Media: media,
 	}, nil
@@ -192,6 +209,10 @@ func (s *Server) UploadPattern(ctx context.Context, req *pb_admin.UploadPatternR
 // a safe SVG) is the client's fault — InvalidArgument, with the inspector's own words — while an
 // S3 or DB failure is Internal.
 func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadContentVectorRequest) (*pb_admin.UploadContentVectorResponse, error) {
+	fileName, err := uploadFileName(req.GetFileName())
+	if err != nil {
+		return nil, err
+	}
 	media, err := s.bucket.UploadContentNonRaster(ctx, req.GetRaw(), "image/svg+xml", s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload content vector",
@@ -203,6 +224,7 @@ func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadCo
 		}
 		return nil, status.Errorf(code, "failed to upload vector: %v", err)
 	}
+	s.recordUploadMeta(ctx, media, fileName, int64(len(req.GetRaw())), sha256Hex(req.GetRaw()))
 	return &pb_admin.UploadContentVectorResponse{
 		Media: media,
 	}, nil
@@ -250,6 +272,10 @@ func (s *Server) UploadContentVector(ctx context.Context, req *pb_admin.UploadCo
 // thumbnail and compressed slots a real picture. The preview's refusals wrap the same sentinel as
 // the model's, so a bad preview is the client's fault (InvalidArgument) exactly as a bad model is.
 func (s *Server) UploadContentModel(ctx context.Context, req *pb_admin.UploadContentModelRequest) (*pb_admin.UploadContentModelResponse, error) {
+	fileName, err := uploadFileName(req.GetFileName())
+	if err != nil {
+		return nil, err
+	}
 	media, err := s.bucket.UploadContentModel(ctx, req.GetRaw(), req.GetPreview(), s.bucket.GetBaseFolder(), bucket.GetMediaName())
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload content model",
@@ -261,6 +287,8 @@ func (s *Server) UploadContentModel(ctx context.Context, req *pb_admin.UploadCon
 		}
 		return nil, status.Errorf(code, "failed to upload model: %v", err)
 	}
+	// The model's own bytes, not the preview's: the row is the model.
+	s.recordUploadMeta(ctx, media, fileName, int64(len(req.GetRaw())), sha256Hex(req.GetRaw()))
 	return &pb_admin.UploadContentModelResponse{
 		Media: media,
 	}, nil
@@ -531,4 +559,63 @@ func (s *Server) GetMediaUsage(ctx context.Context, req *pb_admin.GetMediaUsageR
 	return &pb_admin.GetMediaUsageResponse{
 		Usages: usages,
 	}, nil
+}
+
+// maxUploadFileName bounds the file name an upload records for the library list (media.lib_file_name
+// is VARCHAR(255)).
+const maxUploadFileName = 255
+
+// uploadFileName validates the optional original file name an upload carries (02-DESIGN §2.5):
+// trimmed, at most 255 runes, no path separators. Empty is allowed: older clients send none.
+func uploadFileName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > maxUploadFileName {
+		return "", status.Errorf(codes.InvalidArgument, "file_name must be at most %d characters", maxUploadFileName)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", status.Error(codes.InvalidArgument, "file_name must not contain a path")
+	}
+	return name, nil
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// dataURLSizeAndSha is the decoded length and sha256 of a "data:…;base64,…" payload, streamed so the
+// picture is not decoded into a second copy next to the one the bucket already made. (0, "") when the
+// envelope does not parse — the bucket has accepted it by then, so that is not expected.
+func dataURLSizeAndSha(rawB64Image string) (int64, string) {
+	_, payload, ok := strings.Cut(rawB64Image, ";base64,")
+	if !ok {
+		return 0, ""
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, base64.NewDecoder(base64.StdEncoding, strings.NewReader(strings.TrimSpace(payload))))
+	if err != nil || n == 0 {
+		return 0, ""
+	}
+	return n, hex.EncodeToString(h.Sum(nil))
+}
+
+// recordUploadMeta writes what the library list shows about an upload: original name, size, uploader,
+// sha of the original bytes. It runs only after the upload succeeded and never fails it — a failure
+// is logged. The store COALESCEs every column, so a dedup hit keeps the first uploader's values.
+func (s *Server) recordUploadMeta(ctx context.Context, m *pb_common.MediaFull, fileName string, size int64, sha string) {
+	if s.repo == nil || m == nil || m.GetId() <= 0 {
+		return
+	}
+	meta := entity.MediaLibraryMeta{
+		FileName:     sql.NullString{String: fileName, Valid: fileName != ""},
+		SizeBytes:    sql.NullInt64{Int64: size, Valid: size > 0},
+		SourceSha256: sql.NullString{String: sha, Valid: sha != ""},
+	}
+	if uid := s.callerAdminID(ctx); uid > 0 {
+		meta.UploadedById = sql.NullInt64{Int64: int64(uid), Valid: true}
+	}
+	if err := s.repo.Media().SetMediaLibraryMeta(ctx, int(m.GetId()), meta); err != nil {
+		slog.Default().WarnContext(ctx, "can't record library meta of an upload",
+			slog.Int("media_id", int(m.GetId())), slog.String("err", err.Error()))
+	}
 }
