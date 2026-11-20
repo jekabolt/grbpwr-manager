@@ -120,8 +120,11 @@ func TestEmptySetServesNothing(t *testing.T) {
 	if (Set{}).Servable("0484_add.sql", "") {
 		t.Fatal("an unreadable set must fail closed")
 	}
-	if history(t, 488).Servable("", "") {
-		t.Fatal("a team with no version must be closed")
+	if history(t, 488).Servable("", "") || history(t, 488).Servable("previous", "") {
+		t.Fatal("a team with no version, or a version that is not a migration id, must be closed")
+	}
+	if history(t, 488).Ahead("previous") {
+		t.Fatal("a version that is not a migration id is never ahead")
 	}
 }
 

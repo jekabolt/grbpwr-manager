@@ -157,15 +157,20 @@ func (s Set) MinCodeAt(version string) string {
 }
 
 // Ahead reports whether version is newer than anything this binary embeds (a rollback).
+// A version without a numeric prefix is never ahead: it is not a migration id, so the fleet
+// migrates the database and records a real one.
 func (s Set) Ahead(version string) bool {
-	return version != "" && s.Latest != "" && Compare(version, s.Latest) > 0
+	if _, ok := idNumber(version); !ok {
+		return false
+	}
+	return s.Latest != "" && Compare(version, s.Latest) > 0
 }
 
 // Servable reports whether this binary may serve a database at version with minCode. Team #1 is
 // decided by the caller (always served).
 func (s Set) Servable(version, minCode string) bool {
-	if s.Latest == "" || version == "" {
-		return false
+	if _, ok := idNumber(version); !ok || s.Latest == "" {
+		return false // no version, or not a migration id: not served until the fleet records one
 	}
 	if Compare(version, s.Need) < 0 {
 		return false // behind a migration this code needs
