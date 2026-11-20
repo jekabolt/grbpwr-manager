@@ -164,6 +164,7 @@ type App struct {
 	stopTeamsMail     func()
 	stopProvisioner   func()
 	stopAIRollup      func()
+	stopStorage       func() // X11: storage recount (teams_storage.go)
 	stopTaskBoardHeal func()
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
@@ -975,6 +976,9 @@ func (a *App) Start(ctx context.Context) error {
 			return err
 		}
 		a.wireDesignTeams() // teams mode on: one tick per active team with `ai` on (teams_ai.go)
+		if bk, ok := a.b.(*bucket.Bucket); ok {
+			a.dgw.SetStorageGate(bk.StorageRoom) // X11: a full team never pays (no-op until the meter is on)
+		}
 		if err = a.dgw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
 				slog.String("err", err.Error()),
@@ -1041,6 +1045,9 @@ func (a *App) Start(ctx context.Context) error {
 	// every paid verb.
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
+	}
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		adminS.SetStorageRoom(bk.StorageRoom) // X11: no-op until the meter is on (teams mode)
 	}
 	if designThreedView != nil {
 		adminS.SetDesignThreedRoute(designThreedView)
@@ -1454,6 +1461,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
 	// failed before store.New assigned a.db.
+	if a.stopStorage != nil {
+		a.stopStorage()
+	}
 	if a.stopAIRollup != nil {
 		a.stopAIRollup()
 	}
@@ -1727,6 +1737,7 @@ func (a *App) startTeamsWorkers(ctx context.Context) error {
 		return fmt.Errorf("ai spend rollup: %w", err)
 	}
 	a.stopAIRollup = stop
+	a.stopStorage = a.startStorageMeter(ctx) // X11: storage cap + daily recount (teams_storage.go)
 	return nil
 }
 

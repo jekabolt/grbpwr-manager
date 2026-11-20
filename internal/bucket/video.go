@@ -46,13 +46,13 @@ func (b *Bucket) uploadVideoObj(ctx context.Context, mp4Data []byte, folder, obj
 
 	r := bytes.NewReader(mp4Data)
 
-	_, err = b.Client.PutObject(ctx, b.S3BucketName, fp,
+	_, err = b.put(ctx, fp,
 		r, int64(r.Len()),
 		minio.PutObjectOptions{
 			ContentType:  contentType,
 			CacheControl: cacheControl,
 			UserMetadata: userMetaData,
-		})
+		}, false)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload video object",
 			slog.String("err", err.Error()))

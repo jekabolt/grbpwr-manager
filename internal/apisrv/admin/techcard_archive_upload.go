@@ -104,6 +104,11 @@ func (s *Server) TechCardArchiveUploadHandler() http.Handler {
 			return
 		}
 		username := authsrv.GetAdminUsername(ctx)
+		// X11: a team at its storage cap is refused before a byte of the archive is read.
+		if s.storageRoomCheck(ctx) != nil {
+			writeUploadError(w, http.StatusInsufficientStorage, "storage full")
+			return
+		}
 
 		mr, err := r.MultipartReader()
 		if err != nil {
@@ -299,6 +304,10 @@ func tcupWriteUploadFailure(ctx context.Context, w http.ResponseWriter, username
 	}
 	if errors.Is(err, http.ErrHandlerTimeout) {
 		writeUploadError(w, http.StatusRequestTimeout, "the upload timed out")
+		return
+	}
+	if bucket.IsStorageFull(err) {
+		writeUploadError(w, http.StatusInsufficientStorage, "storage full")
 		return
 	}
 	slog.Default().ErrorContext(ctx, "tech card import: can't store the uploaded archive",

@@ -94,6 +94,8 @@ var (
 	// charged the clip, and nothing on record can resume it. D-16: never fall back, never resubmit —
 	// `unknown`, terminal, reconciled by a person. fal's ErrSubmitUnconfirmed, for the same reason.
 	errVideoSubmitUnconfirmed = errors.New("designgen: the video submit may have been bought and cannot be confirmed")
+	// errTeamStorageFull: the storage gate (SetStorageGate) says the team is at its cap (lane X11).
+	errTeamStorageFull = errors.New("designgen: the team is at its storage cap")
 )
 
 // Stable machine tokens for design_run.error_code. The client renders `failed · <token>`, so they
@@ -112,6 +114,9 @@ const (
 	CodeProviderTimeout     = "provider_timeout"
 	CodeTaskFailed          = "provider_task_failed"
 	CodeStorageFailed       = "storage_failed"
+	// CodeStorageFull — the team is at its storage cap (lane X11): refused before any money, terminal
+	// (the person frees space or the operator raises the cap, then starts a new run).
+	CodeStorageFull = "storage_full"
 	// CodePatternNotSeamless — ПЛИТКА КУПЛЕНА И НЕ СТЫКУЕТСЯ САМА С СОБОЙ (K-13).
 	//
 	// ⚠ ЭТО КОД ДОСТАВЛЕННОЙ ПОПЫТКИ, А НЕ ПРОВАЛЕННОЙ, и в этом весь его смысл. Картинка получена
@@ -309,6 +314,9 @@ func classifyBySentinel(err error) verdict {
 		return verdict{Retryable: false, Code: CodeKindNotAvailable, State: entity.DesignAttemptFailed}
 	case errors.Is(err, errSinkUnsupported):
 		return verdict{Retryable: false, Code: CodeOutputNotStorable, State: entity.DesignAttemptFailed}
+	// ─── ours, X11: the team is at its storage cap. Asked before any attempt row: free, terminal.
+	case errors.Is(err, errTeamStorageFull):
+		return verdict{Retryable: false, Code: CodeStorageFull, State: entity.DesignAttemptFailed}
 	// ─── ours: the job was refused while it was being BUILT, before StartAttempt and therefore
 	// before any money. Terminal because the snapshot is frozen: the next pass assembles the very
 	// same pictures out of the very same params and meets the very same ceiling, so a retry buys

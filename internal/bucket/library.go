@@ -101,7 +101,7 @@ func (b *Bucket) UploadLibraryObject(ctx context.Context, r io.Reader, contentTy
 	// other than the ones that reached the bucket, which is what makes it usable
 	// as a duplicate key later.
 	hasher := sha256.New()
-	info, err := b.Client.PutObject(ctx, b.S3BucketName, key, io.TeeReader(r, hasher), -1,
+	info, err := b.put(ctx, key, io.TeeReader(r, hasher), -1,
 		minio.PutObjectOptions{
 			ContentType: contentType,
 			// Short private cache only: the object is served through presigned urls
@@ -109,7 +109,7 @@ func (b *Bucket) UploadLibraryObject(ctx context.Context, r io.Reader, contentTy
 			// media paths use) would outlive every url that can reach it.
 			CacheControl: "private, max-age=21600",
 			PartSize:     libraryUploadPartSize,
-		})
+		}, false)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload library object",
 			slog.String("key", key), slog.String("err", err.Error()))
@@ -148,11 +148,11 @@ func (b *Bucket) UploadLibraryPreview(ctx context.Context, raw []byte, ext strin
 	}
 
 	r := bytes.NewReader(raw)
-	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, int64(r.Len()),
+	if _, err := b.put(ctx, key, r, int64(r.Len()),
 		minio.PutObjectOptions{
 			ContentType:  string(ct),
 			CacheControl: "private, max-age=21600",
-		}); err != nil {
+		}, false); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload library preview",
 			slog.String("key", key), slog.String("err", err.Error()))
 		return "", fmt.Errorf("upload library preview: %w", err)
@@ -186,7 +186,7 @@ func (b *Bucket) RemoveObjectsByKeys(ctx context.Context, keys ...string) error 
 			}
 			continue
 		}
-		if err := b.Client.RemoveObject(ctx, b.S3BucketName, key, minio.RemoveObjectOptions{}); err != nil {
+		if err := b.removeMetered(ctx, key); err != nil {
 			slog.Default().ErrorContext(ctx, "can't remove object by key",
 				slog.String("key", key), slog.String("err", err.Error()))
 			if firstErr == nil {

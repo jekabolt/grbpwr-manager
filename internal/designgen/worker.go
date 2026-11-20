@@ -49,6 +49,9 @@ type Worker struct {
 	// person's markup silently missing.
 	objects objectFetcher
 
+	// storageGate: the team's storage cap, asked before a fresh run pays (SetStorageGate, X11).
+	storageGate func(ctx context.Context) error
+
 	// now is the pickup guard's clock (submitSettleGrace); nil = time.Now. Tests set it.
 	now func() time.Time
 

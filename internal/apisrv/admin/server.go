@@ -197,6 +197,8 @@ type Server struct {
 	// block that builds the worker, so a Server without the gate is a Server whose money flag is
 	// off and which therefore refuses every paid verb one check earlier.
 	designKindGate func(kind string) error
+	// storageRoom: the team's storage cap, asked before paid generation and archive import (X11).
+	storageRoom func(ctx context.Context) error
 	// designEngines is the per-run engine table (designgen.EngineTable, PLAYGROUND phase 2): the
 	// door validates and prices params.image against it, the band advertises it. Nil = no engine
 	// is offered, and the door refuses every params.image.
