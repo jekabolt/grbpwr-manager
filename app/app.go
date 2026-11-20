@@ -56,6 +56,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/ordercleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/orimages"
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
+	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
@@ -1092,6 +1093,12 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.hs.SetTenantBinder(binder)
+	// Public links carry their team signed in the token (patterntoken v2, lane X1): the edge binds
+	// each /api/p|pv|rp|f request to that team. Same pepper as the link services below, which fail
+	// the boot on an empty one.
+	if linkTokens, err := patterntoken.NewMinter(a.c.PatternToken.Pepper); err == nil {
+		binder.UseTokenTeams(linkTokens.TokenTeam)
+	}
 	a.useSchemaGate(binder)
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)

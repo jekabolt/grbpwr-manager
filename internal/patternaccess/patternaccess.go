@@ -231,24 +231,12 @@ func (s *Service) noteCardAccess(ctx context.Context, techCardID int) {
 	s.statsMu.Unlock()
 }
 
-// refusePublicLinks reports (and logs) whether ctx may not mint public links. The fill/mint
-// methods are best-effort by contract — a missing url never fails the read — so a refused caller
-// gets the rows without links, the same shape as any other mint failure.
-func refusePublicLinks(ctx context.Context, what string) bool {
-	if err := PublicLinksAllowed(ctx); err != nil {
-		slog.Default().InfoContext(ctx, "public link mint refused",
-			slog.String("what", what), slog.String("err", err.Error()))
-		return true
-	}
-	return false
-}
-
 // FillTechCardPatternURLs populates the output-only view_url/download_url on tech-card
 // pattern messages. Nil-receiver-safe (tests construct servers without the service) and
 // best-effort: an unparseable url leaves the fields empty rather than failing the read
 // (design R8). NOT used for persisted snapshots — release blobs must stay token-free.
 func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, ps []*pb_common.TechCardSizePattern) {
-	if s == nil || len(ps) == 0 || refusePublicLinks(ctx, "tech card pattern urls") {
+	if s == nil || len(ps) == 0 {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(ps))
@@ -275,7 +263,7 @@ func (s *Service) applyTechCardURLs(ctx context.Context, baseURL string, rows ma
 		if !ok {
 			continue
 		}
-		tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
+		tok := s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeInternal, row.Id, row.Epoch)
 		p.ViewUrl = baseURL + "/api/p/" + tok
 		p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 	}
@@ -293,7 +281,7 @@ func (s *Service) FillFittingPatternURLs(ctx context.Context, baseURL string, ps
 // RPC returns up to a page of fittings, and a per-fitting ensure would put a query (and,
 // for a fresh object, a write) per fitting behind every list read.
 func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL string, groups [][]*pb_common.FittingPattern) {
-	if s == nil || len(groups) == 0 || refusePublicLinks(ctx, "fitting pattern urls") {
+	if s == nil || len(groups) == 0 {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(groups))
@@ -322,7 +310,7 @@ func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL strin
 			if !ok {
 				continue
 			}
-			tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
+			tok := s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeInternal, row.Id, row.Epoch)
 			p.ViewUrl = baseURL + "/api/p/" + tok
 			p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 		}
@@ -355,11 +343,18 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		notFound("ip rate limited")
 		return
 	}
-	scope, id, epoch, err := s.minter.Parse(token)
+	team, scope, id, epoch, err := s.minter.ParseTeam(token)
 	if err != nil {
 		notFound("bad token")
 		return
 	}
+	// The second lock behind the edge, which binds this request to the token's own signed team
+	// (tenantbind): a token of any other team never reaches a row of the team this request runs as.
+	if team != patterntoken.LinkTeam(ctx) {
+		notFound("team mismatch")
+		return
+	}
+	teamKey := "t" + strconv.FormatInt(team, 10) + "|"
 	// SCOPE ALLOWLIST. This endpoint resolves ids against pattern_object_access, so only
 	// the two OBJECT scopes may pass. A ScopeCard token carries a TECH CARD id in the same
 	// numeric range — looked up here it would resolve to an unrelated object whose row id
@@ -373,7 +368,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Keyed on the PARSED id, never the token string: Parse pins canonical spelling, but
 	// the id is the identity the budget is actually about (both scopes of one object share
 	// it), and a string key would hand an attacker a fresh bucket per spelling variant.
-	if !s.tokenLimiter.Allow(ip + "|" + strconv.FormatInt(id, 10)) {
+	if !s.tokenLimiter.Allow(ip + "|" + teamKey + strconv.FormatInt(id, 10)) {
 		notFound("token rate limited")
 		return
 	}

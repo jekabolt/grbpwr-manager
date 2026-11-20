@@ -234,20 +234,13 @@ func (s *Service) MintRunPackToken(ctx context.Context, runID int) string {
 	if s == nil || runID <= 0 {
 		return ""
 	}
-	// Ответ без токена — тот же best effort, что и при любом сбое минта: v1-токен без команды
-	// открылся бы в команде №1 (PublicLinksAllowed).
-	if err := PublicLinksAllowed(ctx); err != nil {
-		slog.Default().InfoContext(ctx, "run pack token mint refused",
-			slog.Int("run_id", runID), slog.String("err", err.Error()))
-		return ""
-	}
 	row, err := s.runs.EnsureRunPackAccess(ctx, runID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "mint run pack token failed",
 			slog.Int("run_id", runID), slog.String("err", err.Error()))
 		return ""
 	}
-	return s.minter.Mint(patterntoken.ScopeRunPack, int64(runID), row.Epoch)
+	return s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeRunPack, int64(runID), row.Epoch)
 }
 
 // Handler адаптирует ServeManifest под монтирование в http-сервере.
@@ -278,11 +271,18 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 		notFound("ip rate limited")
 		return
 	}
-	scope, id, epoch, err := s.minter.Parse(token)
+	team, scope, id, epoch, err := s.minter.ParseTeam(token)
 	if err != nil {
 		notFound("bad token")
 		return
 	}
+	// The second lock behind the edge, which binds this request to the token's own signed team
+	// (tenantbind): a token of any other team never reaches a row of the team this request runs as.
+	if team != patterntoken.LinkTeam(ctx) {
+		notFound("team mismatch")
+		return
+	}
+	teamKey := "t" + strconv.FormatInt(team, 10) + "|"
 	// СКОУП-ALLOWLIST. Здесь id — это номер ПРОГОНА, а токены 'i'/'p' несут id строки
 	// pattern_object_access, 'c' — id тех-карты. Все три диапазона пересекаются числами, поэтому
 	// принятый чужой скоуп означал бы выдачу наряда партии, у которой просто совпал номер с
@@ -294,7 +294,7 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ключ по РАСПАРСЕННОМУ id, а не по строке токена: Parse уже пришпилил каноническое написание,
 	// но бюджет — про прогон, а строковый ключ выдал бы новое ведро на каждый вариант написания.
-	if !s.tokenLimiter.Allow(ip + "|r|" + strconv.Itoa(int(id))) {
+	if !s.tokenLimiter.Allow(ip + "|" + teamKey + "r|" + strconv.Itoa(int(id))) {
 		notFound("token rate limited")
 		return
 	}

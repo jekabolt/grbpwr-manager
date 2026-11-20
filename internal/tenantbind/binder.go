@@ -101,6 +101,7 @@ type Binder struct {
 	baseDomain    string
 	legacyOrigins map[string]bool
 	behind        func(tenant.Team) bool // nil = every team is current
+	tokenTeams    TokenTeams             // nil = every public link is team #1 (token.go)
 
 	cacheMu   sync.Mutex
 	features  map[int64]featureEntry
@@ -613,6 +614,8 @@ func (b *Binder) bindFor(ctx context.Context, c Class) (context.Context, error) 
 		}
 		return tenant.With(ctx, t), nil
 	case ClassToken:
+		// The http edge binds tokens by their own team (Middleware → bindToken); no gRPC method
+		// is of this class, so this branch only keeps the old team #1 answer for direct callers.
 		return tenant.With(ctx, b.teamOne), nil
 	case ClassHealth:
 		// Probes, swagger, static files: team #1 in both modes. /readyz pings the strict store, which
@@ -663,7 +666,12 @@ func (b *Binder) Stream() grpc.StreamServerInterceptor {
 // Middleware binds the team of a chi / net/http request by its path's class.
 func (b *Binder) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bound, err := b.bindFor(r.Context(), ClassifyPath(r.URL.Path))
+		class := ClassifyPath(r.URL.Path)
+		if class == ClassToken {
+			b.serveToken(w, r, next)
+			return
+		}
+		bound, err := b.bindFor(r.Context(), class)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if status.Code(err) == codes.Unavailable {

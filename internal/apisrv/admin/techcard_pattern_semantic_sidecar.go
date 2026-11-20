@@ -11,7 +11,7 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"google.golang.org/grpc/codes"
@@ -197,14 +197,16 @@ func (s *Server) GetTechCardSavedAssemblySnapshot(ctx context.Context, req *pb_a
 }
 
 func (s *Server) fillSavedAssemblyDownloadURLs(ctx context.Context, patterns []*pb_common.TechCardSizePattern) {
-	if patternaccess.PublicLinksAllowed(ctx) == nil {
-		s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, patterns)
+	// Every team gets the public pattern link: the team travels signed inside the token (v2).
+	s.patternURLs.FillTechCardPatternURLs(ctx, s.patternURLsBaseURL, patterns)
+	if t, ok := tenant.From(ctx); !ok || t.ID == tenant.TeamOneID {
 		return
 	}
-	// Public pattern tokens have no team binding. The authenticated proxy enforces the
-	// caller's storage prefix when opening the exact URL read from the saved row.
+	// Outside team #1 a row the fill left without a link (no service, mint failed) still downloads
+	// through the authenticated proxy, which enforces the caller's storage prefix on the exact url
+	// read from the saved row — the floor these teams had before public links.
 	for _, pattern := range patterns {
-		if raw := pattern.GetUrl(); raw != "" {
+		if raw := pattern.GetUrl(); raw != "" && pattern.GetDownloadUrl() == "" {
 			pattern.DownloadUrl = "/api" + FileProxyPath + "?" + url.Values{"url": {raw}}.Encode()
 		}
 	}

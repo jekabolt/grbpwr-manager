@@ -5,14 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func teamCtx(id int64) context.Context {
@@ -27,26 +26,36 @@ func serveFileCtx(svc *Service, ctx context.Context, target string) *httptest.Re
 	return w
 }
 
-// TestLinkURLContextRefusedOutsideTeamOne — a v1 'f' token has no team and resolves in team #1, so
-// a link minted in team 2 would open team #1's file with the same local id.
-func TestLinkURLContextRefusedOutsideTeamOne(t *testing.T) {
-	if err := PublicLinksAllowed(teamCtx(2)); status.Code(err) != codes.FailedPrecondition ||
-		status.Convert(err).Message() != "public_links_team_one_only" {
-		t.Fatalf("team 2: want FailedPrecondition public_links_team_one_only, got %v", err)
+// TestLinkURLContextEveryTeam — team #1 (and no team) keeps the v1 url; team 2 gets a v2 url that
+// opens under team 2 only.
+func TestLinkURLContextEveryTeam(t *testing.T) {
+	files := &fakeFiles{rows: map[int]*entity.LibraryFileLinkTarget{7: linkTarget(7, 1)}}
+	svc := newTestService(t, files, &fakePresign{})
+	v1 := svc.LinkURL(7, 1)
+	if got := svc.LinkURLContext(context.Background(), 7, 1); got != v1 {
+		t.Fatalf("no team: %q, want %q", got, v1)
 	}
-	svc := newTestService(t, &fakeFiles{}, &fakePresign{})
-	want := svc.LinkURL(7, 1)
-	for _, tc := range []struct {
-		name string
+	if got := svc.LinkURLContext(teamCtx(tenant.TeamOneID), 7, 1); got != v1 {
+		t.Fatalf("team one: %q, want %q", got, v1)
+	}
+	v2 := svc.LinkURLContext(teamCtx(2), 7, 1)
+	if v2 == "" || v2 == v1 || strings.Count(v2[strings.LastIndex(v2, "/")+1:], ".") != 3 {
+		t.Fatalf("team two: %q", v2)
+	}
+	path := func(u string) string { return u[strings.Index(u, "/api/f/"):] }
+	for _, c := range []struct {
 		ctx  context.Context
-		want string
+		u    string
+		code int
 	}{
-		{"no team", context.Background(), want},
-		{"team one", teamCtx(tenant.TeamOneID), want},
-		{"team two", teamCtx(2), ""},
+		{teamCtx(2), v2, http.StatusFound},
+		{context.Background(), v1, http.StatusFound},
+		{teamCtx(3), v2, http.StatusNotFound},
+		{teamCtx(tenant.TeamOneID), v2, http.StatusNotFound},
+		{teamCtx(2), v1, http.StatusNotFound},
 	} {
-		if got := svc.LinkURLContext(tc.ctx, 7, 1); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		if w := serveFileCtx(svc, c.ctx, path(c.u)); w.Code != c.code {
+			t.Errorf("%s: %d, want %d", c.u, w.Code, c.code)
 		}
 	}
 	var nilSvc *Service
@@ -60,10 +69,11 @@ func TestLinkURLContextRefusedOutsideTeamOne(t *testing.T) {
 func TestFlushKeepsTeam(t *testing.T) {
 	files := &fakeFiles{rows: map[int]*entity.LibraryFileLinkTarget{7: linkTarget(7, 3)}}
 	svc := newTestService(t, files, &fakePresign{})
-	tok := svc.minter.Mint(patterntoken.ScopeFile, 7, 3)
+	tok := map[bool]string{true: svc.minter.MintFor(2, patterntoken.ScopeFile, 7, 3), false: svc.minter.Mint(patterntoken.ScopeFile, 7, 3)}
 
 	for _, ctx := range []context.Context{teamCtx(2), teamCtx(2), context.Background()} {
-		if w := serveFileCtx(svc, ctx, "/api/f/"+tok); w.Code != http.StatusFound {
+		_, inTeam := tenant.From(ctx)
+		if w := serveFileCtx(svc, ctx, "/api/f/"+tok[inTeam]); w.Code != http.StatusFound {
 			t.Fatalf("serve: %d", w.Code)
 		}
 	}
