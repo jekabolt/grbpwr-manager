@@ -1,11 +1,13 @@
 package platformauth
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/ratelimit"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"github.com/pquerna/otp/totp"
@@ -33,6 +35,7 @@ VALUES (701, ?, 'op7', ?, 'active', 1, UTC_TIMESTAMP(3))`, totpOp, hash); err !=
 	f.svc.signInLogin = ratelimit.NewLimiter(time.Minute, 1000)
 	f.svc.signInIP = ratelimit.NewLimiter(time.Minute, 1000)
 	f.svc.codeIP = ratelimit.NewLimiter(time.Hour, 1000)
+	f.svc.d.Config.OperatorSecondStep = "on"
 	return f
 }
 
@@ -234,18 +237,19 @@ func TestOperatorTOTPReset(t *testing.T) {
 	if _, err := f.svc.OperatorSetupConfirm(ctx, &auth.OperatorSetupConfirmRequest{Ticket: si.GetTicket(), Code: appCode(t, sm.GetSecret(), f.clock)}); err != nil {
 		t.Fatal(err)
 	}
-	// An operator team session opened from the console session dies with it.
-	if _, err := f.st.DB().Exec(`INSERT INTO user_session (sid, user_id, team_id, aud, parent_sid)
-SELECT 'sopchild000000000000000000000000', 701, NULL, 'team', sid FROM user_session WHERE user_id = 701 AND aud = 'console'`); err != nil {
-		t.Fatal(err)
-	}
+	// The shape the product writes: the console's EnterTeam issues a hand-off code from the console
+	// session (no parent_sid), the team host exchanges it for a team session (no parent either).
+	teamTok, spare := f.enterTeam(), f.issueEntry()
 	sids, err := f.st.ResetOperatorSecondStep(ctx, totpOp, "other@x.io", f.clock)
 	if err != nil || len(sids) != 2 {
 		t.Fatalf("reset: %v (%d sessions)", err, len(sids))
 	}
 	if n := f.count(`SELECT COUNT(*) FROM user_session WHERE user_id = 701 AND revoked_at IS NULL`); n != 0 {
-		t.Fatalf("%d console sessions live after the reset", n)
+		t.Fatalf("%d operator sessions live after the reset", n)
 	}
+	f.wantSessionDead(teamTok, "team entry after the reset")
+	_, err = f.svc.ExchangeHandoff(ctxFrom("10.0.9.1", "opteam"), &auth.ExchangeHandoffRequest{Code: spare})
+	wantCode(t, err, codes.InvalidArgument, "unused entry code after the reset")
 	if n := f.count(`SELECT COUNT(*) FROM operator_totp WHERE user_id = 701`) + f.count(`SELECT COUNT(*) FROM operator_recovery_code WHERE user_id = 701`); n != 0 {
 		t.Fatal("the app or its recovery codes survived the reset")
 	}
@@ -257,5 +261,181 @@ SELECT 'sopchild000000000000000000000000', 701, NULL, 'team', sid FROM user_sess
 	}
 	if _, err := f.st.ResetOperatorSecondStep(ctx, "nobody@x.io", "", f.clock); err == nil {
 		t.Fatal("reset of a non-operator")
+	}
+}
+
+// enterTeam does what the console's EnterTeam and the team host do: a hand-off code from the live
+// console session of 701, exchanged on the team host. It returns the team token.
+func (f *flow) enterTeam() string {
+	f.t.Helper()
+	ex, err := f.svc.ExchangeHandoff(ctxFrom("10.0.9.1", "opteam"), &auth.ExchangeHandoffRequest{Code: f.issueEntry()})
+	if err != nil {
+		f.t.Fatalf("team entry: %v", err)
+	}
+	return ex.GetToken()
+}
+
+// issueEntry issues an operator entry code to team opteam from 701's live console session, as
+// EnterTeam (apisrv/platform/teams.go) does.
+func (f *flow) issueEntry() string {
+	f.t.Helper()
+	if _, err := f.st.DB().Exec(`INSERT IGNORE INTO team (id, slug, name, db_name, status) VALUES (50, 'opteam', 'Op Team', 'lkb_t_opteam01', 'active')`); err != nil {
+		f.t.Fatal(err)
+	}
+	var sid string
+	if err := f.st.DB().Get(&sid, `SELECT sid FROM user_session WHERE user_id = 701 AND aud = 'console' AND revoked_at IS NULL
+ORDER BY created_at DESC LIMIT 1`); err != nil {
+		f.t.Fatalf("no live console session: %v", err)
+	}
+	code, hash, err := NewOperatorCode()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.st.IssueHandoff(context.Background(), 701, sid, platformstore.NewToken{
+		TeamID: 50, TokenHash: hash, ExpiresAt: f.clock.Add(HandoffLongTTL),
+	}, f.clock); err != nil {
+		f.t.Fatalf("entry code: %v", err)
+	}
+	return code
+}
+
+// wantSessionDead: the token's session is revoked, so the edge (SessionActive) refuses the token.
+func (f *flow) wantSessionDead(tok, what string) {
+	f.t.Helper()
+	c, err := jwt.VerifyTeamToken(f.svc.d.JWT, tok, nil)
+	if err != nil {
+		f.t.Fatalf("%s: token: %v", what, err)
+	}
+	ok, err := f.st.SessionActive(context.Background(), c.SessionID)
+	if err != nil || ok {
+		f.t.Fatalf("%s: session still live (%v)", what, err)
+	}
+}
+
+// PLATFORM_OPERATOR_SECOND_STEP off: the console answers a token on the password as before, and the
+// second-step RPCs refuse. Turning it on (boot) ends every console session, team entry and unused
+// entry code issued meanwhile; a second boot with it on ends nothing; off then on ends them again.
+func TestOperatorSecondStepSwitch(t *testing.T) {
+	f := newTotpFlow(t)
+	f.svc.d.Config.OperatorSecondStep = ""
+	ctx := ctxFrom("10.0.7.4", "")
+	si, err := f.svc.SignIn(ctxFrom("10.0.7.1", ""), &auth.SignInRequest{Login: totpOp, Password: totpOpPW, Target: auth.SignInTarget_SIGN_IN_TARGET_CONSOLE})
+	if err != nil || si.GetToken() == "" || si.GetTicket() != "" {
+		t.Fatalf("switch off: console sign-in %v (token %t ticket %t)", err, si.GetToken() != "", si.GetTicket() != "")
+	}
+	if c, err := jwt.VerifyTeamToken(f.svc.d.JWT, si.GetToken(), nil); err != nil || c.Audience != jwt.AudConsole || c.SecondStep {
+		t.Fatalf("switch off: console claims %+v %v", c, err)
+	}
+	_, err = f.svc.OperatorVerify(ctx, &auth.OperatorVerifyRequest{Ticket: "x", Code: "123456"})
+	wantStatus(t, err, codes.FailedPrecondition, "second_step_off", "verify with the switch off")
+	_, err = f.svc.OperatorSetupMail(ctx, &auth.OperatorSetupMailRequest{Ticket: "x", Code: "123456"})
+	wantStatus(t, err, codes.FailedPrecondition, "second_step_off", "setup mail with the switch off")
+
+	if _, on, err := f.st.ApplyOperatorSecondStepSwitch(ctx, false, f.clock); err != nil || on {
+		t.Fatalf("boot with the switch off: %v %t", err, on)
+	}
+	teamTok, spare := f.enterTeam(), f.issueEntry()
+	// A member's own team session is not an operator's and survives.
+	if _, err := f.st.DB().Exec(`INSERT INTO platform_user (id, email, handle, password_hash, status) VALUES (702, 'mem@x.io', 'mem7', 'h', 'active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.DB().Exec(`INSERT INTO user_session (sid, user_id, team_id, aud) VALUES ('smember0000000000000000000000000', 702, 50, 'team')`); err != nil {
+		t.Fatal(err)
+	}
+
+	sids, on, err := f.st.ApplyOperatorSecondStepSwitch(ctx, true, f.clock)
+	if err != nil || !on || len(sids) != 2 {
+		t.Fatalf("switch on: %v %t (%d sessions)", err, on, len(sids))
+	}
+	if n := f.count(`SELECT COUNT(*) FROM user_session WHERE user_id = 701 AND revoked_at IS NULL`); n != 0 {
+		t.Fatalf("%d operator sessions live after the switch", n)
+	}
+	f.wantSessionDead(si.GetToken(), "console session after the switch")
+	f.wantSessionDead(teamTok, "team entry after the switch")
+	_, err = f.svc.ExchangeHandoff(ctxFrom("10.0.9.1", "opteam"), &auth.ExchangeHandoffRequest{Code: spare})
+	wantCode(t, err, codes.InvalidArgument, "unused entry code after the switch")
+	if ok, err := f.st.SessionActive(ctx, "smember0000000000000000000000000"); err != nil || !ok {
+		t.Fatalf("a member's team session ended: %v", err)
+	}
+
+	// Again with it on: nothing more ends.
+	f.svc.d.Config.OperatorSecondStep = "on"
+	verifyApp(t, f)
+	if sids, on, err := f.st.ApplyOperatorSecondStepSwitch(ctx, true, f.clock); err != nil || on || len(sids) != 0 {
+		t.Fatalf("second boot with it on: %v %t %d", err, on, len(sids))
+	}
+	if n := f.count(`SELECT COUNT(*) FROM user_session WHERE user_id = 701 AND revoked_at IS NULL`); n != 1 {
+		t.Fatalf("second boot ended sessions: %d live", n)
+	}
+	// Off, then on again: ends them again.
+	if _, on, err := f.st.ApplyOperatorSecondStepSwitch(ctx, false, f.clock); err != nil || on {
+		t.Fatalf("off: %v %t", err, on)
+	}
+	if sids, on, err := f.st.ApplyOperatorSecondStepSwitch(ctx, true, f.clock); err != nil || !on || len(sids) != 1 {
+		t.Fatalf("on again: %v %t %d", err, on, len(sids))
+	}
+}
+
+// verifyApp sets up 701's app and signs in through it (switch on): one live console session.
+func verifyApp(t *testing.T, f *flow) string {
+	t.Helper()
+	ctx := ctxFrom("10.0.7.4", "")
+	si := f.consoleSignIn()
+	sm, err := f.svc.OperatorSetupMail(ctx, &auth.OperatorSetupMailRequest{Ticket: si.GetTicket(), Code: f.setupCode()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.OperatorSetupConfirm(ctx, &auth.OperatorSetupConfirmRequest{Ticket: si.GetTicket(), Code: appCode(t, sm.GetSecret(), f.clock)}); err != nil {
+		t.Fatal(err)
+	}
+	return sm.GetSecret()
+}
+
+// A rotated pepper: the sealed app no longer opens. The app and its recovery codes are dropped, the
+// operator is told to sign in again, and the next sign-in is a first setup behind a mailed code.
+func TestOperatorTOTPPepperRotated(t *testing.T) {
+	f := newTotpFlow(t)
+	ctx := ctxFrom("10.0.7.4", "")
+	secret := verifyApp(t, f)
+	f.svc.pepper += "-rotated"
+	f.clock = f.clock.Add(time.Minute)
+	si := f.consoleSignIn()
+	if si.GetSecondStep() != auth.OperatorSecondStep_OPERATOR_SECOND_STEP_CODE {
+		t.Fatalf("before: step %v", si.GetSecondStep())
+	}
+	_, err := f.svc.OperatorVerify(ctx, &auth.OperatorVerifyRequest{Ticket: si.GetTicket(), Code: appCode(t, secret, f.clock)})
+	wantStatus(t, err, codes.FailedPrecondition, "sign_in_again", "app sealed under the old pepper")
+	if n := f.count(`SELECT COUNT(*) FROM operator_totp WHERE user_id = 701`) + f.count(`SELECT COUNT(*) FROM operator_recovery_code WHERE user_id = 701`); n != 0 {
+		t.Fatal("the unreadable app or its recovery codes survived")
+	}
+	si = f.consoleSignIn()
+	if si.GetSecondStep() != auth.OperatorSecondStep_OPERATOR_SECOND_STEP_SETUP {
+		t.Fatalf("after: step %v", si.GetSecondStep())
+	}
+	sm, err := f.svc.OperatorSetupMail(ctx, &auth.OperatorSetupMailRequest{Ticket: si.GetTicket(), Code: f.setupCode()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.OperatorSetupConfirm(ctx, &auth.OperatorSetupConfirmRequest{Ticket: si.GetTicket(), Code: appCode(t, sm.GetSecret(), f.clock)}); err != nil {
+		t.Fatalf("setup under the new pepper: %v", err)
+	}
+}
+
+// An address removed from PLATFORM_OPERATOR_EMAILS loses its app: re-listed later, it sets one up anew.
+func TestOperatorTOTPRemovedOperator(t *testing.T) {
+	f := newTotpFlow(t)
+	verifyApp(t, f)
+	unusable := func() (string, error) { return "h", nil }
+	if _, err := f.st.SyncOperators(context.Background(), []string{"someone@x.io"}, f.clock, unusable, HandleBase); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM operator_totp WHERE user_id = 701`) + f.count(`SELECT COUNT(*) FROM operator_recovery_code WHERE user_id = 701`); n != 0 {
+		t.Fatal("a removed operator kept the app")
+	}
+	if _, err := f.st.SyncOperators(context.Background(), []string{totpOp}, f.clock, unusable, HandleBase); err != nil {
+		t.Fatal(err)
+	}
+	if si := f.consoleSignIn(); si.GetSecondStep() != auth.OperatorSecondStep_OPERATOR_SECOND_STEP_SETUP {
+		t.Fatalf("re-listed: step %v", si.GetSecondStep())
 	}
 }

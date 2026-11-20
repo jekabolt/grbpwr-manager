@@ -603,8 +603,17 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 		if !u.IsOperator || !s.isListedOperator(u) {
 			return nil, errAuth()
 		}
-		// No console token on a password alone: the authenticator-app step (operator_totp.go).
-		return s.startOperatorSecondStep(ctx, u, now)
+		if s.d.Config.SecondStepOn() {
+			// No console token on a password alone: the authenticator-app step (operator_totp.go).
+			return s.startOperatorSecondStep(ctx, u, now)
+		}
+		// PLATFORM_OPERATOR_SECOND_STEP off: the password alone answers the console token, as before.
+		tok, err := s.session(ctx, u, 0, jwt.AudConsole, s.d.TeamTTL, false, nil, now)
+		if err != nil {
+			return nil, err
+		}
+		s.audit(ctx, u.ID, 0, "signin", map[string]string{"target": "console"})
+		return &auth.SignInResponse{Token: tok}, nil
 	default:
 		return nil, errBad("target is required")
 	}

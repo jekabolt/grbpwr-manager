@@ -501,6 +501,11 @@ func TestEdgeTeamOneStandardProfileGatesPromo(t *testing.T) {
 func TestEdgePlatformChain(t *testing.T) {
 	srv := newEdgeServer(t, newEdge())
 	const m = "/admin.PlatformService/ListTeams"
+	// PLATFORM_OPERATOR_SECOND_STEP off (the default): a console token without the claim passes.
+	if _, err := callAdmin(srv, m, teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42}), ""); err != nil {
+		t.Fatalf("switch off: console token without the second step refused: %v", err)
+	}
+	srv.platform.cfg.OperatorSecondStep = "on"
 	op := teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42, SecondStep: true})
 	ctx, err := callAdmin(srv, m, op, "")
 	if err != nil {

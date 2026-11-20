@@ -2,7 +2,7 @@
 -- Operator console second step (wave teams, gap 4): a code from an authenticator app (TOTP) after the
 -- password. Idempotent and ANSI_QUOTES-safe: single quotes only, CREATE TABLE IF NOT EXISTS, the
 -- widened ENUM restates the full current list and appends at the end (re-runs as a no-op). Online:
--- three new empty tables, one appended ENUM member pair (instant) and operators signed out. No FK, as every control-plane
+-- four new empty tables and one appended ENUM member pair (instant); nobody is signed out. No FK, as every control-plane
 -- table. No backfill: an operator without a row is made to set the app up on the next sign-in.
 
 -- operator_totp: the confirmed authenticator of one operator. secret_sealed is AES-256-GCM under a
@@ -54,12 +54,14 @@ CREATE TABLE IF NOT EXISTS operator_second_step (
 -- reset, or a recovery code was used — sent to every operator address.
 ALTER TABLE platform_email MODIFY template ENUM('verify','invite','reset','team_request','team_approved','restore','account_deleted','operator_setup','operator_alert') NOT NULL;
 
--- Sessions from before the second step: every console session and the operator team sessions
--- opened from it end now (a console token without the step is refused anyway; this also ends the
--- team sessions an old console token opened). Re-run after a mid-file failure only signs operators
--- out once more.
-UPDATE user_session SET revoked_at = UTC_TIMESTAMP(3)
-WHERE revoked_at IS NULL AND (aud = 'console'
-  OR parent_sid IN (SELECT c.sid FROM (SELECT sid FROM user_session WHERE aud = 'console') c));
+-- platform_flag: settings a boot applied, by name. 'operator_second_step' = the last
+-- PLATFORM_OPERATOR_SECOND_STEP ('on' / 'off'); turning it on ends the operator sessions and
+-- hand-off codes issued without the second step (ApplyOperatorSecondStepSwitch). No session ends here.
+CREATE TABLE IF NOT EXISTS platform_flag (
+  name VARCHAR(64) NOT NULL,
+  value VARCHAR(64) NOT NULL,
+  updated_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 -- +migrate Down
 -- Never dropped or narrowed: an operator's enrolled app outlives a binary rollback (as 0001-0009).

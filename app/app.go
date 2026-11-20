@@ -1672,6 +1672,18 @@ func (a *App) startPlatform(ctx context.Context) error {
 		_ = st.Close()
 		return err
 	}
+	// PLATFORM_OPERATOR_SECOND_STEP (before serving, so the edge has cached no session yet): turning
+	// it on ends every operator session and hand-off code issued without the authenticator-app step.
+	revoked, turnedOn, err := st.ApplyOperatorSecondStepSwitch(ctx, a.c.Platform.SecondStepOn(),
+		time.Now().UTC().Truncate(time.Millisecond))
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("operator second step switch: %w", err)
+	}
+	if turnedOn {
+		slog.Default().WarnContext(ctx, "teams: operator second step turned on; operators signed out",
+			slog.Int("sessions", len(revoked)))
+	}
 	a.platform = st
 	return nil
 }

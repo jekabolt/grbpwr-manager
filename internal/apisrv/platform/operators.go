@@ -29,10 +29,11 @@ func (s *Server) ListOperators(ctx context.Context, _ *pb_admin.ListOperatorsReq
 	return out, nil
 }
 
-// ResetOperatorApp removes an operator's authenticator app and recovery codes (lost phone), signs
-// them out of the console and mails every operator. The caller confirms with their own password
-// (as DeleteTeam): wrong = PERMISSION_DENIED wrong_password, refused = RESOURCE_EXHAUSTED. An email
-// that names no active operator = NOT_FOUND operator_not_found.
+// ResetOperatorApp removes an operator's authenticator app and recovery codes (lost phone), ends
+// all their console and team sessions and unused entry codes, and mails every operator. The caller
+// confirms with their own password (as DeleteTeam): wrong = PERMISSION_DENIED wrong_password,
+// refused = RESOURCE_EXHAUSTED. An email that names no active operator = NOT_FOUND
+// operator_not_found.
 func (s *Server) ResetOperatorApp(ctx context.Context, req *pb_admin.ResetOperatorAppRequest) (*pb_admin.ResetOperatorAppResponse, error) {
 	c, err := caller(ctx)
 	if err != nil {

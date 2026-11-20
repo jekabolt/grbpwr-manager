@@ -36,6 +36,9 @@ var (
 	ErrNotOperator = errors.New("platformstore: not an operator")
 	// ErrCodeWrong: the code did not match (the counters were written).
 	ErrCodeWrong = errors.New("platformstore: wrong code")
+	// ErrAppUnreadable: the operator's sealed app secret no longer opens (the pepper was rotated).
+	// Answered by the judge; JudgeSecondStep then drops the app and answers it back.
+	ErrAppUnreadable = errors.New("platformstore: operator app unreadable")
 )
 
 // OperatorTOTP is an operator's confirmed authenticator.
@@ -211,13 +214,14 @@ type SecondStepOutcome struct {
 // JudgeSecondStep locks the ticket (FOR UPDATE), the operator (FOR SHARE) and the app row, refuses a
 // used, expired, foreign or stale ticket with ErrTokenInvalid and a locked account with
 // ErrSecondStepLocked, then lets judge decide and writes its verdict. A Wrong verdict commits (the
-// counters must survive) and the call returns ErrCodeWrong.
+// counters must survive) and the call returns ErrCodeWrong. A judge answering ErrAppUnreadable on a
+// code ticket drops the app (committed) and the call returns ErrAppUnreadable.
 func (s *Store) JudgeSecondStep(ctx context.Context, ticketHash, wantKind string, now time.Time, pol SecondStepPolicy,
 	judge func(SecondStepState) (SecondStepVerdict, error)) (SecondStepOutcome, error) {
 	var out SecondStepOutcome
-	wrong := false
+	wrong, unreadable := false, false
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-		out, wrong = SecondStepOutcome{}, false
+		out, wrong, unreadable = SecondStepOutcome{}, false, false
 		var t SecondStepTicket
 		if err := tx.GetContext(ctx, &t, `SELECT `+secondStepColumns+` FROM operator_second_step WHERE ticket_hash = ? FOR UPDATE`,
 			ticketHash); err != nil {
@@ -261,6 +265,12 @@ WHERE user_id = ? AND used_at IS NULL ORDER BY id`, u.ID); err != nil {
 			return fmt.Errorf("platformstore: recovery codes: %w", err)
 		}
 		v, err := judge(st)
+		if errors.Is(err, ErrAppUnreadable) && st.TOTP != nil {
+			// The sealed secret no longer opens (the pepper was rotated): the app counts as never
+			// set up. The drop commits; the next sign-in is a first setup behind a mailed code.
+			out.User, unreadable = u, true
+			return dropOperatorAppTx(ctx, tx, u.ID, now)
+		}
 		if err != nil {
 			return err
 		}
@@ -273,6 +283,9 @@ WHERE user_id = ? AND used_at IS NULL ORDER BY id`, u.ID); err != nil {
 	})
 	if err == nil && wrong {
 		return out, ErrCodeWrong
+	}
+	if err == nil && unreadable {
+		return out, ErrAppUnreadable
 	}
 	return out, err
 }
@@ -430,7 +443,8 @@ WHERE u.is_operator = 1 AND u.status = 'active' ORDER BY u.email`); err != nil {
 }
 
 // ResetOperatorSecondStep removes the app and recovery codes of the operator with this email, burns
-// their tickets and revokes their console sessions (returned, for the edge cache). by is the email
+// their tickets, revokes their console and team sessions (returned, for the edge cache) and burns
+// their unused hand-off codes. by is the email
 // of the operator who did it ("" = the server-side reset). Every operator gets an alert letter. The
 // next sign-in of that operator sets an app up again behind a mailed code. ErrNotOperator when the
 // email names no active operator.
@@ -448,39 +462,116 @@ func (s *Store) ResetOperatorSecondStep(ctx context.Context, email, by string, n
 		if u.Status != UserActive || !u.IsOperator {
 			return ErrNotOperator
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM operator_totp WHERE user_id = ?`, u.ID); err != nil {
-			return fmt.Errorf("platformstore: drop operator totp: %w", err)
+		if err := dropOperatorAppTx(ctx, tx, u.ID, now); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM operator_recovery_code WHERE user_id = ?`, u.ID); err != nil {
-			return fmt.Errorf("platformstore: drop recovery codes: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE operator_second_step SET used_at = ? WHERE user_id = ? AND used_at IS NULL`,
-			now, u.ID); err != nil {
-			return fmt.Errorf("platformstore: burn tickets: %w", err)
-		}
-		// Console sessions and the operator team sessions opened from them (parent_sid), plus the
-		// unused hand-off codes they issued: nothing the lost phone helped open outlives the reset.
-		if err := tx.SelectContext(ctx, &sids, `SELECT sid FROM user_session
-WHERE user_id = ? AND revoked_at IS NULL AND (aud = 'console'
-  OR parent_sid IN (SELECT c.sid FROM (SELECT sid FROM user_session WHERE user_id = ? AND aud = 'console') c)) FOR UPDATE`,
-			u.ID, u.ID); err != nil {
-			return fmt.Errorf("platformstore: console sessions: %w", err)
-		}
-		if len(sids) > 0 {
-			q, args, err := sqlx.In(`UPDATE user_session SET revoked_at = ? WHERE user_id = ? AND sid IN (?)`, now, u.ID, sids)
-			if err != nil {
-				return fmt.Errorf("platformstore: revoke console sessions: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, q, args...); err != nil {
-				return fmt.Errorf("platformstore: revoke console sessions: %w", err)
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
-WHERE user_id = ? AND purpose IN ('handoff', 'signin') AND used_at IS NULL
-  AND parent_sid IN (SELECT sid FROM user_session WHERE user_id = ? AND aud = 'console')`, now, u.ID, u.ID); err != nil {
-			return fmt.Errorf("platformstore: burn console hand-off codes: %w", err)
+		// Every console and team session of the operator (an operator has no memberships, so each
+		// team session is a team entry) and every unused hand-off code: nothing the lost phone helped
+		// open outlives the reset.
+		if sids, err = endOperatorAccessTx(ctx, tx, []int64{u.ID}, now); err != nil {
+			return err
 		}
 		return operatorAlertTx(ctx, tx, OperatorEventReset, u.Email.String, by, now)
 	})
 	return sids, err
+}
+
+// endOperatorAccessTx revokes every live console and team session of these users and burns their
+// unused hand-off codes. It returns the revoked session ids (for the edge cache).
+func endOperatorAccessTx(ctx context.Context, tx *sqlx.Tx, userIDs []int64, now time.Time) ([]string, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	var sids []string
+	q, args, err := sqlx.In(`SELECT sid FROM user_session
+WHERE user_id IN (?) AND revoked_at IS NULL AND aud IN ('console', 'team') FOR UPDATE`, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("platformstore: operator sessions: %w", err)
+	}
+	if err := tx.SelectContext(ctx, &sids, q, args...); err != nil {
+		return nil, fmt.Errorf("platformstore: operator sessions: %w", err)
+	}
+	if len(sids) > 0 {
+		q, args, err := sqlx.In(`UPDATE user_session SET revoked_at = ? WHERE sid IN (?)`, now, sids)
+		if err != nil {
+			return nil, fmt.Errorf("platformstore: revoke operator sessions: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return nil, fmt.Errorf("platformstore: revoke operator sessions: %w", err)
+		}
+	}
+	q, args, err = sqlx.In(`UPDATE email_token SET used_at = ?
+WHERE user_id IN (?) AND purpose = 'handoff' AND used_at IS NULL`, now, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("platformstore: burn hand-off codes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return nil, fmt.Errorf("platformstore: burn hand-off codes: %w", err)
+	}
+	return sids, nil
+}
+
+// secondStepFlag is the platform_flag row that remembers the last PLATFORM_OPERATOR_SECOND_STEP a
+// boot applied.
+const secondStepFlag = "operator_second_step"
+
+// ApplyOperatorSecondStepSwitch records PLATFORM_OPERATOR_SECOND_STEP at boot. When it turns on (the
+// stored value is not "on" yet) every console session, every team session and unused hand-off code
+// of an operator, and every unused second-step ticket end in the same transaction: nothing issued
+// without the second step survives the switch. Off only records "off", so a later switch-on ends them
+// again. It returns the revoked session ids and whether this call turned the switch on.
+func (s *Store) ApplyOperatorSecondStepSwitch(ctx context.Context, on bool, now time.Time) ([]string, bool, error) {
+	var sids []string
+	turnedOn := false
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		sids, turnedOn = nil, false
+		var cur []string
+		if err := tx.SelectContext(ctx, &cur, `SELECT value FROM platform_flag WHERE name = ? FOR UPDATE`, secondStepFlag); err != nil {
+			return fmt.Errorf("platformstore: second step flag: %w", err)
+		}
+		want := "off"
+		if on {
+			want = "on"
+		}
+		if len(cur) == 1 && cur[0] == want {
+			return nil
+		}
+		if on {
+			var ids []int64
+			if err := tx.SelectContext(ctx, &ids, `SELECT id FROM platform_user WHERE is_operator <> 0
+UNION SELECT DISTINCT user_id FROM user_session WHERE aud = 'console' AND revoked_at IS NULL`); err != nil {
+				return fmt.Errorf("platformstore: operators: %w", err)
+			}
+			var err error
+			if sids, err = endOperatorAccessTx(ctx, tx, ids, now); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE operator_second_step SET used_at = ? WHERE used_at IS NULL`, now); err != nil {
+				return fmt.Errorf("platformstore: burn tickets: %w", err)
+			}
+			turnedOn = true
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO platform_flag (name, value, updated_at) VALUES (?, ?, ?)
+ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)`, secondStepFlag, want, now); err != nil {
+			return fmt.Errorf("platformstore: second step flag: %w", err)
+		}
+		return nil
+	})
+	return sids, turnedOn, err
+}
+
+// dropOperatorAppTx removes the app, recovery codes and live tickets of one operator (the next
+// sign-in sets an app up again behind a mailed code).
+func dropOperatorAppTx(ctx context.Context, tx *sqlx.Tx, userID int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM operator_totp WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("platformstore: drop operator totp: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM operator_recovery_code WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("platformstore: drop recovery codes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE operator_second_step SET used_at = ? WHERE user_id = ? AND used_at IS NULL`,
+		now, userID); err != nil {
+		return fmt.Errorf("platformstore: burn tickets: %w", err)
+	}
+	return nil
 }

@@ -574,6 +574,7 @@ func bindEnvVars() {
 	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
 	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 	viper.BindEnv("platform.signup_approval", "PLATFORM_SIGNUP_APPROVAL")
+	viper.BindEnv("platform.operator_second_step", "PLATFORM_OPERATOR_SECOND_STEP")
 	viper.BindEnv("platform.terms_version", "PLATFORM_TERMS_VERSION")
 	// Sign in with Google / Apple (teams O). Optional, parsed only; none set = no provider buttons.
 	viper.BindEnv("platform.oauth.google_client_id", "OAUTH_GOOGLE_CLIENT_ID")

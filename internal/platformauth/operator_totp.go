@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +68,9 @@ var SecondStepPolicy = platformstore.SecondStepPolicy{
 // Answers of the second step.
 func errTicketGone() error { return status.Error(codes.FailedPrecondition, "sign_in_again") }
 func errLocked() error     { return status.Error(codes.ResourceExhausted, "locked") }
+func errSecondStepOff() error {
+	return status.Error(codes.FailedPrecondition, "second_step_off")
+}
 
 // operatorRing is the AEAD that seals operator app secrets, derived from the pepper.
 func (s *Service) operatorRing() (*keyring.Ring, error) {
@@ -186,7 +190,8 @@ func (s *Service) OperatorSetupConfirm(ctx context.Context, req *auth.OperatorSe
 			}
 			secret, err := ring.Open(st.Ticket.PendingSecretSealed, operatorAAD(st.User.ID))
 			if err != nil {
-				return platformstore.SecondStepVerdict{}, fmt.Errorf("platformauth: open pending totp: %w", err)
+				// Sealed under an older pepper: this setup starts over from the password.
+				return platformstore.SecondStepVerdict{}, platformstore.ErrTokenInvalid
 			}
 			step, match := matchTOTP(secret, code, ok, now, 0)
 			if !match {
@@ -235,11 +240,13 @@ func (s *Service) OperatorVerify(ctx context.Context, req *auth.OperatorVerifyRe
 	out, err := s.d.Store.JudgeSecondStep(ctx, HashToken(req.GetTicket()), platformstore.SecondStepCode, now, SecondStepPolicy,
 		func(st platformstore.SecondStepState) (platformstore.SecondStepVerdict, error) {
 			usedRecovery = false
+			// An app sealed under an older pepper is no app: the store drops it and the next sign-in
+			// is a first setup (recovery codes hashed under that pepper cannot match either).
+			secret, err := ring.Open(st.TOTP.SecretSealed, operatorAAD(st.User.ID))
+			if err != nil {
+				return platformstore.SecondStepVerdict{}, platformstore.ErrAppUnreadable
+			}
 			if isApp {
-				secret, err := ring.Open(st.TOTP.SecretSealed, operatorAAD(st.User.ID))
-				if err != nil {
-					return platformstore.SecondStepVerdict{}, fmt.Errorf("platformauth: open totp: %w", err)
-				}
 				step, match := matchTOTP(secret, code, true, now, st.TOTP.LastStep)
 				if !match {
 					return platformstore.SecondStepVerdict{Wrong: true}, nil
@@ -263,6 +270,11 @@ func (s *Service) OperatorVerify(ctx context.Context, req *auth.OperatorVerifyRe
 			usedRecovery = true
 			return platformstore.SecondStepVerdict{UseRecoveryID: hit, SessionSID: sid}, nil
 		})
+	if errors.Is(err, platformstore.ErrAppUnreadable) {
+		slog.Default().WarnContext(ctx, "platformauth: operator app unreadable (pepper changed?); app removed, next sign-in sets it up",
+			slog.String("operator", out.User.Email.String))
+		return nil, errTicketGone()
+	}
 	if err := s.secondStepErr(ctx, "verify", err); err != nil {
 		return nil, err
 	}
@@ -280,10 +292,14 @@ func (s *Service) OperatorVerify(ctx context.Context, req *auth.OperatorVerifyRe
 	return resp, nil
 }
 
-// secondStepGate: the service is usable and the caller's IP is under the code limiter.
+// secondStepGate: the service is usable, PLATFORM_OPERATOR_SECOND_STEP is on and the caller's IP is
+// under the code limiter.
 func (s *Service) secondStepGate(ctx context.Context) error {
 	if err := s.usable(); err != nil {
 		return err
+	}
+	if !s.d.Config.SecondStepOn() {
+		return errSecondStepOff()
 	}
 	if !s.codeIP.Allow(middleware.GetClientIP(ctx)) {
 		return errBusy()
