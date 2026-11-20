@@ -24,13 +24,21 @@ import (
 //   - a meter error that is not «full» lets the upload pass (logged): accounting never stops work;
 //     the daily recount (SumByTeam) heals the number.
 
-// ErrStorageFull: the team in ctx is at its storage cap; nothing was written.
-var ErrStorageFull = errors.New("bucket: storage full")
+// ErrStorageFull: the team in ctx is at its storage cap; nothing was written. The text carries a
+// token ([storage_full]) no other error is likely to contain: it is the fallback match below.
+var ErrStorageFull = errors.New("bucket: team storage cap reached [storage_full]")
 
-// IsStorageFull reports whether err carries ErrStorageFull, also through a %v wrap or a gRPC status
-// message (the text is the fallback: several handlers flatten the chain).
+// IsStorageFull reports whether err is ErrStorageFull: errors.Is first; the full sentinel text only
+// as a fallback, for handlers that flatten the chain (%v, a gRPC status message). An unrelated error
+// that merely says «storage full» does not match.
 func IsStorageFull(err error) bool {
-	return err != nil && (errors.Is(err, ErrStorageFull) || strings.Contains(err.Error(), ErrStorageFull.Error()))
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrStorageFull) {
+		return true
+	}
+	return strings.Contains(err.Error(), ErrStorageFull.Error())
 }
 
 // StorageMeter counts the bytes of each team (control plane, internal/storagemeter).
@@ -42,20 +50,30 @@ type StorageMeter interface {
 	Add(ctx context.Context, teamID, delta int64) error
 }
 
-// SetStorageMeter turns the storage cap on (teams mode only; nil = off, today's behaviour).
-func (b *Bucket) SetStorageMeter(m StorageMeter) { b.meter = m }
+type meterBox struct{ m StorageMeter }
 
-// meterTeam is the team the bytes of this ctx are counted to; false = nothing is counted (no meter,
-// teams mode off, or no team in ctx).
-func (b *Bucket) meterTeam(ctx context.Context) (int64, bool) {
-	if b.meter == nil || b.Config == nil || !b.Config.TeamsMode {
-		return 0, false
+// SetStorageMeter turns the storage cap on (teams mode only; nil = off, today's behaviour). Safe
+// while requests and workers write the bucket.
+func (b *Bucket) SetStorageMeter(m StorageMeter) {
+	if m == nil {
+		b.meter.Store(nil)
+		return
+	}
+	b.meter.Store(&meterBox{m: m})
+}
+
+// meterTeam is the meter and the team the bytes of this ctx are counted to; nil = nothing is
+// counted (no meter, teams mode off, or no team in ctx).
+func (b *Bucket) meterTeam(ctx context.Context) (StorageMeter, int64) {
+	box := b.meter.Load()
+	if box == nil || b.Config == nil || !b.Config.TeamsMode {
+		return nil, 0
 	}
 	t, ok := tenant.From(ctx)
 	if !ok || t.ID <= 0 {
-		return 0, false
+		return nil, 0
 	}
-	return t.ID, true
+	return box.m, t.ID
 }
 
 // meterCtx outlives a cancelled request: the bytes are already in (or out of) the bucket.
@@ -63,13 +81,13 @@ func meterCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
-func (b *Bucket) meterAdd(ctx context.Context, team, delta int64) {
+func meterAdd(ctx context.Context, m StorageMeter, team, delta int64) {
 	if delta == 0 {
 		return
 	}
 	mctx, cancel := meterCtx(ctx)
 	defer cancel()
-	if err := b.meter.Add(mctx, team, delta); err != nil {
+	if err := m.Add(mctx, team, delta); err != nil {
 		slog.Default().ErrorContext(ctx, "storage meter: can't move the count",
 			slog.Int64("team", team), slog.Int64("delta", delta), slog.String("err", err.Error()))
 	}
@@ -78,14 +96,15 @@ func (b *Bucket) meterAdd(ctx context.Context, team, delta int64) {
 // put is the package's one write to the bucket. exempt = counted but never refused (the tech-card
 // export archive: a download must keep working at the cap).
 func (b *Bucket) put(ctx context.Context, key string, r io.Reader, size int64, opts minio.PutObjectOptions, exempt bool) (minio.UploadInfo, error) {
-	team, metered := b.meterTeam(ctx)
+	m, team := b.meterTeam(ctx)
+	metered := m != nil
 	var reserved int64
 	if metered && !exempt {
 		n := size
 		if n < 0 {
 			n = 0
 		}
-		if err := b.meter.Reserve(ctx, team, n, size < 0); err != nil {
+		if err := m.Reserve(ctx, team, n, size < 0); err != nil {
 			if errors.Is(err, ErrStorageFull) {
 				slog.Default().InfoContext(ctx, "storage cap: upload refused",
 					slog.Int64("team", team), slog.Int64("bytes", size))
@@ -100,19 +119,20 @@ func (b *Bucket) put(ctx context.Context, key string, r io.Reader, size int64, o
 	info, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, size, opts)
 	if err != nil {
 		if metered {
-			b.meterAdd(ctx, team, -reserved)
+			meterAdd(ctx, m, team, -reserved)
 		}
 		return info, err
 	}
 	if metered {
-		b.meterAdd(ctx, team, info.Size-reserved)
+		meterAdd(ctx, m, team, info.Size-reserved)
 	}
 	return info, nil
 }
 
 // removeMetered removes one object and takes its size off the team's count.
 func (b *Bucket) removeMetered(ctx context.Context, key string) error {
-	team, metered := b.meterTeam(ctx)
+	m, team := b.meterTeam(ctx)
+	metered := m != nil
 	var size int64
 	if metered {
 		if st, err := b.Client.StatObject(ctx, b.S3BucketName, key, minio.StatObjectOptions{}); err == nil {
@@ -123,7 +143,7 @@ func (b *Bucket) removeMetered(ctx context.Context, key string) error {
 		return err
 	}
 	if metered {
-		b.meterAdd(ctx, team, -size)
+		meterAdd(ctx, m, team, -size)
 	}
 	return nil
 }
@@ -187,4 +207,23 @@ func classifyKey(base, key string) (keyOwner, string) {
 		return keyNobody, ""
 	}
 	return keyTeamOne, ""
+}
+
+// StorageRoom answers ErrStorageFull when the team in ctx is at its cap — the cheap question asked
+// before work that would end in an upload (a paid AI generation, an archive import), so a full team
+// neither pays nor waits for a refusal at the put. Nothing is reserved; a meter error answers nil
+// (accounting never stops work), and so does a ctx the meter does not count.
+func (b *Bucket) StorageRoom(ctx context.Context) error {
+	m, team := b.meterTeam(ctx)
+	if m == nil {
+		return nil
+	}
+	if err := m.Reserve(ctx, team, 0, true); err != nil {
+		if errors.Is(err, ErrStorageFull) {
+			return err
+		}
+		slog.Default().ErrorContext(ctx, "storage meter: room check failed, work passes",
+			slog.Int64("team", team), slog.String("err", err.Error()))
+	}
+	return nil
 }

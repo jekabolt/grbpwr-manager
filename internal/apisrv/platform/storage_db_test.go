@@ -47,6 +47,13 @@ func TestSetTeamStorageCap(t *testing.T) {
 	if err != nil || res.GetTeam().GetStorageCapBytes() != 0 {
 		t.Fatalf("no cap: %v %v", res, err)
 	}
+	if res.GetTeam().GetStorageCapDefault() {
+		t.Fatal("no cap is the team's own state, not the default")
+	}
+	res, err = s.SetTeamStorageCap(ctx, &pb_admin.SetTeamStorageCapRequest{TeamSlug: "team2", DefaultCap: true})
+	if err != nil || res.GetTeam().GetStorageCapBytes() != 20<<30 || !res.GetTeam().GetStorageCapDefault() {
+		t.Fatalf("back to default: %v %v", res, err)
+	}
 	if _, err := s.SetTeamStorageCap(ctx, &pb_admin.SetTeamStorageCapRequest{TeamSlug: "grbpwr", CapBytes: 1 << 40}); err != nil {
 		t.Fatalf("team #1 cap: %v", err)
 	}
@@ -56,13 +63,15 @@ func TestSetTeamStorageCap(t *testing.T) {
 		{TeamSlug: "team2", CapBytes: -1},
 		{TeamSlug: "team2", CapBytes: 5, NoCap: true},
 		{TeamSlug: "team2", CapBytes: 1 << 60},
+		{TeamSlug: "team2", NoCap: true, DefaultCap: true},
+		{TeamSlug: "team2", CapBytes: 5, DefaultCap: true},
 	} {
 		if _, err := s.SetTeamStorageCap(ctx, bad); status.Code(err) != codes.InvalidArgument {
 			t.Errorf("%v: %v, want INVALID_ARGUMENT", bad, err)
 		}
 	}
 	var n int
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_audit WHERE action = 'team_storage_cap'`); err != nil || n != 3 {
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_audit WHERE action = 'team_storage_cap'`); err != nil || n != 4 {
 		t.Fatalf("audit rows = %d, %v", n, err)
 	}
 }

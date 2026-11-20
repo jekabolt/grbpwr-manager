@@ -5,6 +5,7 @@ package storagemeter
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Store interface {
 	AddStorage(ctx context.Context, teamID, delta int64) error
 	StorageTeams(ctx context.Context) ([]platformstore.StorageTeam, error)
 	SetRecountedStorage(ctx context.Context, used map[int64]int64, now time.Time) error
+	LockStorageRecount(ctx context.Context) (release func(), ok bool, err error)
 }
 
 // Lister is the bucket side of the recount (bucket.Bucket.SumByTeam).
@@ -56,9 +58,22 @@ func (m *Meter) Add(ctx context.Context, teamID, delta int64) error {
 	return m.st.AddStorage(ctx, teamID, delta)
 }
 
+// ErrRecountBusy: another app instance holds the recount lock; this one skips its turn.
+var ErrRecountBusy = errors.New("storagemeter: another instance is recounting")
+
 // Recount lists the bucket once and writes every team's true number: team #1 gets the legacy keys,
-// every other team the bytes under its file key (0 when it has none).
+// every other team the bytes under its file key (0 when it has none). One instance at a time
+// (LockStorageRecount). Uploads and deletes that land while the listing runs may be counted twice
+// or lost; the next recount (24 h) settles them — the drift is bounded by one day of traffic.
 func Recount(ctx context.Context, st Store, ls Lister, now time.Time) (map[int64]int64, error) {
+	release, ok, err := st.LockStorageRecount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrRecountBusy
+	}
+	defer release()
 	totals, err := ls.SumByTeam(ctx)
 	if err != nil {
 		return nil, err
@@ -125,6 +140,10 @@ func (w *Worker) tick(ctx context.Context) {
 	defer cancel()
 	start := time.Now()
 	used, err := Recount(tctx, w.st, w.ls, start.UTC().Truncate(time.Millisecond))
+	if errors.Is(err, ErrRecountBusy) {
+		slog.Default().InfoContext(ctx, "storage recount skipped: another instance holds it")
+		return
+	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "storage recount failed", slog.String("err", err.Error()))
 		return

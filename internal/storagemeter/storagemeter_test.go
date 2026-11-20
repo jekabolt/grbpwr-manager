@@ -12,12 +12,15 @@ import (
 )
 
 type fakeStore struct {
-	ok      bool
-	err     error
-	defCap  int64
-	stream  int64
-	teams   []platformstore.StorageTeam
-	written map[int64]int64
+	ok       bool
+	err      error
+	defCap   int64
+	stream   int64
+	teams    []platformstore.StorageTeam
+	written  map[int64]int64
+	busy     bool
+	locked   int
+	released int
 }
 
 func (f *fakeStore) ReserveStorage(_ context.Context, _ int64, n, defCap int64) (bool, error) {
@@ -31,6 +34,14 @@ func (f *fakeStore) StorageTeams(context.Context) ([]platformstore.StorageTeam, 
 func (f *fakeStore) SetRecountedStorage(_ context.Context, used map[int64]int64, _ time.Time) error {
 	f.written = used
 	return nil
+}
+
+func (f *fakeStore) LockStorageRecount(context.Context) (func(), bool, error) {
+	if f.busy {
+		return nil, false, nil
+	}
+	f.locked++
+	return func() { f.released++ }, true, nil
 }
 
 type fakeLister struct{ t bucket.StorageTotals }
@@ -72,5 +83,13 @@ func TestRecount(t *testing.T) {
 	}
 	if len(st.written) != len(want) {
 		t.Fatalf("written %v", st.written)
+	}
+	if st.locked != 1 || st.released != 1 {
+		t.Fatalf("lock taken %d, released %d", st.locked, st.released)
+	}
+	// another instance holds the lock: nothing is listed or written
+	st2 := &fakeStore{busy: true}
+	if _, err := Recount(context.Background(), st2, ls, time.Now()); !errors.Is(err, ErrRecountBusy) || st2.written != nil {
+		t.Fatalf("busy: %v %v", err, st2.written)
 	}
 }

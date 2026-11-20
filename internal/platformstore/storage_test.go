@@ -98,3 +98,36 @@ func TestTeamStorageReserveIsAtomic(t *testing.T) {
 		t.Fatalf("used = %d", got[7].Used)
 	}
 }
+
+func TestStorageRecountLockOneHolder(t *testing.T) {
+	st := openFresh(t)
+	ctx := context.Background()
+	release, ok, err := st.LockStorageRecount(ctx)
+	if err != nil || !ok {
+		t.Fatalf("first: %v %v", ok, err)
+	}
+	if _, ok2, err := st.LockStorageRecount(ctx); err != nil || ok2 {
+		t.Fatalf("second holder must be refused: %v %v", ok2, err)
+	}
+	release()
+	release2, ok, err := st.LockStorageRecount(ctx)
+	if err != nil || !ok {
+		t.Fatalf("after release: %v %v", ok, err)
+	}
+	release2()
+}
+
+func TestStorageCapBackToDefault(t *testing.T) {
+	st := openFresh(t)
+	ctx := context.Background()
+	if err := st.SetStorageCap(ctx, 2, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClearStorageCap(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.StorageFor(ctx, []int64{2})
+	if got[2].Cap.Valid || got[2].EffectiveCap(77) != 77 {
+		t.Fatalf("cap = %+v", got[2])
+	}
+}

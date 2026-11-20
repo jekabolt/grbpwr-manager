@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -223,4 +224,32 @@ func TestPutObjectOnlyInPut(t *testing.T) {
 			require.NotContains(t, string(src), call, "%s writes the bucket outside put / removeMetered", f)
 		}
 	}
+}
+
+func TestIsStorageFullMatch(t *testing.T) {
+	require.True(t, IsStorageFull(ErrStorageFull))
+	require.True(t, IsStorageFull(fmt.Errorf("upload: %w", ErrStorageFull)))
+	require.True(t, IsStorageFull(fmt.Errorf("upload: %v", ErrStorageFull)), "flattened chain still maps")
+	require.False(t, IsStorageFull(nil))
+	require.False(t, IsStorageFull(errors.New("disk storage full on host")))
+	require.False(t, IsStorageFull(errors.New("bucket: storage full")))
+	require.False(t, IsStorageFull(errors.New("storage_full")))
+}
+
+func TestStorageRoom(t *testing.T) {
+	b, _, m := newMeterBucket(t, true)
+	require.NoError(t, b.StorageRoom(teamCtx(2, fileKeyA)))
+	require.Equal(t, []int64{0}, m.reserved, "a room check reserves nothing")
+	require.Empty(t, m.added)
+
+	m.full = true
+	require.ErrorIs(t, b.StorageRoom(teamCtx(2, fileKeyA)), ErrStorageFull)
+
+	m.full, m.reserveErr = false, errors.New("db down")
+	require.NoError(t, b.StorageRoom(teamCtx(2, fileKeyA)), "a broken meter never stops work")
+
+	off, _, offM := newMeterBucket(t, false)
+	offM.full = true
+	require.NoError(t, off.StorageRoom(teamCtx(2, fileKeyA)), "teams mode off: nothing is counted")
+	require.NoError(t, b.StorageRoom(context.Background()), "no team in ctx: nothing is counted")
 }

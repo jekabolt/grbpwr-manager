@@ -620,6 +620,10 @@ func (s *Server) StartDesignRun(ctx context.Context, req *pb_admin.StartDesignRu
 	if err := s.designKindGateCheck(kind); err != nil {
 		return nil, err
 	}
+	// X11: a team at its storage cap is refused before the reserve — its output could not be kept.
+	if err := s.storageRoomCheck(ctx); err != nil {
+		return nil, err
+	}
 	ask := strings.TrimSpace(req.GetAsk())
 	if len([]rune(ask)) > designMaxAskRunes {
 		return nil, status.Errorf(codes.InvalidArgument,

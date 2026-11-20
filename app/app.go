@@ -976,6 +976,9 @@ func (a *App) Start(ctx context.Context) error {
 			return err
 		}
 		a.wireDesignTeams() // teams mode on: one tick per active team with `ai` on (teams_ai.go)
+		if bk, ok := a.b.(*bucket.Bucket); ok {
+			a.dgw.SetStorageGate(bk.StorageRoom) // X11: a full team never pays (no-op until the meter is on)
+		}
 		if err = a.dgw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
 				slog.String("err", err.Error()),
@@ -1042,6 +1045,9 @@ func (a *App) Start(ctx context.Context) error {
 	// every paid verb.
 	if a.dgw != nil {
 		adminS.SetDesignKindGate(a.dgw.PreflightKind)
+	}
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		adminS.SetStorageRoom(bk.StorageRoom) // X11: no-op until the meter is on (teams mode)
 	}
 	if designThreedView != nil {
 		adminS.SetDesignThreedRoute(designThreedView)

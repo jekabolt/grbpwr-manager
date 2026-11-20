@@ -27,23 +27,28 @@ func (s *Server) withStorage(ctx context.Context, ids []int64, rows ...*pb_admin
 		ts := st[ids[i]]
 		row.StorageUsedBytes = ts.Used
 		row.StorageCapBytes = ts.EffectiveCap(def)
+		row.StorageCapDefault = !ts.Cap.Valid
 	}
 	return nil
 }
 
-// SetTeamStorageCap sets a team's storage cap: cap_bytes > 0, or no_cap. Team #1 too (it starts
-// with no cap). Uploads over the cap are refused; reads never are.
+// SetTeamStorageCap sets a team's storage cap: cap_bytes > 0, no_cap, or default_cap (back to
+// TEAM_STORAGE_CAP_GB). Team #1 too (it starts with no cap). Uploads over the cap are refused;
+// reads never are.
 func (s *Server) SetTeamStorageCap(ctx context.Context, req *pb_admin.SetTeamStorageCapRequest) (*pb_admin.SetTeamStorageCapResponse, error) {
 	c, err := caller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var capBytes int64
+	n, noCap, def := req.GetCapBytes(), req.GetNoCap(), req.GetDefaultCap()
+	var detail string
 	switch {
-	case req.GetNoCap() && req.GetCapBytes() == 0:
-		capBytes = 0
-	case !req.GetNoCap() && req.GetCapBytes() > 0 && req.GetCapBytes() <= maxStorageCap:
-		capBytes = req.GetCapBytes()
+	case def && !noCap && n == 0:
+		detail = "default"
+	case noCap && !def && n == 0:
+		detail = "0"
+	case !noCap && !def && n > 0 && n <= maxStorageCap:
+		detail = strconv.FormatInt(n, 10)
 	default:
 		return nil, status.Error(codes.InvalidArgument, "storage_cap")
 	}
@@ -51,10 +56,15 @@ func (s *Server) SetTeamStorageCap(ctx context.Context, req *pb_admin.SetTeamSto
 	if err != nil {
 		return nil, err
 	}
-	if err := s.st.SetStorageCap(ctx, t.ID, capBytes); err != nil {
+	if def {
+		err = s.st.ClearStorageCap(ctx, t.ID)
+	} else {
+		err = s.st.SetStorageCap(ctx, t.ID, n) // 0 with no_cap = no cap
+	}
+	if err != nil {
 		return nil, storeErr(ctx, "set storage cap", err)
 	}
-	s.audit(ctx, c.UserID, t.ID, "team_storage_cap", map[string]string{"cap_bytes": strconv.FormatInt(capBytes, 10)})
+	s.audit(ctx, c.UserID, t.ID, "team_storage_cap", map[string]string{"cap_bytes": detail})
 	team, err := s.refreshed(ctx, t.Slug)
 	if err != nil {
 		return nil, err

@@ -127,6 +127,16 @@ ON DUPLICATE KEY UPDATE cap_bytes = ?`, teamID, capBytes, capBytes)
 	return nil
 }
 
+// ClearStorageCap puts the team back on the default cap (cap_bytes NULL = TEAM_STORAGE_CAP_GB).
+func (s *Store) ClearStorageCap(ctx context.Context, teamID int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO team_storage (team_id, cap_bytes) VALUES (?, NULL)
+ON DUPLICATE KEY UPDATE cap_bytes = NULL`, teamID)
+	if err != nil {
+		return fmt.Errorf("platformstore: clear storage cap: %w", err)
+	}
+	return nil
+}
+
 // StorageFor reads the given teams' rows; a team without a row is absent (used 0, default cap).
 func (s *Store) StorageFor(ctx context.Context, teamIDs []int64) (map[int64]TeamStorage, error) {
 	out := make(map[int64]TeamStorage, len(teamIDs))
@@ -178,4 +188,29 @@ ON DUPLICATE KEY UPDATE used_bytes = ?, recounted_at = ?`, team, n, now, n, now)
 		}
 	}
 	return nil
+}
+
+// LockStorageRecount takes the recount's lock (GET_LOCK, named after this control-plane database:
+// lock names are server-wide and beta / prod share a cluster). One holder across app instances; ok
+// false = another instance is recounting. The lock lives on one pinned connection; release frees it.
+func (s *Store) LockStorageRecount(ctx context.Context) (release func(), ok bool, err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("platformstore: recount lock: %w", err)
+	}
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, `SELECT GET_LOCK(CONCAT(DATABASE(), ':team_storage_recount'), 0)`).Scan(&got); err != nil {
+		_ = conn.Close()
+		return nil, false, fmt.Errorf("platformstore: recount lock: %w", err)
+	}
+	if !got.Valid || got.Int64 != 1 {
+		_ = conn.Close()
+		return nil, false, nil
+	}
+	return func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(rctx, `SELECT RELEASE_LOCK(CONCAT(DATABASE(), ':team_storage_recount'))`)
+		_ = conn.Close() // a failed release still frees the lock with the session
+	}, true, nil
 }
