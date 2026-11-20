@@ -249,6 +249,11 @@ var methodOverrides = map[string][]Key{
 	"GenerateDesignJoins":         {TechCards, AI},
 	// Allowlisted in rbac (four editors use it): core is its domain, ai the capability.
 	"TranslateFields": {Core, AI},
+
+	// LIBRARY (media-files): copying a private file into media reads files and writes media, so both
+	// features must be on. The other library RPCs are allowlisted (Core) and the handler drops a
+	// branch whose feature is off.
+	"CopyLibraryFileToMedia": {Media, Files},
 }
 
 // ForMethod returns the features required by an AdminService full method.

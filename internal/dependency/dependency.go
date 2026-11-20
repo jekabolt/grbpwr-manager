@@ -2027,6 +2027,31 @@ type (
 		// instead of refusing. "Still used" is not an error — it means the row is no longer
 		// the caller's to take back, and neither are the objects behind it.
 		DeleteMediaByIdIfUnused(ctx context.Context, id int) (deleted bool, refs []entity.MediaUsageRef, err error)
+		// SetMediaLibraryMeta records upload metadata for the library list (file name, size,
+		// uploader, source sha). COALESCE on every column: it never overwrites, so a dedup hit
+		// keeps the first uploader's values. Kind and folder are not written here.
+		SetMediaLibraryMeta(ctx context.Context, id int, m entity.MediaLibraryMeta) error
+	}
+
+	// Library is the unified library: media rows and library files as one list keyed by
+	// (source, id), plus the shared folder tree. The files branch always applies the
+	// caller's file visibility; b says which branches the caller may read at all.
+	Library interface {
+		CreateFolder(ctx context.Context, parentID int, name string, createdByID int) (*entity.LibraryFolder, error)
+		RenameFolder(ctx context.Context, id int, name string) (*entity.LibraryFolder, error)
+		MoveFolder(ctx context.Context, id, newParentID int) (*entity.LibraryFolder, error)
+		// DeleteFolder refuses with entity.ErrFolderNotEmpty while anything points at the
+		// folder, blind to ACL and features.
+		DeleteFolder(ctx context.Context, id int) error
+		// MoveItems is all or nothing; folderID 0 takes the items out of every folder.
+		MoveItems(ctx context.Context, refs []entity.LibraryRef, folderID int) (int, error)
+		// FindMediaBySourceSha returns (nil, nil) when no media row matches.
+		FindMediaBySourceSha(ctx context.Context, sha256 string) (*entity.MediaFull, error)
+		SetMediaFolder(ctx context.Context, mediaID, folderID int) error
+		ListItems(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter, sort entity.LibrarySort, limit, offset int) ([]entity.LibraryItemRow, int, error)
+		Facets(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter) (*entity.LibraryFacets, error)
+		FileUsedIDs(ctx context.Context, ids []int) (map[int]bool, error)
+		ListFolders(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter) ([]entity.LibraryFolder, error)
 	}
 
 	Admin interface {
@@ -2459,6 +2484,7 @@ type (
 		Retention() Retention
 		Analytics() Analytics
 		Media() Media
+		Library() Library
 		Settings() Settings
 		Workshop() Workshop
 		AI() AI

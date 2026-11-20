@@ -47,6 +47,41 @@ const addMediaQuery = `INSERT INTO media (
 		:contentHash
 	);`
 
+// setMediaLibraryMetaQuery fills the library metadata of a media row (0483) without ever
+// overwriting: a dedup hit on an existing row keeps the first uploader's name, size, uploader and
+// source sha. NULL arguments leave the column as it is.
+const setMediaLibraryMetaQuery = `UPDATE media SET
+		lib_file_name = COALESCE(lib_file_name, :fileName),
+		lib_size_bytes = COALESCE(lib_size_bytes, :sizeBytes),
+		lib_uploaded_by_id = COALESCE(lib_uploaded_by_id, :uploadedById),
+		lib_source_sha256 = COALESCE(lib_source_sha256, :sourceSha256)
+	WHERE id = :id`
+
+// SetMediaLibraryMeta records upload metadata for the library list. It writes only name, size,
+// uploader and source sha (kind is generated, the folder belongs to MoveLibraryItems) and never
+// overwrites a value already set. A missing row is not an error: the update simply matches nothing.
+func (s *Store) SetMediaLibraryMeta(ctx context.Context, id int, m entity.MediaLibraryMeta) error {
+	err := storeutil.ExecNamed(ctx, s.DB, setMediaLibraryMetaQuery, map[string]any{
+		"id":           id,
+		"fileName":     nullIfBlank(m.FileName),
+		"sizeBytes":    m.SizeBytes,
+		"uploadedById": m.UploadedById,
+		"sourceSha256": nullIfBlank(m.SourceSha256),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set media library meta: %w", err)
+	}
+	return nil
+}
+
+// nullIfBlank binds an empty string as SQL NULL, so a blank name or sha never fills the column.
+func nullIfBlank(v sql.NullString) sql.NullString {
+	if !v.Valid || strings.TrimSpace(v.String) == "" {
+		return sql.NullString{}
+	}
+	return v
+}
+
 const findMediaByContentHashQuery = `SELECT * FROM media WHERE content_hash = :hash LIMIT 1`
 
 // AddMedia adds a new media item to the database.

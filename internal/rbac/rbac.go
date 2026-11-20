@@ -999,6 +999,10 @@ var methodRequirements = map[string]Requirement{
 	"ListFixedAssets":      rd(SectionAccounting),
 	"PostDepreciation":     wr(SectionAccounting),
 	"AccrueCorporationTax": wr(SectionAccounting),
+	// LIBRARY (media-files): turning a private file into a media row writes media, so content:write
+	// gates it here; the handler also requires files:read and EnsureVisible on the file, and
+	// feature.methodOverrides requires both the Media and the Files feature.
+	"CopyLibraryFileToMedia": wr(SectionContent),
 }
 
 // allowlist is the set of admin methods any authenticated account may call
@@ -1066,6 +1070,21 @@ var allowlist = map[string]entity.AccessLevel{
 	// Teams mode OFF keeps the old gate inside the handler — a legacy token, a super or accounts
 	// read, else the edge's exact refusal text — so prod answers byte for byte as before.
 	"ListTeamMembers": entity.AccessRead,
+	// LIBRARY (media-files). The unified list spans two sections that do not contain one another
+	// (media = content, files = files) and methodRequirements allows one section per method, so the
+	// edge lets any account in and the handler gates each branch: a branch the caller has neither the
+	// section nor the team feature for is dropped; neither branch = PermissionDenied library_no_section.
+	// Folder edits need content:write (Media on) OR files:write (Files on); moving an item needs write
+	// in its own source's section. The writes are classed write so a read-only team is refused at the
+	// edge even though Move/Rename names match no mutating prefix.
+	"ListLibraryItems":    entity.AccessRead,
+	"GetLibraryFacets":    entity.AccessRead,
+	"ListLibraryFolders":  entity.AccessRead,
+	"CreateLibraryFolder": entity.AccessWrite,
+	"RenameLibraryFolder": entity.AccessWrite,
+	"MoveLibraryFolder":   entity.AccessWrite,
+	"DeleteLibraryFolder": entity.AccessWrite,
+	"MoveLibraryItems":    entity.AccessWrite,
 }
 
 // EncodePermissions formats a permission set as the "section:access" strings

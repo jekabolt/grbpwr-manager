@@ -4698,6 +4698,83 @@ service AdminService {
       body: "*"
     };
   }
+
+  // LIBRARY (media + files as one list). One contiguous block; every route is under
+  // /api/admin/library/… so it never collides with /api/admin/files/{id}.
+
+  // ListLibraryItems is one page of the unified library: media rows and library files in one
+  // list, keyed by (source, id). Branches the caller may not read are dropped silently.
+  rpc ListLibraryItems(ListLibraryItemsRequest) returns (ListLibraryItemsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/items/list"
+      body: "*"
+    };
+  }
+
+  // GetLibraryFacets answers the counts for the same filter: months, kinds, used/free, ratios.
+  rpc GetLibraryFacets(GetLibraryFacetsRequest) returns (GetLibraryFacetsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/facets"
+      body: "*"
+    };
+  }
+
+  // ListLibraryFolders answers every folder, flat, ordered by parent then name.
+  rpc ListLibraryFolders(ListLibraryFoldersRequest) returns (ListLibraryFoldersResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/folders/list"
+      body: "*"
+    };
+  }
+
+  // CreateLibraryFolder makes a folder under parent_id (0 = root).
+  rpc CreateLibraryFolder(CreateLibraryFolderRequest) returns (CreateLibraryFolderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/folders/create"
+      body: "*"
+    };
+  }
+
+  // RenameLibraryFolder renames a folder; the name stays unique among its siblings.
+  rpc RenameLibraryFolder(RenameLibraryFolderRequest) returns (RenameLibraryFolderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/folders/rename"
+      body: "*"
+    };
+  }
+
+  // MoveLibraryFolder moves a folder under a new parent (0 = root); no cycles, depth capped.
+  rpc MoveLibraryFolder(MoveLibraryFolderRequest) returns (MoveLibraryFolderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/folders/move"
+      body: "*"
+    };
+  }
+
+  // DeleteLibraryFolder deletes an empty folder; anything inside refuses with folder_not_empty.
+  rpc DeleteLibraryFolder(DeleteLibraryFolderRequest) returns (DeleteLibraryFolderResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/folders/delete"
+      body: "*"
+    };
+  }
+
+  // MoveLibraryItems puts items into a folder (0 = out of every folder), all or nothing.
+  rpc MoveLibraryItems(MoveLibraryItemsRequest) returns (MoveLibraryItemsResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/items/move"
+      body: "*"
+    };
+  }
+
+  // CopyLibraryFileToMedia turns a private library image/vector/video into a media row through
+  // the normal upload pipeline (three sizes for raster). The file stays; dedup by sha256.
+  rpc CopyLibraryFileToMedia(CopyLibraryFileToMediaRequest) returns (CopyLibraryFileToMediaResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/library/files/copy-to-media"
+      body: "*"
+    };
+  }
 }
 
 // DICITONARY
@@ -4722,6 +4799,8 @@ message UploadContentImageRequest {
   //
   // Absent/false = the ordinary path (re-encode + derive thumbnail/compressed), unchanged.
   bool preserve_original = 2;
+  // Optional original file name for the library list: trimmed, at most 255 runes, never a path.
+  string file_name = 3;
 }
 
 message UploadContentImageResponse {
@@ -4731,6 +4810,8 @@ message UploadContentImageResponse {
 message UploadContentVideoRequest {
   bytes raw = 1;
   string content_type = 4;
+  // Optional original file name (see UploadContentImageRequest.file_name). 2 and 3 are retired.
+  string file_name = 5;
 }
 
 message UploadContentVideoResponse {
@@ -4754,6 +4835,8 @@ message UploadContentVectorRequest {
   // trusted. A GLB has its own door (UploadContentModel), for the same reason: one verb, one
   // content type, so no client can choose which branch of the non-raster path its payload takes.
   bytes raw = 1;
+  // Optional original file name (see UploadContentImageRequest.file_name).
+  string file_name = 2;
 }
 
 message UploadContentVectorResponse {
@@ -4774,6 +4857,8 @@ message UploadContentModelRequest {
   // no preview: the media row keeps the old shape (every url slot is the .glb), which is what every
   // model uploaded before this field looks like. The same raster ceilings as UploadContentImage.
   bytes preview = 2;
+  // Optional original file name of the .glb (see UploadContentImageRequest.file_name).
+  string file_name = 3;
 }
 
 message UploadContentModelResponse {
@@ -15800,4 +15885,185 @@ message TranslateFieldsResponse {
 
 message TranslatedFields {
   map<string, string> fields = 1;
+}
+
+// LIBRARY — media + files as one list (ListLibraryItems and friends).
+
+enum LibrarySource {
+  LIBRARY_SOURCE_UNSPECIFIED = 0;
+  LIBRARY_SOURCE_MEDIA = 1;
+  LIBRARY_SOURCE_FILE = 2;
+}
+
+enum LibraryKind {
+  LIBRARY_KIND_UNSPECIFIED = 0;
+  LIBRARY_KIND_IMAGE = 1;
+  LIBRARY_KIND_VIDEO = 2;
+  LIBRARY_KIND_VECTOR = 3;
+  LIBRARY_KIND_MODEL = 4;
+  LIBRARY_KIND_DOCUMENT = 5;
+}
+
+enum LibraryAccept {
+  LIBRARY_ACCEPT_UNSPECIFIED = 0; // = ANY
+  LIBRARY_ACCEPT_ANY = 1;
+  LIBRARY_ACCEPT_VISUAL = 2;
+}
+
+enum LibraryUsage {
+  LIBRARY_USAGE_UNSPECIFIED = 0; // = both
+  LIBRARY_USAGE_USED = 1;
+  LIBRARY_USAGE_FREE = 2;
+}
+
+enum LibrarySort {
+  LIBRARY_SORT_UNSPECIFIED = 0; // = NEW
+  LIBRARY_SORT_NEW = 1;
+  LIBRARY_SORT_OLD = 2;
+  LIBRARY_SORT_NAME = 3;
+  LIBRARY_SORT_SIZE = 4;
+}
+
+// LibraryItemRef is the row key of the unified list: media id 7 and file id 7 are different rows.
+message LibraryItemRef {
+  LibrarySource source = 1;
+  int32 id = 2;
+}
+
+message LibraryItemFilter {
+  repeated LibraryKind kinds = 1; // empty = all; OR within
+  LibraryAccept accept = 2; // VISUAL: media + copyable files only
+  repeated LibrarySource sources = 3; // empty = every source the caller may read
+  int32 folder_id = 4; // 0 = any folder (unless no_folder)
+  bool no_folder = 5; // folder IS NULL; with folder_id>0 = InvalidArgument
+  bool include_subfolders = 6; // with folder_id: the whole subtree
+  string search = 7; // trimmed; media: name LIKE or exact id; files: existing ListFiles search
+  int32 project_topic_id = 8; // files only => media branch dropped
+  repeated int32 topic_ids = 9; // files only (intersection, as ListLibraryFiles) => media dropped
+  int32 uploaded_by_id = 10; // admins.id; media rows without uploader never match
+  google.protobuf.Timestamp created_from = 11; // [from, to), UTC
+  google.protobuf.Timestamp created_to = 12;
+  LibraryUsage usage = 13;
+  repeated string ratios = 14; // "4:5" reduced named ratios or "other"; => files dropped
+}
+
+message LibraryItem {
+  LibraryItemRef ref = 1;
+  LibraryKind kind = 2;
+  string name = 3; // media: lib_file_name or ""; file: file_name
+  int64 size_bytes = 4; // 0 = unknown (old media)
+  string content_type = 5; // file: as stored; media: derived from kind + ext
+  google.protobuf.Timestamp created_at = 6;
+  int32 folder_id = 7; // 0 = none
+  int32 uploaded_by_id = 8;
+  string uploaded_by = 9; // username or ""
+  bool in_use = 10; // filled for the returned page only
+  common.MediaFull media = 11; // set iff source = MEDIA
+  LibraryFile file = 12; // set iff source = FILE (presigned via libraryFilesToPb)
+  int32 width = 13; // media thumbnail dims; file 0
+  int32 height = 14;
+}
+
+message ListLibraryItemsRequest {
+  LibraryItemFilter filter = 1;
+  LibrarySort sort = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListLibraryItemsResponse {
+  repeated LibraryItem items = 1;
+  int32 total = 2;
+  repeated LibrarySource sources_visible = 3;
+}
+
+message LibraryKindCount {
+  LibraryKind kind = 1;
+  int32 count = 2;
+}
+
+message LibraryRatioCount {
+  string ratio = 1; // "4:5" | "other"
+  int32 count = 2;
+}
+
+message GetLibraryFacetsRequest {
+  LibraryItemFilter filter = 1;
+}
+
+message GetLibraryFacetsResponse {
+  repeated MonthCount months = 1; // same filter, newest first (scrubber offsets)
+  repeated LibraryKindCount kinds = 2; // filter minus `kinds`
+  int32 used = 3; // filter minus `usage`
+  int32 free = 4; // filter minus `usage`
+  repeated LibraryRatioCount ratios = 5; // filter minus `ratios`, media only
+  int32 total = 6;
+}
+
+message LibraryFolder {
+  int32 id = 1;
+  int32 parent_id = 2;
+  string name = 3;
+  google.protobuf.Timestamp created_at = 4;
+  int32 item_count = 5; // direct items visible to caller under filter
+  int32 child_count = 6;
+}
+
+message ListLibraryFoldersRequest {
+  LibraryItemFilter filter = 1; // folder fields of filter ignored
+}
+
+message ListLibraryFoldersResponse {
+  repeated LibraryFolder folders = 1; // flat, ordered by parent, name
+}
+
+message CreateLibraryFolderRequest {
+  int32 parent_id = 1;
+  string name = 2;
+}
+
+message CreateLibraryFolderResponse {
+  LibraryFolder folder = 1;
+}
+
+message RenameLibraryFolderRequest {
+  int32 id = 1;
+  string name = 2;
+}
+
+message RenameLibraryFolderResponse {
+  LibraryFolder folder = 1;
+}
+
+message MoveLibraryFolderRequest {
+  int32 id = 1;
+  int32 new_parent_id = 2;
+}
+
+message MoveLibraryFolderResponse {
+  LibraryFolder folder = 1;
+}
+
+message DeleteLibraryFolderRequest {
+  int32 id = 1;
+}
+
+message DeleteLibraryFolderResponse {}
+
+message MoveLibraryItemsRequest {
+  repeated LibraryItemRef refs = 1;
+  int32 folder_id = 2; // 0 = take out of folders
+}
+
+message MoveLibraryItemsResponse {
+  int32 moved = 1;
+}
+
+message CopyLibraryFileToMediaRequest {
+  int32 file_id = 1;
+}
+
+message CopyLibraryFileToMediaResponse {
+  common.MediaFull media = 1;
+  bool existed = 2;
 }

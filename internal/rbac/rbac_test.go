@@ -279,6 +279,14 @@ func TestAllowlistClasses(t *testing.T) {
 		"SetAccountSpecialties": entity.AccessWrite,
 		"TranslateFields":       entity.AccessWrite,
 		"ListTeamMembers":       entity.AccessRead,
+		"ListLibraryItems":      entity.AccessRead,
+		"GetLibraryFacets":      entity.AccessRead,
+		"ListLibraryFolders":    entity.AccessRead,
+		"CreateLibraryFolder":   entity.AccessWrite,
+		"RenameLibraryFolder":   entity.AccessWrite,
+		"MoveLibraryFolder":     entity.AccessWrite,
+		"DeleteLibraryFolder":   entity.AccessWrite,
+		"MoveLibraryItems":      entity.AccessWrite,
 	}
 	if len(allowlist) != len(want) {
 		t.Errorf("allowlist has %d entries, want %d", len(allowlist), len(want))

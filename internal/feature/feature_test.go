@@ -198,6 +198,9 @@ func TestExplicitMethodOverrides(t *testing.T) {
 		{name: "GetAiProvidersConfig", want: []Key{AIProviders}},
 		{name: "CreateAccount", want: []Key{LocalAccounts}},
 		{name: "GetCurrentAccount", want: []Key{Core}},
+		{name: "CopyLibraryFileToMedia", want: []Key{Media, Files}},
+		{name: "ListLibraryItems", want: []Key{Core}},
+		{name: "MoveLibraryItems", want: []Key{Core}},
 	}
 	for _, tc := range tests {
 		got, ok := ForMethod(rbac.MethodPrefix + tc.name)
