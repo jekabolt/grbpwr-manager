@@ -40,7 +40,8 @@ func createSession(ctx context.Context, e sqlx.ExecerContext, sid string, userID
 }
 
 // createSessionTx is createSession with the root session the new one was opened from (parentSID,
-// "" = none): a root sign-out revokes every session that names it.
+// "" = none): a root sign-out revokes every session that names it. The device the request came
+// from (WithSessionClient on ctx) is recorded with it.
 func createSessionTx(ctx context.Context, e sqlx.ExecerContext, sid string, userID, teamID int64, aud, parentSID string,
 	credGen int64, now time.Time) error {
 	var team, parent any
@@ -50,8 +51,10 @@ func createSessionTx(ctx context.Context, e sqlx.ExecerContext, sid string, user
 	if parentSID != "" {
 		parent = parentSID
 	}
-	r, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at, parent_sid)
-SELECT ?, id, ?, ?, ?, ?, ? FROM platform_user WHERE id = ? AND credential_gen = ?`, sid, team, aud, now, now, parent, userID, credGen)
+	ua, ip := sessionClientArgs(ctx)
+	r, err := e.ExecContext(ctx, `INSERT INTO user_session (sid, user_id, team_id, aud, created_at, last_seen_at, parent_sid, user_agent, ip)
+SELECT ?, id, ?, ?, ?, ?, ?, ?, ? FROM platform_user WHERE id = ? AND credential_gen = ?`,
+		sid, team, aud, now, now, parent, ua, ip, userID, credGen)
 	if err != nil {
 		return fmt.Errorf("platformstore: create session: %w", err)
 	}

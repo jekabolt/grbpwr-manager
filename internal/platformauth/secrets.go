@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 )
 
 // Purposes of an email_token row.
@@ -133,15 +134,20 @@ func NewSessionID() (string, error) {
 }
 
 // UnusableHash returns a maker of password hashes nobody can match: a real PBKDF2 hash (the same
-// work as any account's) of 32 random bytes that are thrown away. A seeded operator sets a password
-// through reset.
+// work as any account's) of 32 random bytes that are thrown away, marked unusable
+// (platformstore.MarkUnusable), so the profile reads «no password» and offers to set one. A seeded
+// operator sets a password through reset.
 func UnusableHash(h *pwhash.PasswordHasher) func() (string, error) {
 	return func() (string, error) {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
 			return "", fmt.Errorf("platformauth: random hash: %w", err)
 		}
-		return h.HashPassword(hex.EncodeToString(b))
+		hash, err := h.HashPassword(hex.EncodeToString(b))
+		if err != nil {
+			return "", err
+		}
+		return platformstore.MarkUnusable(hash)
 	}
 }
 

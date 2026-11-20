@@ -333,7 +333,7 @@ WHERE u.email = ? AND i.provider = 'google' AND i.subject = 'g-o3-new'`, newEmai
 	if _, err := j.svc.SignIn(ctxFrom("10.9.0.2", ""), &auth.SignInRequest{Login: owner, Password: ownerPW, Target: auth.SignInTarget_SIGN_IN_TARGET_ROOT}); err != nil {
 		t.Fatalf("password sign-in after the link: %v", err)
 	}
-	if _, err := j.svc.SignOut(ctx, root); err != nil {
+	if _, err := j.svc.SignOut(ctx, root, false); err != nil {
 		t.Fatal(err)
 	}
 	_, err = j.svc.ListMyTeams(ctx, root, &auth.ListMyTeamsRequest{})

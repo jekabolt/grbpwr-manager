@@ -13,9 +13,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Account profile RPCs of the calling person (P0 design §1.2, §3.1, §3.2, §3.4, §3.7). Contract stubs:
-// each answers Unimplemented until its server lane lands (S2a profile + avatar; S2b moves the password and
-// Google ones to me_password.go / me_google.go).
+// Account profile RPCs of the calling person (P0 design §1.2, §3.1, §3.2). The password RPC is in
+// me_password.go, the Google ones in me_google.go, the devices in me_sessions.go.
 
 // errNotYet is the answer of an account RPC whose server lane has not landed.
 func errNotYet() error { return status.Error(codes.Unimplemented, "not implemented yet") }
@@ -43,9 +42,8 @@ func (s *Service) profilePB(p platformstore.Profile) *auth.MyProfile {
 		PublicUsername: p.PublicUsername,
 		Email:          p.Email,
 		AvatarUrl:      s.AvatarURL(p.AvatarSHA),
-		// An unusable hash (a provider account) is a real PBKDF2 hash too, so the shape is all the
-		// profile can tell today; ChangeMyPassword (lane S2b) owns the «set a password» case.
-		PasswordSet: wellFormedHash(p.PasswordHash),
+		// false for an account made or claimed through a provider: ChangeMyPassword then sets one.
+		PasswordSet: p.PasswordSet,
 		GoogleEmail: p.GoogleEmail,
 		// SoleOwnerTeams and ClosingTeams come with delete account (lane S4b).
 	}
@@ -180,19 +178,4 @@ func (s *Service) SetMyAvatar(ctx context.Context, token string, req *auth.SetMy
 	}
 	s.audit(ctx, c.UserID, c.TeamID, "avatar_set", nil)
 	return &auth.SetMyAvatarResponse{AvatarUrl: s.AvatarURL(a.SHA256)}, nil
-}
-
-// ChangeMyPassword changes or sets the password.
-func (s *Service) ChangeMyPassword(ctx context.Context, token string, req *auth.ChangeMyPasswordRequest) (*auth.ChangeMyPasswordResponse, error) {
-	return nil, errNotYet()
-}
-
-// StartGoogleLink issues a single-use Google connect ticket.
-func (s *Service) StartGoogleLink(ctx context.Context, token string, req *auth.StartGoogleLinkRequest) (*auth.StartGoogleLinkResponse, error) {
-	return nil, errNotYet()
-}
-
-// UnlinkMyGoogle disconnects Google.
-func (s *Service) UnlinkMyGoogle(ctx context.Context, token string, req *auth.UnlinkMyGoogleRequest) (*auth.UnlinkMyGoogleResponse, error) {
-	return nil, errNotYet()
 }

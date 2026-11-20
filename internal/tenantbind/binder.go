@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -691,14 +692,30 @@ type storePlane struct{ st *platformstore.Store }
 
 func (p storePlane) Directory() tenant.Directory { return p.st.Directory() }
 func (p storePlane) SessionActive(ctx context.Context, sid string) (bool, error) {
-	return p.st.SessionActive(ctx, sid)
+	ok, err := p.st.SessionActive(ctx, sid)
+	if ok && err == nil {
+		p.touch(ctx, sid)
+	}
+	return ok, err
+}
+
+// touch moves a session found live on a cache miss to «seen now» (the device list's last seen; the
+// store writes at most every platformstore.TouchEvery). A failure costs only that freshness.
+func (p storePlane) touch(ctx context.Context, sid string) {
+	if err := p.st.TouchSession(ctx, sid, time.Now().UTC().Truncate(time.Millisecond)); err != nil {
+		slog.WarnContext(ctx, "tenantbind: touch session", slog.String("err", err.Error()))
+	}
 }
 func (p storePlane) FeatureOverrides(ctx context.Context, teamID int64) (map[string]bool, error) {
 	return p.st.FeatureOverrides(ctx, teamID)
 }
 
 func (p storePlane) TeamSession(ctx context.Context, sid string, uid, tid int64) (string, bool, error) {
-	return p.st.TeamSession(ctx, sid, uid, tid)
+	role, ok, err := p.st.TeamSession(ctx, sid, uid, tid)
+	if ok && err == nil {
+		p.touch(ctx, sid)
+	}
+	return role, ok, err
 }
 func (p storePlane) LegacyCredGen(ctx context.Context, handle string) (int64, error) {
 	return p.st.LegacyCredGen(ctx, handle)

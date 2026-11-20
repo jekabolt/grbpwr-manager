@@ -94,6 +94,9 @@ type Service struct {
 	createTeam, logoSet *ratelimit.Limiter
 	// profileRead, profileWrite, avatarSet: the account RPCs per account (P0 §1.4).
 	profileRead, profileWrite, avatarSet *ratelimit.Limiter
+	// sessionRead, sessionWrite: the device list and its sign-outs; passwordChange: change / set
+	// password tries; googleLink: Google connect starts — each per account (P0 §1.4).
+	sessionRead, sessionWrite, passwordChange, googleLink *ratelimit.Limiter
 	// logoSlots bounds the logos decoded at once (memory: a 4096-px image is tens of MB decoded).
 	logoSlots chan struct{}
 }
@@ -146,7 +149,12 @@ func New(d Deps) (*Service, error) {
 		profileRead:  ratelimit.NewLimiter(time.Minute, MaxProfileReadsPerMin),
 		profileWrite: ratelimit.NewLimiter(time.Hour, MaxProfileWritesPerHr),
 		avatarSet:    ratelimit.NewLimiter(time.Hour, MaxAvatarSetsPerHr),
-		options:      d.SignInOptions,
+
+		sessionRead:    ratelimit.NewLimiter(time.Minute, MaxSessionReadsPerMin),
+		sessionWrite:   ratelimit.NewLimiter(time.Hour, MaxSessionWritesPerHr),
+		passwordChange: ratelimit.NewLimiter(time.Hour, MaxPasswordChangesPerHr),
+		googleLink:     ratelimit.NewLimiter(time.Hour, MaxGoogleLinksPerHr),
+		options:        d.SignInOptions,
 	}
 	if s.options == nil {
 		s.options = OptionsFromConfig(d.Config.OAuth)
@@ -171,7 +179,7 @@ func (s *Service) Ready() error { return s.ready }
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
 	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet,
-		s.profileRead, s.profileWrite, s.avatarSet} {
+		s.profileRead, s.profileWrite, s.avatarSet, s.sessionRead, s.sessionWrite, s.passwordChange, s.googleLink} {
 		l.Stop()
 	}
 }
@@ -448,6 +456,7 @@ func (s *Service) VerifyEmail(ctx context.Context, req *auth.VerifyEmailRequest)
 		s.log(ctx, "session id", err)
 		return nil, errInternal()
 	}
+	ctx = withSessionClient(ctx)
 	var res platformstore.VerifyResult
 	if tok := strings.TrimSpace(req.GetToken()); tok != "" {
 		res, err = s.d.Store.VerifyByLink(ctx, HashToken(tok), now, nt, sid, s.review())
@@ -688,6 +697,7 @@ func (s *Service) session(ctx context.Context, u platformstore.User, teamID int6
 		s.log(ctx, "session id", err)
 		return "", errInternal()
 	}
+	ctx = withSessionClient(ctx)
 	// A team session exists only while the membership is active (checked under its row lock), and
 	// only on the credential generation read with the password the caller checked: neither a sign-in
 	// that started before a removal nor one that used a password changed since leaves a session.
@@ -824,6 +834,7 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 		s.log(ctx, "session id", err)
 		return nil, errInternal()
 	}
+	ctx = withSessionClient(ctx)
 	now := s.now()
 	res, err := s.d.Store.ExchangeHandoff(ctx, HashToken(code), team.ID, sid, now)
 	switch {
@@ -871,13 +882,17 @@ func (s *Service) ExchangeHandoff(ctx context.Context, req *auth.ExchangeHandoff
 
 // SignOut revokes the session of a platform token. A root token's sign-out also ends every session
 // opened from it (hand-offs into teams) and spends its unused hand-off and sign-in codes; a team
-// token's ends only that team session. Always {}.
-func (s *Service) SignOut(ctx context.Context, token string) (*auth.SignOutResponse, error) {
+// token's ends only that team session, or with device (the profile's log out) the whole device: the
+// root session it was handed off from and every session of that chain. Always {}.
+func (s *Service) SignOut(ctx context.Context, token string, device bool) (*auth.SignOutResponse, error) {
 	if token == "" {
 		return &auth.SignOutResponse{}, nil
 	}
 	claims, err := jwt.VerifyTeamToken(s.d.JWT, token, nil)
 	if err != nil || claims.Legacy || claims.SessionID == "" {
+		return &auth.SignOutResponse{}, nil
+	}
+	if device && claims.Audience == jwt.AudTeam && claims.UserID > 0 && s.signOutDevice(ctx, claims.SessionID, claims.UserID, s.now()) {
 		return &auth.SignOutResponse{}, nil
 	}
 	if claims.Audience == jwt.AudRoot && claims.UserID > 0 {

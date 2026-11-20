@@ -43,6 +43,7 @@ func (s *Service) rootCaller(ctx context.Context, token string) (platformstore.U
 	if err != nil || u.Status != platformstore.UserActive {
 		return platformstore.User{}, "", errAuth()
 	}
+	s.touch(ctx, claims.SessionID)
 	return u, claims.SessionID, nil
 }
 

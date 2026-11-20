@@ -8,6 +8,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/auth/pwhash"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
 	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
+	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 )
 
 // startTeamsMail syncs the platform operators from PLATFORM_OPERATOR_EMAILS and starts the platform
@@ -54,13 +55,19 @@ func (a *App) startTeamsMail(ctx context.Context) (stop func(), err error) {
 	return func() { stopSweep(); stopMail() }, nil
 }
 
-// joiningSweepEvery is how often reserved memberships whose invite died are removed.
+// joiningSweepEvery is how often reserved memberships whose invite died are removed (and dead
+// sessions forget their device).
 const joiningSweepEvery = time.Hour
 
+// forgetRoundsMax bounds the ForgetSessionClients batches of one sweep.
+const forgetRoundsMax = 20
+
 // startJoiningSweep removes, now and then hourly, invite reservations that can never finish (their
-// invite expired or was revoked); the staged admins row they left stays disabled.
+// invite expired or was revoked; the staged admins row they left stays disabled), and clears the ip
+// and user agent of sessions dead for more than platformstore.ClientRetention (P0 §3.3).
 func startJoiningSweep(ctx context.Context, st interface {
 	SweepJoining(context.Context, time.Time) (int64, error)
+	ForgetSessionClients(context.Context, time.Time, time.Duration) (int64, error)
 }) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -71,6 +78,23 @@ func startJoiningSweep(ctx context.Context, st interface {
 			slog.Default().ErrorContext(ctx, "teams: sweep stale invite reservations", slog.String("err", err.Error()))
 		case n > 0:
 			slog.Default().InfoContext(ctx, "teams: stale invite reservations removed", slog.Int64("count", n))
+		}
+		var forgot int64
+		for range forgetRoundsMax {
+			n, err := st.ForgetSessionClients(ctx, time.Now().UTC(), platformauth.RootSessionTTL)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Default().ErrorContext(ctx, "teams: forget old session devices", slog.String("err", err.Error()))
+				}
+				break
+			}
+			forgot += n
+			if n < platformstore.ForgetBatch {
+				break
+			}
+		}
+		if forgot > 0 {
+			slog.Default().InfoContext(ctx, "teams: old session devices forgotten", slog.Int64("count", forgot))
 		}
 	}
 	go func() {

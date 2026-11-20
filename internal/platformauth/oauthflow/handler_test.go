@@ -44,6 +44,16 @@ type fakeFlow struct {
 	code, key string
 	signIns   []platformstore.ProviderSignIn
 	accepts   []acceptCall
+
+	// The Google connect (handler_link_test.go): the live ticket, whom it connects and where it
+	// returns, the completion's key and what it was called with.
+	linkTicket string
+	linkUID    int64
+	linkTeam   tenant.Team
+	linkErr    error
+	linkKey    string
+	ticketsUse int
+	links      []linkCall
 }
 
 type acceptCall struct {
@@ -57,6 +67,10 @@ func newFakeFlow() *fakeFlow {
 		inviteHash: strings.Repeat("a", 64),
 		inviteTeam: tenant.Team{ID: 7, Slug: "acme"},
 		code:       "signin-code-value",
+		linkTicket: "link-ticket-value",
+		linkUID:    42,
+		linkTeam:   tenant.Team{ID: 7, Slug: "acme"},
+		linkKey:    KeyLinked,
 	}
 }
 
@@ -77,6 +91,9 @@ func (f *fakeFlow) CreateOAuthState(_ context.Context, st platformstore.OAuthSta
 	defer f.mu.Unlock()
 	if f.createErr != nil {
 		return f.createErr
+	}
+	if st.ExpiresAt.IsZero() {
+		st.ExpiresAt = fakeExpires
 	}
 	f.states[st.StateHash] = st
 	f.created = append(f.created, st)

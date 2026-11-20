@@ -23,18 +23,23 @@ import (
 
 // The routes, under the /api/auth/oauth mount (teams O §3):
 //
-//	POST /{provider}/start   form: target=signin|invite [, invite_token, terms_accepted]
+//	POST /{provider}/start   form: target=signin|invite|link [, invite_token, terms_accepted, ticket]
 //	GET  /google/callback    Google's redirect (values in the query)
 //	POST /apple/callback     Apple's form_post (values in the body)
 //
-// A callback always ends in a 303 to https://<PLATFORM_BASE_DOMAIN>/auth/oauth with #code=<one-time
-// sign-in code> or #error=<key>; there is no return-URL parameter.
+// A sign-in or invite callback always ends in a 303 to https://<PLATFORM_BASE_DOMAIN>/auth/oauth with
+// #code=<one-time sign-in code> or #error=<key>; there is no return-URL parameter. A Google connect
+// from the profile (target=link, Google only, P0 §3.7) ends on the profile of the host its ticket was
+// issued on — https://<slug>.<base>/profile, or https://<base>/profile for a root token — with
+// ?google=<key>: linked, taken, already_linked, unverified, cancelled, expired or try_again.
 const (
 	// CookieName is the browser binder of a started flow: 32 random bytes, the state row keeps only
 	// their sha256.
 	CookieName = "__Host-lekalo_oauth"
-	// ResultPath is the one root page every callback lands on.
+	// ResultPath is the one root page every sign-in and invite callback lands on.
 	ResultPath = "/auth/oauth"
+	// ProfilePath is the page a Google connect returns to, on the host its ticket names.
+	ProfilePath = "/profile"
 
 	maxBodyBytes = 16 << 10
 	// perMinute is the strict limit of the two steps that cost something: a start writing a state
@@ -59,7 +64,22 @@ const (
 	KeyDisabled       = "disabled"
 	KeyTryAgain       = "try_again"
 	KeyUsePassword    = "use_password"
+	// A Google connect's ?google= keys besides cancelled, expired, unverified and try_again
+	// (platformauth's link completion answers with the same strings).
+	KeyLinked        = "linked"
+	KeyTaken         = "taken"
+	KeyAlreadyLinked = "already_linked"
 )
+
+// linkKey is the ?google= value of a link completion's key; a key outside the set is try_again.
+func linkKey(key string) string {
+	switch key {
+	case KeyLinked, KeyTaken, KeyAlreadyLinked, KeyUnverified, KeyExpired, KeyCancelled, KeyTryAgain:
+		return key
+	default:
+		return KeyTryAgain
+	}
+}
 
 // outcome is why a callback did not end in a code. key is the one table from outcome to #error=.
 type outcome uint8
@@ -139,6 +159,12 @@ type Flow interface {
 	// The completions: exactly one of code and key is non-empty.
 	CompleteProviderSignIn(ctx context.Context, in platformstore.ProviderSignIn) (code, key string)
 	AcceptInviteWithProvider(ctx context.Context, inviteHash, termsVersion string, in platformstore.ProviderSignIn) (code, key string)
+	// ConsumeLinkTicket spends a Google-connect ticket: the account it connects and the team host it
+	// returns to (the zero Team: the root host). platformstore.ErrTokenInvalid when it is not live.
+	ConsumeLinkTicket(ctx context.Context, ticket string) (userID int64, team tenant.Team, err error)
+	// CompleteGoogleLink connects the verified identity to the account and answers the ?google= key;
+	// startedAt is when the flow began.
+	CompleteGoogleLink(ctx context.Context, userID int64, startedAt time.Time, in platformstore.ProviderSignIn) (key string)
 }
 
 // Origins are the edge's origin rules (tenantbind.Binder): the root host for a sign-in, the
@@ -168,6 +194,7 @@ type Deps struct {
 type Handler struct {
 	mux           *chi.Mux
 	d             Deps
+	base          string // BaseDomain, lowercase, no trailing dot
 	resultURL     string
 	startGuard    *ratelimit.Limiter // per IP, loose: before the form and the origin are read
 	startLimit    *ratelimit.Limiter // per IP + canonical origin, strict: before a state row is written
@@ -185,6 +212,7 @@ func New(d Deps) *Handler {
 		exchangeLimit: ratelimit.NewLimiter(time.Minute, perMinute),
 	}
 	if base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d.BaseDomain)), "."); base != "" {
+		h.base = base
 		h.resultURL = "https://" + base + ResultPath
 	}
 	m := chi.NewRouter()
@@ -228,8 +256,8 @@ func (h *Handler) provider(name string) (oauth.Provider, bool) {
 }
 
 // start: POST /{provider}/start. Client mistakes (no target, wrong origin, terms not ticked)
-// answer 4xx; what a person can run into (a dead invite, the limiter, the store) answers the same
-// 303 to the result page as a callback. The order: the loose per-IP guard → the form → the origin
+// answer 4xx; what a person can run into (a dead invite or ticket, the limiter, the store) answers
+// the same 303 as a callback (a Google connect's to its profile once its ticket is spent). The order: the loose per-IP guard → the form → the origin
 // for the target → the strict limit per IP + canonical origin → the state row. An origin the rules
 // refuse never gets a bucket of its own.
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
@@ -291,14 +319,45 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		if terms {
 			st.TermsVersion = h.d.Flow.TermsVersion()
 		}
+	case platformstore.OAuthTargetLink:
+		if name != oauth.ProviderGoogle {
+			plain(w, http.StatusBadRequest, "link is google only")
+			return
+		}
+		ticket := strings.TrimSpace(form.Get("ticket"))
+		if ticket == "" || len(ticket) > maxTokenLen {
+			plain(w, http.StatusBadRequest, "ticket required")
+			return
+		}
+		// The ticket is spent before the origin check: it is single use either way, and a page on a
+		// foreign origin holding a live ticket gets nothing from it.
+		uid, team, err := h.d.Flow.ConsumeLinkTicket(ctx, ticket)
+		if errors.Is(err, platformstore.ErrTokenInvalid) {
+			h.fail(w, r, name, outStateInvalid)
+			return
+		}
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "oauth: start: link ticket failed", slog.String("err", err.Error()))
+			h.fail(w, r, name, outInternal)
+			return
+		}
+		allowed := h.d.Origins.RootOriginAllowed(origin)
+		if team.ID > 0 {
+			allowed = h.d.Origins.OriginAllowed(origin, team, false)
+		}
+		if !allowed {
+			plain(w, http.StatusForbidden, "origin not allowed")
+			return
+		}
+		st.LinkUserID, st.ReturnSlug = uid, team.Slug
 	default:
-		plain(w, http.StatusBadRequest, "target must be signin or invite")
+		plain(w, http.StatusBadRequest, "target must be signin, invite or link")
 		return
 	}
 	// The origin passed its rule: the canonical form (the binder's) keys the bucket, so case
 	// variants of one origin share it.
 	if !h.startLimit.Allow(ip + "|" + h.d.Origins.CanonicalOrigin(origin)) {
-		h.fail(w, r, name, outLimited)
+		h.end(w, r, name, st, outLimited)
 		return
 	}
 	state, err1 := oauth.NewState()
@@ -307,13 +366,13 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	binder, err4 := oauth.NewState()
 	if err := errors.Join(err1, err2, err3, err4); err != nil {
 		slog.Default().ErrorContext(ctx, "oauth: start: no randomness", slog.String("err", err.Error()))
-		h.fail(w, r, name, outInternal)
+		h.end(w, r, name, st, outInternal)
 		return
 	}
 	st.StateHash, st.BinderHash, st.PKCEVerifier, st.Nonce = hashHex(state), hashHex(binder), verifier, nonce
 	if err := h.d.Flow.CreateOAuthState(ctx, st); err != nil {
 		slog.Default().ErrorContext(ctx, "oauth: start: state not stored", slog.String("provider", name))
-		h.fail(w, r, name, outInternal)
+		h.end(w, r, name, st, outInternal)
 		return
 	}
 	http.SetCookie(w, binderCookie(binder, int(platformstore.OAuthStateTTL/time.Second)))
@@ -323,8 +382,9 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 // callback: GET /google/callback (query) or POST /apple/callback (form_post body). The order is
 // fixed: the loose per-IP guard → read state → spend the row → binder cookie (constant time) →
 // provider error → the strict per-IP limit → Exchange with the row's verifier and nonce →
-// completion → 303 to the result page. The strict limit sits right before the outbound call it
-// protects, so junk callbacks (which never get that far) cannot spend a person's flow.
+// completion → 303 to the result page (a Google connect's: to its profile, from the spent row on). The
+// strict limit sits right before the outbound call it protects, so junk callbacks (which never get
+// that far) cannot spend a person's flow.
 func (h *Handler) callback(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := h.provider(name)
@@ -365,33 +425,33 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 			return
 		}
 		if row.Provider != name {
-			h.fail(w, r, name, outStateInvalid)
+			h.end(w, r, name, row, outStateInvalid)
 			return
 		}
 		// A missing or foreign cookie leaves the cookie alone: it may be a later tab's live flow.
 		c, err := r.Cookie(CookieName)
 		if err != nil || c.Value == "" || len(c.Value) > maxStateLen ||
 			subtle.ConstantTimeCompare([]byte(hashHex(c.Value)), []byte(row.BinderHash)) != 1 {
-			h.fail(w, r, name, outBinderMismatch)
+			h.end(w, r, name, row, outBinderMismatch)
 			return
 		}
 		http.SetCookie(w, binderCookie("", -1))
 		if err := oauth.CallbackError(values); err != nil {
-			h.fail(w, r, name, providerOutcome(err))
+			h.end(w, r, name, row, providerOutcome(err))
 			return
 		}
 		code := values.Get("code")
 		if code == "" || len(code) > maxCodeLen {
-			h.fail(w, r, name, outTokenInvalid)
+			h.end(w, r, name, row, outTokenInvalid)
 			return
 		}
 		if !h.exchangeLimit.Allow(ip) {
-			h.fail(w, r, name, outLimited)
+			h.end(w, r, name, row, outLimited)
 			return
 		}
 		id, err := p.Exchange(ctx, code, row.PKCEVerifier, row.Nonce)
 		if err != nil {
-			h.fail(w, r, name, providerOutcome(err))
+			h.end(w, r, name, row, providerOutcome(err))
 			return
 		}
 		in := platformstore.ProviderSignIn{
@@ -408,6 +468,15 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 			signInCode, key = h.d.Flow.CompleteProviderSignIn(ctx, in)
 		case platformstore.OAuthTargetInvite:
 			signInCode, key = h.d.Flow.AcceptInviteWithProvider(ctx, row.InviteHash, row.TermsVersion, in)
+		case platformstore.OAuthTargetLink:
+			if row.LinkUserID <= 0 || name != oauth.ProviderGoogle {
+				h.end(w, r, name, row, outInternal)
+				return
+			}
+			// The flow began OAuthStateTTL before its row expires: a password change since ends it.
+			key = h.d.Flow.CompleteGoogleLink(ctx, row.LinkUserID, row.ExpiresAt.Add(-platformstore.OAuthStateTTL), in)
+			seeOther(w, h.profileURL(row.ReturnSlug)+"?google="+linkKey(key))
+			return
 		default:
 			key = KeyTryAgain
 		}
@@ -422,11 +491,50 @@ func (h *Handler) callback(name string) http.HandlerFunc {
 // fail ends a flow on the result page with its key. An unreachable provider is the one outcome an
 // operator hears about: one line, provider and kind, nothing of the flow.
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, provider string, o outcome) {
+	note(r, provider, o)
+	seeOther(w, h.resultURL+"#error="+o.key())
+}
+
+// end ends a flow whose target is known: a Google connect back on its profile with ?google=<key>,
+// anything else on the result page (fail).
+func (h *Handler) end(w http.ResponseWriter, r *http.Request, provider string, st platformstore.OAuthState, o outcome) {
+	if st.Target != platformstore.OAuthTargetLink {
+		h.fail(w, r, provider, o)
+		return
+	}
+	note(r, provider, o)
+	seeOther(w, h.profileURL(st.ReturnSlug)+"?google="+o.key())
+}
+
+// note logs the one outcome an operator hears about.
+func note(r *http.Request, provider string, o outcome) {
 	if o == outProviderUnreachable {
 		slog.Default().ErrorContext(r.Context(), "oauth: provider unreachable",
 			slog.String("provider", provider), slog.String("kind", string(oauth.ErrorProviderUnreachable)))
 	}
-	seeOther(w, h.resultURL+"#error="+o.key())
+}
+
+// profileURL is the profile a Google connect returns to: the team host of slug, or the root host for
+// "" (or a slug that is not one host label; it comes from the ticket row, never from the request).
+func (h *Handler) profileURL(slug string) string {
+	if hostLabel(slug) {
+		return "https://" + slug + "." + h.base + ProfilePath
+	}
+	return "https://" + h.base + ProfilePath
+}
+
+// hostLabel reports whether s is one lowercase DNS label: a-z, 0-9 and inner hyphens, 1–63 long.
+func hostLabel(s string) bool {
+	if s == "" || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // seeOther is the 303 every flow step ends in: Location and no body. http.Redirect would echo the

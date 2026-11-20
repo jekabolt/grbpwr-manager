@@ -93,7 +93,7 @@ func (s *Server) SignOut(ctx context.Context, req *auth.SignOutRequest) (*auth.S
 	if err != nil {
 		return nil, err
 	}
-	return svc.SignOut(ctx, bearer(ctx))
+	return svc.SignOut(ctx, bearer(ctx), req.GetDevice())
 }
 
 func (s *Server) RequestPasswordReset(ctx context.Context, req *auth.RequestPasswordResetRequest) (*auth.RequestPasswordResetResponse, error) {

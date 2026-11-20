@@ -95,7 +95,7 @@ func TestProviderSignInToNewTeam(t *testing.T) {
 	}
 
 	// The root sign-out ends that root session only.
-	if _, err := f.svc.SignOut(ctx, second); err != nil {
+	if _, err := f.svc.SignOut(ctx, second, false); err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.svc.ListMyTeams(ctx, second, &auth.ListMyTeamsRequest{})

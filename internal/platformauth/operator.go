@@ -46,6 +46,7 @@ func (s *Service) exchangeOperator(ctx context.Context, team tenant.Team, code s
 		s.log(ctx, "session id", err)
 		return nil, errInternal()
 	}
+	ctx = withSessionClient(ctx)
 	now := s.now()
 	res, err := s.d.Store.ExchangeOperatorHandoff(ctx, HashToken(code), team.ID, sid, now)
 	switch {
