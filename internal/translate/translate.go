@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
@@ -27,10 +28,21 @@ type Completer interface {
 // disabled (Enabled() == false).
 type Service struct {
 	client Completer
+	// system is the system prompt: the house (team #1, GRBPWR) prompt unless WithBrand replaced it.
+	system string
 }
 
-// New builds a Service over a completer (which may be a disabled one).
-func New(client Completer) *Service { return &Service{client: client} }
+// New builds a Service over a completer (which may be a disabled one). It speaks in the house voice
+// (team #1): systemPrompt, unchanged.
+func New(client Completer) *Service { return &Service{client: client, system: systemPrompt} }
+
+// WithBrand returns a copy that speaks for another team's brand: brand is its name from the team's
+// workspace settings; empty gives a neutral prompt that names no brand. Never GRBPWR's name or voice.
+func (s *Service) WithBrand(brand string) *Service {
+	out := *s
+	out.system = brandPrompt(strings.TrimSpace(brand))
+	return &out
+}
 
 // Enabled reports whether translation is configured (API key present).
 func (s *Service) Enabled() bool { return s != nil && s.client != nil && s.client.Enabled() }
@@ -55,6 +67,24 @@ Rules:
 - NEVER translate: URLs, email addresses, the brand name "GRBPWR", product names, or any {{...}} interpolation placeholder — copy them verbatim. You may move a {{...}} within a sentence to fit grammar, but never rename or drop one.
 - Match the source casing convention: if the source is ALL-CAPS, output ALL-CAPS where the target script has letter case (CJK has no case).
 - Do not add explanations. Return ONLY the requested JSON object — no prose, no markdown code fences.`
+
+// brandPrompt is systemPrompt for a team other than team #1: the same rules, the team's own brand
+// name (or none), a neutral voice instead of GRBPWR's.
+func brandPrompt(brand string) string {
+	who, keep := "a fashion brand", "brand names"
+	if brand != "" {
+		q := strconv.Quote(brand)
+		who, keep = "the fashion brand "+q, "the brand name "+q
+	}
+	return `You are a professional localization translator for ` + who + `. Translate marketing and UI copy faithfully in a clear, natural brand voice — natural in the target language, not literal.
+
+Rules:
+- Translate the "text" of each item. Keep each item's "id" unchanged.
+- Preserve ALL inline HTML EXACTLY: every tag, attribute and the structure. Translate only the human-readable text between tags. Never add, remove, reorder, or alter tags/attributes.
+- NEVER translate: URLs, email addresses, ` + keep + `, product names, or any {{...}} interpolation placeholder — copy them verbatim. You may move a {{...}} within a sentence to fit grammar, but never rename or drop one.
+- Match the source casing convention: if the source is ALL-CAPS, output ALL-CAPS where the target script has letter case (CJK has no case).
+- Do not add explanations. Return ONLY the requested JSON object — no prose, no markdown code fences.`
+}
 
 // maxItemsPerRequest bounds how many strings travel in one model request. A single unbounded
 // request is the difference between "flaky" and "always fails": provider output limits and the
@@ -122,7 +152,7 @@ func (s *Service) translateChunk(
 		localeName(sourceLocale), localeName(targetLocale), string(inJSON),
 	)
 
-	content, err := s.client.Complete(ctx, systemPrompt, user, true)
+	content, err := s.client.Complete(ctx, s.system, user, true)
 	if err != nil {
 		return fmt.Errorf("translate %s→%s: %w", sourceLocale, targetLocale, err)
 	}
