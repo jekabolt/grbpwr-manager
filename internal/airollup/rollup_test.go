@@ -224,6 +224,9 @@ func TestWorkLoopServesActiveTeamsWithAIOn(t *testing.T) {
 			return map[string]bool{string(feature.AI): false}, nil
 		case 5:
 			return nil, errors.New("control plane hiccup")
+		case teamOstra.ID:
+			// ai is off by default since X7: ostra is the team an operator switched it on for
+			return map[string]bool{string(feature.AI): true}, nil
 		}
 		return nil, nil
 	}, 1)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/aiprov"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
+	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -163,8 +164,12 @@ func TestG9AIMoneyStaysInTheSpendingTeam(t *testing.T) {
 		PriceEstimate: decimal.NullDecimal{Decimal: decimal.RequireFromString("0.10"), Valid: true},
 	})
 	require.NoError(t, err)
+	// ai is off by default since X7: the spending team is one an operator switched it on for.
+	aiOn := func(context.Context, int64) (map[string]bool, error) {
+		return map[string]bool{string(feature.AI): true}, nil
+	}
 	claim := func(ctx context.Context) (claimed []entity.DesignRun) {
-		require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{one, twoAs(two, tenant.StatusSuspended)}}, nil, 1)(ctx,
+		require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{one, twoAs(two, tenant.StatusSuspended)}}, aiOn, 1)(ctx,
 			func(ctx context.Context) error {
 				tm, _ := tenant.From(ctx)
 				if tm.ID == 1 {
@@ -182,7 +187,7 @@ func TestG9AIMoneyStaysInTheSpendingTeam(t *testing.T) {
 	require.Equal(t, entity.DesignRunPending, status)
 
 	var claimed []entity.DesignRun
-	require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{two}}, nil, 1)(ctx, func(ctx context.Context) error {
+	require.NoError(t, WorkLoop(fakeDir{teams: []tenant.Team{two}}, aiOn, 1)(ctx, func(ctx context.Context) error {
 		c, err := st.Design().ClaimRuns(ctx, 5, time.Minute, uuid.NewString())
 		claimed = append(claimed, c...)
 		return err
