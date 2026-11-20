@@ -51,7 +51,8 @@ const (
 	// warehouse role can hold inventory:read for balances without seeing their value.
 	SectionInventory = "inventory"
 	// SectionCosting is a FIELD-SHAPING section, not a method gate: no RPC is mapped
-	// to it in methodRequirements. Instead the admin service strips confidential cost
+	// to it as a primary section in methodRequirements (it is only the Alt of GetStyleEconomics, the
+	// card page's money tab). Instead the admin service strips confidential cost
 	// fields (tech-card costing block + BOM purchase prices, product cost_price, margin/
 	// COGS on metrics, release unit cost) from responses when the account lacks
 	// costing:read, and rejects writes that set cost data without costing:write. A
@@ -150,13 +151,21 @@ func ValidSection(key string) bool {
 // stay meaningful on a SuperOnly entry (they keep the classification test's invariants and say where
 // the method would live if it were ever delegated); the flag is what gates.
 type Requirement struct {
-	Section   string
-	Access    entity.AccessLevel
+	Section string
+	Access  entity.AccessLevel
+	// Alt is a second section that also grants the method, at the SAME Access. Only the style facts,
+	// size chart, economics and alert-threshold read carry it: the tech-card page reads and saves them,
+	// so a tech_cards (or costing) member must not need products / analytics too (X7). altMethods in
+	// rbac_test.go pins the set.
+	Alt       string
 	SuperOnly bool
 }
 
 func rd(section string) Requirement { return Requirement{Section: section, Access: entity.AccessRead} }
 func wr(section string) Requirement { return Requirement{Section: section, Access: entity.AccessWrite} }
+
+// or adds the Alt section to a requirement (same access level).
+func (r Requirement) or(alt string) Requirement { r.Alt = alt; return r }
 
 // wrSuper is wr(section) that only a super account may call (see Requirement.SuperOnly).
 func wrSuper(section string) Requirement {
@@ -169,10 +178,10 @@ func wrSuper(section string) Requirement {
 // that so a newly added RPC can never ship unprotected.
 var methodRequirements = map[string]Requirement{
 	// catalog colorways / variants
-	"CreateColorway":       wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorway":       wr(SectionProducts), // R2/R4 write decomposition (was UpsertColorway)
-	"UpdateColorwayRecipe": wr(SectionProducts), // colourway-owned material recipe (S2/S3 write-path)
-	"UpdateStyle":          wr(SectionProducts), // R4: sole writer of catalogue-style facts
+	"CreateColorway":       wr(SectionProducts),                      // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorway":       wr(SectionProducts),                      // R2/R4 write decomposition (was UpsertColorway)
+	"UpdateColorwayRecipe": wr(SectionProducts),                      // colourway-owned material recipe (S2/S3 write-path)
+	"UpdateStyle":          wr(SectionProducts).or(SectionTechCards), // R4: sole writer of catalogue-style facts
 	"GetColorwaysPaged":    rd(SectionProducts),
 	"GetColorwayByID":      rd(SectionProducts),
 	"ArchiveColorwayByID":  wr(SectionProducts), // was DeleteColorwayByID (archive-not-delete, R6/R9)
@@ -194,8 +203,8 @@ var methodRequirements = map[string]Requirement{
 	"SetVariantPrice":          wr(SectionProducts), // 0251 manual B-grade price (catalogue price, not costing)
 	// Style size chart (R5). Preserves the pre-R5 authorization: the chart used to be edited through
 	// the catalog product save (UpsertColorway = SectionProducts), so the same catalog role keeps it.
-	"GetStyleSizeChart":               rd(SectionProducts),
-	"UpdateStyleSizeChart":            wr(SectionProducts),
+	"GetStyleSizeChart":               rd(SectionProducts).or(SectionTechCards),
+	"UpdateStyleSizeChart":            wr(SectionProducts).or(SectionTechCards),
 	"GetStyleCutList":                 rd(SectionProducts), // Q6: read-only production cut-list projection (mirror consumer)
 	"RelinkDraftColorway":             wr(SectionProducts), // R4: move a draft colourway to another style
 	"CloneStyleForSeason":             wr(SectionProducts), // R4: deep-clone a style under a new season
@@ -250,7 +259,7 @@ var methodRequirements = map[string]Requirement{
 	// analytics
 	"GetMetrics":             rd(SectionAnalytics),
 	"GetDashboard":           rd(SectionAnalytics),
-	"GetStyleEconomics":      rd(SectionAnalytics),
+	"GetStyleEconomics":      rd(SectionAnalytics).or(SectionCosting),
 	"GetChannelRoasSettled":  rd(SectionAnalytics),
 	"UpsertInventoryTargets": wr(SectionAnalytics),
 	"UpsertChannelSpend":     wr(SectionAnalytics),
@@ -269,7 +278,7 @@ var methodRequirements = map[string]Requirement{
 	"UpsertEmployee":      wr(SectionAnalytics),
 	"ArchiveEmployee":     wr(SectionAnalytics),
 	"ListEmployees":       rd(SectionAnalytics),
-	"GetAlertSettings":    rd(SectionAnalytics),
+	"GetAlertSettings":    rd(SectionAnalytics).or(SectionTechCards),
 	"UpsertAlertSettings": wr(SectionAnalytics),
 	// VAT rates feed the tax engine (declarations/JPK), not business metrics — governed by
 	// accounting for segregation of duties (D-5), so a metrics-only operator can't move tax numbers.
@@ -1149,7 +1158,13 @@ func Allow(fullMethod string, super bool, perms map[string]entity.AccessLevel) b
 	if !known {
 		return false
 	}
-	have, ok := perms[req.Section]
+	if have, ok := perms[req.Section]; ok && have.Covers(req.Access) {
+		return true
+	}
+	if req.Alt == "" {
+		return false
+	}
+	have, ok := perms[req.Alt]
 	return ok && have.Covers(req.Access)
 }
 
