@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
@@ -71,4 +72,41 @@ func (s *Store) FileFolderID(ctx context.Context, fileID int) (int, error) {
 		return 0, sql.ErrNoRows
 	}
 	return int(ids[0].Int64), nil
+}
+
+type twinRow struct {
+	Sha string `db:"sha"`
+	Id  int    `db:"id"`
+}
+
+// MediaTwinIDs answers, for each given file sha256, the public media made from it: the same rule as
+// FindMediaBySourceSha (lib_source_sha256 OR content_hash, the lowest id), keyed by the lowercased
+// sha. Blank shas are skipped; a sha without a twin is absent. Two grouped reads, one per media
+// column, each on its own covering index (idx_media_lib_source_sha, idx_media_content_hash).
+func (s *Store) MediaTwinIDs(ctx context.Context, sha256s []string) (map[string]int, error) {
+	out := map[string]int{}
+	var shas []string
+	for _, raw := range sha256s {
+		if sha := strings.ToLower(strings.TrimSpace(raw)); sha != "" && !slices.Contains(shas, sha) {
+			shas = append(shas, sha)
+		}
+	}
+	if len(shas) == 0 {
+		return out, nil
+	}
+	for _, col := range []string{"lib_source_sha256", "content_hash"} {
+		rows, err := storeutil.QueryListNamed[twinRow](ctx, s.DB,
+			"SELECT "+col+" AS sha, MIN(id) AS id FROM media WHERE "+col+" IN (:lib_shas) GROUP BY "+col,
+			map[string]any{"lib_shas": shas})
+		if err != nil {
+			return nil, fmt.Errorf("failed to find media twins: %w", err)
+		}
+		for _, r := range rows {
+			sha := strings.ToLower(r.Sha)
+			if cur, ok := out[sha]; !ok || r.Id < cur {
+				out[sha] = r.Id
+			}
+		}
+	}
+	return out, nil
 }

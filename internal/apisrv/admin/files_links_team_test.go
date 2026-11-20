@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -15,45 +16,31 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Review item 5: a /api/f link carries no team and resolves in team #1, so outside team #1 the
-// RPCs that publish one refuse before writing anything, and reads show no url.
-func TestFileLinksRefusedOutsideTeamOne(t *testing.T) {
+// Lane X1: every team publishes /api/f links. The team travels signed inside the token, so team 2
+// gets its own v2 url and team #1 keeps exactly its old v1 url.
+func TestFileLinksEveryTeam(t *testing.T) {
 	team2 := tenant.Team{ID: 2, Slug: "acme"}
+	teamOne := tenant.Team{ID: tenant.TeamOneID, Slug: "grbpwr"}
 
-	t.Run("set level link", func(t *testing.T) {
+	t.Run("rotate is not refused outside team one", func(t *testing.T) {
 		files := mocks.NewMockFiles(t)
 		repo := mocks.NewMockRepository(t)
 		repo.EXPECT().Files().Return(files).Maybe()
 		files.EXPECT().GetFileById(mock.Anything, 7).Return(storedFile(), nil).Maybe()
-		s := &Server{repo: repo}
-		ctx := tenant.With(ctxAs("pasha", false, filesWrite), team2)
-		_, err := s.SetLibraryFileAccess(ctx, &pb_admin.SetLibraryFileAccessRequest{FileId: 7, Level: "link", LinkTtl: 24})
-		require.Equal(t, codes.FailedPrecondition, status.Code(err))
-		require.Equal(t, "public_links_team_one_only", status.Convert(err).Message())
-		files.AssertNotCalled(t, "SetFileAccess", mock.Anything, mock.Anything, mock.Anything)
-	})
-
-	t.Run("rotate", func(t *testing.T) {
-		files := mocks.NewMockFiles(t)
-		repo := mocks.NewMockRepository(t)
-		repo.EXPECT().Files().Return(files).Maybe()
-		files.EXPECT().GetFileById(mock.Anything, 7).Return(storedFile(), nil).Maybe()
+		files.EXPECT().RotateFileLink(mock.Anything, 7, mock.Anything).Return(nil, sql.ErrNoRows).Maybe()
 		s := &Server{repo: repo}
 		ctx := tenant.With(ctxAs("pasha", false, filesWrite), team2)
 		_, err := s.RotateLibraryFileLink(ctx, &pb_admin.RotateLibraryFileLinkRequest{FileId: 7})
-		require.Equal(t, codes.FailedPrecondition, status.Code(err))
-		files.AssertNotCalled(t, "RotateFileLink", mock.Anything, mock.Anything, mock.Anything)
+		require.NotEqual(t, codes.FailedPrecondition, status.Code(err))
 	})
 
-	t.Run("read shows no url outside team one, the url in team one", func(t *testing.T) {
+	t.Run("read shows each team its own url", func(t *testing.T) {
 		svc, err := fileaccess.New(nil, nil, nil, "test-pepper", "https://backend.example")
 		require.NoError(t, err)
 		t.Cleanup(svc.Stop)
 		link := &entity.LibraryFilePublicAccess{FileId: 7, Epoch: 2, CreatedAt: time.Now()}
-		for _, c := range []struct {
-			team    tenant.Team
-			wantURL bool
-		}{{team2, false}, {tenant.Team{ID: tenant.TeamOneID, Slug: "grbpwr"}, true}} {
+		urls := map[int64]string{}
+		for _, team := range []tenant.Team{team2, teamOne} {
 			files := mocks.NewMockFiles(t)
 			files.EXPECT().GetFileAccess(mock.Anything, 7).Return(&entity.LibraryFileAccess{
 				FileId: 7, Level: entity.LibraryFileAccessLink, Link: link,
@@ -62,13 +49,16 @@ func TestFileLinksRefusedOutsideTeamOne(t *testing.T) {
 			repo := mocks.NewMockRepository(t)
 			repo.EXPECT().Files().Return(files)
 			s := &Server{repo: repo, fileLinks: svc}
-			resp, err := s.GetLibraryFileAccess(tenant.With(ctxAs("pasha", false, filesWrite), c.team), &pb_admin.GetLibraryFileAccessRequest{Id: 7})
+			resp, err := s.GetLibraryFileAccess(tenant.With(ctxAs("pasha", false, filesWrite), team), &pb_admin.GetLibraryFileAccessRequest{Id: 7})
 			require.NoError(t, err)
-			require.Equal(t, c.wantURL, resp.GetAccess().GetLink().GetUrl() != "", "team %d", c.team.ID)
+			urls[team.ID] = resp.GetAccess().GetLink().GetUrl()
+			require.NotEmpty(t, urls[team.ID], "team %d", team.ID)
 		}
+		require.Equal(t, svc.LinkURL(7, 2), urls[tenant.TeamOneID], "team #1 keeps the v1 url")
+		require.NotEqual(t, urls[tenant.TeamOneID], urls[2])
 	})
 
-	t.Run("label files on a card get no url outside team one", func(t *testing.T) {
+	t.Run("label files on a card get a url in every team", func(t *testing.T) {
 		svc, err := fileaccess.New(nil, nil, nil, "test-pepper", "https://backend.example")
 		require.NoError(t, err)
 		t.Cleanup(svc.Stop)
@@ -76,8 +66,8 @@ func TestFileLinksRefusedOutsideTeamOne(t *testing.T) {
 		tc := &entity.TechCard{}
 		tc.GarmentLabels = []entity.TechCardGarmentLabel{{Files: []entity.TechCardGarmentLabelFile{{LibraryFileId: 7, LinkEpoch: 1}}}}
 		s.fillGarmentLabelFileLinks(tenant.With(t.Context(), team2), tc)
-		require.Empty(t, tc.GarmentLabels[0].Files[0].PublicURL)
+		require.Equal(t, svc.LinkURLFor(2, 7, 1), tc.GarmentLabels[0].Files[0].PublicURL)
 		s.fillGarmentLabelFileLinks(t.Context(), tc)
-		require.NotEmpty(t, tc.GarmentLabels[0].Files[0].PublicURL)
+		require.Equal(t, svc.LinkURL(7, 1), tc.GarmentLabels[0].Files[0].PublicURL)
 	})
 }

@@ -9,7 +9,6 @@ import (
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/fileaccess"
 	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -51,7 +50,7 @@ func (s *Server) linkURL(ctx context.Context, level entity.LibraryFileAccessLeve
 		return ""
 	}
 	// LinkURLContext безопасен на nil-сервисе: сборка без сервиса отдаёт блок доступа без url.
-	// Вне команды №1 url тоже пуст: токен v1 без команды открылся бы в команде №1.
+	// Команда едет внутри токена (v2), у команды №1 — прежний v1-адрес.
 	return s.fileLinks.LinkURLContext(ctx, link.FileId, link.Epoch)
 }
 
@@ -96,11 +95,6 @@ func (s *Server) SetLibraryFileAccess(ctx context.Context, req *pb_admin.SetLibr
 	level, err := dto.ParseLibraryFileAccessLevel(req.GetLevel())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if level == entity.LibraryFileAccessLink {
-		if err := fileaccess.PublicLinksAllowed(ctx); err != nil {
-			return nil, err
-		}
 	}
 	ttl, err := dto.ValidateLibraryFileLinkTTL(req.GetLinkTtl())
 	if err != nil {
@@ -171,9 +165,6 @@ func (s *Server) SetLibraryFileAccess(ctx context.Context, req *pb_admin.SetLibr
 func (s *Server) RotateLibraryFileLink(ctx context.Context, req *pb_admin.RotateLibraryFileLinkRequest) (*pb_admin.RotateLibraryFileLinkResponse, error) {
 	if req.GetFileId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "file id is required")
-	}
-	if err := fileaccess.PublicLinksAllowed(ctx); err != nil {
-		return nil, err
 	}
 	fileID := int(req.GetFileId())
 	current, err := s.repo.Files().GetFileById(ctx, fileID)

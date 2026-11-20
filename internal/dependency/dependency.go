@@ -2052,6 +2052,9 @@ type (
 		MoveItems(ctx context.Context, refs []entity.LibraryRef, folderID int) (int, error)
 		// FindMediaBySourceSha returns (nil, nil) when no media row matches.
 		FindMediaBySourceSha(ctx context.Context, sha256 string) (*entity.MediaFull, error)
+		// MediaTwinIDs is FindMediaBySourceSha for many shas at once: lowercased sha -> the lowest
+		// matching media id; blank shas and shas without a twin are absent.
+		MediaTwinIDs(ctx context.Context, sha256s []string) (map[string]int, error)
 		SetMediaFolder(ctx context.Context, mediaID, folderID int) error
 		ListItems(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter, sort entity.LibrarySort, limit, offset int) ([]entity.LibraryItemRow, int, error)
 		Facets(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter) (*entity.LibraryFacets, error)

@@ -5,12 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func teamCtx(id int64) context.Context {
@@ -25,32 +24,32 @@ func serveRunPackCtx(svc *Service, ctx context.Context, target string) *httptest
 	return w
 }
 
-// TestMintRefusedOutsideTeamOne — a v1 'r' token has no team and resolves in team #1, so minting
-// it in team 2 would hand out team #1's run with the same local id.
-func TestMintRefusedOutsideTeamOne(t *testing.T) {
-	if err := PublicLinksAllowed(teamCtx(2)); status.Code(err) != codes.FailedPrecondition ||
-		status.Convert(err).Message() != "public_links_team_one_only" {
-		t.Fatalf("team 2: want FailedPrecondition public_links_team_one_only, got %v", err)
+// TestEveryTeamMintsAndOpensOnlyItsOwn — team 2 mints a v2 'r' token that opens under team 2 and
+// is the uniform 404 under team 3 and team #1; team #1's v1 token stays v1 and is 404 under team 2.
+func TestEveryTeamMintsAndOpensOnlyItsOwn(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	tok2 := svc.MintRunPackToken(teamCtx(2), 41)
+	tok1 := svc.MintRunPackToken(context.Background(), 41)
+	if tok2 == "" || strings.Count(tok2, ".") != 3 || strings.Count(tok1, ".") != 2 {
+		t.Fatalf("tokens: team2 %q team1 %q", tok2, tok1)
 	}
-	for _, tc := range []struct {
-		name string
+	if got := svc.MintRunPackToken(teamCtx(tenant.TeamOneID), 41); got != tok1 {
+		t.Fatalf("team #1 ctx minted %q, want the v1 token %q", got, tok1)
+	}
+	for _, c := range []struct {
 		ctx  context.Context
-		mint bool
+		tok  string
+		code int
 	}{
-		{"no team", context.Background(), true},
-		{"team one", teamCtx(tenant.TeamOneID), true},
-		{"team two", teamCtx(2), false},
+		{teamCtx(2), tok2, http.StatusOK},
+		{context.Background(), tok1, http.StatusOK},
+		{teamCtx(3), tok2, http.StatusNotFound},
+		{teamCtx(tenant.TeamOneID), tok2, http.StatusNotFound},
+		{teamCtx(2), tok1, http.StatusNotFound},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, runs, _ := newTestService(t)
-			got := svc.MintRunPackToken(tc.ctx, 41)
-			if (got != "") != tc.mint {
-				t.Fatalf("minted %q, want mint=%v", got, tc.mint)
-			}
-			if !tc.mint && runs.ensured != 0 {
-				t.Fatalf("refused mint must not create the access row (ensured=%d)", runs.ensured)
-			}
-		})
+		if w := serveRunPackCtx(svc, c.ctx, "/api/rp/"+c.tok); w.Code != c.code {
+			t.Errorf("%q: %d, want %d", c.tok, w.Code, c.code)
+		}
 	}
 }
 
@@ -58,10 +57,11 @@ func TestMintRefusedOutsideTeamOne(t *testing.T) {
 // failed flush requeues them); counters recorded with no team flush with no team.
 func TestFlushKeepsTeam(t *testing.T) {
 	svc, runs, _ := newTestService(t)
-	token := svc.MintRunPackToken(context.Background(), 41)
+	token := map[bool]string{true: svc.MintRunPackToken(teamCtx(2), 41), false: svc.MintRunPackToken(context.Background(), 41)}
 
 	for _, ctx := range []context.Context{teamCtx(2), teamCtx(2), context.Background()} {
-		if w := serveRunPackCtx(svc, ctx, "/api/rp/"+token); w.Code != http.StatusOK {
+		_, inTeam := tenant.From(ctx)
+		if w := serveRunPackCtx(svc, ctx, "/api/rp/"+token[inTeam]); w.Code != http.StatusOK {
 			t.Fatalf("serve: %d", w.Code)
 		}
 	}

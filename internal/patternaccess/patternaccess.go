@@ -49,6 +49,14 @@ type ReadOnlyPatterns interface {
 	ReadOnlyPatternURL(ctx context.Context, host, objectKey string) (string, time.Time, error)
 }
 
+// KeyOwner answers «does this object key of our bucket belong to the team in ctx»
+// (bucket.TeamOwnsKey). *bucket.Bucket implements it; a Presigner that does not (test fakes without
+// teams) means every key is owned. Pattern urls come from client-saved cards, so a team could save
+// another team's key: without this check its link would serve the other team's file.
+type KeyOwner interface {
+	OwnsObjectKey(ctx context.Context, key string) bool
+}
+
 // CardManifests is the narrow slice of dependency.TechCards the viewer manifest needs
 // (see viewer.go). dependency.TechCards satisfies it.
 type CardManifests interface {
@@ -90,6 +98,8 @@ type Service struct {
 	presign Presigner
 	// readOnly is presign's ReadOnlyPatterns side, nil when it has none (see ReadOnlyPatterns).
 	readOnly ReadOnlyPatterns
+	// owner is presign's KeyOwner side, nil when it has none (see KeyOwner).
+	owner KeyOwner
 
 	// viewerBaseURL is this backend's external origin (PatternToken.PublicBaseURL,
 	// trailing slash trimmed) — the per-file /api/p urls inside a viewer manifest are
@@ -144,6 +154,9 @@ func New(objects dependency.PatternObjects, cards CardManifests, presign Presign
 	if ro, ok := presign.(ReadOnlyPatterns); ok {
 		s.readOnly = ro
 	}
+	if o, ok := presign.(KeyOwner); ok {
+		s.owner = o
+	}
 	go s.flushLoop()
 	return s, nil
 }
@@ -174,7 +187,16 @@ func (s *Service) patternRef(ctx context.Context, rawURL, filename string) (enti
 		}
 		ref.SourceHost = host
 	}
+	// Our own bucket: no link for a key of another team (read-only hosts are gated above by host).
+	if ref.SourceHost == "" && !s.ownsKey(ctx, k) {
+		return entity.PatternObjectRef{}, false
+	}
 	return ref, true
+}
+
+// ownsKey: the team in ctx owns object key k of our bucket (true when there is no KeyOwner).
+func (s *Service) ownsKey(ctx context.Context, k string) bool {
+	return s.owner == nil || s.owner.OwnsObjectKey(ctx, k)
 }
 
 func (s *Service) flushLoop() {
@@ -231,24 +253,12 @@ func (s *Service) noteCardAccess(ctx context.Context, techCardID int) {
 	s.statsMu.Unlock()
 }
 
-// refusePublicLinks reports (and logs) whether ctx may not mint public links. The fill/mint
-// methods are best-effort by contract — a missing url never fails the read — so a refused caller
-// gets the rows without links, the same shape as any other mint failure.
-func refusePublicLinks(ctx context.Context, what string) bool {
-	if err := PublicLinksAllowed(ctx); err != nil {
-		slog.Default().InfoContext(ctx, "public link mint refused",
-			slog.String("what", what), slog.String("err", err.Error()))
-		return true
-	}
-	return false
-}
-
 // FillTechCardPatternURLs populates the output-only view_url/download_url on tech-card
 // pattern messages. Nil-receiver-safe (tests construct servers without the service) and
 // best-effort: an unparseable url leaves the fields empty rather than failing the read
 // (design R8). NOT used for persisted snapshots — release blobs must stay token-free.
 func (s *Service) FillTechCardPatternURLs(ctx context.Context, baseURL string, ps []*pb_common.TechCardSizePattern) {
-	if s == nil || len(ps) == 0 || refusePublicLinks(ctx, "tech card pattern urls") {
+	if s == nil || len(ps) == 0 {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(ps))
@@ -275,7 +285,7 @@ func (s *Service) applyTechCardURLs(ctx context.Context, baseURL string, rows ma
 		if !ok {
 			continue
 		}
-		tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
+		tok := s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeInternal, row.Id, row.Epoch)
 		p.ViewUrl = baseURL + "/api/p/" + tok
 		p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 	}
@@ -293,7 +303,7 @@ func (s *Service) FillFittingPatternURLs(ctx context.Context, baseURL string, ps
 // RPC returns up to a page of fittings, and a per-fitting ensure would put a query (and,
 // for a fresh object, a write) per fitting behind every list read.
 func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL string, groups [][]*pb_common.FittingPattern) {
-	if s == nil || len(groups) == 0 || refusePublicLinks(ctx, "fitting pattern urls") {
+	if s == nil || len(groups) == 0 {
 		return
 	}
 	refs := make([]entity.PatternObjectRef, 0, len(groups))
@@ -322,7 +332,7 @@ func (s *Service) FillFittingPatternURLsBatch(ctx context.Context, baseURL strin
 			if !ok {
 				continue
 			}
-			tok := s.minter.Mint(patterntoken.ScopeInternal, row.Id, row.Epoch)
+			tok := s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeInternal, row.Id, row.Epoch)
 			p.ViewUrl = baseURL + "/api/p/" + tok
 			p.DownloadUrl = baseURL + "/api/p/" + tok + "?dl=1"
 		}
@@ -348,6 +358,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Default().Log(ctx, level, "pattern access denied",
 			slog.String("reason", reason), slog.String("ip", ip),
 			slog.String("ua", r.UserAgent()))
+		// Every refusal is the same uncacheable bare 404: a later rotate or an owner fix must not
+		// meet a cached answer, and no refusal may look different from another.
+		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 	}
 
@@ -355,11 +368,18 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		notFound("ip rate limited")
 		return
 	}
-	scope, id, epoch, err := s.minter.Parse(token)
+	team, scope, id, epoch, err := s.minter.ParseTeam(token)
 	if err != nil {
 		notFound("bad token")
 		return
 	}
+	// The second lock behind the edge, which binds this request to the token's own signed team
+	// (tenantbind): a token of any other team never reaches a row of the team this request runs as.
+	if team != patterntoken.LinkTeam(ctx) {
+		notFound("team mismatch")
+		return
+	}
+	teamKey := "t" + strconv.FormatInt(team, 10) + "|"
 	// SCOPE ALLOWLIST. This endpoint resolves ids against pattern_object_access, so only
 	// the two OBJECT scopes may pass. A ScopeCard token carries a TECH CARD id in the same
 	// numeric range — looked up here it would resolve to an unrelated object whose row id
@@ -373,7 +393,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Keyed on the PARSED id, never the token string: Parse pins canonical spelling, but
 	// the id is the identity the budget is actually about (both scopes of one object share
 	// it), and a string key would hand an attacker a fresh bucket per spelling variant.
-	if !s.tokenLimiter.Allow(ip + "|" + strconv.FormatInt(id, 10)) {
+	if !s.tokenLimiter.Allow(ip + "|" + teamKey + strconv.FormatInt(id, 10)) {
 		notFound("token rate limited")
 		return
 	}
@@ -412,6 +432,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		signed, expiresAt, err = s.readOnly.ReadOnlyPatternURL(ctx, row.SourceHost, row.ObjectKey)
 	} else {
+		// A row minted before the owner check, or a key the card was changed to: the same bare 404.
+		if !s.ownsKey(ctx, row.ObjectKey) {
+			notFound("foreign key")
+			return
+		}
 		signed, expiresAt, err = s.presign.PresignPatternObject(ctx, row.ObjectKey, download, row.Filename.String)
 	}
 	if err != nil {

@@ -96,6 +96,9 @@ Use `CREATE TABLE IF NOT EXISTS` (and symmetric `IF EXISTS` on drops), and never
 them by that stable name. Prefer several small migrations over one large destructive overhaul (see `0079`). The
 lint in `internal/store/migrationlint` enforces this for migrations numbered above its grandfathered baseline.
 
+A team migration is additive by default; a DROP / RENAME / CHANGE ships in its own later release and is declared
+`_breaking_` — the rules and the `-- compat:` header are in `internal/store/sql/MIGRATIONS.md` (lint-enforced).
+
 Numbers must be **unique**. Historical exception: two files share prefix `0003`
 (`0003_add_announce_translations.sql` and `0003_add_product_version.sql`) — both are already applied on prod, so
 do **not** rename them (sql-migrate tracks by full filename; renaming reapplies). Always take the next free unique

@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	migrate "github.com/rubenv/sql-migrate"
+
+	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 )
 
 const (
@@ -67,6 +69,11 @@ func runMigrations(ctx context.Context, dsn string, set migrate.MigrationSet, so
 	defer db.Close()
 	// sql-migrate runs one statement at a time, so one connection is enough and there is one to kill.
 	db.SetMaxOpenConns(1)
+	// A rollback over additive releases: the database is only ahead of this binary, start anyway
+	// (owner 20.11, X3). Diverged or breaking history still refuses below.
+	if err := schemacompat.TolerateAhead(ctx, db, set.TableName, &set, source); err != nil {
+		return 0, fmt.Errorf("read applied migrations: %w", err)
+	}
 
 	type result struct {
 		n   int

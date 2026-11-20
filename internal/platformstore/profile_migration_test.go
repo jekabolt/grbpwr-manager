@@ -297,8 +297,8 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`, t
 		t.Fatalf("open after 0009: %v", err)
 	}
 	defer st.Close()
-	if n := count(`SELECT COUNT(*) FROM platform_migrations`); n != 10 { // Open applies 0010 (X6) too
-		t.Fatalf("platform_migrations rows = %d, want 10", n)
+	if n := count(`SELECT COUNT(*) FROM platform_migrations`); n != 11 { // + 0010 (X3), 0011 (X6)
+		t.Fatalf("platform_migrations rows = %d, want 11", n)
 	}
 }
 
