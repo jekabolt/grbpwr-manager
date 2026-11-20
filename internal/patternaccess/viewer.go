@@ -35,7 +35,7 @@ const unboundGroupKey = "_unbound"
 // FillTechCardPatternURLs: a viewer-token failure must never fail a GetTechCard read —
 // the response simply carries no token and the печать falls back to per-sheet QR codes.
 func (s *Service) MintCardViewerToken(ctx context.Context, techCardID int) string {
-	if s == nil || techCardID <= 0 || refusePublicLinks(ctx, "card viewer token") {
+	if s == nil || techCardID <= 0 {
 		return ""
 	}
 	row, err := s.objects.EnsureCardViewer(ctx, techCardID)
@@ -44,7 +44,7 @@ func (s *Service) MintCardViewerToken(ctx context.Context, techCardID int) strin
 			slog.Int("tech_card_id", techCardID), slog.String("err", err.Error()))
 		return ""
 	}
-	return s.minter.Mint(patterntoken.ScopeCard, int64(techCardID), row.Epoch)
+	return s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopeCard, int64(techCardID), row.Epoch)
 }
 
 // ManifestHandler adapts ServeManifest for the http server wiring.
@@ -75,11 +75,18 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 		notFound("ip rate limited")
 		return
 	}
-	scope, id, epoch, err := s.minter.Parse(token)
+	team, scope, id, epoch, err := s.minter.ParseTeam(token)
 	if err != nil {
 		notFound("bad token")
 		return
 	}
+	// The second lock behind the edge, which binds this request to the token's own signed team
+	// (tenantbind): a token of any other team never reaches a row of the team this request runs as.
+	if team != patterntoken.LinkTeam(ctx) {
+		notFound("team mismatch")
+		return
+	}
+	teamKey := "t" + strconv.FormatInt(team, 10) + "|"
 	// Only the CARD scope opens a manifest. An object token ('i'/'p') carries a
 	// pattern_object_access row id — accepted here it would leak the manifest of the
 	// tech card that happens to share the number (the mirror image of the confusion
@@ -92,7 +99,7 @@ func (s *Service) ServeManifest(w http.ResponseWriter, r *http.Request) {
 	// object ids overlap numerically, and a shared bucket would let requests against
 	// card N eat the budget of object N (object keys are all-digit suffixes, so the
 	// prefix cannot collide).
-	if !s.tokenLimiter.Allow(ip + "|c|" + strconv.FormatInt(id, 10)) {
+	if !s.tokenLimiter.Allow(ip + "|" + teamKey + "c|" + strconv.FormatInt(id, 10)) {
 		notFound("token rate limited")
 		return
 	}
@@ -241,7 +248,7 @@ func (s *Service) buildManifest(ctx context.Context, card *entity.PatternViewerC
 		var viewURL, downloadURL string
 		if ref, ok := s.patternRef(ctx, sh.URL, ""); ok {
 			if row, ok := objectRows[ref.ID()]; ok {
-				tok := s.minter.Mint(patterntoken.ScopePrint, row.Id, row.Epoch)
+				tok := s.minter.MintFor(patterntoken.LinkTeam(ctx), patterntoken.ScopePrint, row.Id, row.Epoch)
 				viewURL = s.viewerBaseURL + "/api/p/" + tok
 				downloadURL = viewURL + "?dl=1"
 			}

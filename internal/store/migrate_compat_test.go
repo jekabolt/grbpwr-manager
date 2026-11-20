@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
+	migrate "github.com/rubenv/sql-migrate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -43,7 +45,19 @@ func TestTeamMigrationKilledMidwayResumes(t *testing.T) {
 	_, err := testDB.ExecContext(ctx, "CREATE DATABASE `"+db+"` CHARACTER SET utf8mb4")
 	require.NoError(t, err)
 
-	killCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Files up to the idempotency lint's grandfathered max (0092) were never re-runnable and no
+	// live team re-runs them; apply the first resumeFrom files whole, then cut inside the
+	// idempotent zone.
+	const resumeFrom = 300
+	dsn, err := TeamDSN(testCfg.DSN, db)
+	require.NoError(t, err)
+	raw, err := sql.Open("mysql", dsn)
+	require.NoError(t, err)
+	_, err = migrate.ExecMax(raw, "mysql", teamMigrationSource(), migrate.Up, resumeFrom)
+	raw.Close()
+	require.NoError(t, err)
+
+	killCtx, cancel := context.WithTimeout(ctx, time.Second)
 	_, err = MigrateTeam(killCtx, testCfg.DSN, db)
 	cancel()
 	require.Error(t, err, "the run must be cut before it finishes")
@@ -75,7 +89,9 @@ func TestTeamOneBootsOnSchemaAheadAndRefusesDiverged(t *testing.T) {
 	add := func(id string) {
 		_, err := testDB.ExecContext(ctx, `INSERT INTO gorp_migrations (id, applied_at) VALUES (?, NOW())`, id)
 		require.NoError(t, err)
-		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), `DELETE FROM gorp_migrations WHERE id = ?`, id) })
+		t.Cleanup(func() {
+			_, _ = testDB.ExecContext(context.Background(), `DELETE FROM gorp_migrations WHERE id = ?`, id)
+		})
 	}
 	del := func(id string) {
 		_, err := testDB.ExecContext(ctx, `DELETE FROM gorp_migrations WHERE id = ?`, id)

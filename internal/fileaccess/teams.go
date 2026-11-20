@@ -2,39 +2,17 @@ package fileaccess
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/patterntoken"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
-// PublicLinksAllowed refuses minting a public link (/api/f) outside team #1.
-//
-// The v1 token is (scope, id, epoch) with no team, and the resolving route is bound to team #1, so
-// a link minted in team 2 for local file 7 would open team #1's file 7. A ctx with no team is teams
-// mode off (or a legacy caller) and is allowed exactly as before. Until the v2 token lands.
-func PublicLinksAllowed(ctx context.Context) error {
-	if t, ok := tenant.From(ctx); ok && t.ID != tenant.TeamOneID {
-		return status.Error(codes.FailedPrecondition, "public_links_team_one_only")
-	}
-	return nil
-}
-
-// LinkURLContext is LinkURL behind the team gate: outside team #1 it returns "" (no link), the same
-// best-effort shape a nil service gives. LinkURL itself takes no ctx and cannot check the team, so
-// every caller that can run in a non-team-1 ctx must use this one.
+// LinkURLContext is the public url of a file of the team in ctx (no team = team #1, the v1 url).
+// Every team mints links; the team travels signed inside the token (patterntoken v2), so the edge
+// opens the link in the team that minted it and in no other.
 func (s *Service) LinkURLContext(ctx context.Context, fileID, epoch int) string {
-	if s == nil || fileID <= 0 {
-		return ""
-	}
-	if err := PublicLinksAllowed(ctx); err != nil {
-		slog.Default().InfoContext(ctx, "library file link mint refused",
-			slog.Int("file_id", fileID), slog.String("err", err.Error()))
-		return ""
-	}
-	return s.LinkURL(fileID, epoch)
+	return s.LinkURLFor(patterntoken.LinkTeam(ctx), fileID, epoch)
 }
 
 // statsKey identifies one pending batch: the team the accesses were recorded under, or none.
