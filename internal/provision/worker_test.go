@@ -16,6 +16,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/provision"
+	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
@@ -125,6 +126,9 @@ type fakeSchema struct {
 	// the race between a guard and the next statement); later statements on that lock fail.
 	killOn string
 	dead   map[string]bool
+	// X3: declarations (nil = strict), what a failed run reached per database.
+	set     *schemacompat.Set
+	applied map[string]string
 }
 
 func (s *fakeSchema) Create(_ context.Context, db string) error {
@@ -202,6 +206,17 @@ func (s *fakeSchema) Lines(_ context.Context, db string) ([]string, error) {
 	return []string{"c\tt\tid\tint\tNO\t<null>\t"}, nil
 }
 func (s *fakeSchema) Latest() string { return s.latest }
+func (s *fakeSchema) Compat() schemacompat.Set {
+	if s.set != nil {
+		return *s.set
+	}
+	return schemacompat.Set{Latest: s.latest, Need: s.latest}
+}
+func (s *fakeSchema) Applied(_ context.Context, db string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applied[db], nil
+}
 
 type fakeDir struct{ pf *fakePlatform }
 
@@ -222,6 +237,7 @@ func (d fakeDir) Invalidate(int64)                                  {}
 
 type fakeTeam struct {
 	slug, db, status, version, owner string
+	minCode                          string
 }
 
 type fakePlatform struct {
@@ -415,13 +431,21 @@ func (p *fakePlatform) SetTeamSchema(_ context.Context, id int64, db, token, v, 
 	p.teams[id].version = v
 	return nil
 }
+func (p *fakePlatform) RaiseTeamMinCode(_ context.Context, id int64, mc string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if t := p.teams[id]; t != nil {
+		t.minCode = schemacompat.Raise(t.minCode, mc)
+	}
+	return nil
+}
 func (p *fakePlatform) SchemaTeams(context.Context) ([]platformstore.SchemaTeam, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out []platformstore.SchemaTeam
 	for id, t := range p.teams {
 		if t.status == "active" || t.status == "suspended" {
-			out = append(out, platformstore.SchemaTeam{ID: id, Slug: t.slug, DBName: t.db, Status: t.status, SchemaVersion: ns(t.version)})
+			out = append(out, platformstore.SchemaTeam{ID: id, Slug: t.slug, DBName: t.db, Status: t.status, SchemaVersion: ns(t.version), SchemaMinCode: ns(t.minCode)})
 		}
 	}
 	return out, nil
