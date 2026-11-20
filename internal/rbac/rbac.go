@@ -376,6 +376,7 @@ var methodRequirements = map[string]Requirement{
 	"DeleteTechCardPatternRevision": wr(SectionTechCards),
 	"DeleteTechCard":                wr(SectionTechCards),
 	"ListTechCards":                 rd(SectionTechCards),
+	"ListMyRecentTechCards":         rd(SectionTechCards),
 	"GetStylePipeline":              rd(SectionTechCards),
 	"GetTechCardReadiness":          rd(SectionTechCards),
 	// CONSTRUCTION-аудит (машинный слой): rd, не wr, и это НЕ описка рядом с AI-методами этой

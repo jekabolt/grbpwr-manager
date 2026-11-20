@@ -1312,6 +1312,11 @@ type (
 		ListTechCardFindingSeen(ctx context.Context, techCardID int) ([]entity.TechCardFindingSeen, error)
 		MarkTechCardFindingSeen(ctx context.Context, techCardID int, findingKey, fingerprint, seenBy string) error
 		UnmarkTechCardFindingSeen(ctx context.Context, techCardID int, findingKey string) error
+		// Recently touched cards per account (home «recent techcards», 0485): outside UpdateTechCard,
+		// stamped best-effort by the handler on GetTechCard and every tech-card write. Touch upserts
+		// and trims to entity.RecentTechCardsKeep; list is latest first without obsolete/system cards.
+		TouchTechCardRecent(ctx context.Context, accountID, techCardID int) error
+		ListRecentTechCards(ctx context.Context, accountID, limit int) ([]entity.RecentTechCard, error)
 		// Development (R&D) cost journal (task 14): append + delete + list rows at the tech-card
 		// level (NOT full-replace); a period cost, never seeded into product.cost_price.
 		AddTechCardDevExpense(ctx context.Context, e entity.TechCardDevExpense) (entity.TechCardDevExpense, error)

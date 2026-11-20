@@ -2172,6 +2172,14 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/tech-card/list"};
   }
 
+  // ListMyRecentTechCards returns the cards the caller opened or changed most recently, latest
+  // first. The caller is always «me»: no account id travels in the request. Archived (obsolete)
+  // and system cards are skipped; limit defaults to 6, capped at 20. Guarded by the tech-card
+  // read right; the route lives outside /tech-card/ so the {id} pattern cannot shadow it.
+  rpc ListMyRecentTechCards(ListMyRecentTechCardsRequest) returns (ListMyRecentTechCardsResponse) {
+    option (google.api.http) = {get: "/api/admin/me/recent-tech-cards"};
+  }
+
   // GetStylePipeline returns the development board: per-stage counts + a few light cards per column
   // (gap-01), so the idea→prod pipeline loads in one call.
   // GetTechCardReadiness reports what is missing before a style can advance a stage or be released.
@@ -10885,6 +10893,20 @@ message ListTechCardsRequest {
 message ListTechCardsResponse {
   repeated common.TechCardListItem tech_cards = 1;
   int32 total = 2;
+}
+
+message ListMyRecentTechCardsRequest {
+  int32 limit = 1; // 0 = default 6; capped at 20
+}
+
+// RecentTechCard is one card the caller touched (opened or wrote) and when they last did.
+message RecentTechCard {
+  common.TechCardListItem card = 1;
+  google.protobuf.Timestamp touched_at = 2;
+}
+
+message ListMyRecentTechCardsResponse {
+  repeated RecentTechCard items = 1;
 }
 
 // TechCardReadinessRequirement is ONE condition on a style's progress, evaluated server-side against
