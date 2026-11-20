@@ -230,6 +230,17 @@ var methodOverrides = map[string][]Key{
 	"SetTeamBrand":        {Core},
 	"SetTeamMemberAccess": {Core},
 
+	// A style's facts, size chart and economics belong to its tech card: the card page reads and
+	// saves them, so they follow tech_cards, not the products / analytics sections rbac files them
+	// under. A new team has tech_cards on and products / analytics off (X7).
+	"GetStyleSizeChart":    {TechCards},
+	"UpdateStyleSizeChart": {TechCards},
+	"UpdateStyle":          {TechCards},
+	"GetStyleEconomics":    {TechCards},
+	// Alert thresholds are read by the tech-card list badge and by production (two features, and
+	// a key list here means «all of»), so the read is core; the write stays analytics.
+	"GetAlertSettings": {Core},
+
 	// Paid AI calls: the domain feature and the ai capability must both be on.
 	"AutoTranslateEmailCampaign":  {EmailCampaigns, AI},
 	"DraftFittingEdits":           {Fittings, AI},
