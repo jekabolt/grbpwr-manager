@@ -9,6 +9,9 @@ type MediaFull struct {
 	Id        int       `db:"id" json:"id"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 	MediaItem
+	// MediaLibraryMeta is the library metadata (0483 lib_* columns). json:"-" keeps every JSON
+	// holder document and fingerprint that marshals a MediaFull byte-identical.
+	MediaLibraryMeta `json:"-"`
 }
 
 // MonthCount is the number of media rows created in one UTC calendar month.

@@ -35,6 +35,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/store/ga4data"
 	"github.com/jekabolt/grbpwr-manager/internal/store/inventory"
 	"github.com/jekabolt/grbpwr-manager/internal/store/language"
+	"github.com/jekabolt/grbpwr-manager/internal/store/library"
 	"github.com/jekabolt/grbpwr-manager/internal/store/membership"
 	"github.com/jekabolt/grbpwr-manager/internal/store/metrics"
 	"github.com/jekabolt/grbpwr-manager/internal/store/model"
@@ -164,6 +165,7 @@ type MYSQLStore struct {
 	fittingStore       *fitting.Store
 	taskStore          *task.Store
 	filesStore         *fileslibrary.Store
+	libraryStore       *library.Store
 	fulfillmentStore   *fulfillment.Store
 	techCardStore      *techcard.Store
 	productionRunStore *productionrun.Store
@@ -462,6 +464,7 @@ func initSubStores(ms *MYSQLStore) {
 	ms.fittingStore = fitting.New(base, ms.Tx)
 	ms.taskStore = task.New(base, ms.Tx)
 	ms.filesStore = fileslibrary.New(base, ms.Tx)
+	ms.libraryStore = library.New(base, ms.Tx)
 	ms.fulfillmentStore = fulfillment.New(base, ms.Tx)
 	ms.techCardStore = techcard.New(base, ms.Tx, ms.readTx, func() dependency.Repository { return ms })
 	ms.productionRunStore = productionrun.New(base, ms.Tx)
@@ -503,6 +506,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	txStore.fittingStore = fitting.New(base, outerTx)
 	txStore.taskStore = task.New(base, outerTx)
 	txStore.filesStore = fileslibrary.New(base, outerTx)
+	txStore.libraryStore = library.New(base, outerTx)
 	txStore.fulfillmentStore = fulfillment.New(base, outerTx)
 	txStore.techCardStore = techcard.New(base, outerTx, outerTx, func() dependency.Repository { return txStore })
 	txStore.productionRunStore = productionrun.New(base, outerTx)
@@ -577,6 +581,7 @@ func (ms *MYSQLStore) Hero() dependency.Hero                     { return ms.con
 func (ms *MYSQLStore) Campaigns() dependency.Campaigns           { return ms.campaignStore }
 func (ms *MYSQLStore) Archive() dependency.Archive               { return ms.content }
 func (ms *MYSQLStore) Media() dependency.Media                   { return ms.content }
+func (ms *MYSQLStore) Library() dependency.Library               { return ms.libraryStore }
 func (ms *MYSQLStore) Settings() dependency.Settings             { return ms.settingsStore }
 func (ms *MYSQLStore) Workshop() dependency.Workshop             { return ms.workshopStore }
 func (ms *MYSQLStore) AI() dependency.AI                         { return ms.aiStore }
