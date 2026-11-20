@@ -499,3 +499,53 @@ func mergeMediaUsage(registry, jsonRefs []entity.MediaUsageRef) map[int][]entity
 	}
 	return out
 }
+
+// usedIDsSQL renders one registry entry as a branch of the "every media id something holds" UNION
+// (the unified library's used/free filter, media-files B2): the same FROM and joins as selectSQL,
+// so a row that selectSQL would report as a usage is exactly a row this branch yields, and no id
+// bind. A NULL column (an optional slot left empty) is no usage, as in selectSQL's IN (...).
+func (src mediaRefSource) usedIDsSQL() string {
+	from := src.table
+	if src.joins != "" {
+		from += " " + src.joins
+	}
+	return fmt.Sprintf("SELECT %s AS id FROM %s WHERE %s IS NOT NULL", src.column, from, src.column)
+}
+
+// mediaUsedIDsUnion is the whole registry as one UNION ALL of held media ids, built once at init.
+// Same rules as mediaUsageQuery: no ':' anywhere (it carries no binds at all) and no SQL comments.
+var mediaUsedIDsUnion = buildMediaUsedIDsUnion()
+
+func buildMediaUsedIDsUnion() string {
+	branches := make([]string, 0, len(mediaRefRegistry))
+	for _, src := range mediaRefRegistry {
+		branches = append(branches, src.usedIDsSQL())
+	}
+	return strings.Join(branches, " UNION ALL ")
+}
+
+// MediaUsedJoinAlias is the alias UsedMediaFilter's join gives the held-id set: mref.id IS NULL
+// means no registry column holds the media row.
+const MediaUsedJoinAlias = "mref"
+
+// UsedMediaFilter is the used/free predicate of the unified library over media rows aliased m.
+//
+// joinSQL is a LEFT JOIN of the distinct ids every registry column holds (one derived table,
+// materialized once per statement) to m; jsonIDs are the ids the JSON holders show. A media row
+// is USED when `mref.id IS NOT NULL OR m.id IN (jsonIDs)` and FREE when
+// `mref.id IS NULL AND m.id NOT IN (jsonIDs)` — the same answer as len(mediaUsageOn(id)) > 0, from
+// the same registry and the same holder walk, so the library never grows a second definition of
+// "used". jsonIDs is never empty (sentinel [0], no media has id 0), so it binds into IN (...)
+// safely.
+func UsedMediaFilter(ctx context.Context, db dependency.DB) (joinSQL string, jsonIDs []int, err error) {
+	jsonIDs, err = mediaJSONUsedIDs(ctx, db)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(jsonIDs) == 0 {
+		jsonIDs = []int{0}
+	}
+	joinSQL = "LEFT JOIN (SELECT DISTINCT x.id FROM (" + mediaUsedIDsUnion + ") x) " +
+		MediaUsedJoinAlias + " ON " + MediaUsedJoinAlias + ".id = m.id"
+	return joinSQL, jsonIDs, nil
+}

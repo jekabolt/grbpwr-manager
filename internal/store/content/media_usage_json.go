@@ -110,6 +110,13 @@ func jsonHolderBranch(holder, entityExpr, labelExpr, variantExpr, doc, from stri
 var mediaJSONHolderQuery = buildMediaJSONHolderQuery()
 
 func buildMediaJSONHolderQuery() string {
+	return buildMediaJSONHolderUnion(jsonHolderBranch)
+}
+
+// buildMediaJSONHolderUnion is the one list of JSON holders, rendered with branch: the prefiltered
+// branch for mediaJSONUsage, the unfiltered one for mediaJSONUsedIDs.
+func buildMediaJSONHolderUnion(branch func(holder, entityExpr, labelExpr, variantExpr, doc, from string, keys []string) string) string {
+	jsonHolderBranch := branch
 	const emailLabel = `COALESCE(NULLIF(c.name, ''), CONCAT('email campaign ', c.id))`
 	branches := []string{
 		jsonHolderBranch(jsonHolderHero, "0", "'home page'", "''", "h.data",
@@ -216,4 +223,53 @@ func mediaJSONRefs(ctx context.Context, rows []mediaJSONHolderRow, ids []int) []
 		}
 	}
 	return out
+}
+
+// jsonHolderAnyBranch is jsonHolderBranch without the requested-id prefilter: it keeps every document
+// that carries at least one of its walker's keys at all, for the "every media id a holder shows"
+// question of the library's used/free filter.
+func jsonHolderAnyBranch(holder, entityExpr, labelExpr, variantExpr, doc, from string, keys []string) string {
+	paths := make([]string, 0, 2*len(keys))
+	for _, k := range keys {
+		paths = append(paths, "'$**."+k+"'", "'$**."+k+"[*]'")
+	}
+	return fmt.Sprintf(
+		"SELECT '%s' AS holder, %s AS entity_id, %s AS label, %s AS variant, %s AS doc FROM %s WHERE JSON_EXTRACT(%s, %s) IS NOT NULL",
+		holder, entityExpr, collatedText(labelExpr), collatedText(variantExpr), doc, from,
+		doc, strings.Join(paths, ", "))
+}
+
+// mediaJSONUsedHolderQuery is every JSON holder, unfiltered by id, built once at init. No binds,
+// no ':' and no comments (the same rules as mediaJSONHolderQuery).
+var mediaJSONUsedHolderQuery = buildMediaJSONHolderUnion(jsonHolderAnyBranch)
+
+// mediaJSONUsedIDs returns every media id a JSON holder shows, decided by the same walkers as
+// mediaJSONUsage: a document that does not decode shows nothing.
+func mediaJSONUsedIDs(ctx context.Context, db dependency.DB) ([]int, error) {
+	rows, err := storeutil.QueryListNamed[mediaJSONHolderRow](ctx, db, mediaJSONUsedHolderQuery, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read media json holders: %w", err)
+	}
+	seen := map[int]struct{}{}
+	var out []int
+	for _, r := range rows {
+		_, slots, err := r.mediaSlots()
+		if err != nil {
+			slog.WarnContext(ctx, "media usage: a JSON holder does not decode, counted as showing nothing",
+				slog.String("holder", r.Holder), slog.Int("entity_id", r.EntityId),
+				slog.String("err", err.Error()))
+			continue
+		}
+		for _, sl := range slots {
+			if sl.MediaId <= 0 {
+				continue
+			}
+			if _, ok := seen[sl.MediaId]; ok {
+				continue
+			}
+			seen[sl.MediaId] = struct{}{}
+			out = append(out, sl.MediaId)
+		}
+	}
+	return out, nil
 }

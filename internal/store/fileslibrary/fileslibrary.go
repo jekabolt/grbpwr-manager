@@ -281,22 +281,8 @@ func (s *Store) FindFilesBySha256(ctx context.Context, sha256 string) ([]entity.
 // начинает врать, а человек листает страницы за числом, которого нет. Ту же ошибку уже ловили на
 // витрине открытого. Любой НОВЫЙ фильтр обязан дописываться в `where` ДО этой строки.
 func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) ([]entity.LibraryFile, int, error) {
-	if len(f.TopicIds) > entity.MaxLibraryTopicFilters {
-		return nil, 0, fmt.Errorf("%w: at most %d topics can be combined in one filter, got %d",
-			entity.ErrLibraryBatchTooLarge, entity.MaxLibraryTopicFilters, len(f.TopicIds))
-	}
-	// НЕВОЗМОЖНЫЕ КОМБИНАЦИИ ОТВЕРГАЮТСЯ, А НЕ ИГНОРИРУЮТСЯ. Молча отброшенное плечо показало бы
-	// БОЛЬШЕ, чем просили, а лишняя строка в этой библиотеке — это чьё-то говорящее имя файла.
-	//
-	// «Без роли» без проекта означало бы «почти вся библиотека» и не отвечало бы ни на один
-	// вопрос. Проект и роль вместе с «разобрать» — прямое противоречие: файл в проекте несёт
-	// строку связи, значит в «разобрать» его нет по построению, и пустая выдача читалась бы как
-	// «в этом проекте ничего нет».
-	if f.WithoutRole && f.ProjectTopicId <= 0 {
-		return nil, 0, fmt.Errorf("%w: without_role is only meaningful together with a project", entity.ErrLibraryFilterInvalid)
-	}
-	if f.Untopiced && (f.ProjectTopicId > 0 || f.RoleId > 0 || f.WithoutRole) {
-		return nil, 0, fmt.Errorf("%w: untopiced cannot be combined with a project or a role", entity.ErrLibraryFilterInvalid)
+	if err := validateFileFilter(f); err != nil {
+		return nil, 0, err
 	}
 	limit := f.Limit
 	if limit <= 0 {
@@ -309,12 +295,91 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 		return nil, 0, err
 	}
 
+	params := map[string]any{}
+	clause, err := buildFileWhere(f, v, params)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	total, err := storeutil.QueryCountNamed(ctx, s.DB,
+		`SELECT COUNT(*) FROM library_file lf WHERE `+clause, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count library files: %w", err)
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+
+	// Newest first by default: a library is read from the most recent thing
+	// backwards. id breaks ties so paging can never repeat or skip a row.
+	//
+	// order_factor управляет ТОЛЬКО хронологией. У имени и размера направление
+	// зафиксировано (А→Я и «крупное сверху»), потому что обратное никому не нужно,
+	// а два независимых контрола дали бы состояния вроде «по имени, но в обратную
+	// сторону от того, что написано на кнопке».
+	orderBy := ""
+	switch f.SortBy {
+	case entity.LibraryFileSortName:
+		orderBy = "lf.file_name ASC, lf.id ASC"
+	case entity.LibraryFileSortSize:
+		orderBy = "lf.size_bytes DESC, lf.id DESC"
+	default:
+		direction := "DESC"
+		if f.OrderFactor == entity.Ascending {
+			direction = "ASC"
+		}
+		orderBy = "lf.created_at " + direction + ", lf.id " + direction
+	}
+	params["limit"] = limit
+	params["offset"] = offset
+	files, err := storeutil.QueryListNamed[entity.LibraryFile](ctx, s.DB,
+		`SELECT lf.* FROM library_file lf WHERE `+clause+
+			` ORDER BY `+orderBy+
+			` LIMIT :limit OFFSET :offset`, params)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list library files: %w", err)
+	}
+	if err := s.attachRelatedSlice(ctx, files); err != nil {
+		return nil, 0, err
+	}
+	return files, total, nil
+}
+
+// validateFileFilter refuses the combinations ListFiles cannot answer (see the comments inside).
+func validateFileFilter(f entity.LibraryFileListFilter) error {
+	if len(f.TopicIds) > entity.MaxLibraryTopicFilters {
+		return fmt.Errorf("%w: at most %d topics can be combined in one filter, got %d",
+			entity.ErrLibraryBatchTooLarge, entity.MaxLibraryTopicFilters, len(f.TopicIds))
+	}
+	// НЕВОЗМОЖНЫЕ КОМБИНАЦИИ ОТВЕРГАЮТСЯ, А НЕ ИГНОРИРУЮТСЯ. Молча отброшенное плечо показало бы
+	// БОЛЬШЕ, чем просили, а лишняя строка в этой библиотеке — это чьё-то говорящее имя файла.
+	//
+	// «Без роли» без проекта означало бы «почти вся библиотека» и не отвечало бы ни на один
+	// вопрос. Проект и роль вместе с «разобрать» — прямое противоречие: файл в проекте несёт
+	// строку связи, значит в «разобрать» его нет по построению, и пустая выдача читалась бы как
+	// «в этом проекте ничего нет».
+	if f.WithoutRole && f.ProjectTopicId <= 0 {
+		return fmt.Errorf("%w: without_role is only meaningful together with a project", entity.ErrLibraryFilterInvalid)
+	}
+	if f.Untopiced && (f.ProjectTopicId > 0 || f.RoleId > 0 || f.WithoutRole) {
+		return fmt.Errorf("%w: untopiced cannot be combined with a project or a role", entity.ErrLibraryFilterInvalid)
+	}
+	return nil
+}
+
+// buildFileWhere is the WHERE of ListFiles: the visibility predicate plus topics, project/role,
+// person and search, AND-joined, with every bind written into params. It is the one place that
+// clause is built, so the grid and the unified library (fileslibrary.FileWhere) cannot drift.
+// Limit, Offset and the sort fields of f are not read here.
+func buildFileWhere(f entity.LibraryFileListFilter, v Viewer, params map[string]any) (string, error) {
+	if err := validateFileFilter(f); err != nil {
+		return "", err
+	}
 	// ТОЧКА 1 ПРЕДИКАТА, И ОН СТОИТ В ТОМ ЖЕ WHERE, ЧТО ФИЛЬТРЫ И ПОИСК — не отдельным проходом
 	// и не UNION'ом. Иначе расширение поиска по автору (LIKE на uploaded_by ниже) вытащило бы
 	// ограниченный файл мимо фильтра видимости: «что заливал Паша» показало бы имя файла, который
 	// Паша от спрашивающего закрыл.
 	where := []string{"1 = 1"}
-	params := map[string]any{}
 	where = append(where, v.Where("lf", params))
 	switch {
 	case f.Untopiced:
@@ -429,50 +494,14 @@ func (s *Store) ListFiles(ctx context.Context, f entity.LibraryFileListFilter) (
 			WHERE lft_rs.file_id = lf.id AND fr_rs.name LIKE :search ESCAPE '\\'))`)
 		params["search"] = "%" + escapeLike(q) + "%"
 	}
-	clause := strings.Join(where, " AND ")
+	return strings.Join(where, " AND "), nil
+}
 
-	total, err := storeutil.QueryCountNamed(ctx, s.DB,
-		`SELECT COUNT(*) FROM library_file lf WHERE `+clause, params)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count library files: %w", err)
-	}
-	if total == 0 {
-		return nil, 0, nil
-	}
-
-	// Newest first by default: a library is read from the most recent thing
-	// backwards. id breaks ties so paging can never repeat or skip a row.
-	//
-	// order_factor управляет ТОЛЬКО хронологией. У имени и размера направление
-	// зафиксировано (А→Я и «крупное сверху»), потому что обратное никому не нужно,
-	// а два независимых контрола дали бы состояния вроде «по имени, но в обратную
-	// сторону от того, что написано на кнопке».
-	orderBy := ""
-	switch f.SortBy {
-	case entity.LibraryFileSortName:
-		orderBy = "lf.file_name ASC, lf.id ASC"
-	case entity.LibraryFileSortSize:
-		orderBy = "lf.size_bytes DESC, lf.id DESC"
-	default:
-		direction := "DESC"
-		if f.OrderFactor == entity.Ascending {
-			direction = "ASC"
-		}
-		orderBy = "lf.created_at " + direction + ", lf.id " + direction
-	}
-	params["limit"] = limit
-	params["offset"] = offset
-	files, err := storeutil.QueryListNamed[entity.LibraryFile](ctx, s.DB,
-		`SELECT lf.* FROM library_file lf WHERE `+clause+
-			` ORDER BY `+orderBy+
-			` LIMIT :limit OFFSET :offset`, params)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list library files: %w", err)
-	}
-	if err := s.attachRelatedSlice(ctx, files); err != nil {
-		return nil, 0, err
-	}
-	return files, total, nil
+// FileWhere exports buildFileWhere for the unified library store (internal/store/library): the
+// files branch of its UNION ANDs exactly the clause the files grid uses, visibility included.
+// Bind names it writes: visViewerId, topicId, topicId<N>, projectTopicId, roleId, personId, search.
+func FileWhere(f entity.LibraryFileListFilter, v Viewer, params map[string]any) (string, error) {
+	return buildFileWhere(f, v, params)
 }
 
 // ListTopics returns the rail: every topic with how many files carry it, plus
