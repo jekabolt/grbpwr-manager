@@ -11,6 +11,9 @@ import (
 // migration minCode (X3): only a binary that embeds it may serve the team. It only ever raises the
 // value, in one statement (numeric prefix first, then the full id, as sql-migrate orders them), so
 // an older worker racing a newer one can never lower it; no lease is needed. "" is a no-op.
+// The column arrives with control-plane migration 0010, one release after the code that tolerates
+// a control plane ahead of it; until then no breaking team migration may ship (none exists), so
+// this is only ever called with "" and the team's min code reads empty.
 func (s *Store) RaiseTeamMinCode(ctx context.Context, teamID int64, minCode string) error {
 	if minCode == "" {
 		return nil

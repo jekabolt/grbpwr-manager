@@ -40,37 +40,3 @@ func TestControlPlaneAheadByAdditiveMigrationsStillOpens(t *testing.T) {
 		t.Fatal("a newer breaking control-plane migration must refuse")
 	}
 }
-
-func TestRaiseTeamMinCodeOnlyRaises(t *testing.T) {
-	st := openFresh(t)
-	ctx := context.Background()
-	res, err := st.DB().Exec(`INSERT INTO team (slug, name, db_name, status) VALUES ('x3mincode', 'x3', 'grbpwr_t_x3mincode', 'active')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, _ := res.LastInsertId()
-	get := func() string {
-		var v *string
-		if err := st.DB().Get(&v, `SELECT schema_min_code FROM team WHERE id = ?`, id); err != nil {
-			t.Fatal(err)
-		}
-		if v == nil {
-			return ""
-		}
-		return *v
-	}
-	for _, step := range []struct{ raise, want string }{
-		{"", ""},
-		{"0490_breaking_a.sql", "0490_breaking_a.sql"},
-		{"0488_breaking_old.sql", "0490_breaking_a.sql"}, // never lowered
-		{"1000_breaking_b.sql", "1000_breaking_b.sql"},   // numeric, not string, order
-		{"0999_breaking_zzz.sql", "1000_breaking_b.sql"},
-	} {
-		if err := st.RaiseTeamMinCode(ctx, id, step.raise); err != nil {
-			t.Fatal(err)
-		}
-		if got := get(); got != step.want {
-			t.Fatalf("after raise %q: %q, want %q", step.raise, got, step.want)
-		}
-	}
-}

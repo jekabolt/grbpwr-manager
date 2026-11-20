@@ -68,7 +68,7 @@ func (r teamRow) team() tenant.Team {
 	}
 }
 
-const teamColumns = `id, slug, name, db_name, file_key, profile, status, schema_version, schema_min_code`
+const teamColumns = `id, slug, name, db_name, file_key, profile, status, schema_version`
 
 func (d *directory) cached(m map[int64]cachedTeam, id int64) (tenant.Team, bool) {
 	d.mu.Lock()

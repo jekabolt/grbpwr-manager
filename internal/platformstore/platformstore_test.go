@@ -98,9 +98,8 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// + 0004 credential_gen (I1, one column) + 0005 team_delete (D1, columns and keys only)
 	// + 0006 oauth (O0: platform_identity, oauth_state, team_logo + columns)
 	// + 0007 exact identity collations (column changes only) + 0008 team_brand (W1, one table)
-	// + 0009 profile (P0: account_avatar, oauth_link_ticket + columns, keys and ENUM members)
-	// + 0010 team_schema_min_code (X3, one column).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 10 {
+	// + 0009 profile (P0: account_avatar, oauth_link_ticket + columns, keys and ENUM members).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 9 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 20 {

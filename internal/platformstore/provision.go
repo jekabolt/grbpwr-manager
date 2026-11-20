@@ -433,7 +433,7 @@ WHERE lease_key = ? AND token = ? AND token <> '' AND expires_at > UTC_TIMESTAMP
 // schema behind the binary (every call would answer «team is being updated» until the next pass).
 func (s *Store) SchemaTeams(ctx context.Context) ([]SchemaTeam, error) {
 	var out []SchemaTeam
-	if err := s.db.SelectContext(ctx, &out, `SELECT id, slug, db_name, status, schema_version, schema_min_code FROM team
+	if err := s.db.SelectContext(ctx, &out, `SELECT id, slug, db_name, status, schema_version FROM team
 WHERE (status IN ('active','suspended') OR (status = 'deleted' AND purge_at > UTC_TIMESTAMP(3)))
   AND id <> ? AND db_name IS NOT NULL ORDER BY id`, tenant.TeamOneID); err != nil {
 		return nil, fmt.Errorf("platformstore: schema teams: %w", err)
