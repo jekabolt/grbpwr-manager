@@ -196,6 +196,9 @@ func (s *Server) CreateTechCard(ctx context.Context, req *pb_admin.CreateTechCar
 	if err != nil {
 		return nil, techCardConvertErr(err)
 	}
+	if err := s.refuseForeignPatternURLs(ctx, techCardPatternURLs(tc.Patterns)); err != nil {
+		return nil, err
+	}
 	if err := validateStyleNumberOverride(tc); err != nil {
 		return nil, err
 	}
@@ -543,6 +546,9 @@ func (s *Server) prepareTechCardWriteFrom(ctx context.Context, id int, in *pb_co
 	})
 	if err != nil {
 		return nil, techCardConvertErr(err)
+	}
+	if err := s.refuseForeignPatternURLs(ctx, techCardPatternURLs(tc.Patterns)); err != nil {
+		return nil, err
 	}
 	if src.readdress != nil {
 		src.readdress(tc)

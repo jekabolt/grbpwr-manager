@@ -36,6 +36,9 @@ func (s *Server) AddFitting(ctx context.Context, req *pb_admin.AddFittingRequest
 	if err != nil {
 		return nil, fittingConvertErr(err)
 	}
+	if err := s.refuseForeignPatternURLs(ctx, fittingPatternURLs(fi.Patterns)); err != nil {
+		return nil, err
+	}
 	actor := authsrv.GetAdminUsername(ctx)
 	fi.CreatedBy, fi.UpdatedBy = actor, actor
 	// Переноса геометрии здесь нет и быть не может: у создаваемой примерки хранимого нет, и
@@ -126,6 +129,9 @@ func (s *Server) UpdateFitting(ctx context.Context, req *pb_admin.UpdateFittingR
 	fi, err := dto.ConvertPbFittingInsertToEntity(req.Fitting)
 	if err != nil {
 		return nil, fittingConvertErr(err)
+	}
+	if err := s.refuseForeignPatternURLs(ctx, fittingPatternURLs(fi.Patterns)); err != nil {
+		return nil, err
 	}
 	fi.UpdatedBy = authsrv.GetAdminUsername(ctx)
 	// ГЕОМЕТРИЯ УКАЗАНИЙ НА СНИМКАХ (0319) — тот же контракт присутствия, что у эскиза тех-карты.

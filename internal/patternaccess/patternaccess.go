@@ -49,6 +49,14 @@ type ReadOnlyPatterns interface {
 	ReadOnlyPatternURL(ctx context.Context, host, objectKey string) (string, time.Time, error)
 }
 
+// KeyOwner answers «does this object key of our bucket belong to the team in ctx»
+// (bucket.TeamOwnsKey). *bucket.Bucket implements it; a Presigner that does not (test fakes without
+// teams) means every key is owned. Pattern urls come from client-saved cards, so a team could save
+// another team's key: without this check its link would serve the other team's file.
+type KeyOwner interface {
+	OwnsObjectKey(ctx context.Context, key string) bool
+}
+
 // CardManifests is the narrow slice of dependency.TechCards the viewer manifest needs
 // (see viewer.go). dependency.TechCards satisfies it.
 type CardManifests interface {
@@ -90,6 +98,8 @@ type Service struct {
 	presign Presigner
 	// readOnly is presign's ReadOnlyPatterns side, nil when it has none (see ReadOnlyPatterns).
 	readOnly ReadOnlyPatterns
+	// owner is presign's KeyOwner side, nil when it has none (see KeyOwner).
+	owner KeyOwner
 
 	// viewerBaseURL is this backend's external origin (PatternToken.PublicBaseURL,
 	// trailing slash trimmed) — the per-file /api/p urls inside a viewer manifest are
@@ -144,6 +154,9 @@ func New(objects dependency.PatternObjects, cards CardManifests, presign Presign
 	if ro, ok := presign.(ReadOnlyPatterns); ok {
 		s.readOnly = ro
 	}
+	if o, ok := presign.(KeyOwner); ok {
+		s.owner = o
+	}
 	go s.flushLoop()
 	return s, nil
 }
@@ -174,7 +187,16 @@ func (s *Service) patternRef(ctx context.Context, rawURL, filename string) (enti
 		}
 		ref.SourceHost = host
 	}
+	// Our own bucket: no link for a key of another team (read-only hosts are gated above by host).
+	if ref.SourceHost == "" && !s.ownsKey(ctx, k) {
+		return entity.PatternObjectRef{}, false
+	}
 	return ref, true
+}
+
+// ownsKey: the team in ctx owns object key k of our bucket (true when there is no KeyOwner).
+func (s *Service) ownsKey(ctx context.Context, k string) bool {
+	return s.owner == nil || s.owner.OwnsObjectKey(ctx, k)
 }
 
 func (s *Service) flushLoop() {
@@ -336,6 +358,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Default().Log(ctx, level, "pattern access denied",
 			slog.String("reason", reason), slog.String("ip", ip),
 			slog.String("ua", r.UserAgent()))
+		// Every refusal is the same uncacheable bare 404: a later rotate or an owner fix must not
+		// meet a cached answer, and no refusal may look different from another.
+		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 	}
 
@@ -407,6 +432,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		signed, expiresAt, err = s.readOnly.ReadOnlyPatternURL(ctx, row.SourceHost, row.ObjectKey)
 	} else {
+		// A row minted before the owner check, or a key the card was changed to: the same bare 404.
+		if !s.ownsKey(ctx, row.ObjectKey) {
+			notFound("foreign key")
+			return
+		}
 		signed, expiresAt, err = s.presign.PresignPatternObject(ctx, row.ObjectKey, download, row.Filename.String)
 	}
 	if err != nil {
