@@ -275,3 +275,29 @@ func (s *Server) RestoreAccount(ctx context.Context, req *auth.RestoreAccountReq
 	}
 	return svc.RestoreAccount(ctx, req)
 }
+
+// The operator second-step RPCs are public: the ticket from SignIn is the credential.
+
+func (s *Server) OperatorSetupMail(ctx context.Context, req *auth.OperatorSetupMailRequest) (*auth.OperatorSetupMailResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.OperatorSetupMail(ctx, req)
+}
+
+func (s *Server) OperatorSetupConfirm(ctx context.Context, req *auth.OperatorSetupConfirmRequest) (*auth.OperatorSetupConfirmResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.OperatorSetupConfirm(ctx, req)
+}
+
+func (s *Server) OperatorVerify(ctx context.Context, req *auth.OperatorVerifyRequest) (*auth.OperatorVerifyResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	return svc.OperatorVerify(ctx, req)
+}

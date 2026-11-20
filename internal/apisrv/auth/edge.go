@@ -435,6 +435,10 @@ func (s *Server) platformChain(ctx context.Context, method string) (context.Cont
 		}
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
+	// A console token minted before the authenticator-app step (or without it) opens nothing.
+	if !claims.SecondStep {
+		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
+	}
 	ok, err := s.edge.SessionActive(ctx, claims.SessionID)
 	if err != nil {
 		return ctx, status.Error(codes.Unavailable, "session check unavailable")

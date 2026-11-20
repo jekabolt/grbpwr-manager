@@ -164,7 +164,8 @@ type Payload struct {
 	TeamName string `json:"team_name"`
 	Slug     string `json:"slug"`
 	From     string `json:"from"`
-	Email    string `json:"email"` // team_request: who asked for the team
+	Email    string `json:"email"` // team_request: who asked for the team; operator_alert: whose app
+	Event    string `json:"event"` // operator_alert: setup | reset | recovery
 	// Until is the end of a deleted account's restore window (restore, account_deleted); Deleted is
 	// when it was deleted (only the restore letter a sign-up with the account's email asked for).
 	Until   *time.Time `json:"until"`
@@ -326,6 +327,10 @@ const (
 	KindRestore = "restore"
 	// KindAccountDeleted confirms an account delete and says until when it can be restored.
 	KindAccountDeleted = "account_deleted"
+	// KindOperatorSetup carries the code an operator types before a first authenticator-app setup.
+	KindOperatorSetup = "operator_setup"
+	// KindOperatorAlert tells every operator an app was set up, reset, or a recovery code was used.
+	KindOperatorAlert = "operator_alert"
 )
 
 type buttonData struct{ Link, Label string }
@@ -334,6 +339,8 @@ type letterData struct {
 	Subject, Address, Code, Link, Team, From, Base, Email string
 	// Until and Deleted are dates as the letters show them ("dec 19"); "" = none.
 	Until, Deleted string
+	// Event is the operator_alert line ("app set up", "app reset", "recovery code used").
+	Event string
 }
 
 // day renders a date as the letters show it: "dec 19" (UTC).
@@ -347,7 +354,7 @@ func day(t *time.Time) string {
 func parseTemplates() (*templates, error) {
 	t := &templates{html: map[string]*htmltemplate.Template{}, text: map[string]*texttemplate.Template{}}
 	funcs := htmltemplate.FuncMap{"button": func(link, label string) buttonData { return buttonData{link, label} }}
-	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved, KindRestore, KindAccountDeleted} {
+	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved, KindRestore, KindAccountDeleted, KindOperatorSetup, KindOperatorAlert} {
 		h, err := htmltemplate.New("layout").Funcs(funcs).ParseFS(templateFS, "templates/layout.html.gohtml", "templates/"+k+".html.gohtml")
 		if err != nil {
 			return nil, fmt.Errorf("platformmail: parse %s html: %w", k, err)
@@ -360,6 +367,9 @@ func parseTemplates() (*templates, error) {
 	}
 	return t, nil
 }
+
+// operatorEvents are the operator_alert lines by event.
+var operatorEvents = map[string]string{"setup": "app set up", "reset": "app reset", "recovery": "recovery code used"}
 
 // spaced renders a six-digit code as the letter shows it: "482 913".
 func spaced(code string) string {
@@ -415,6 +425,17 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 			return Message{}, errors.New("platformmail: account deleted letter without a date")
 		}
 		d.Subject = "account deleted"
+	case KindOperatorSetup:
+		if p.Code == "" {
+			return Message{}, errors.New("platformmail: operator setup letter without a code")
+		}
+		d.Subject = d.Code + " · console setup"
+	case KindOperatorAlert:
+		d.Event = operatorEvents[p.Event]
+		if d.Event == "" || p.Email == "" {
+			return Message{}, errors.New("platformmail: operator alert letter without an event or an email")
+		}
+		d.Subject = "console · " + d.Event
 	}
 	var hb, tb bytes.Buffer
 	if err := h.ExecuteTemplate(&hb, "layout", d); err != nil {

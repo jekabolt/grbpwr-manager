@@ -25,6 +25,9 @@ const (
 	// claimOperator marks an operator-entry team token (teams §23): a console operator in a team
 	// they are not a member of. Only ever true; absent otherwise.
 	claimOperator = "op"
+	// claimSecondStep marks a console token minted after the operator passed the authenticator-app
+	// code (wave teams, gap 4). Only ever true; a console token without it is refused.
+	claimSecondStep = "s2"
 )
 
 // TeamClaims are the claims of a platform token.
@@ -44,6 +47,8 @@ type TeamClaims struct {
 	Legacy    bool
 	// Operator: an operator-entry team token (claim op). Read only from a platform team token.
 	Operator bool
+	// SecondStep: a console token whose operator passed the app code (claim s2).
+	SecondStep bool
 	// CredGen is a legacy token's credential generation (claim "cg", 0 when absent). The edge in
 	// teams mode refuses a legacy token whose generation is not the account's current one.
 	CredGen int64
@@ -91,6 +96,12 @@ func NewTeamTokenAt(a *jwtauth.JWTAuth, ttl time.Duration, c TeamClaims, now tim
 			return "", fmt.Errorf("%w: only a team token carries the operator claim", errTeamClaims)
 		}
 		claims[claimOperator] = true
+	}
+	if c.SecondStep {
+		if c.Audience != AudConsole {
+			return "", fmt.Errorf("%w: only a console token carries the second-step claim", errTeamClaims)
+		}
+		claims[claimSecondStep] = true
 	}
 	_, ts, err := a.Encode(claims)
 	if err != nil {
@@ -183,6 +194,8 @@ func VerifyTeamToken(a *jwtauth.JWTAuth, token string, exp *Expectations) (TeamC
 	}
 	c.SessionID = sid
 	c.Operator, _ = m[claimOperator].(bool)
+	c.SecondStep, _ = m[claimSecondStep].(bool)
+	c.SecondStep = c.SecondStep && c.Audience == AudConsole
 	if c.Handle == "" {
 		return TeamClaims{}, fmt.Errorf("%w: sub", errTeamClaims)
 	}

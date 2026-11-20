@@ -428,7 +428,7 @@ VALUES ('delivered+b3op@resend.dev', 'o3op', ?, 'active', 1, UTC_TIMESTAMP(3))`,
 		t.Fatalf("an operator's provider sign-in wrote %d sessions or identities", n)
 	}
 	if si, err := j.svc.SignIn(ctxFrom("10.9.0.3", ""), &auth.SignInRequest{Login: "delivered+b3op@resend.dev", Password: opPW,
-		Target: auth.SignInTarget_SIGN_IN_TARGET_CONSOLE}); err != nil || si.GetToken() == "" {
+		Target: auth.SignInTarget_SIGN_IN_TARGET_CONSOLE}); err != nil || si.GetTicket() == "" {
 		t.Fatalf("console password sign-in: %v", err)
 	}
 }
