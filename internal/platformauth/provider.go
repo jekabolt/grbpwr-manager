@@ -42,6 +42,8 @@ const (
 	KeyDisabled    = "disabled"     // the account is disabled
 	KeyUsePassword = "use_password" // an operator's account: password only
 	KeyTryAgain    = "try_again"    // anything else (a race, the store, the service unusable)
+	// KeyAccountDeleted: the account is deleted and can still be restored (RequestAccountRestore).
+	KeyAccountDeleted = "account_deleted"
 )
 
 // GetSignInOptions tells the sign-in page which provider buttons to show (public, no lookup).
@@ -84,6 +86,8 @@ func (s *Service) CompleteProviderSignIn(ctx context.Context, in platformstore.P
 		return "", KeyDisabled
 	case errors.Is(err, platformstore.ErrProviderOperator):
 		return "", KeyUsePassword
+	case errors.Is(err, platformstore.ErrAccountDeleted):
+		return "", KeyAccountDeleted
 	case errors.Is(err, platformstore.ErrTokenInvalid):
 		return "", KeyTryAgain
 	case err != nil:

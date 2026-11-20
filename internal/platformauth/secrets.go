@@ -31,6 +31,8 @@ const (
 	PurposeReset   = "reset"
 	PurposeHandoff = "handoff"
 	PurposeSignIn  = "signin"
+	// PurposeRestore: the letter that brings a deleted account back (link + code).
+	PurposeRestore = "restore"
 )
 
 // tokenBytes is the entropy of a link token and of a hand-off code (256 bits).

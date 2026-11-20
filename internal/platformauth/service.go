@@ -21,6 +21,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Hooks reach team databases; the auth server builds them from its admin repository.
@@ -35,6 +36,10 @@ type Hooks struct {
 	// last step, or the finish on sign-in). false = nothing was enabled: the row is not staged any
 	// more (finished, disabled or re-decided since).
 	EnableMember func(ctx context.Context, team tenant.Team, handle string) (bool, error)
+	// FreezeMember disables the member's enabled admins row in the team's database and marks it for
+	// EnableMember (an account delete froze the membership; a restore finishes the row again). false =
+	// no enabled row there.
+	FreezeMember func(ctx context.Context, team tenant.Team, handle string) (bool, error)
 	// TeamOnePassword writes a new password hash onto team #1's admins row of the handle.
 	TeamOnePassword func(ctx context.Context, handle, hash string) error
 	// PasswordChanged runs after a password reset committed: sids are the sessions it revoked.
@@ -90,6 +95,8 @@ type Service struct {
 	options SignInOptions
 
 	codeIP, signUpIP, signInIP, signInLogin, slugIP, resetIP *ratelimit.Limiter
+	// restoreIP: restore letters and link restores per IP; accountDelete: delete tries per account.
+	restoreIP, accountDelete *ratelimit.Limiter
 	// createTeam: `new team` per account (MaxCreateTeamsPerHr); logoSet: logo changes per account.
 	createTeam, logoSet *ratelimit.Limiter
 	// profileRead, profileWrite, avatarSet: the account RPCs per account (P0 §1.4).
@@ -142,9 +149,12 @@ func New(d Deps) (*Service, error) {
 		signInLogin: ratelimit.NewLimiter(time.Minute, 5),
 		slugIP:      ratelimit.NewLimiter(time.Minute, 60),
 		resetIP:     ratelimit.NewLimiter(time.Minute, 10),
+		restoreIP:   ratelimit.NewLimiter(time.Minute, 10),
 		createTeam:  ratelimit.NewLimiter(time.Hour, MaxCreateTeamsPerHr),
 		logoSet:     ratelimit.NewLimiter(time.Hour, MaxLogoSetsPerHr),
 		logoSlots:   make(chan struct{}, MaxLogoDecodes),
+
+		accountDelete: ratelimit.NewLimiter(time.Hour, MaxAccountDeletesPerHr),
 
 		profileRead:  ratelimit.NewLimiter(time.Minute, MaxProfileReadsPerMin),
 		profileWrite: ratelimit.NewLimiter(time.Hour, MaxProfileWritesPerHr),
@@ -179,7 +189,8 @@ func (s *Service) Ready() error { return s.ready }
 // Close stops the limiters' cleanup goroutines.
 func (s *Service) Close() {
 	for _, l := range []*ratelimit.Limiter{s.codeIP, s.signUpIP, s.signInIP, s.signInLogin, s.slugIP, s.resetIP, s.createTeam, s.logoSet,
-		s.profileRead, s.profileWrite, s.avatarSet, s.sessionRead, s.sessionWrite, s.passwordChange, s.googleLink} {
+		s.profileRead, s.profileWrite, s.avatarSet, s.sessionRead, s.sessionWrite, s.passwordChange, s.googleLink,
+		s.restoreIP, s.accountDelete} {
 		l.Stop()
 	}
 }
@@ -232,6 +243,8 @@ func (s *Service) letter(purpose, email string, ttl time.Duration, now time.Time
 			l.Link = s.rootURL("/confirm", "token", tok)
 		case PurposeReset:
 			l.Link = s.rootURL("/reset", "token", tok)
+		case PurposeRestore:
+			l.Link = s.rootURL("/restore", "token", tok)
 		}
 		if team != nil {
 			nt.TeamID = team.ID
@@ -379,6 +392,7 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 		Now: now, PendingTTL: PendingTeamTTL, MaxLettersPerHour: MaxLettersPerEmailHr,
 		PasswordMatches: s.passwordMatcher(req.GetPassword()),
 		Letter:          s.letter(PurposeVerify, email, VerifyTTL, now),
+		RestoreLetter:   s.letter(PurposeRestore, email, RestoreTTL, now),
 		TermsVersion:    s.d.TermsVersion,
 		Logo:            logo,
 		Brand:           brand,
@@ -554,10 +568,19 @@ func (s *Service) SignIn(ctx context.Context, req *auth.SignInRequest) (*auth.Si
 		s.log(ctx, "sign-in lookup", err)
 		return nil, errInternal()
 	}
-	if !s.passwordOK(req.GetPassword(), u.PasswordHash) || u.Status != platformstore.UserActive {
+	if !s.passwordOK(req.GetPassword(), u.PasswordHash) {
 		return nil, errAuth()
 	}
 	now := s.now()
+	if u.Status != platformstore.UserActive {
+		// The right password of a deleted account inside its window: no token, the date it can be
+		// restored until (only the password's holder learns the account is deleted).
+		if until, ok := u.RestoreUntil(now); ok && !u.IsOperator {
+			s.audit(ctx, u.ID, 0, "signin_deleted", nil)
+			return &auth.SignInResponse{AccountDeletedUntil: timestamppb.New(until)}, nil
+		}
+		return nil, errAuth()
+	}
 	switch target {
 	case auth.SignInTarget_SIGN_IN_TARGET_ROOT:
 		return s.signInRoot(ctx, u, now)
@@ -1169,6 +1192,9 @@ func (s *Service) AcceptInvite(ctx context.Context, req *auth.AcceptInviteReques
 		return nil, errTerms()
 	case errors.Is(err, platformstore.ErrAlreadyMember):
 		return nil, status.Error(codes.FailedPrecondition, "already_member")
+	case errors.Is(err, platformstore.ErrAccountDeleted):
+		// The right password of a deleted account that can still come back: restore first.
+		return nil, errAccountDeleted()
 	case errors.Is(err, platformstore.ErrTokenInvalid):
 		return nil, errCode()
 	case err != nil:

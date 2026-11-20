@@ -219,7 +219,8 @@ func (s *Store) TeamOneCredentials(ctx context.Context, handle string) (TeamOneC
 		}
 		return TeamOneCred{}, false, fmt.Errorf("platformstore: team #1 credentials: %w", err)
 	}
-	return TeamOneCred{Hash: u.Hash, Gen: u.Gen, Disabled: u.Status == UserDisabled}, true, nil
+	// A deleted account signs in nowhere, the legacy login included, until it is restored.
+	return TeamOneCred{Hash: u.Hash, Gen: u.Gen, Disabled: u.Status == UserDisabled || u.Status == UserDeleted}, true, nil
 }
 
 // LegacyCredGen is the credential generation a legacy team #1 token must carry to be valid: the

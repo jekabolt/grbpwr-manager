@@ -23,7 +23,8 @@ type DeletedTeam struct {
 // never asks again for a row it has passed:
 //
 //  1. the team row, always first. FOR UPDATE where the team itself changes (DeleteTeam,
-//     RestoreTeam, SetTeamReadOnly, RenameTeam, ApproveTeam, DeclineTeam, UpsertInvite, ClaimSpare,
+//     RestoreTeam, DeleteAccount and RestoreAccount — every team they may close or reopen, in id
+//     order —, SetTeamReadOnly, RenameTeam, ApproveTeam, DeclineTeam, UpsertInvite, ClaimSpare,
 //     the pending sweep, EnsureTeamOne, SetTeamLogo, SetTeamBrand) or where a status read must hold
 //     until commit (RevokeMemberSessions: a member's rights changed); FOR SHARE where something is created that lives only
 //     while the team is usable (CreateTeamSession, IssueHandoff — member and operator entry —,
@@ -71,7 +72,10 @@ type DeletedTeam struct {
 // asks for an invite after it); the sign-up confirm locks its token before its team, which is
 // still pending then (DeleteTeam stops at the status check before it touches a token). After the
 // membership the confirm inserts its new root session (a row no one else can hold yet), as the
-// sign-in code exchange inserts one after its token.
+// sign-in code exchange inserts one after its token. RestoreAccount does the same with its restore
+// letter (account → token → memberships → new root session): every transaction that touches a
+// membership or a token of an account it does not hold the lock of never waits for that account's
+// letters, and every one that does holds the account first.
 
 // DeleteTeam hides a team (teams D1): in one transaction the team row is locked, the status goes
 // active / suspended → deleted with deleted_at = now, purge_at = now + retention and deleted_from =
@@ -103,24 +107,18 @@ func (s *Store) DeleteTeam(ctx context.Context, teamID int64, now time.Time, ret
 			return ErrWrongTeamStatus
 		}
 		res.Slug, res.Name = cur.Slug, cur.Name
-		if _, err := tx.ExecContext(ctx, `UPDATE team SET status = 'deleted', deleted_at = ?, purge_at = ?, deleted_from = ?
-WHERE id = ?`, now, res.PurgeAt, cur.Status, teamID); err != nil {
-			return fmt.Errorf("platformstore: delete team: %w", err)
+		if err := markTeamDeletedTx(ctx, tx, teamID, cur.Status, 0, now, res.PurgeAt); err != nil {
+			return err
 		}
 		sids, err := revokeAllTeamSessionsTx(ctx, tx, teamID, now)
 		if err != nil {
 			return err
 		}
 		res.SIDs = sids
-		if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET revoked_at = ?
-WHERE team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL`, now, teamID); err != nil {
-			return fmt.Errorf("platformstore: revoke team invites: %w", err)
+		if err := revokeTeamInvitesTx(ctx, tx, teamID, now); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
-WHERE team_id = ? AND purpose = 'handoff' AND used_at IS NULL`, now, teamID); err != nil {
-			return fmt.Errorf("platformstore: expire team hand-offs: %w", err)
-		}
-		return nil
+		return expireTeamHandoffsTx(ctx, tx, teamID, now)
 	})
 	s.dir.Invalidate(teamID)
 	if err != nil {
@@ -148,9 +146,10 @@ func (s *Store) RestoreTeam(ctx context.Context, teamID int64, now time.Time) (R
 			Status      string         `db:"status"`
 			PurgeAt     sql.NullTime   `db:"purge_at"`
 			DeletedFrom sql.NullString `db:"deleted_from"`
+			ClosedWith  sql.NullInt64  `db:"closed_with_user_id"`
 		}
-		if err := tx.GetContext(ctx, &cur, `SELECT slug, name, status, purge_at, deleted_from FROM team WHERE id = ? FOR UPDATE`,
-			teamID); err != nil {
+		if err := tx.GetContext(ctx, &cur, `SELECT slug, name, status, purge_at, deleted_from, closed_with_user_id
+FROM team WHERE id = ? FOR UPDATE`, teamID); err != nil {
 			if isNoRows(err) {
 				return ErrTeamNotFound
 			}
@@ -159,13 +158,25 @@ func (s *Store) RestoreTeam(ctx context.Context, teamID int64, now time.Time) (R
 		if cur.Status != "deleted" || !cur.PurgeAt.Valid || !cur.PurgeAt.Time.After(now.UTC()) {
 			return ErrWrongTeamStatus
 		}
-		back := cur.DeletedFrom.String
-		if back == "" {
-			back = "suspended"
+		// A team whose only members are deleted accounts (frozen; a team that closed with its only
+		// member's account included) would come back with nobody able to enter it: it comes back with
+		// RestoreAccount (P0 §3.5). One with an active member again (a co-member restored their own
+		// account) the console may reopen. A membership turns active only with its account held, so a
+		// restore racing this unlocked read at worst makes the console try again.
+		var n struct {
+			Active int `db:"a"`
+			Frozen int `db:"f"`
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE team SET status = ?, deleted_at = NULL, purge_at = NULL, deleted_from = NULL
-WHERE id = ?`, back, teamID); err != nil {
-			return fmt.Errorf("platformstore: restore team: %w", err)
+		if err := tx.GetContext(ctx, &n, `SELECT COALESCE(SUM(status = 'active'), 0) AS a, COALESCE(SUM(status = 'frozen'), 0) AS f
+FROM team_member WHERE team_id = ?`, teamID); err != nil {
+			return fmt.Errorf("platformstore: team members: %w", err)
+		}
+		if n.Active == 0 && (n.Frozen > 0 || cur.ClosedWith.Valid) {
+			return ErrWrongTeamStatus
+		}
+		back := restoredStatus(cur.DeletedFrom)
+		if err := reopenTeamTx(ctx, tx, teamID, back); err != nil {
+			return err
 		}
 		res = RestoredTeam{Slug: cur.Slug, Name: cur.Name, Status: back}
 		return nil
@@ -175,6 +186,58 @@ WHERE id = ?`, back, teamID); err != nil {
 		return RestoredTeam{}, err
 	}
 	return res, nil
+}
+
+// restoredStatus is the status a deleted team goes back to: the one it had (deleted_from), else
+// suspended.
+func restoredStatus(from sql.NullString) string {
+	if from.Valid && from.String != "" {
+		return from.String
+	}
+	return "suspended"
+}
+
+// markTeamDeletedTx is the team row half of a delete (the caller holds the row FOR UPDATE and
+// checked its status): status deleted, deleted_at now, purge_at, deleted_from the old status and,
+// for a team that closes with its only member's account, closed_with_user_id (0 = none).
+func markTeamDeletedTx(ctx context.Context, tx *sqlx.Tx, teamID int64, from string, closedWith int64, now, purgeAt time.Time) error {
+	var with any
+	if closedWith > 0 {
+		with = closedWith
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE team SET status = 'deleted', deleted_at = ?, purge_at = ?, deleted_from = ?,
+closed_with_user_id = ? WHERE id = ?`, now.UTC(), purgeAt.UTC(), from, with, teamID); err != nil {
+		return fmt.Errorf("platformstore: delete team: %w", err)
+	}
+	return nil
+}
+
+// reopenTeamTx brings a deleted team back to status (the caller holds the row FOR UPDATE and checked
+// it): deleted_at, purge_at, deleted_from and closed_with_user_id back to NULL.
+func reopenTeamTx(ctx context.Context, tx *sqlx.Tx, teamID int64, status string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE team SET status = ?, deleted_at = NULL, purge_at = NULL, deleted_from = NULL,
+closed_with_user_id = NULL WHERE id = ?`, status, teamID); err != nil {
+		return fmt.Errorf("platformstore: restore team: %w", err)
+	}
+	return nil
+}
+
+// revokeTeamInvitesTx revokes the team's open invites.
+func revokeTeamInvitesTx(ctx context.Context, tx *sqlx.Tx, teamID int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET revoked_at = ?
+WHERE team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL`, now.UTC(), teamID); err != nil {
+		return fmt.Errorf("platformstore: revoke team invites: %w", err)
+	}
+	return nil
+}
+
+// expireTeamHandoffsTx consumes the team's unexchanged hand-off codes.
+func expireTeamHandoffsTx(ctx context.Context, tx *sqlx.Tx, teamID int64, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
+WHERE team_id = ? AND purpose = 'handoff' AND used_at IS NULL`, now.UTC(), teamID); err != nil {
+		return fmt.Errorf("platformstore: expire team hand-offs: %w", err)
+	}
+	return nil
 }
 
 // shareTeamTx takes the team row FOR SHARE, the first lock of every transaction that creates a

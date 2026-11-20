@@ -306,6 +306,7 @@ func TestKeyTable(t *testing.T) {
 		{outInviteGone, "expired"},
 		{outDisabled, "disabled"},
 		{outUsePassword, "use_password"},
+		{outAccountDeleted, "account_deleted"},
 		{outLimited, "try_again"},
 		{outInternal, "try_again"},
 	}
@@ -319,8 +320,8 @@ func TestKeyTable(t *testing.T) {
 		}
 		keys[r.o.key()] = true
 	}
-	if len(keys) != 7 {
-		t.Errorf("the table reaches %d keys, want the seven: %v", len(keys), keys)
+	if len(keys) != 8 {
+		t.Errorf("the table reaches %d keys, want the eight: %v", len(keys), keys)
 	}
 	if got := outcome(0).key(); got != KeyTryAgain {
 		t.Errorf("an unset outcome answers %q", got)
@@ -328,7 +329,7 @@ func TestKeyTable(t *testing.T) {
 	completions := map[string]string{
 		KeyUnverified: "unverified", KeyInviteMismatch: "invite_mismatch", KeyExpired: "expired",
 		KeyDisabled: "disabled", KeyUsePassword: "use_password", KeyTryAgain: "try_again",
-		KeyCancelled: "try_again", "": "try_again", "something_new": "try_again",
+		KeyAccountDeleted: "account_deleted", KeyCancelled: "try_again", "": "try_again", "something_new": "try_again",
 	}
 	for k, want := range completions {
 		if got := completionOutcome(k).key(); got != want {
@@ -759,7 +760,7 @@ func TestGoogleFlow(t *testing.T) {
 		}
 	}
 	// The completion's refusal keys pass through the table.
-	for _, key := range []string{"unverified", "disabled", "use_password", "try_again", "bogus"} {
+	for _, key := range []string{"unverified", "disabled", "use_password", "account_deleted", "try_again", "bogus"} {
 		r.flow.key = key
 		rec, cookie := r.start(t, "google", "target=signin", rootOrigin)
 		code, state := r.authorize(t, rec.Header().Get("Location"))

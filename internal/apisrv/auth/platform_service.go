@@ -102,6 +102,9 @@ func (s *Server) platformHooks() platformauth.Hooks {
 		EnableMember: func(ctx context.Context, team tenant.Team, handle string) (bool, error) {
 			return s.enableTeamAdmin(tenant.With(ctx, team), handle)
 		},
+		FreezeMember: func(ctx context.Context, team tenant.Team, handle string) (bool, error) {
+			return s.freezeTeamAdmin(tenant.With(ctx, team), handle)
+		},
 		TeamOnePassword: func(ctx context.Context, handle, hash string) error {
 			pctx, err := tenant.Pinned(ctx, s.platform.store.Directory(), 1)
 			if err != nil {
@@ -158,6 +161,7 @@ func (s *Server) dropRevokedCredentials(_ context.Context, handle string, sids [
 type teamJoins interface {
 	StageJoin(ctx context.Context, username, pwHash string, isSuper bool, perms []entity.AdminPermission) error
 	FinishJoin(ctx context.Context, username string) (bool, error)
+	FreezeJoin(ctx context.Context, username string) (bool, error)
 }
 
 func (s *Server) teamJoins() (teamJoins, error) {
@@ -198,6 +202,22 @@ func (s *Server) enableTeamAdmin(ctx context.Context, handle string) (bool, erro
 	ok, err := j.FinishJoin(ctx, handle)
 	if err != nil {
 		return false, fmt.Errorf("enable team admin: %w", err)
+	}
+	return ok, nil
+}
+
+// freezeTeamAdmin disables an enabled admins row in the pinned team and sets its join_pending marker,
+// so the legacy Login refuses it and a later enableTeamAdmin (an account restore) finishes only a row
+// this freeze touched. false = no enabled row.
+func (s *Server) freezeTeamAdmin(ctx context.Context, handle string) (bool, error) {
+	defer s.InvalidateAdminAccount(handle)
+	j, err := s.teamJoins()
+	if err != nil {
+		return false, err
+	}
+	ok, err := j.FreezeJoin(ctx, handle)
+	if err != nil {
+		return false, fmt.Errorf("freeze team admin: %w", err)
 	}
 	return ok, nil
 }

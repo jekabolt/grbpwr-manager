@@ -45,7 +45,6 @@ func (s *Service) profilePB(p platformstore.Profile) *auth.MyProfile {
 		// false for an account made or claimed through a provider: ChangeMyPassword then sets one.
 		PasswordSet: p.PasswordSet,
 		GoogleEmail: p.GoogleEmail,
-		// SoleOwnerTeams and ClosingTeams come with delete account (lane S4b).
 	}
 	if p.PasswordChangedAt.Valid {
 		out.PasswordChangedAt = timestamppb.New(p.PasswordChangedAt.Time)
@@ -63,7 +62,16 @@ func (s *Service) profile(ctx context.Context, userID int64) (*auth.MyProfile, e
 		s.log(ctx, "read profile", err)
 		return nil, errInternal()
 	}
-	return s.profilePB(p), nil
+	out := s.profilePB(p)
+	// What the delete modal shows: the teams that block the delete (sole owner) and the teams that
+	// close with the account. DeleteMyAccount re-checks under its locks.
+	pre, err := s.d.Store.AccountDeletePreview(ctx, userID)
+	if err != nil {
+		s.log(ctx, "delete preview", err)
+		return nil, errInternal()
+	}
+	out.SoleOwnerTeams, out.ClosingTeams = s.teamRefs(pre.SoleOwner), s.teamRefs(pre.Closing)
+	return out, nil
 }
 
 // GetMyProfile returns the calling person's own profile (team token of any role, or root token).

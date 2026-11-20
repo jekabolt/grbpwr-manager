@@ -129,6 +129,22 @@ func (s *Store) StageJoin(ctx context.Context, username, pwHash string, isSuper 
 	})
 }
 
+// FreezeJoin disables an enabled row because its person deleted the platform account, and marks it
+// join_pending, so that a restore of the account (FinishJoin) turns on exactly the rows this froze:
+// a row already disabled stays as it is, without the marker. false = no enabled row.
+func (s *Store) FreezeJoin(ctx context.Context, username string) (bool, error) {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE admins SET disabled = TRUE, join_pending = TRUE WHERE username = ? AND disabled = FALSE`, username)
+	if err != nil {
+		return false, fmt.Errorf("failed to freeze admin: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to get affected rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // FinishJoin enables a row staged by StageJoin, atomically: only while join_pending is still set.
 // false = nothing to finish (already finished, or disabled / re-decided since; the row is left
 // exactly as it is).
@@ -273,7 +289,7 @@ func (s *Store) permissionsByAdminID(ctx context.Context, adminID int) ([]entity
 // username. Small table (a handful of admins), so two queries + in-memory group.
 func (s *Store) ListAccounts(ctx context.Context) ([]entity.AdminAccount, error) {
 	admins, err := storeutil.QueryListNamed[entity.Admin](ctx, s.DB,
-		`SELECT id, username, password_hash, is_super, disabled, created_at, updated_at
+		`SELECT id, username, password_hash, is_super, disabled, join_pending, created_at, updated_at
 		 FROM admins ORDER BY username`, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list admins: %w", err)

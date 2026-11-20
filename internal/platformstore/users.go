@@ -42,6 +42,8 @@ const (
 	UserPending  = "pending"
 	UserActive   = "active"
 	UserDisabled = "disabled"
+	// UserDeleted: the person deleted the account (S4b); it can be restored until purge_at.
+	UserDeleted = "deleted"
 )
 
 // maxHandleTries bounds the -2, -3 … search for a derived handle.
@@ -61,10 +63,23 @@ type User struct {
 	LockedUntil     sql.NullTime   `db:"code_locked_until"`
 	// CredGen is credential_gen: a session opened for this read is created only while it is unchanged.
 	CredGen int64 `db:"credential_gen"`
+	// DeletedAt and PurgeAt are set while the account is deleted: when it was deleted and the last
+	// moment it can be restored.
+	DeletedAt sql.NullTime `db:"deleted_at"`
+	PurgeAt   sql.NullTime `db:"purge_at"`
+}
+
+// RestoreUntil is the end of a deleted account's restore window; ok=false for any other account or
+// a window already over.
+func (u User) RestoreUntil(now time.Time) (time.Time, bool) {
+	if u.Status != UserDeleted || !u.PurgeAt.Valid || !u.PurgeAt.Time.After(now) {
+		return time.Time{}, false
+	}
+	return u.PurgeAt.Time, true
 }
 
 const userColumns = `id, email, handle, password_hash, email_verified_at, is_operator, status, code_failures,
-code_failures_since, code_locked_until, credential_gen`
+code_failures_since, code_locked_until, credential_gen, deleted_at, purge_at`
 
 // Counters is a user's code-failure state as the code path reads and writes it.
 func (u User) Counters() CodeCounters {
@@ -340,7 +355,7 @@ JOIN platform_user u ON u.id = t.created_by WHERE t.id = ?`, teamID); err != nil
 }
 
 func insertLetterTx(ctx context.Context, tx *sqlx.Tx, l Letter, now time.Time) error {
-	payload, err := json.Marshal(letterPayload{Link: l.Link, Code: l.Code, TeamName: l.TeamName, Slug: l.Slug, From: l.From})
+	payload, err := json.Marshal(payloadOf(l))
 	if err != nil {
 		return fmt.Errorf("platformstore: letter payload: %w", err)
 	}
@@ -354,7 +369,7 @@ VALUES (?, ?, ?, 'pending', ?)`, l.To, l.Template, string(payload), now); err !=
 func lettersSinceTx(ctx context.Context, tx *sqlx.Tx, email string, since time.Time) (int, error) {
 	var n int
 	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM platform_email
-WHERE to_email = ? AND template IN ('verify','invite','reset') AND created_at > ?`,
+WHERE to_email = ? AND template IN ('verify','invite','reset','restore') AND created_at > ?`,
 		email, since); err != nil {
 		return 0, fmt.Errorf("platformstore: count letters: %w", err)
 	}
@@ -408,6 +423,9 @@ type SignUpParams struct {
 	// FirstName and LastName are the name typed on the sheet, split and checked ("" = none); they
 	// name a new account and rename a still-pending one, never an active one.
 	FirstName, LastName string
+	// RestoreLetter builds the restore letter a deleted account's email gets instead of a sign-up
+	// (nil = none).
+	RestoreLetter MakeLetter
 }
 
 // SignUpResult says what happened; the client sees the same empty answer either way.
@@ -517,6 +535,18 @@ terms_version = COALESCE(?, terms_version), terms_accepted_at = COALESCE(?, term
 				return nil
 			}
 			uid = u.ID
+		case u.Status == UserDeleted:
+			// A deleted account's email stays reserved: no new account and no team. While its window
+			// runs, the inbox gets the restore letter instead (when it was deleted, until when it can
+			// come back), under the same hourly cap; the answer is the same empty one either way.
+			res.Reason = "deleted"
+			if _, ok := u.RestoreUntil(p.Now); ok && !u.IsOperator {
+				if err := restoreLetterTx(ctx, tx, u, p.RestoreLetter, true, p.Now); err != nil {
+					return err
+				}
+				res.UserID = u.ID
+			}
+			return nil
 		default:
 			res.Reason = "disabled"
 			return nil
@@ -566,7 +596,7 @@ func (s *Store) ResendVerification(ctx context.Context, email string, now time.T
 		if err != nil {
 			return err
 		}
-		if u.Status == UserDisabled {
+		if u.Status == UserDisabled || u.Status == UserDeleted {
 			return nil
 		}
 		// A pending account, or a verified one adding a team: its newest live pending team.

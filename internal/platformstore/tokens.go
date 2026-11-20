@@ -68,6 +68,13 @@ code_locked_until = NULL WHERE id = ?`, userID); err != nil {
 // order as the code path: user first), consumes it and runs fn inside the same transaction.
 func (s *Store) withLink(ctx context.Context, purpose, tokenHash string, now time.Time,
 	fn func(tx *sqlx.Tx, t tokenRow, u User) error) error {
+	return s.withLinkAfter(ctx, purpose, tokenHash, now, nil, fn)
+}
+
+// withLinkAfter is withLink with before run first in the transaction, with the token's user id, for
+// the locks that come before the account (lock order at DeleteTeam: team rows).
+func (s *Store) withLinkAfter(ctx context.Context, purpose, tokenHash string, now time.Time,
+	before func(tx *sqlx.Tx, userID int64) error, fn func(tx *sqlx.Tx, t tokenRow, u User) error) error {
 	var uid int64
 	if err := s.db.GetContext(ctx, &uid, `SELECT user_id FROM email_token WHERE token_hash = ? AND purpose = ?`,
 		tokenHash, purpose); err != nil {
@@ -77,6 +84,11 @@ func (s *Store) withLink(ctx context.Context, purpose, tokenHash string, now tim
 		return fmt.Errorf("platformstore: find token: %w", err)
 	}
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if before != nil {
+			if err := before(tx, uid); err != nil {
+				return err
+			}
+		}
 		u, err := lockUserByID(ctx, tx, uid)
 		if errors.Is(err, ErrUserNotFound) {
 			return ErrTokenInvalid
@@ -107,8 +119,20 @@ WHERE token_hash = ? AND purpose = ? FOR UPDATE`, tokenHash, purpose); err != ni
 // counters before answering ErrTokenInvalid; a right one consumes the letter, clears the user's
 // counters and runs fn in the same transaction.
 func (s *Store) withCode(ctx context.Context, a CodeAttempt, fn func(tx *sqlx.Tx, t tokenRow, u User) error) error {
+	return s.withCodeAfter(ctx, a, nil, fn)
+}
+
+// withCodeAfter is withCode with before run first in the transaction, for the locks that come before
+// the account (lock order at DeleteTeam: team rows).
+func (s *Store) withCodeAfter(ctx context.Context, a CodeAttempt, before func(tx *sqlx.Tx) error,
+	fn func(tx *sqlx.Tx, t tokenRow, u User) error) error {
 	wrong := false
 	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if before != nil {
+			if err := before(tx); err != nil {
+				return err
+			}
+		}
 		u, err := lockUserByEmail(ctx, tx, a.Email)
 		if errors.Is(err, ErrUserNotFound) {
 			a.Match(0, "")
@@ -197,7 +221,8 @@ type Review struct {
 // (changeCredentialsTx expires it).
 func verifyTx(ctx context.Context, tx *sqlx.Tx, t tokenRow, u User, handoff NewToken, rootSID string, review Review,
 	now time.Time) (VerifyResult, error) {
-	if u.Status == UserDisabled || !t.TeamID.Valid {
+	// A deleted account comes back only through RestoreAccount (its memberships with it), never here.
+	if u.Status == UserDisabled || u.Status == UserDeleted || !t.TeamID.Valid {
 		return VerifyResult{}, ErrTokenInvalid
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET status = 'active',
@@ -342,7 +367,7 @@ type ResetResult struct {
 
 func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.Time) (ResetResult, error) {
 	// No hash: the caller only counts a miss its preflight saw; a code that matches now is not consumed.
-	if u.Status == UserDisabled || newHash == "" {
+	if u.Status == UserDisabled || u.Status == UserDeleted || newHash == "" {
 		return ResetResult{}, ErrTokenInvalid
 	}
 	// A reset proves the inbox: a pending account (an operator seeded at boot is active) stays as is.
@@ -365,12 +390,12 @@ func resetTx(ctx context.Context, tx *sqlx.Tx, u User, newHash string, now time.
 }
 
 // ResetLinkLive is a read-only check that tokenHash is a live reset link of an account that is not
-// disabled. It runs before the password is hashed; ResetByLink re-checks under locks.
+// disabled or deleted. It runs before the password is hashed; ResetByLink re-checks under locks.
 func (s *Store) ResetLinkLive(ctx context.Context, tokenHash string, now time.Time) (bool, error) {
 	var n int
 	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM email_token t JOIN platform_user u ON u.id = t.user_id
-WHERE t.token_hash = ? AND t.purpose = 'reset' AND t.used_at IS NULL AND t.expires_at > ? AND u.status <> ?`,
-		tokenHash, now, UserDisabled); err != nil {
+WHERE t.token_hash = ? AND t.purpose = 'reset' AND t.used_at IS NULL AND t.expires_at > ? AND u.status NOT IN (?, ?)`,
+		tokenHash, now, UserDisabled, UserDeleted); err != nil {
 		return false, fmt.Errorf("platformstore: reset link: %w", err)
 	}
 	return n > 0, nil
@@ -388,7 +413,7 @@ func (s *Store) ResetCodeMatches(ctx context.Context, a CodeAttempt) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	if u.Status == UserDisabled || a.Locked(u.Counters()) {
+	if u.Status == UserDisabled || u.Status == UserDeleted || a.Locked(u.Counters()) {
 		a.Match(0, "")
 		return false, nil
 	}
