@@ -297,7 +297,8 @@ func TestJoinSignUpAndConfirmCode(t *testing.T) {
 	if n := countRows(t, st, `SELECT COUNT(*) FROM platform_email WHERE to_email = ? AND template = 'join_code' AND team_id = 2`, email); n != 1 {
 		t.Fatalf("attributed join letters = %d", n)
 	}
-	attempt := platformstore.CodeAttempt{Purpose: "verify_join", Email: email, Now: now.Add(time.Minute), MaxRowAttempts: 5,
+	// No Purpose: the store names the letter it checks (the service never sets it).
+	attempt := platformstore.CodeAttempt{Email: email, Now: now.Add(time.Minute), MaxRowAttempts: 5,
 		Match:  func(uid int64, stored string) bool { return uid == res.UserID && stored == fmt.Sprintf("code-%d", uid) },
 		Fail:   func(c platformstore.CodeCounters) platformstore.CodeCounters { return c },
 		Locked: func(platformstore.CodeCounters) bool { return false },
