@@ -61,8 +61,15 @@ func listOf(eff map[feature.Key]bool) []feature.Key {
 }
 
 func TestTeamOneFeaturesUseStoredProfile(t *testing.T) {
-	ov := map[string]bool{
-		string(feature.Products): true, string(feature.AIProviders): true, string(feature.LocalAccounts): true,
+	// A stored «standard» team #1 is the production profile: its rows are what the plan writes (ai
+	// among them since ai is no longer default-on, X7).
+	_, systemOn, _, err := platformstore.Team1ProfilePlan(platformstore.Team1ProfileProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := map[string]bool{}
+	for _, k := range systemOn {
+		ov[string(k)] = true
 	}
 	b, _, _ := teamOneBinder(t, tenant.ProfileStandard, ov)
 	// The request path hands the binder the boot-time team (profile all).
@@ -90,6 +97,19 @@ func TestTeamOneFeaturesUseStoredProfile(t *testing.T) {
 	console := feature.Effective(tenant.TeamOneID, tenant.ProfileStandard, ov)
 	if !slices.Equal(listOf(console), got) {
 		t.Fatalf("workspace %v != console %v", got, listOf(console))
+	}
+}
+
+// TestTeamOneKeepsAIFromMigrationRow — team #1 on «standard» whose only ai source is the 0015 row
+// (enabled, system) has ai: the binder reads the row through FeatureOverrides.
+func TestTeamOneKeepsAIFromMigrationRow(t *testing.T) {
+	b, _, _ := teamOneBinder(t, tenant.ProfileStandard, map[string]bool{string(feature.AI): true})
+	eff, err := b.Features(context.Background(), teamOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eff[feature.AI] {
+		t.Fatal("team #1 lost ai with the 0015 row present")
 	}
 }
 

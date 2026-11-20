@@ -102,8 +102,9 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// + 0010 team_schema_min_code (X3, one column)
 	// + 0011 mail delivery (X6: platform_mail_suppression + platform_email delivery columns)
 	// + 0012 operator second step (operator_totp, operator_recovery_code, operator_second_step,
-	// platform_flag) + 0014 team_storage (X11, one table; 0013 is X6's, not merged yet).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 13 {
+	// platform_flag) + 0014 team_storage (X11, one table; 0013 is X6's, not merged yet)
+	// + 0015 ai off by default (X7, rows only).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 14 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 26 {

@@ -19,7 +19,6 @@ func TestDefaultOnGolden(t *testing.T) {
 		Materials,
 		Production,
 		TechCards,
-		AI,
 	}
 	if got := DefaultOn(); !slices.Equal(got, want) {
 		t.Fatalf("DefaultOn() = %v, want %v", got, want)
@@ -327,5 +326,64 @@ func TestAllowed(t *testing.T) {
 		if got := Allowed(effective, tc.keys); got != tc.want {
 			t.Errorf("%s: Allowed(%v) = %v, want %v", tc.name, tc.keys, got, tc.want)
 		}
+	}
+}
+
+// TestNewTeamOpensTechCardsAndProduction — X7: a freshly approved team must be able to load the
+// tech-card list, the card page and production. Approval writes no team_feature rows
+// (platformstore console.go ApproveTeam only moves the status) and team.profile defaults to
+// 'standard' (platformstore/sql/0001_control_plane.sql), so the team runs on Effective with no
+// overrides. The names are every adminService call made by a useQuery on load in the client's
+// managers/tech-cards, managers/tech-card, managers/production-runs and page/useStyleEconomics.ts.
+func TestNewTeamOpensTechCardsAndProduction(t *testing.T) {
+	eff := Effective(2, "standard", nil)
+	onLoad := []string{
+		"CheckProductionRunReadiness", "GetAlertSettings", "GetDesignEditLayer", "GetDesignRun",
+		"GetOperationWorkCatalog", "GetProductionRun", "GetProductionRunCutPlan",
+		"GetProductionRunMaterialPlan", "GetSample", "GetStyleCostEstimate", "GetStyleEconomics",
+		"GetStylePipeline", "GetStyleSizeChart", "GetTechCard", "GetTechCardConstructionAudit",
+		"GetTechCardMarker", "GetTechCardReadiness", "GetTechCardRelease", "ListAdmins",
+		"ListCostingMigrationExceptions", "ListDesignRuns", "ListFittings", "ListMaterialStock",
+		"ListProductionRunCutReceipts", "ListProductionRunLays", "ListProductionRuns",
+		"ListSampleSubstitutions", "ListSamples", "ListStyleAssembly", "ListStyleFileProjects",
+		"ListTechCardDevExpenses", "ListTechCardFabricDirectionGaps", "ListTechCardReleases",
+		"ListTechCardRoleAssignments", "ListTechCardSnapshots", "ListTechCards",
+		"PreviewDesignRunInputs",
+		// The card's own save (style facts and the size chart behind season / age group).
+		"UpdateStyle", "UpdateStyleSizeChart",
+	}
+	for _, name := range onLoad {
+		keys, ok := ForMethod(rbac.MethodPrefix + name)
+		if !ok || !Allowed(eff, keys) {
+			t.Errorf("%s needs %v (mapped %v): a new team bounces off the screen", name, keys, ok)
+		}
+	}
+	// Only the alert-settings READ moved; the write and the products side of a colourway stay put.
+	for name, want := range map[string]Key{
+		"UpsertAlertSettings": Analytics,
+		"GetColorwayByID":     Products,
+		"ListStockChanges":    Products,
+	} {
+		if keys, _ := ForMethod(rbac.MethodPrefix + name); !slices.Equal(keys, []Key{want}) {
+			t.Errorf("%s = %v, want [%s]", name, keys, want)
+		}
+	}
+}
+
+// TestNewTeamHasNoAI — owner, 20.11: a new team starts with ai off, so every paid AI RPC answers
+// feature_off until the operator switches ai on; team one's profiles keep it (platformstore tests).
+func TestNewTeamHasNoAI(t *testing.T) {
+	eff := Effective(2, "standard", nil)
+	if eff[AI] {
+		t.Fatal("a new team starts with ai on")
+	}
+	for _, name := range []string{"FormatLibraryNoteMarkdown", "StartDesignRun", "DraftFittingEdits", "EnhanceText"} {
+		keys, ok := ForMethod(rbac.MethodPrefix + name)
+		if !ok || Allowed(eff, keys) {
+			t.Errorf("%s = %v on a new team, want feature_off", name, keys)
+		}
+	}
+	if on := Effective(2, "standard", map[string]bool{string(AI): true}); !on[AI] {
+		t.Error("the operator's ai switch does not turn it on")
 	}
 }
