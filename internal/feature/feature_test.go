@@ -19,7 +19,6 @@ func TestDefaultOnGolden(t *testing.T) {
 		Materials,
 		Production,
 		TechCards,
-		AI,
 	}
 	if got := DefaultOn(); !slices.Equal(got, want) {
 		t.Fatalf("DefaultOn() = %v, want %v", got, want)
@@ -368,5 +367,23 @@ func TestNewTeamOpensTechCardsAndProduction(t *testing.T) {
 		if keys, _ := ForMethod(rbac.MethodPrefix + name); !slices.Equal(keys, []Key{want}) {
 			t.Errorf("%s = %v, want [%s]", name, keys, want)
 		}
+	}
+}
+
+// TestNewTeamHasNoAI — owner, 20.11: a new team starts with ai off, so every paid AI RPC answers
+// feature_off until the operator switches ai on; team one's profiles keep it (platformstore tests).
+func TestNewTeamHasNoAI(t *testing.T) {
+	eff := Effective(2, "standard", nil)
+	if eff[AI] {
+		t.Fatal("a new team starts with ai on")
+	}
+	for _, name := range []string{"FormatLibraryNoteMarkdown", "StartDesignRun", "DraftFittingEdits", "EnhanceText"} {
+		keys, ok := ForMethod(rbac.MethodPrefix + name)
+		if !ok || Allowed(eff, keys) {
+			t.Errorf("%s = %v on a new team, want feature_off", name, keys)
+		}
+	}
+	if on := Effective(2, "standard", map[string]bool{string(AI): true}); !on[AI] {
+		t.Error("the operator's ai switch does not turn it on")
 	}
 }

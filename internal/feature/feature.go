@@ -79,7 +79,9 @@ var catalog = []Info{
 	// Dictionaries (colours, collections, sizes) are not a switch: every team has
 	// them (owner decision 18.11), so the section maps to Core below.
 	{Key: Settings, Title: "settings", Group: "admin"},
-	{Key: AI, Title: "ai", Group: "admin", DefaultOn: true},
+	// Paid AI is off for a new team until the operator switches it on in the console (owner, 20.11);
+	// teams that existed before got an explicit row (platformstore/sql/0015_ai_off_by_default.sql).
+	{Key: AI, Title: "ai", Group: "admin"},
 	{Key: AIProviders, Title: "ai providers", Group: "admin", TeamOneOnly: true},
 	{Key: LocalAccounts, Title: "local accounts", Group: "admin", TeamOneOnly: true},
 }
@@ -93,7 +95,6 @@ var defaultOn = []Key{
 	Materials,
 	Production,
 	TechCards,
-	AI,
 }
 
 // Catalog returns the ordered catalog of switchable team features. Core is not
