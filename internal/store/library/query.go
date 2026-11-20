@@ -122,6 +122,11 @@ func validateItemFilter(f entity.LibraryItemFilter) (itemFilter, error) {
 			out.Sources = append(out.Sources, s)
 		}
 	}
+	switch f.Access {
+	case entity.LibraryItemAccessPrivate, entity.LibraryItemAccessPublic:
+	default:
+		out.Access = entity.LibraryItemAccessUnspecified
+	}
 	out.Ratios = nil
 	for _, raw := range f.Ratios {
 		r := strings.TrimSpace(raw)
@@ -180,6 +185,13 @@ func planBranches(b entity.LibraryBranches, f itemFilter) entity.LibraryBranches
 	if len(f.Sources) > 0 {
 		b.Media = b.Media && slices.Contains(f.Sources, entity.LibrarySourceMedia)
 		b.Files = b.Files && slices.Contains(f.Sources, entity.LibrarySourceFile)
+	}
+	// Private is files only, public is media only; with sources it is the intersection.
+	switch f.Access {
+	case entity.LibraryItemAccessPrivate:
+		b.Media = false
+	case entity.LibraryItemAccessPublic:
+		b.Files = false
 	}
 	// Topics and projects exist only on files.
 	if f.ProjectTopicId > 0 || len(f.TopicIds) > 0 {
@@ -390,7 +402,8 @@ func (s *Store) buildQuery(ctx context.Context, b entity.LibraryBranches, full i
 		// One item per picture: while the media branch runs in this same query, a file with a media
 		// twin is shown as that media only. A files-only list (sources=[FILE]: the notes and label
 		// pickers, whose FKs need the file row; a topic filter; a caller without media) keeps it.
-		if q.media {
+		// access=PRIVATE drops it always: a published original is not private any more.
+		if q.media || f.Access == entity.LibraryItemAccessPrivate {
 			where = append(where, "NOT "+fileHasMediaTwinSQL)
 		}
 		if len(kindValues) > 0 {

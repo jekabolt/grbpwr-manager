@@ -94,6 +94,17 @@ const (
 	LibraryUsageFree
 )
 
+// LibraryItemAccess filters the list by who can see a row. Unspecified means both. Private is a
+// library file without a public media twin (a published original is not private any more); public is
+// a media row.
+type LibraryItemAccess int
+
+const (
+	LibraryItemAccessUnspecified LibraryItemAccess = iota
+	LibraryItemAccessPrivate
+	LibraryItemAccessPublic
+)
+
 // LibrarySort orders the list. Unspecified means newest first.
 type LibrarySort int
 
@@ -127,6 +138,7 @@ type LibraryItemFilter struct {
 	CreatedTo         time.Time // zero = open; the range is [from, to)
 	Usage             LibraryUsage
 	Ratios            []string
+	Access            LibraryItemAccess
 }
 
 // LibraryBranches says which tables a library read may touch, decided by the handler from the
@@ -192,6 +204,10 @@ type LibraryFacets struct {
 	Free   int
 	Ratios []LibraryRatioCount
 	Total  int
+	// AccessPrivate / AccessPublic count the filter minus its access axis: files without a public
+	// twin and media. Their sum is the total of the same filter without access.
+	AccessPrivate int
+	AccessPublic  int
 }
 
 // Folder rules (store internal/store/library/folders.go).

@@ -161,7 +161,8 @@ type ratioCountRow struct {
 
 // Facets answers the counts for the filter (02-DESIGN §3.5): months and total under the whole
 // filter, kinds under the filter minus kinds (accept still applies), used/free under the filter minus
-// usage, ratios under the filter minus ratios (media only).
+// usage, ratios under the filter minus ratios (media only), private/public under the filter minus
+// access.
 func (s *Store) Facets(ctx context.Context, b entity.LibraryBranches, f entity.LibraryItemFilter) (*entity.LibraryFacets, error) {
 	vf, err := validateItemFilter(f)
 	if err != nil {
@@ -270,6 +271,26 @@ func (s *Store) Facets(ctx context.Context, b entity.LibraryBranches, f entity.L
 			if ratios[key] > 0 {
 				out.Ratios = append(out.Ratios, entity.LibraryRatioCount{Ratio: key, Count: ratios[key]})
 			}
+		}
+	}
+
+	// Access: the filter with its access axis replaced by each value in turn, so private + public is
+	// the total without access whenever the media branch runs (the files-only total keeps twins).
+	for _, a := range []entity.LibraryItemAccess{entity.LibraryItemAccessPrivate, entity.LibraryItemAccessPublic} {
+		af := vf
+		af.Access = a
+		q, err = s.buildQuery(ctx, b, af, skipAxes{}, false, cache)
+		if err != nil {
+			return nil, err
+		}
+		n, err := s.countItems(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		if a == entity.LibraryItemAccessPrivate {
+			out.AccessPrivate = n
+		} else {
+			out.AccessPublic = n
 		}
 	}
 	return out, nil

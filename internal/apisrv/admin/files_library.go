@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/bucket"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -59,6 +60,29 @@ func (s *Server) withLibraryURLs(ctx context.Context, f *entity.LibraryFile, pb 
 	return pb
 }
 
+// fillPublicMediaIDs sets public_media_id on converted files (pbs[i] is files[i]): the media made from
+// each file by the library twin rule, in one batched lookup. A caller who may not read media gets 0
+// and costs no query.
+func (s *Server) fillPublicMediaIDs(ctx context.Context, files []entity.LibraryFile, pbs []*pb_admin.LibraryFile) error {
+	if len(files) == 0 || !libraryAccessOf(ctx).MediaRead {
+		return nil
+	}
+	shas := make([]string, 0, len(files))
+	for i := range files {
+		shas = append(shas, files[i].Sha256)
+	}
+	twins, err := s.repo.Library().MediaTwinIDs(ctx, shas)
+	if err != nil {
+		return err
+	}
+	for i := range files {
+		if i < len(pbs) && pbs[i] != nil {
+			pbs[i].PublicMediaId = int32(twins[strings.ToLower(strings.TrimSpace(files[i].Sha256))])
+		}
+	}
+	return nil
+}
+
 // libraryFilesToPb converts and signs a page of files.
 func (s *Server) libraryFilesToPb(ctx context.Context, files []entity.LibraryFile) []*pb_admin.LibraryFile {
 	out := make([]*pb_admin.LibraryFile, 0, len(files))
@@ -81,9 +105,12 @@ func (s *Server) GetLibraryFile(ctx context.Context, req *pb_admin.GetLibraryFil
 		slog.Default().ErrorContext(ctx, "can't get library file", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't get file")
 	}
-	return &pb_admin.GetLibraryFileResponse{
-		File: s.withLibraryURLs(ctx, f, dto.ConvertEntityLibraryFileToPb(f)),
-	}, nil
+	pb := s.withLibraryURLs(ctx, f, dto.ConvertEntityLibraryFileToPb(f))
+	if err := s.fillPublicMediaIDs(ctx, []entity.LibraryFile{*f}, []*pb_admin.LibraryFile{pb}); err != nil {
+		slog.Default().ErrorContext(ctx, "can't find library file media twin", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't get file")
+	}
+	return &pb_admin.GetLibraryFileResponse{File: pb}, nil
 }
 
 // GetLibraryFileContent returns the bytes of a library file for the preview on its card.
@@ -164,8 +191,13 @@ func (s *Server) ListLibraryFiles(ctx context.Context, req *pb_admin.ListLibrary
 		slog.Default().ErrorContext(ctx, "can't list library files", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't list files")
 	}
+	pbs := s.libraryFilesToPb(ctx, files)
+	if err := s.fillPublicMediaIDs(ctx, files, pbs); err != nil {
+		slog.Default().ErrorContext(ctx, "can't find library file media twins", slog.String("err", err.Error()))
+		return nil, status.Error(codes.Internal, "can't list files")
+	}
 	return &pb_admin.ListLibraryFilesResponse{
-		Files: s.libraryFilesToPb(ctx, files),
+		Files: pbs,
 		Total: int32(total),
 	}, nil
 }
