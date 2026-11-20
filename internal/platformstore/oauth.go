@@ -368,6 +368,9 @@ func claimPendingTx(ctx context.Context, tx *sqlx.Tx, userID int64, p ProviderPa
 	if err != nil {
 		return nil, nil, fmt.Errorf("platformstore: claim: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM platform_join_intent WHERE user_id = ?`, userID); err != nil {
+		return nil, nil, fmt.Errorf("platformstore: claim: clear join intent: %w", err)
+	}
 	hash, err := p.UnusableHash()
 	if err != nil {
 		return nil, nil, err

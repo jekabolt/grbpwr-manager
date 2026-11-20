@@ -29,6 +29,12 @@ func TestRenderLetters(t *testing.T) {
 			"731 054 · reset password", []string{"731 054", "reset#token=def"}},
 		{KindInvite, Payload{TeamName: "Atelier & Co", From: "anna", Link: "https://beta.lekalo.studio/join#token=ghi"},
 			"join Atelier & Co", []string{"join#token=ghi", "anna"}},
+		{KindJoinCode, Payload{Code: "182736", TeamName: "Atelier Anna", Slug: "atelier-anna", Link: "https://atelier-anna.beta.lekalo.studio/join"},
+			"182 736 · join Atelier Anna", []string{"182 736", "Atelier Anna", "return to join"}},
+		{KindJoinRequest, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Email: "joiner@example.com", Link: "https://atelier-anna.beta.lekalo.studio/workspace#people"},
+			"join request · Atelier Anna", []string{"Atelier Anna", "joiner@example.com", "review requests"}},
+		{KindJoinApproved, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Link: "https://atelier-anna.beta.lekalo.studio/"},
+			"Atelier Anna · joined", []string{"Atelier Anna", "open workspace"}},
 		{KindTeamRequest, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Email: "anna@example.com", Link: "https://console.beta.lekalo.studio/"},
 			"new team · Atelier Anna", []string{"Atelier Anna", "atelier-anna.beta.lekalo.studio", "anna@example.com", "console.beta.lekalo.studio"}},
 		{KindTeamApproved, Payload{TeamName: "Atelier Anna", Slug: "atelier-anna", Link: "https://atelier-anna.beta.lekalo.studio/"},
@@ -45,6 +51,9 @@ func TestRenderLetters(t *testing.T) {
 		}
 		if m.Subject != c.subject {
 			t.Fatalf("%s subject = %q, want %q", c.kind, m.Subject, c.subject)
+		}
+		if c.kind == KindJoinRequest && strings.Contains(m.Subject, c.p.Email) {
+			t.Fatalf("join request subject contains the address: %q", m.Subject)
 		}
 		for _, w := range c.want {
 			if !strings.Contains(m.Text, w) {
@@ -71,6 +80,9 @@ func TestRenderRefusesIncompletePayload(t *testing.T) {
 		kind string
 		p    Payload
 	}{{KindVerify, Payload{Link: "l"}}, {KindReset, Payload{Link: "l"}}, {KindInvite, Payload{Link: "l"}},
+		{KindJoinCode, Payload{Link: "l", TeamName: "x"}}, {KindJoinCode, Payload{Link: "l", Code: "123456"}},
+		{KindJoinRequest, Payload{Link: "l", TeamName: "x", Email: "a@x.io"}},
+		{KindJoinRequest, Payload{Link: "l", TeamName: "x", Slug: "x"}}, {KindJoinApproved, Payload{Link: "l"}},
 		{KindTeamRequest, Payload{Link: "l", TeamName: "x"}}, {KindTeamApproved, Payload{Link: "l"}},
 		{KindRestore, Payload{Link: "l", Code: "123456"}}, {KindRestore, Payload{Link: "l", Until: &time.Time{}}},
 		{KindAccountDeleted, Payload{Link: "l"}}, {"nope", Payload{Link: "l", Code: "123456"}}} {
@@ -91,6 +103,17 @@ func TestTruncate(t *testing.T) {
 	}
 	if truncate("short") != "short" {
 		t.Fatal("short changed")
+	}
+}
+
+func TestJoinLetterSuppression(t *testing.T) {
+	if !SuppressionApplies(KindJoinCode) {
+		t.Fatal("join code must honour suppression")
+	}
+	for _, kind := range []string{KindJoinRequest, KindJoinApproved} {
+		if SuppressionApplies(kind) {
+			t.Fatalf("%s must reach an existing account", kind)
+		}
 	}
 }
 

@@ -4675,6 +4675,35 @@ service AdminService {
     };
   }
 
+  // GetTeamJoinLink returns the calling team's stable join link.
+  rpc GetTeamJoinLink(GetTeamJoinLinkRequest) returns (GetTeamJoinLinkResponse) {
+    option (google.api.http) = {get: "/api/admin/team/join-link"};
+  }
+
+  // RotateTeamJoinLink invalidates the old link and pending requests made through older generations.
+  rpc RotateTeamJoinLink(RotateTeamJoinLinkRequest) returns (RotateTeamJoinLinkResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/join-link/rotate"
+      body: "*"
+    };
+  }
+
+  // ApproveTeamJoinRequest joins one pending requester with the ordinary invite defaults.
+  rpc ApproveTeamJoinRequest(ApproveTeamJoinRequestRequest) returns (ApproveTeamJoinRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/join-requests/{request_ref}/approve"
+      body: "*"
+    };
+  }
+
+  // DeclineTeamJoinRequest declines one pending requester.
+  rpc DeclineTeamJoinRequest(DeclineTeamJoinRequestRequest) returns (DeclineTeamJoinRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/join-requests/{request_ref}/decline"
+      body: "*"
+    };
+  }
+
   // RemoveTeamMember removes a member from the calling team.
   rpc RemoveTeamMember(RemoveTeamMemberRequest) returns (RemoveTeamMemberResponse) {
     option (google.api.http) = {
@@ -15803,6 +15832,14 @@ message ListTeamMembersResponse {
   repeated TeamInvite invites = 2;
   // sections are the sections a member can be given, in screen order (key, title = screen word).
   repeated AdminSectionInfo sections = 3;
+  repeated TeamJoinRequest join_requests = 4;
+}
+
+// TeamJoinRequest is one pending join-link request. Its database id never leaves the server.
+message TeamJoinRequest {
+  string request_ref = 1;
+  string email = 2;
+  google.protobuf.Timestamp created_at = 3;
 }
 
 message InviteTeamMemberRequest {
@@ -15831,6 +15868,30 @@ message ResendTeamInviteRequest {
 }
 
 message ResendTeamInviteResponse {}
+
+message GetTeamJoinLinkRequest {}
+
+message GetTeamJoinLinkResponse {
+  string link = 1;
+}
+
+message RotateTeamJoinLinkRequest {}
+
+message RotateTeamJoinLinkResponse {
+  string link = 1;
+}
+
+message ApproveTeamJoinRequestRequest {
+  string request_ref = 1;
+}
+
+message ApproveTeamJoinRequestResponse {}
+
+message DeclineTeamJoinRequestRequest {
+  string request_ref = 1;
+}
+
+message DeclineTeamJoinRequestResponse {}
 
 message RemoveTeamMemberRequest {
   string username = 1;

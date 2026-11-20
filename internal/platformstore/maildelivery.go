@@ -29,7 +29,7 @@ func (s *Store) SignupLetterStats(ctx context.Context, now time.Time) (SignupLet
   COALESCE(SUM(created_at >= ?), 0) AS verify_hour,
   COALESCE(SUM(status = 'sent'), 0) AS sent_day,
   COALESCE(SUM(status = 'sent' AND delivery IN ('bounced', 'complained')), 0) AS bounced_day
-FROM platform_email WHERE template = 'verify' AND created_at >= ?`, hour, day); err != nil {
+FROM platform_email WHERE template IN ('verify','join_code') AND created_at >= ?`, hour, day); err != nil {
 		return st, fmt.Errorf("platformstore: sign-up letter stats: %w", err)
 	}
 	return st, nil

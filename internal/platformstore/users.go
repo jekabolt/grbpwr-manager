@@ -311,7 +311,8 @@ func termsColumns(terms string, now time.Time) (any, any) {
 	return terms, now.UTC().Truncate(time.Second)
 }
 
-// teamLetterPayload is a team_request / team_approved letter: no code, a link that needs none.
+// teamLetterPayload is a team request/approval or join request/approval letter: no code, a link
+// that needs no token.
 type teamLetterPayload struct {
 	Link     string `json:"link"`
 	TeamName string `json:"team_name"`
@@ -377,7 +378,7 @@ func nullID(id int64) any {
 func lettersSinceTx(ctx context.Context, tx *sqlx.Tx, email string, since time.Time) (int, error) {
 	var n int
 	if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM platform_email
-WHERE to_email = ? AND template IN ('verify','invite','reset','restore') AND created_at > ?`,
+WHERE to_email = ? AND template IN ('verify','join_code','invite','reset','restore') AND created_at > ?`,
 		email, since); err != nil {
 		return 0, fmt.Errorf("platformstore: count letters: %w", err)
 	}
@@ -536,6 +537,9 @@ terms_version = COALESCE(?, terms_version), terms_accepted_at = COALESCE(?, term
 			}
 			if _, err := deletePendingTeamsTx(ctx, tx, `created_by = ? AND status = 'pending'`, uid); err != nil {
 				return fmt.Errorf("platformstore: drop pending teams: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM platform_join_intent WHERE user_id = ?`, uid); err != nil {
+				return fmt.Errorf("platformstore: clear join intent: %w", err)
 			}
 		case u.Status == UserActive:
 			if p.PasswordMatches == nil || !p.PasswordMatches(u.PasswordHash) {

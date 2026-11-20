@@ -174,10 +174,17 @@ func (s *Store) AcceptInvite(ctx context.Context, p AcceptParams) (AcceptResult,
 // SweepJoining removes reserved memberships whose invite is no longer live (expired, revoked or
 // gone): the join can never finish, and the staged admins row stays disabled. It returns how many.
 func (s *Store) SweepJoining(ctx context.Context, now time.Time) (int64, error) {
+	if _, err := s.db.ExecContext(ctx, `UPDATE team_join_request SET status = 'expired', decided_at = ?
+WHERE status = 'pending' AND created_at <= ?`, now, now.Add(-joinRequestLifetime)); err != nil {
+		return 0, fmt.Errorf("platformstore: expire join requests: %w", err)
+	}
 	r, err := s.db.ExecContext(ctx, `DELETE m FROM team_member m JOIN platform_user u ON u.id = m.user_id
 WHERE m.status = 'joining' AND NOT EXISTS (
   SELECT 1 FROM team_invite i
-  WHERE i.team_id = m.team_id AND i.email = u.email AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?)`, now)
+  WHERE i.team_id = m.team_id AND i.email = u.email AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?)
+AND NOT EXISTS (
+  SELECT 1 FROM team_join_request r
+  WHERE r.team_id = m.team_id AND r.user_id = m.user_id AND r.status = 'approved')`, now)
 	if err != nil {
 		return 0, fmt.Errorf("platformstore: sweep joining: %w", err)
 	}
@@ -467,6 +474,9 @@ WHERE team_id = ? AND user_id = ? AND status IN ('joining', 'active')`, inv.Role
 		}
 		if n, _ := r.RowsAffected(); n != 1 {
 			return ErrTokenInvalid
+		}
+		if err := closePendingJoinRequestsTx(ctx, tx, inv.TeamID, userID, p.Now); err != nil {
+			return err
 		}
 		h := p.Handoff
 		h.Purpose, h.CodeHash, h.TeamID = "handoff", "", inv.TeamID

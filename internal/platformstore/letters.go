@@ -15,8 +15,8 @@ import (
 type Letter struct {
 	To, Template, Link, Code, TeamName, Slug, From string
 	Until, Deleted                                 time.Time
-	// TeamID, InviteID: set by the store on invite letters (X6: per-team cap, the invite's own
-	// delivery state). Zero elsewhere.
+	// TeamID, InviteID: set on invite letters (X6: per-team cap, the invite's own delivery state).
+	// A join_code also carries TeamID for outbox attribution, but never in its email_token row.
 	TeamID, InviteID int64
 }
 
@@ -51,7 +51,7 @@ func (s *Store) EnqueueLetter(ctx context.Context, l Letter) error {
 		return fmt.Errorf("platformstore: letter: bad recipient")
 	}
 	switch l.Template {
-	case "verify", "invite", "reset":
+	case "verify", "join_code", "invite", "reset":
 	default:
 		return fmt.Errorf("platformstore: letter: unknown template %q", l.Template)
 	}

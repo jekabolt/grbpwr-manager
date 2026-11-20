@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -51,6 +52,16 @@ func InviteRef(pepper string, id int64) string {
 	m.Write([]byte("invite|"))
 	m.Write([]byte(strconv.FormatInt(id, 10)))
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))[:inviteRefLen]
+}
+
+// JoinLinkToken is the public token of one team join-link generation.
+func JoinLinkToken(pepper string, teamID, gen int64, nonce []byte) string {
+	return platformstore.JoinLinkToken(pepper, teamID, gen, nonce)
+}
+
+// JoinRequestRef is the opaque handle of a pending team join request.
+func JoinRequestRef(pepper string, id int64) string {
+	return platformstore.JoinRequestRef(pepper, id)
 }
 
 // DefaultInvitePermissions is a new member's grant (teams §3): write on every section of the
@@ -142,6 +153,15 @@ func peopleErr(ctx context.Context, op string, err error) error {
 		return status.Error(codes.ResourceExhausted, "letter_cap")
 	case errors.Is(err, platformstore.ErrTeamLetterCap):
 		return status.Error(codes.ResourceExhausted, "team_letter_cap")
+	case errors.Is(err, platformstore.ErrRotateCap):
+		return status.Error(codes.ResourceExhausted, "rotate_cap")
+	case errors.Is(err, platformstore.ErrJoinLinkInvalid):
+		return status.Error(codes.NotFound, "request_not_found")
+	case errors.Is(err, platformstore.ErrJoinRequestNotFound):
+		return status.Error(codes.NotFound, "request_not_found")
+	case errors.Is(err, platformstore.ErrJoinConfirmEmail), errors.Is(err, platformstore.ErrJoinDisabled),
+		errors.Is(err, platformstore.ErrJoinOperator):
+		return status.Error(codes.FailedPrecondition, "request_unavailable")
 	case errors.Is(err, platformstore.ErrTeamReadOnly):
 		return status.Error(codes.FailedPrecondition, "team_read_only")
 	case errors.Is(err, platformstore.ErrOwnerTarget):
@@ -250,6 +270,10 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	if err != nil {
 		return nil, peopleErr(ctx, "invites", err)
 	}
+	requests, err := s.platform.store.PendingJoinRequests(ctx, p.w.Team.ID, time.Now().UTC())
+	if err != nil {
+		return nil, peopleErr(ctx, "join requests", err)
+	}
 	// Grants live in the team database's admins rows. A failed read fails the call: rights shown as
 	// none would be saved back as none by the screen's next click (a full-set write).
 	accounts, err := s.repo.Admin().ListAccounts(ctx)
@@ -263,9 +287,10 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	sections := teamSections(p.w.Features)
 	now := time.Now().UTC()
 	out := &pb_admin.ListTeamMembersResponse{
-		Members:  make([]*pb_admin.TeamMember, 0, len(members)),
-		Invites:  make([]*pb_admin.TeamInvite, 0, len(invites)),
-		Sections: sectionsPB(sections),
+		Members:      make([]*pb_admin.TeamMember, 0, len(members)),
+		Invites:      make([]*pb_admin.TeamInvite, 0, len(invites)),
+		Sections:     sectionsPB(sections),
+		JoinRequests: make([]*pb_admin.TeamJoinRequest, 0, len(requests)),
 	}
 	for _, m := range members {
 		tm := &pb_admin.TeamMember{Username: m.Handle, Email: m.Email.String, Role: m.Role, You: m.Handle == me && !p.w.Operator,
@@ -285,7 +310,178 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	for _, inv := range invites {
 		out.Invites = append(out.Invites, invitePB(s.platform.cfg.TokenPepper, inv, now))
 	}
+	for _, req := range requests {
+		out.JoinRequests = append(out.JoinRequests, &pb_admin.TeamJoinRequest{
+			RequestRef: JoinRequestRef(s.platform.cfg.TokenPepper, req.ID),
+			Email:      req.Email,
+			CreatedAt:  timestamppb.New(req.CreatedAt),
+		})
+	}
 	return out, nil
+}
+
+func (s *Server) teamJoinLink(slug string, l platformstore.TeamJoinLink) string {
+	token := JoinLinkToken(s.platform.cfg.TokenPepper, l.TeamID, l.Gen, l.Nonce)
+	return "https://" + slug + "." + strings.ToLower(strings.TrimSpace(s.platform.cfg.BaseDomain)) + "/join#link=" + token
+}
+
+func (s *Server) teamHomeLink(slug string) string {
+	return "https://" + slug + "." + strings.ToLower(strings.TrimSpace(s.platform.cfg.BaseDomain)) + "/"
+}
+
+// GetTeamJoinLink creates the team's single link on first copy and re-derives the same value later.
+func (s *Server) GetTeamJoinLink(ctx context.Context, _ *pb_admin.GetTeamJoinLinkRequest) (*pb_admin.GetTeamJoinLinkResponse, error) {
+	if !s.teamsOn() {
+		return nil, errTeamsOff()
+	}
+	p, err := s.changer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	link, err := s.platform.store.EnsureJoinLink(ctx, platformstore.JoinLinkChange{
+		TeamID: p.w.Team.ID, Actor: p.actor(), IP: middleware.GetClientIP(ctx), Now: time.Now().UTC().Truncate(time.Millisecond),
+	})
+	if err != nil {
+		return nil, peopleErr(ctx, "get join link", err)
+	}
+	return &pb_admin.GetTeamJoinLinkResponse{Link: s.teamJoinLink(p.w.Team.Slug, link)}, nil
+}
+
+// RotateTeamJoinLink invalidates the old link and closes pending requests from older generations.
+func (s *Server) RotateTeamJoinLink(ctx context.Context, _ *pb_admin.RotateTeamJoinLinkRequest) (*pb_admin.RotateTeamJoinLinkResponse, error) {
+	if !s.teamsOn() {
+		return nil, errTeamsOff()
+	}
+	p, err := s.changer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	link, err := s.platform.store.RotateJoinLink(ctx, platformstore.JoinLinkChange{
+		TeamID: p.w.Team.ID, Actor: p.actor(), IP: middleware.GetClientIP(ctx), Now: time.Now().UTC().Truncate(time.Millisecond),
+	})
+	if err != nil {
+		return nil, peopleErr(ctx, "rotate join link", err)
+	}
+	return &pb_admin.RotateTeamJoinLinkResponse{Link: s.teamJoinLink(p.w.Team.Slug, link)}, nil
+}
+
+func (s *Server) joinRequest(ctx context.Context, p peopleCtx, ref string, resumeApproved bool) (platformstore.PendingJoinRequest, error) {
+	ref = strings.TrimSpace(ref)
+	if len(ref) != inviteRefLen {
+		return platformstore.PendingJoinRequest{}, status.Error(codes.NotFound, "request_not_found")
+	}
+	now := time.Now().UTC()
+	requests, err := s.platform.store.PendingJoinRequests(ctx, p.w.Team.ID, now)
+	if resumeApproved {
+		requests, err = s.platform.store.JoinRequestsForApproval(ctx, p.w.Team.ID, now)
+	}
+	if err != nil {
+		return platformstore.PendingJoinRequest{}, peopleErr(ctx, "join requests", err)
+	}
+	for _, req := range requests {
+		if hmac.Equal([]byte(JoinRequestRef(s.platform.cfg.TokenPepper, req.ID)), []byte(ref)) {
+			return req, nil
+		}
+	}
+	return platformstore.PendingJoinRequest{}, status.Error(codes.NotFound, "request_not_found")
+}
+
+type joinRequestAdmins interface {
+	StageJoin(context.Context, string, string, bool, []entity.AdminPermission) error
+	FinishJoin(context.Context, string) (bool, error)
+}
+
+func (s *Server) stageJoinRequest(ctx context.Context, m platformstore.JoinMember, perms []entity.AdminPermission) error {
+	admins, ok := s.repo.Admin().(joinRequestAdmins)
+	if !ok {
+		return errors.New("admin repository cannot stage team joins")
+	}
+	hash, err := platformauth.UnusableHash(s.pwhash)()
+	if err != nil {
+		return fmt.Errorf("join request hash: %w", err)
+	}
+	if err := admins.StageJoin(ctx, m.Handle, hash, false, perms); err != nil {
+		return fmt.Errorf("stage join request: %w", err)
+	}
+	if s.invalidateAdminAuth != nil {
+		s.invalidateAdminAuth(m.Handle)
+	}
+	return nil
+}
+
+func (s *Server) enableJoinRequest(ctx context.Context, m platformstore.JoinMember) (bool, error) {
+	if _, ok, err := s.platform.store.Membership(ctx, m.UserID, m.TeamID); err != nil || !ok {
+		return false, err
+	}
+	admins, ok := s.repo.Admin().(joinRequestAdmins)
+	if !ok {
+		return false, errors.New("admin repository cannot finish team joins")
+	}
+	finished, err := admins.FinishJoin(ctx, m.Handle)
+	if s.invalidateAdminAuth != nil {
+		s.invalidateAdminAuth(m.Handle)
+	}
+	if err != nil {
+		return false, fmt.Errorf("finish join request: %w", err)
+	}
+	return finished, nil
+}
+
+// ApproveTeamJoinRequest uses the same four-step join as an invite, with the ordinary invite defaults.
+func (s *Server) ApproveTeamJoinRequest(ctx context.Context, req *pb_admin.ApproveTeamJoinRequestRequest) (*pb_admin.ApproveTeamJoinRequestResponse, error) {
+	if !s.teamsOn() {
+		return nil, errTeamsOff()
+	}
+	p, err := s.changer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := s.joinRequest(ctx, p, req.GetRequestRef(), true)
+	if err != nil {
+		return nil, err
+	}
+	perms := DefaultInvitePermissions(p.w.Features)
+	raw, err := permissionsJSON(perms)
+	if err != nil {
+		return nil, peopleErr(ctx, "join permissions", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	res, err := s.platform.store.ApproveJoinRequest(ctx, platformstore.JoinRequestDecisionParams{
+		TeamID: p.w.Team.ID, RequestID: pending.ID, Actor: p.actor(), IP: middleware.GetClientIP(ctx), Now: now,
+		Permissions: raw, ApprovedLink: s.teamHomeLink(p.w.Team.Slug),
+		Stage: func(ctx context.Context, m platformstore.JoinMember) error {
+			return s.stageJoinRequest(ctx, m, perms)
+		},
+		Enable: s.enableJoinRequest,
+	})
+	if err != nil {
+		return nil, peopleErr(ctx, "approve join request", err)
+	}
+	if res.EnablePending {
+		slog.Default().WarnContext(ctx, "team members: approved join row not enabled", slog.String("email", pending.Email))
+	}
+	return &pb_admin.ApproveTeamJoinRequestResponse{}, nil
+}
+
+func (s *Server) DeclineTeamJoinRequest(ctx context.Context, req *pb_admin.DeclineTeamJoinRequestRequest) (*pb_admin.DeclineTeamJoinRequestResponse, error) {
+	if !s.teamsOn() {
+		return nil, errTeamsOff()
+	}
+	p, err := s.changer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := s.joinRequest(ctx, p, req.GetRequestRef(), false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.platform.store.DeclineJoinRequest(ctx, platformstore.JoinRequestDecisionParams{
+		TeamID: p.w.Team.ID, RequestID: pending.ID, Actor: p.actor(), IP: middleware.GetClientIP(ctx),
+		Now: time.Now().UTC().Truncate(time.Millisecond),
+	}); err != nil {
+		return nil, peopleErr(ctx, "decline join request", err)
+	}
+	return &pb_admin.DeclineTeamJoinRequestResponse{}, nil
 }
 
 // InviteTeamMember invites an email into the caller's team. An open invite for the email (an

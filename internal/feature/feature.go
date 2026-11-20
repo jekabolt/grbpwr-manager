@@ -219,12 +219,16 @@ var methodOverrides = map[string][]Key{
 
 	// P0 adds these RPCs. Mapping them now keeps the feature gate fail-closed
 	// across the merge order of the two lanes.
-	"ListTeamMembers":   {Core},
-	"InviteTeamMember":  {Core},
-	"RevokeTeamInvite":  {Core},
-	"ResendTeamInvite":  {Core},
-	"RemoveTeamMember":  {Core},
-	"SetTeamMemberRole": {Core},
+	"ListTeamMembers":        {Core},
+	"InviteTeamMember":       {Core},
+	"RevokeTeamInvite":       {Core},
+	"ResendTeamInvite":       {Core},
+	"GetTeamJoinLink":        {Core},
+	"RotateTeamJoinLink":     {Core},
+	"ApproveTeamJoinRequest": {Core},
+	"DeclineTeamJoinRequest": {Core},
+	"RemoveTeamMember":       {Core},
+	"SetTeamMemberRole":      {Core},
 	// workspace screen (W0): brand data and per-member section rights.
 	"SetTeamBrand":        {Core},
 	"SetTeamMemberAccess": {Core},

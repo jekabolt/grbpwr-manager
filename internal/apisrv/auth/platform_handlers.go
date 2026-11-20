@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/proto/gen/auth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,7 +39,61 @@ func (s *Server) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Sig
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(req.GetJoinLink()) != "" {
+		team, err := s.requestedJoinTeam(ctx)
+		if err != nil {
+			return nil, err
+		}
+		ctx = tenant.With(ctx, team)
+	}
 	return svc.SignUp(ctx, req)
+}
+
+func (s *Server) requestedJoinTeam(ctx context.Context) (tenant.Team, error) {
+	if s.edge == nil {
+		return tenant.Team{}, status.Error(codes.NotFound, "link_invalid")
+	}
+	team, named, err := s.edge.RequestedTeam(ctx, grpcHost(ctx), tenant.HeaderSlug(ctx))
+	if err != nil || !named || team.ID <= 0 {
+		return tenant.Team{}, status.Error(codes.NotFound, "link_invalid")
+	}
+	return team, nil
+}
+
+func (s *Server) JoinLinkInfo(ctx context.Context, req *auth.JoinLinkInfoRequest) (*auth.JoinLinkInfoResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	team, err := s.requestedJoinTeam(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return svc.JoinLinkInfo(ctx, team.ID, req)
+}
+
+func (s *Server) JoinTeam(ctx context.Context, req *auth.JoinTeamRequest) (*auth.JoinTeamResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	team, err := s.requestedJoinTeam(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return svc.JoinTeam(ctx, bearer(ctx), team.ID, req)
+}
+
+func (s *Server) ConfirmJoinCode(ctx context.Context, req *auth.ConfirmJoinCodeRequest) (*auth.ConfirmJoinCodeResponse, error) {
+	svc, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	team, err := s.requestedJoinTeam(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return svc.ConfirmJoinCode(tenant.With(ctx, team), req)
 }
 
 func (s *Server) CheckTeamSlug(ctx context.Context, req *auth.CheckTeamSlugRequest) (*auth.CheckTeamSlugResponse, error) {

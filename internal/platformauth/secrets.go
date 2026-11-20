@@ -31,6 +31,8 @@ const (
 	PurposeReset   = "reset"
 	PurposeHandoff = "handoff"
 	PurposeSignIn  = "signin"
+	// PurposeVerifyJoin confirms a pending account that intends to join an existing team.
+	PurposeVerifyJoin = "verify_join"
 	// PurposeRestore: the letter that brings a deleted account back (link + code).
 	PurposeRestore = "restore"
 )

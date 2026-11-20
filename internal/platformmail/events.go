@@ -47,7 +47,9 @@ func hardDelivery(d string) bool { return d == DeliveryBounced || d == DeliveryC
 // letters that go to an address somebody typed (a sign-up's confirm letter, an invite). Letters to
 // an existing person's own confirmed address (reset, restore, account deleted, team letters) are
 // always sent, so nobody can be locked out of their own password reset through the list.
-func SuppressionApplies(kind string) bool { return kind == KindVerify || kind == KindInvite }
+func SuppressionApplies(kind string) bool {
+	return kind == KindVerify || kind == KindJoinCode || kind == KindInvite
+}
 
 // maxEventBody bounds a webhook body (Resend events are a few KB).
 const maxEventBody = 256 << 10

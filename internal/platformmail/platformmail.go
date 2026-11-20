@@ -339,7 +339,7 @@ func (w *Worker) Sweep(ctx context.Context) (int64, error) {
 	now := w.clock()
 	r, err := w.db.ExecContext(ctx, `UPDATE platform_email SET payload = JSON_REMOVE(payload, '$.code', '$.link')
 WHERE JSON_CONTAINS_PATH(payload, 'one', '$.code', '$.link')
-  AND ((template = 'verify' AND created_at < ?) OR (template = 'reset' AND created_at < ?) OR (template = 'invite' AND created_at < ?)
+  AND ((template IN ('verify','join_code') AND created_at < ?) OR (template = 'reset' AND created_at < ?) OR (template = 'invite' AND created_at < ?)
     OR (template = 'restore' AND created_at < ?))`,
 		now.Add(-24*time.Hour), now.Add(-time.Hour), now.Add(-7*24*time.Hour), now.Add(-time.Hour))
 	if err != nil {
@@ -375,6 +375,12 @@ const (
 	KindVerify = "verify"
 	KindReset  = "reset"
 	KindInvite = "invite"
+	// KindJoinCode confirms the email of a sign-up that intends to join an existing team.
+	KindJoinCode = "join_code"
+	// KindJoinRequest notifies a team's owners that its join-link queue has a new request.
+	KindJoinRequest = "join_request"
+	// KindJoinApproved tells the requester that the team approved the join.
+	KindJoinApproved = "join_approved"
 	// KindTeamRequest goes to each operator when a confirmed sign-up waits for approval.
 	KindTeamRequest = "team_request"
 	// KindTeamApproved goes to the team's owner when an operator approves it.
@@ -410,7 +416,7 @@ func day(t *time.Time) string {
 func parseTemplates() (*templates, error) {
 	t := &templates{html: map[string]*htmltemplate.Template{}, text: map[string]*texttemplate.Template{}}
 	funcs := htmltemplate.FuncMap{"button": func(link, label string) buttonData { return buttonData{link, label} }}
-	for _, k := range []string{KindVerify, KindReset, KindInvite, KindTeamRequest, KindTeamApproved, KindRestore, KindAccountDeleted, KindOperatorSetup, KindOperatorAlert} {
+	for _, k := range []string{KindVerify, KindReset, KindInvite, KindJoinCode, KindJoinRequest, KindJoinApproved, KindTeamRequest, KindTeamApproved, KindRestore, KindAccountDeleted, KindOperatorSetup, KindOperatorAlert} {
 		h, err := htmltemplate.New("layout").Funcs(funcs).ParseFS(templateFS, "templates/layout.html.gohtml", "templates/"+k+".html.gohtml")
 		if err != nil {
 			return nil, fmt.Errorf("platformmail: parse %s html: %w", k, err)
@@ -461,6 +467,21 @@ func (t *templates) render(kind string, p Payload, base string) (Message, error)
 			return Message{}, errors.New("platformmail: invite letter without a team")
 		}
 		d.Subject = "join " + p.TeamName
+	case KindJoinCode:
+		if p.Code == "" || p.TeamName == "" {
+			return Message{}, errors.New("platformmail: join code letter without a code or team")
+		}
+		d.Subject = d.Code + " · join " + p.TeamName
+	case KindJoinRequest:
+		if p.TeamName == "" || p.Slug == "" || p.Email == "" {
+			return Message{}, errors.New("platformmail: join request letter without a team or email")
+		}
+		d.Subject = "join request · " + p.TeamName
+	case KindJoinApproved:
+		if p.TeamName == "" {
+			return Message{}, errors.New("platformmail: join approved letter without a team")
+		}
+		d.Subject = p.TeamName + " · joined"
 	case KindTeamRequest:
 		if p.TeamName == "" || p.Slug == "" {
 			return Message{}, errors.New("platformmail: team request letter without a team")

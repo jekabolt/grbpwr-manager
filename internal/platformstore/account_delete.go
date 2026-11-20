@@ -275,6 +275,13 @@ WHERE team_id = ? AND status = 'active' FOR UPDATE`, id); err != nil {
 credential_gen = credential_gen + 1 WHERE id = ?`, now, purgeAt, userID); err != nil {
 			return fmt.Errorf("platformstore: delete account: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE team_join_request SET status = 'closed', decided_at = ?
+WHERE user_id = ? AND status = 'pending'`, now, userID); err != nil {
+			return fmt.Errorf("platformstore: close account join requests: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM platform_join_intent WHERE user_id = ?`, userID); err != nil {
+			return fmt.Errorf("platformstore: delete account join intent: %w", err)
+		}
 		// Google-connect flows started by the account end with it (as a credential change ends them).
 		if err := expireLinkFlowsTx(ctx, tx, userID, now); err != nil {
 			return err

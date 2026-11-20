@@ -100,6 +100,7 @@ func TestSignupLetterStats(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO platform_email (to_email, template, payload, status, created_at, delivery) VALUES
  ('a@x.test', 'verify', '{}', 'sent', ?, 'delivered'),
+	('j@x.test', 'join_code', '{}', 'sent', ?, 'delivered'),
  ('b@x.test', 'verify', '{}', 'sent', ?, 'bounced'),
  ('c@x.test', 'verify', '{}', 'sent', ?, 'complained'),
  ('d@x.test', 'verify', '{}', 'sent', ?, 'soft_bounce'),
@@ -108,7 +109,7 @@ func TestSignupLetterStats(t *testing.T) {
  ('g@x.test', 'verify', '{}', 'sent', ?, 'bounced')`,
 	} {
 		day := now.Add(-2 * time.Hour)
-		if _, err := st.DB().Exec(q, now, day, day, day, day, now, now.Add(-25*time.Hour)); err != nil {
+		if _, err := st.DB().Exec(q, now, now, day, day, day, day, now, now.Add(-25*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -116,8 +117,8 @@ func TestSignupLetterStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.VerifyLastHour != 1 || s.Sent24h != 5 || s.Bounced24h != 2 {
-		t.Fatalf("stats = %+v, want hour 1, sent 5, bounced 2", s)
+	if s.VerifyLastHour != 2 || s.Sent24h != 6 || s.Bounced24h != 2 {
+		t.Fatalf("stats = %+v, want hour 2, sent 6, bounced 2", s)
 	}
 }
 
