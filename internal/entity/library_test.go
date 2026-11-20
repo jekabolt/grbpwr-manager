@@ -55,8 +55,8 @@ func TestFileKindOf(t *testing.T) {
 }
 
 func TestCopyableToMedia(t *testing.T) {
-	yes := []string{"image/jpeg", "image/png", "image/webp", "image/heic", "image/svg+xml", "video/mp4", "video/webm", "Image/JPEG"}
-	no := []string{"image/gif", "image/avif", "image/vnd.dxf", "video/quicktime", "application/pdf", "model/gltf-binary", ""}
+	yes := []string{"image/jpeg", "image/png", "image/webp", "image/heic", "image/svg+xml", "video/mp4", "video/webm", "Image/JPEG", "image/gif"}
+	no := []string{"image/avif", "image/heif", "image/vnd.dxf", "video/quicktime", "application/pdf", "model/gltf-binary", ""}
 	for _, ct := range yes {
 		if !CopyableToMedia(ct) {
 			t.Errorf("CopyableToMedia(%q) = false, want true", ct)

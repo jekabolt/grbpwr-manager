@@ -1261,6 +1261,8 @@ func (s *Server) Start(ctx context.Context,
 			grpcRecovery.UnaryServerInterceptor(recoveryOpts...),
 			// Team of the call, before auth (auth reads the team's admins).
 			s.tenantUnary(),
+			// Right after the team binder: the call's Sentry hub carries the team (panics too).
+			observability.TeamUnaryInterceptor(),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
 			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
@@ -1272,6 +1274,7 @@ func (s *Server) Start(ctx context.Context,
 			grpcRecovery.StreamServerInterceptor(recoveryOpts...),
 			s.noShopStreamInterceptor(),
 			s.tenantStream(),
+			observability.TeamStreamInterceptor(),
 			grpcSlog.StreamServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.StreamAdminAuthInterceptor(),
 		),

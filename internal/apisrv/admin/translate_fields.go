@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -133,12 +134,20 @@ func validateTranslateFields(req *pb_admin.TranslateFieldsRequest) (*translateFi
 
 // translateFieldsSystemPrompt is _openrouter.js's system prompt, line for line: the role lines by
 // context (a tech pack goes to a sewing factory — the reader is a technologist, not a shopper), then
-// the shared rules.
-func translateFieldsSystemPrompt(in *translateFieldsIn) string {
-	role := []string{"You are a professional fashion e-commerce translator for the brand grbpwr."}
+// the shared rules. The brand named is the calling team's (house = team #1, today's wording exactly;
+// no brand data = no brand named).
+func translateFieldsSystemPrompt(in *translateFieldsIn, brand promptBrand) string {
+	shop, pack := "for the brand grbpwr.", " (brand grbpwr)."
+	if !brand.House {
+		shop, pack = "for a fashion brand.", "."
+		if brand.Name != "" {
+			shop, pack = "for the brand "+strconv.Quote(brand.Name)+".", " (brand "+strconv.Quote(brand.Name)+")."
+		}
+	}
+	role := []string{"You are a professional fashion e-commerce translator " + shop}
 	if in.techpack {
 		role = []string{
-			"You are a garment technologist translating a tech pack for a sewing factory (brand grbpwr).",
+			"You are a garment technologist translating a tech pack for a sewing factory" + pack,
 			"Fields are operation names, part names, notes, materials and measurement points.",
 			"Use the factory floor's standard terms of the target language, terse like the source.",
 			"- Keep codes like FRT_L_MAIN, abbreviations SA, CB, CF, TS, RS, WS, GSM, numbers and units exactly as written.",
@@ -272,7 +281,7 @@ func (s *Server) TranslateFields(ctx context.Context, req *pb_admin.TranslateFie
 
 	started := time.Now()
 	res, err := s.ai.Chat(ctx, purpose, aiprov.ChatRequest{
-		System: translateFieldsSystemPrompt(in), User: user, JSONMode: true,
+		System: translateFieldsSystemPrompt(in, s.translateBrand(ctx)), User: user, JSONMode: true,
 		MaxTokens: translateFieldsMaxTokens, Temperature: translateFieldsTemperature(),
 	})
 	took := time.Since(started)
