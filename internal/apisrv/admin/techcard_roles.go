@@ -122,8 +122,20 @@ func (s *Server) ListAdmins(ctx context.Context, _ *pb_admin.ListAdminsRequest) 
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't list admin specialties", slog.String("err", err.Error()))
 	}
+	admins := dto.ConvertEntityAdminRefsToPb(refs)
+	// Name, @username and photo from the control-plane directory (P0 §3.1); the handle stays the key.
+	handles := make([]string, 0, len(admins))
+	for _, a := range admins {
+		handles = append(handles, a.GetUsername())
+	}
+	dir := s.directory(ctx, handles)
+	for _, a := range admins {
+		if d, ok := dir[a.GetUsername()]; ok {
+			a.Name, a.PublicUsername, a.AvatarUrl = d.Name, d.PublicUsername, d.AvatarURL
+		}
+	}
 	return &pb_admin.ListAdminsResponse{
-		Admins:      dto.ConvertEntityAdminRefsToPb(refs),
+		Admins:      admins,
 		Specialties: specialties,
 	}, nil
 }

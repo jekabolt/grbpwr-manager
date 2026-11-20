@@ -99,10 +99,13 @@ func (s *Service) AcceptInviteWithProvider(ctx context.Context, inviteHash, term
 		s.log(ctx, "sign-in code", err)
 		return "", KeyTryAgain
 	}
+	first, last := inviteNames(inv.Name)
 	res, err := s.d.Store.AcceptInvite(ctx, platformstore.AcceptParams{
 		TokenHash:     inviteHash,
 		Now:           now,
 		HandleBase:    HandleBase(inv.Email),
+		FirstName:     first,
+		LastName:      last,
 		Handoff:       platformstore.NewToken{TokenHash: hash, ExpiresAt: now.Add(SignInCodeTTL)},
 		TermsVersion:  termsVersion,
 		Stage:         s.stageInvite,

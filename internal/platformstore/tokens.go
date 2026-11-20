@@ -222,8 +222,12 @@ FROM team WHERE id = ? FOR UPDATE`, t.TeamID.Int64); err != nil {
 	if _, err := tx.ExecContext(ctx, `UPDATE team SET status = ?, pending_expires_at = NULL WHERE id = ?`, next, team.ID); err != nil {
 		return VerifyResult{}, fmt.Errorf("platformstore: team to %s: %w", next, err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
-VALUES (?, ?, 'owner', 'active', ?) ON DUPLICATE KEY UPDATE role = 'owner', status = 'active'`, team.ID, u.ID, now); err != nil {
+	// The confirmed team's owner owes its first entry (P0 §4); an owner membership already active
+	// keeps its flag (entry_pending is assigned before status, so it reads the old status).
+	if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, entry_pending, created_at)
+VALUES (?, ?, 'owner', 'active', 1, ?)
+ON DUPLICATE KEY UPDATE role = 'owner', entry_pending = IF(status = 'active', entry_pending, 1), status = 'active'`,
+		team.ID, u.ID, now); err != nil {
 		return VerifyResult{}, fmt.Errorf("platformstore: owner membership: %w", err)
 	}
 	root := false

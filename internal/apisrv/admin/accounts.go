@@ -50,6 +50,9 @@ func (s *Server) GetCurrentAccount(ctx context.Context, _ *pb_admin.GetCurrentAc
 		acc.Permissions = permsToProto(authz.Perms)
 	}
 	acc.Specialties = s.currentAccountSpecialties(ctx, username)
+	if d, ok := s.directory(ctx, []string{username})[username]; ok {
+		withDisplay(acc, d)
+	}
 	return &pb_admin.GetCurrentAccountResponse{Account: acc, Workspace: s.workspaceToProto(ctx)}, nil
 }
 
@@ -69,13 +72,14 @@ func (s *Server) workspaceToProto(ctx context.Context) *pb_admin.Workspace {
 		features = append(features, string(k))
 	}
 	return &pb_admin.Workspace{
-		Slug:     w.Team.Slug,
-		Name:     w.Team.Name,
-		Role:     w.Role,
-		Features: features,
-		ReadOnly: w.ReadOnly,
-		LogoUrl:  s.teamLogoURL(ctx, w.Team.ID, w.Team.Slug),
-		Brand:    s.teamBrand(ctx, w.Team.ID),
+		Slug:        w.Team.Slug,
+		Name:        w.Team.Name,
+		Role:        w.Role,
+		Features:    features,
+		ReadOnly:    w.ReadOnly,
+		LogoUrl:     s.teamLogoURL(ctx, w.Team.ID, w.Team.Slug),
+		Brand:       s.teamBrand(ctx, w.Team.ID),
+		EntryNeeded: s.entryNeeded(ctx, w),
 	}
 }
 
@@ -142,9 +146,18 @@ func (s *Server) ListAccounts(ctx context.Context, _ *pb_admin.ListAccountsReque
 		slog.Default().ErrorContext(ctx, "failed to list admin accounts", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "failed to list accounts")
 	}
+	handles := make([]string, 0, len(accounts))
+	for i := range accounts {
+		handles = append(handles, accounts[i].Username)
+	}
+	dir := s.directory(ctx, handles)
 	out := make([]*pb_admin.AdminAccount, 0, len(accounts))
 	for i := range accounts {
-		out = append(out, toProtoAccount(&accounts[i]))
+		acc := toProtoAccount(&accounts[i])
+		if d, ok := dir[accounts[i].Username]; ok {
+			withDisplay(acc, d)
+		}
+		out = append(out, acc)
 	}
 	return &pb_admin.ListAccountsResponse{Accounts: out}, nil
 }

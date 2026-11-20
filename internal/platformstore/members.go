@@ -69,13 +69,15 @@ type TeamInvite struct {
 	Role      string    `db:"role"`
 	SentAt    time.Time `db:"created_at"`
 	ExpiresAt time.Time `db:"expires_at"`
+	// Name is the person's name as the inviter typed it ("" = none).
+	Name string `db:"name"`
 }
 
 // OpenInvites lists the team's invites that were neither accepted nor revoked (an expired one
 // included: the screen offers to resend it), newest first.
 func (s *Store) OpenInvites(ctx context.Context, teamID int64) ([]TeamInvite, error) {
 	var out []TeamInvite
-	if err := s.db.SelectContext(ctx, &out, `SELECT id, email, role, created_at, expires_at FROM team_invite
+	if err := s.db.SelectContext(ctx, &out, `SELECT id, email, role, created_at, expires_at, name FROM team_invite
 WHERE team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL ORDER BY created_at DESC, id DESC`, teamID); err != nil {
 		return nil, fmt.Errorf("platformstore: open invites: %w", err)
 	}
@@ -100,6 +102,9 @@ type InviteParams struct {
 	Now    time.Time
 	// MaxPerHour caps letters to one address per hour (verify, invite and reset together).
 	MaxPerHour int
+	// Name is the person's name as the inviter typed it, checked by the caller ("" = none: a
+	// re-invite keeps the name the open invite holds).
+	Name string
 }
 
 // UpsertInvite invites an email into a team and queues the letter in one transaction. An active
@@ -149,8 +154,8 @@ func (s *Store) UpsertInvite(ctx context.Context, p InviteParams) (TeamInvite, e
 		id := existing.ID
 		switch {
 		case isNoRows(err):
-			r, err := tx.ExecContext(ctx, `INSERT INTO team_invite (team_id, email, role, permissions, token_hash, invited_by, expires_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, p.TeamID, p.Email, p.Role, string(p.Permissions), p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now)
+			r, err := tx.ExecContext(ctx, `INSERT INTO team_invite (team_id, email, role, permissions, token_hash, invited_by, expires_at, created_at, name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.TeamID, p.Email, p.Role, string(p.Permissions), p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, p.Name)
 			if err != nil {
 				return fmt.Errorf("platformstore: insert invite: %w", err)
 			}
@@ -161,19 +166,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, p.TeamID, p.Email, p.Role, string(p.Permission
 			return fmt.Errorf("platformstore: open invite: %w", err)
 		case p.KeepPermissions:
 			if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET role = ?, token_hash = ?, invited_by = ?,
-expires_at = ?, created_at = ? WHERE id = ?`, p.Role, p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, id); err != nil {
+expires_at = ?, created_at = ?, name = COALESCE(NULLIF(?, ''), name) WHERE id = ?`, p.Role, p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, p.Name, id); err != nil {
 				return fmt.Errorf("platformstore: update invite: %w", err)
 			}
 		default:
 			if _, err := tx.ExecContext(ctx, `UPDATE team_invite SET role = ?, permissions = ?, token_hash = ?, invited_by = ?,
-expires_at = ?, created_at = ? WHERE id = ?`, p.Role, string(p.Permissions), p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, id); err != nil {
+expires_at = ?, created_at = ?, name = COALESCE(NULLIF(?, ''), name) WHERE id = ?`, p.Role, string(p.Permissions), p.TokenHash, p.Actor.UserID, p.ExpiresAt, p.Now, p.Name, id); err != nil {
 				return fmt.Errorf("platformstore: update invite: %w", err)
 			}
 		}
 		if err := insertLetterTx(ctx, tx, p.Letter, p.Now); err != nil {
 			return err
 		}
-		out = TeamInvite{ID: id, Email: p.Email, Role: p.Role, SentAt: p.Now, ExpiresAt: p.ExpiresAt}
+		name := p.Name
+		if name == "" {
+			if err := tx.GetContext(ctx, &name, `SELECT name FROM team_invite WHERE id = ?`, id); err != nil {
+				return fmt.Errorf("platformstore: invite name: %w", err)
+			}
+		}
+		out = TeamInvite{ID: id, Email: p.Email, Role: p.Role, SentAt: p.Now, ExpiresAt: p.ExpiresAt, Name: name}
 		return nil
 	})
 	return out, err
@@ -199,7 +210,7 @@ func (s *Store) ResendInvite(ctx context.Context, p ResendParams) error {
 			return err
 		}
 		var inv TeamInvite
-		if err := tx.GetContext(ctx, &inv, `SELECT id, email, role, created_at, expires_at FROM team_invite
+		if err := tx.GetContext(ctx, &inv, `SELECT id, email, role, created_at, expires_at, name FROM team_invite
 WHERE id = ? AND team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL FOR UPDATE`, p.InviteID, p.TeamID); err != nil {
 			if isNoRows(err) {
 				return ErrInviteNotFound

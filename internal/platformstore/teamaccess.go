@@ -227,12 +227,21 @@ VALUES (NULL, ?, ?, 'active', ?)`, handle, hash, now.UTC())
 			if err != nil {
 				return fmt.Errorf("platformstore: team #1 user id: %w", err)
 			}
+			// One namespace (P0 §3.1): a handle someone shows as their @username is taken too.
+			held, err := publicUsernameHeldTx(ctx, tx, handle)
+			if err != nil {
+				return err
+			}
+			if held {
+				return ErrHandleTaken
+			}
 			role := "member"
 			if super {
 				role = "owner"
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, created_at)
-VALUES (1, ?, ?, 'active', ?)`, id, role, now.UTC()); err != nil {
+			// A new team #1 member owes its first entry (P0 §4).
+			if _, err := tx.ExecContext(ctx, `INSERT INTO team_member (team_id, user_id, role, status, entry_pending, created_at)
+VALUES (1, ?, ?, 'active', 1, ?)`, id, role, now.UTC()); err != nil {
 				return fmt.Errorf("platformstore: team #1 member: %w", err)
 			}
 			return nil

@@ -180,6 +180,7 @@ func invitePB(pepper string, inv platformstore.TeamInvite, now time.Time) *pb_ad
 		SentAt:    timestamppb.New(inv.SentAt),
 		ExpiresAt: timestamppb.New(inv.ExpiresAt),
 		Status:    st,
+		Name:      inv.Name,
 	}
 }
 
@@ -263,7 +264,11 @@ func (s *Server) ListTeamMembers(ctx context.Context, _ *pb_admin.ListTeamMember
 	}
 	for _, m := range members {
 		tm := &pb_admin.TeamMember{Username: m.Handle, Email: m.Email.String, Role: m.Role, You: m.Handle == me && !p.w.Operator,
-			Permissions: []*pb_admin.AdminPermission{}}
+			Permissions:    []*pb_admin.AdminPermission{},
+			Name:           platformstore.DisplayName(m.FirstName, m.LastName),
+			PublicUsername: m.Username(),
+			AvatarUrl:      s.avatarURL(m.AvatarSHA.String),
+		}
 		if m.Role != roleOwner {
 			tm.Permissions = grantsPB(sections, grants[strings.ToLower(m.Handle)])
 		}
@@ -301,6 +306,12 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	if role != roleOwner && role != roleMember {
 		return nil, status.Error(codes.InvalidArgument, "bad_role")
 	}
+	// The name the inviter typed (one box): it prefills the join sheet and seeds a new account's
+	// first/last name. Stored as the display form of its split; empty keeps a re-invite's name.
+	first, last, err := platformauth.SplitFullName(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "bad_name")
+	}
 	// Rights named by the request follow SetTeamMemberAccess's rule; none named = the team's default
 	// for a new invite, and a re-invite of an open one keeps what it holds.
 	grants := DefaultInvitePermissions(p.w.Features)
@@ -321,6 +332,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	inv, err := s.platform.store.UpsertInvite(ctx, platformstore.InviteParams{
 		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, KeepPermissions: !named, TokenHash: hash,
+		Name:      platformstore.DisplayName(first, last),
 		ExpiresAt: now.Add(InviteTTL), Actor: p.actor(), Now: now, MaxPerHour: inviteLettersPerHour,
 		Letter: platformstore.Letter{
 			To: email, Template: "invite", Link: s.inviteLink(p.w.Team.Slug, token),

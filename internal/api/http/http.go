@@ -187,6 +187,7 @@ type Server struct {
 	tcArchiveUploadHandler  http.Handler
 	fileLinkHandler         http.Handler
 	teamLogoHandler         http.Handler
+	avatarHandler           http.Handler
 	oauthHandler            http.Handler
 	stripeWebhookHandler    StripeWebhookHandler
 	aftershipWebhookHandler AftershipWebhookHandler
@@ -341,6 +342,12 @@ func (s *Server) SetFileLinkHandler(h http.Handler) {
 // /api/auth body limit does not concern it.
 func (s *Server) SetTeamLogoHandler(h http.Handler) {
 	s.teamLogoHandler = h
+}
+
+// SetAvatarHandler registers the public avatar route (GET / HEAD /api/auth/avatar/{sha256}, teams
+// mode only), mounted the way the team logo route is.
+func (s *Server) SetAvatarHandler(h http.Handler) {
+	s.avatarHandler = h
 }
 
 // SetOAuthHandler mounts the provider sign-in routes at /api/auth/oauth (teams mode only, teams O
@@ -789,6 +796,11 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.teamLogoHandler != nil {
 			r.Method(http.MethodGet, "/auth/team-logo/{slug}", s.teamLogoHandler)
 			r.Method(http.MethodHead, "/auth/team-logo/{slug}", s.teamLogoHandler)
+		}
+		// The public avatar (teams mode), content-addressed by its sha256.
+		if s.avatarHandler != nil {
+			r.Method(http.MethodGet, "/auth/avatar/{sha}", s.avatarHandler)
+			r.Method(http.MethodHead, "/auth/avatar/{sha}", s.avatarHandler)
 		}
 		// Provider sign-in (teams mode): the start and the two callbacks.
 		if s.oauthHandler != nil {

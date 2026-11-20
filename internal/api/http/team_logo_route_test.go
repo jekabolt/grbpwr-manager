@@ -41,6 +41,33 @@ func TestTeamLogoRouteBeatsAuthMount(t *testing.T) {
 	}
 }
 
+// The public avatar route sits next to the team logo route and beats the mount the same way.
+func TestAvatarRouteBeatsAuthMount(t *testing.T) {
+	s := New(&Config{Address: "127.0.0.1", Port: "8081"})
+	hit := 0
+	s.SetAvatarHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit++
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, err := s.setupHTTPAPI(ctx, &auth.Server{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "/api/auth/avatar/" + strings.Repeat("ab", 32)
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(m, target, nil))
+		if rec.Code != http.StatusTeapot {
+			t.Errorf("%s %s = %d, want the avatar handler", m, target, rec.Code)
+		}
+	}
+	if hit != 2 {
+		t.Errorf("avatar handler hit %d times, want 2", hit)
+	}
+}
+
 // The three requests that carry a logo (SignUp, CreateTeam, SetTeamLogo) ride the /api/auth mount:
 // its body limit must take a 1 MiB logo as gateway JSON (base64, ~1.4 MB) with room for the other
 // fields, and stay a limit (O1: "accept ~1.4 MB base64, cap ~2 MB" — the mount's 4 MB covers it).
