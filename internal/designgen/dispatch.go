@@ -147,6 +147,10 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		if prov, err = w.providers.preflight(w.sink, run.Kind); err != nil {
 			return w.failRun(ctx, run, token, err)
 		}
+		// X11: a team at its storage cap never pays for an output its bucket would refuse.
+		if err := w.storageCheck(ctx); err != nil {
+			return w.failRun(ctx, run, token, err)
+		}
 	}
 
 	// The SAME table the door prices against and the band advertises (app.go hands EngineTableFunc to

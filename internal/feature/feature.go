@@ -220,6 +220,7 @@ var methodOverrides = map[string][]Key{
 	// P0 adds these RPCs. Mapping them now keeps the feature gate fail-closed
 	// across the merge order of the two lanes.
 	"ListTeamMembers":        {Core},
+	"GetTeamStorage":         {Core},
 	"InviteTeamMember":       {Core},
 	"RevokeTeamInvite":       {Core},
 	"ResendTeamInvite":       {Core},

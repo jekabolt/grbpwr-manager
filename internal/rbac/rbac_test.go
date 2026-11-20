@@ -279,6 +279,7 @@ func TestAllowlistClasses(t *testing.T) {
 		"SetAccountSpecialties": entity.AccessWrite,
 		"TranslateFields":       entity.AccessWrite,
 		"ListTeamMembers":       entity.AccessRead,
+		"GetTeamStorage":        entity.AccessRead,
 		"ListLibraryItems":      entity.AccessRead,
 		"GetLibraryFacets":      entity.AccessRead,
 		"ListLibraryFolders":    entity.AccessRead,

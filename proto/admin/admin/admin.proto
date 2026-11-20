@@ -4736,6 +4736,12 @@ service AdminService {
     };
   }
 
+  // GetTeamStorage returns the calling team's file storage: bytes in use and its cap (lane X11). Any
+  // member may read it; only the operator changes the cap (PlatformService.SetTeamStorageCap).
+  rpc GetTeamStorage(GetTeamStorageRequest) returns (GetTeamStorageResponse) {
+    option (google.api.http) = {get: "/api/admin/team/storage"};
+  }
+
   // LIBRARY (media + files as one list). One contiguous block; every route is under
   // /api/admin/library/… so it never collides with /api/admin/files/{id}.
 
@@ -15929,6 +15935,17 @@ message SetTeamMemberAccessRequest {
 
 message SetTeamMemberAccessResponse {
   TeamMember member = 1;
+}
+
+message GetTeamStorageRequest {}
+
+message GetTeamStorageResponse {
+  // used_bytes is the team's storage in use (counted at upload / delete, recounted daily).
+  int64 used_bytes = 1;
+  // cap_bytes is the cap that applies to the team; 0 = no cap (teams mode off answers 0 / 0).
+  int64 cap_bytes = 2;
+  // full: uploads are refused until files are removed or the cap is raised.
+  bool full = 3;
 }
 
 // TranslateFieldsRequest — the admin client's /api/translate body

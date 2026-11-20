@@ -178,6 +178,9 @@ func (s *Server) ListTeams(ctx context.Context, req *pb_admin.ListTeamsRequest) 
 			total = total.Add(spend[t.ID].CostUSD)
 		}
 	}
+	if err := s.withStorage(ctx, ids, out.Teams...); err != nil {
+		return nil, err
+	}
 	out.AiSpendMonthTotalUsd = total.StringFixed(2)
 	return out, nil
 }
@@ -200,6 +203,9 @@ func (s *Server) GetTeam(ctx context.Context, req *pb_admin.GetTeamRequest) (*pb
 		return nil, storeErr(ctx, "team members", err)
 	}
 	out := &pb_admin.GetTeamResponse{Team: teamPB(t, spend), Members: make([]*pb_admin.PlatformMember, 0, len(members))}
+	if err := s.withStorage(ctx, []int64{t.ID}, out.Team); err != nil {
+		return nil, err
+	}
 	for _, m := range members {
 		pm := &pb_admin.PlatformMember{Handle: m.Handle, Email: m.Email.String, Role: m.Role,
 			Name: platformstore.DisplayName(m.FirstName, m.LastName)}
@@ -221,7 +227,11 @@ func (s *Server) refreshed(ctx context.Context, slug string) (*pb_admin.Platform
 	if err != nil {
 		return nil, storeErr(ctx, "month spend", err)
 	}
-	return teamPB(t, spend), nil
+	row := teamPB(t, spend)
+	if err := s.withStorage(ctx, []int64{t.ID}, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // refreshedByID is refreshed by the team's id, a deleted team included (DeleteTeam, RestoreTeam).
@@ -234,7 +244,11 @@ func (s *Server) refreshedByID(ctx context.Context, teamID int64) (*pb_admin.Pla
 	if err != nil {
 		return nil, storeErr(ctx, "month spend", err)
 	}
-	return teamPB(t, spend), nil
+	row := teamPB(t, spend)
+	if err := s.withStorage(ctx, []int64{t.ID}, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // ApproveTeam opens a waiting sign-up: review → provisioning (the provisioner claims it) and the

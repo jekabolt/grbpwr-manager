@@ -1281,6 +1281,8 @@ func (s *Server) Start(ctx context.Context,
 			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
 			// caller's «recent techcards» row, best-effort, once the handler has succeeded.
 			adminServer.RecentTechCardsUnary(),
+			// Innermost: an upload over the team's storage cap is one code, not a 500.
+			storageFullUnary(),
 		),
 		grpc.ChainStreamInterceptor(
 			observability.StreamServerInterceptor(),

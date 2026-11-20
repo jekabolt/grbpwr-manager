@@ -1075,6 +1075,9 @@ var allowlist = map[string]entity.AccessLevel{
 	// Teams mode OFF keeps the old gate inside the handler — a legacy token, a super or accounts
 	// read, else the edge's exact refusal text — so prod answers byte for byte as before.
 	"ListTeamMembers": entity.AccessRead,
+	// GetTeamStorage (lane X11) — the settings row «used / cap» of the calling team: every member reads
+	// it (the edge resolves the team; nothing to act on). The cap changes only in the console.
+	"GetTeamStorage": entity.AccessRead,
 	// LIBRARY (media-files). The unified list spans two sections that do not contain one another
 	// (media = content, files = files) and methodRequirements allows one section per method, so the
 	// edge lets any account in and the handler gates each branch: a branch the caller has neither the

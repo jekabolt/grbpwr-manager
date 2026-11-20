@@ -153,6 +153,10 @@ func (s *Server) FileUploadHandler() http.Handler {
 				writeUploadError(w, http.StatusRequestEntityTooLarge, "the file is too large")
 				return
 			}
+			if bucket.IsStorageFull(err) {
+				writeUploadError(w, http.StatusInsufficientStorage, "storage full")
+				return
+			}
 			slog.Default().ErrorContext(ctx, "can't store library object",
 				slog.String("username", username), slog.String("err", err.Error()))
 			writeUploadError(w, http.StatusInternalServerError, "could not store the file")

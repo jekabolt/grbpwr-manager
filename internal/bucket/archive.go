@@ -245,14 +245,14 @@ func (b *Bucket) UploadArchiveObject(ctx context.Context, r io.Reader, name stri
 	}
 	key := root + ArchiveSegment + "/" + entropy + "/" + fileName
 
-	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, -1,
+	if _, err := b.put(ctx, key, r, -1,
 		minio.PutObjectOptions{
 			ContentType: string(contentTypeZIP),
 			// Короткий приватный кэш: объект живёт 7 дней и достижим только подписанной ссылкой
 			// на 10 минут, поэтому годовой immutable-кэш публичных путей здесь бессмыслен.
 			CacheControl: "private, max-age=600",
 			PartSize:     archiveUploadPartSize,
-		}); err != nil {
+		}, true); err != nil { // export = a download: counted, never refused
 		slog.Default().ErrorContext(ctx, "can't upload tech card archive",
 			slog.String("key", key), slog.String("err", err.Error()))
 		return "", fmt.Errorf("upload tech card archive %q: %w", key, err)
@@ -301,12 +301,12 @@ func (b *Bucket) UploadImportObject(ctx context.Context, r io.Reader, importID s
 	}
 	key := root + ImportSegment + "/" + importID + archiveNameExt
 
-	if _, err := b.Client.PutObject(ctx, b.S3BucketName, key, newCapReader(r, MaxArchiveObjectBytes), -1,
+	if _, err := b.put(ctx, key, newCapReader(r, MaxArchiveObjectBytes), -1,
 		minio.PutObjectOptions{
 			ContentType:  string(contentTypeZIP),
 			CacheControl: "private, max-age=600",
 			PartSize:     archiveUploadPartSize,
-		}); err != nil {
+		}, false); err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload tech card import archive",
 			slog.String("key", key), slog.String("err", err.Error()))
 		return "", fmt.Errorf("upload tech card import archive %q: %w", key, err)
