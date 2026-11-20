@@ -79,20 +79,28 @@ const teamOneUserSQL = `SELECT u.id, u.password_hash, u.credential_gen, u.status
 FROM platform_user u JOIN team_member m ON m.user_id = u.id AND m.team_id = 1
 WHERE u.handle = ?`
 
-// changeCredentialsTx is the one credential write: the hash (when given), credential_gen + 1, every
-// live session revoked, every unused hand-off, provider sign-in code and verify letter expired (a
-// verify letter signs in: one held from before the change must not open a session on the new
-// generation; a pending team still waiting gets a fresh letter by ResendVerification). Inside the
-// caller's transaction.
+// changeCredentialsTx is the one credential write: the hash (when given; password_changed_at is now
+// for a usable one, NULL for an unusable one), credential_gen + 1, every live session revoked, every
+// unused hand-off, provider sign-in code and verify letter expired (a verify letter signs in: one
+// held from before the change must not open a session on the new generation; a pending team still
+// waiting gets a fresh letter by ResendVerification), and every Google connect in flight ended.
+// Inside the caller's transaction.
 func changeCredentialsTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash string, now time.Time) (CredentialChange, error) {
 	now = now.UTC()
 	if hash != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1 WHERE id = ?`,
-			hash, userID); err != nil {
+		var changed any = now
+		if IsUnusableHash(hash) {
+			changed = nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1,
+password_changed_at = ? WHERE id = ?`, hash, changed, userID); err != nil {
 			return CredentialChange{}, fmt.Errorf("platformstore: set password: %w", err)
 		}
 	} else if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET credential_gen = credential_gen + 1 WHERE id = ?`, userID); err != nil {
 		return CredentialChange{}, fmt.Errorf("platformstore: bump credentials: %w", err)
+	}
+	if err := expireLinkFlowsTx(ctx, tx, userID, now); err != nil {
+		return CredentialChange{}, err
 	}
 	var c CredentialChange
 	if err := tx.GetContext(ctx, &c.Gen, `SELECT credential_gen FROM platform_user WHERE id = ?`, userID); err != nil {
@@ -111,6 +119,49 @@ func changeCredentialsTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash st
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify') AND used_at IS NULL`, now, userID); err != nil {
 		return CredentialChange{}, fmt.Errorf("platformstore: expire hand-offs, sign-in codes and verify letters: %w", err)
+	}
+	return c, nil
+}
+
+// keptChainChange is a committed changeCredentialsKeepChainTx: the generation, the ended sessions
+// and how many live devices they were.
+type keptChainChange struct {
+	Gen     int64
+	SIDs    []string
+	Devices int
+}
+
+// changeCredentialsKeepChainTx is changeCredentialsTx for a person changing their own password (P0
+// §3.4): the new hash with password_changed_at now and credential_gen + 1 (legacy team #1 tokens of
+// the old generation die, a sign-in that checked the old password opens no session), every unused
+// hand-off, sign-in code, verify and reset letter expired, every Google connect in flight ended.
+// Sessions: signOutOthers ends every one outside keepChain (revokeOtherDevicesTx); false ends none.
+// The caller's own sid token lives on (gen is checked for legacy tokens only). Inside the caller's
+// transaction, which holds the account FOR UPDATE.
+func changeCredentialsKeepChainTx(ctx context.Context, tx *sqlx.Tx, userID int64, hash, keepChain string, signOutOthers bool,
+	live SessionLiveness, now time.Time) (keptChainChange, error) {
+	now = now.UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET password_hash = ?, credential_gen = credential_gen + 1,
+password_changed_at = ? WHERE id = ?`, hash, now, userID); err != nil {
+		return keptChainChange{}, fmt.Errorf("platformstore: change password: %w", err)
+	}
+	var c keptChainChange
+	if err := tx.GetContext(ctx, &c.Gen, `SELECT credential_gen FROM platform_user WHERE id = ?`, userID); err != nil {
+		return keptChainChange{}, fmt.Errorf("platformstore: read credential generation: %w", err)
+	}
+	if signOutOthers {
+		d, err := revokeOtherDevicesTx(ctx, tx, userID, keepChain, live, now)
+		if err != nil {
+			return keptChainChange{}, err
+		}
+		c.SIDs, c.Devices = d.SIDs, d.Devices
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
+WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify', 'reset') AND used_at IS NULL`, now, userID); err != nil {
+		return keptChainChange{}, fmt.Errorf("platformstore: expire codes and letters: %w", err)
+	}
+	if err := expireLinkFlowsTx(ctx, tx, userID, now); err != nil {
+		return keptChainChange{}, err
 	}
 	return c, nil
 }

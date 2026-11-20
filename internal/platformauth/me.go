@@ -97,5 +97,6 @@ func (s *Service) me(ctx context.Context, token string) (caller, error) {
 	default:
 		return caller{}, errSignInAgain()
 	}
+	s.touch(ctx, c.SID)
 	return c, nil
 }

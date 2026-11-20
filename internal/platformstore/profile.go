@@ -28,6 +28,9 @@ type Profile struct {
 	Email             string
 	PasswordHash      string
 	PasswordChangedAt sql.NullTime
+	// PasswordSet: the account has a password its owner can type (P0 §3.4); false for an account
+	// made or claimed through a provider that never set one.
+	PasswordSet bool
 	// GoogleEmail is the connected Google identity's email ("" = not connected).
 	GoogleEmail string
 	// AvatarSHA is the avatar's sha256 ("" = no avatar).
@@ -91,6 +94,11 @@ WHERE user_id = ? AND provider = 'google' ORDER BY id LIMIT 1`, userID); err != 
 	if len(google) > 0 {
 		p.GoogleEmail = google[0].String
 	}
+	set, err := passwordSet(ctx, s.db, r.ID, r.PasswordHash)
+	if err != nil {
+		return Profile{}, err
+	}
+	p.PasswordSet = set
 	return p, nil
 }
 

@@ -25,6 +25,8 @@ const (
 
 	OAuthTargetSignIn = "signin"
 	OAuthTargetInvite = "invite"
+	// OAuthTargetLink connects Google to the signed-in account a link ticket names (P0 §3.7).
+	OAuthTargetLink = "link"
 )
 
 // Provider sign-in refusals. The caller maps each to its fixed key; nothing reaches a client as text.
@@ -50,12 +52,16 @@ type OAuthState struct {
 	StateHash    string
 	BinderHash   string
 	Provider     string // ProviderGoogle | ProviderApple
-	Target       string // OAuthTargetSignIn | OAuthTargetInvite
+	Target       string // OAuthTargetSignIn | OAuthTargetInvite | OAuthTargetLink
 	PKCEVerifier string
 	Nonce        string
 	InviteHash   string // the invite token's hash, target invite only
 	TermsVersion string // the terms version accepted on the invite sheet, "" = none
-	ExpiresAt    time.Time
+	// LinkUserID is the account a Google connect goes to and ReturnSlug the team host it returns
+	// to, target link only.
+	LinkUserID int64
+	ReturnSlug string
+	ExpiresAt  time.Time
 }
 
 type oauthStateRow struct {
@@ -67,6 +73,8 @@ type oauthStateRow struct {
 	Nonce        string         `db:"nonce"`
 	InviteHash   sql.NullString `db:"invite_hash"`
 	TermsVersion sql.NullString `db:"terms_version"`
+	LinkUserID   sql.NullInt64  `db:"link_user_id"`
+	ReturnSlug   sql.NullString `db:"return_slug"`
 	ExpiresAt    time.Time      `db:"expires_at"`
 }
 
@@ -79,27 +87,37 @@ func (s *Store) CreateOAuthState(ctx context.Context, st OAuthState, now time.Ti
 		return errors.New("platformstore: oauth state needs state and binder hashes")
 	case st.Provider != ProviderGoogle && st.Provider != ProviderApple:
 		return fmt.Errorf("platformstore: unknown provider %q", st.Provider)
-	case st.Target != OAuthTargetSignIn && st.Target != OAuthTargetInvite:
+	case st.Target != OAuthTargetSignIn && st.Target != OAuthTargetInvite && st.Target != OAuthTargetLink:
 		return fmt.Errorf("platformstore: unknown oauth target %q", st.Target)
 	case (st.Target == OAuthTargetInvite) != (st.InviteHash != ""):
 		return errors.New("platformstore: an invite hash goes with the invite target only")
+	case (st.Target == OAuthTargetLink) != (st.LinkUserID > 0) || (st.Target != OAuthTargetLink && st.ReturnSlug != ""):
+		return errors.New("platformstore: an account and its return go with the link target only")
+	case st.Target == OAuthTargetLink && st.Provider != ProviderGoogle:
+		return errors.New("platformstore: only google connects to an account")
+	case len(st.ReturnSlug) > 63:
+		return errors.New("platformstore: return slug too long")
 	case st.PKCEVerifier == "" || len(st.PKCEVerifier) > 128 || st.Nonce == "" || len(st.Nonce) > 64:
 		return errors.New("platformstore: oauth state needs a verifier and a nonce")
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM oauth_state WHERE expires_at < ? LIMIT 500`, now.Add(-time.Hour)); err != nil {
 		return fmt.Errorf("platformstore: clear old oauth states: %w", err)
 	}
-	var invite, terms any
+	var invite, terms, linkUser, returnSlug any
 	if st.InviteHash != "" {
 		invite = st.InviteHash
 	}
 	if st.TermsVersion != "" {
 		terms = st.TermsVersion
 	}
+	if st.LinkUserID > 0 {
+		linkUser, returnSlug = st.LinkUserID, st.ReturnSlug
+	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO oauth_state
-(state_hash, binder_hash, provider, target, pkce_verifier, nonce, invite_hash, terms_version, created_at, expires_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, st.StateHash, st.BinderHash, st.Provider, st.Target, st.PKCEVerifier, st.Nonce,
-		invite, terms, now, now.Add(OAuthStateTTL)); err != nil {
+(state_hash, binder_hash, provider, target, pkce_verifier, nonce, invite_hash, terms_version, link_user_id, return_slug,
+created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, st.StateHash, st.BinderHash, st.Provider, st.Target, st.PKCEVerifier, st.Nonce,
+		invite, terms, linkUser, returnSlug, now, now.Add(OAuthStateTTL)); err != nil {
 		return fmt.Errorf("platformstore: create oauth state: %w", err)
 	}
 	return nil
@@ -126,7 +144,7 @@ WHERE state_hash = ? AND used_at IS NULL AND expires_at > ?`, now, stateHash, no
 	}
 	var row oauthStateRow
 	if err := s.db.GetContext(ctx, &row, `SELECT state_hash, binder_hash, provider, target, pkce_verifier, nonce,
-invite_hash, terms_version, expires_at FROM oauth_state WHERE state_hash = ?`, stateHash); err != nil {
+invite_hash, terms_version, link_user_id, return_slug, expires_at FROM oauth_state WHERE state_hash = ?`, stateHash); err != nil {
 		if isNoRows(err) {
 			return OAuthState{}, ErrOAuthStateInvalid
 		}
@@ -135,7 +153,8 @@ invite_hash, terms_version, expires_at FROM oauth_state WHERE state_hash = ?`, s
 	return OAuthState{
 		StateHash: row.StateHash, BinderHash: row.BinderHash, Provider: row.Provider, Target: row.Target,
 		PKCEVerifier: row.PKCEVerifier, Nonce: row.Nonce, InviteHash: row.InviteHash.String,
-		TermsVersion: row.TermsVersion.String, ExpiresAt: row.ExpiresAt,
+		TermsVersion: row.TermsVersion.String, LinkUserID: row.LinkUserID.Int64, ReturnSlug: row.ReturnSlug.String,
+		ExpiresAt: row.ExpiresAt,
 	}, nil
 }
 

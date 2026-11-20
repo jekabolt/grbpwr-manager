@@ -200,8 +200,9 @@ func splitList(s string) []string {
 
 // Store is the control-plane repository.
 type Store struct {
-	db  *sqlx.DB
-	dir *directory
+	db    *sqlx.DB
+	dir   *directory
+	touch *sessionTouches
 }
 
 // ErrUserNotFound: no platform user with that handle.
@@ -240,7 +241,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db, dir: newDirectory(db)}, nil
+	return &Store{db: db, dir: newDirectory(db), touch: newSessionTouches()}, nil
 }
 
 func migrateUp(ctx context.Context, db *sqlx.DB) error {

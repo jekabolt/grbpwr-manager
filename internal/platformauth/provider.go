@@ -143,6 +143,7 @@ func (s *Service) ExchangeSignInCode(ctx context.Context, req *auth.ExchangeSign
 		s.log(ctx, "session id", err)
 		return nil, errInternal()
 	}
+	ctx = withSessionClient(ctx)
 	now := s.now()
 	res, err := s.d.Store.ExchangeSignInCode(ctx, HashToken(code), sid, now)
 	if errors.Is(err, platformstore.ErrTokenInvalid) {
