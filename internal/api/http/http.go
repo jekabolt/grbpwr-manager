@@ -1263,6 +1263,9 @@ func (s *Server) Start(ctx context.Context,
 			s.tenantUnary(),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
+			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
+			// caller's «recent techcards» row, best-effort, once the handler has succeeded.
+			adminServer.RecentTechCardsUnary(),
 		),
 		grpc.ChainStreamInterceptor(
 			observability.StreamServerInterceptor(),

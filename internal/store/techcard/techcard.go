@@ -1437,6 +1437,14 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 	if err != nil {
 		return nil, 0, fmt.Errorf("can't list tech cards: %w", err)
 	}
+	s.decorateListCards(ctx, cards)
+	return cards, total, nil
+}
+
+// decorateListCards is what every header-only list owes its rows after the SELECT: the legacy
+// composition repair, a preview thumbnail and the per-row facts. Both lookups degrade to a warning:
+// a list must still render when a secondary fact cannot be resolved.
+func (s *Store) decorateListCards(ctx context.Context, cards []entity.TechCard) {
 	normalizeLegacyComposition(cards)
 
 	// Resolve a preview thumbnail per card for grid/gallery views (B-9). One batched media query for
@@ -1459,7 +1467,6 @@ func (s *Store) ListTechCards(ctx context.Context, limit, offset int, orderFacto
 		slog.Default().WarnContext(ctx, "can't resolve tech card list facts; counts omitted",
 			slog.String("err", err.Error()))
 	}
-	return cards, total, nil
 }
 
 // enrichListFacts fills the per-row facts a list/board row shows but the tech_card row does not
