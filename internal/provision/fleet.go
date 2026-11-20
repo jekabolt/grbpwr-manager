@@ -36,7 +36,7 @@ const (
 //     no breaking migration this binary predates (schemacompat);
 //   - a failed team is isolated: its real progress is recorded, it is retried with backoff
 //     (fleetFirstBackoff doubling to fleetMaxBackoff), and reported as ONE error
-//     "team_migrate_failed" per team per target version; it keeps serving while its version is
+//     TeamStuckAfterMigration per team per target version; it keeps serving while its version is
 //     still servable.
 //
 // Team #1 is never migrated here (store.New does it at boot); it is only fingerprinted, every
@@ -166,13 +166,13 @@ func (w *Worker) fleetResult(ctx context.Context, t platformstore.SchemaTeam, er
 	w.mu.Unlock()
 	switch {
 	case err == nil && reported != "":
-		w.log.InfoContext(ctx, "team_migrate_recovered", slog.Int64("tid", t.ID), slog.String("slug", t.Slug),
+		w.log.InfoContext(ctx, "team_migrate_recovered", slog.String("team", t.Slug),
 			slog.String("version", latest))
 	case err != nil && reported != latest:
-		w.log.ErrorContext(ctx, "team_migrate_failed", slog.Int64("tid", t.ID), slog.String("slug", t.Slug),
-			slog.String("version", latest), slog.String("err", err.Error()))
+		w.log.ErrorContext(ctx, TeamStuckAfterMigration, slog.String("team", t.Slug),
+			slog.String("err", err.Error()), slog.String("version", latest))
 	case err != nil:
-		w.log.WarnContext(ctx, "provision: team migration still failing", slog.String("slug", t.Slug),
+		w.log.WarnContext(ctx, "provision: team migration still failing", slog.String("team", t.Slug),
 			slog.String("version", latest), slog.String("err", err.Error()))
 	}
 }
@@ -270,6 +270,11 @@ func (w *Worker) migrateTeam(ctx context.Context, t platformstore.SchemaTeam) (e
 	}
 	return err
 }
+
+// TeamStuckAfterMigration is the one error a failed team migration emits (once per team per
+// target version). X12's Sentry alert matches this exact text and the "team" attr (the slug,
+// never the id): keep it stable, details go into attrs.
+const TeamStuckAfterMigration = "team stuck after migration"
 
 // errSkipped: another worker has the database; neither a success nor a failure of this one.
 var errSkipped = errors.New("provision: skipped")

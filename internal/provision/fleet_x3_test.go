@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/provision"
 	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 )
 
@@ -80,11 +81,11 @@ func TestFleetOneFailedTeamDoesNotCloseOthers(t *testing.T) {
 	if !set.Servable(pf.teams[4].version, pf.teams[4].minCode) {
 		t.Fatal("a team behind only a lazy migration must stay open")
 	}
-	if got := rec.count("team_migrate_failed"); got != 1 {
-		t.Fatalf("team_migrate_failed logged %d times, want 1", got)
+	if got := rec.count(provision.TeamStuckAfterMigration); got != 1 {
+		t.Fatalf("stuck event logged %d times, want 1", got)
 	}
-	if rec.lvl["team_migrate_failed"] != slog.LevelError {
-		t.Fatalf("team_migrate_failed level %v", rec.lvl["team_migrate_failed"])
+	if rec.lvl[provision.TeamStuckAfterMigration] != slog.LevelError {
+		t.Fatalf("stuck event level %v", rec.lvl[provision.TeamStuckAfterMigration])
 	}
 
 	// Inside the backoff nothing is retried.
@@ -96,8 +97,8 @@ func TestFleetOneFailedTeamDoesNotCloseOthers(t *testing.T) {
 	// After it: retried, still failing = a warning, not a second error.
 	now = now.Add(2 * time.Minute)
 	_ = w.MigrateFleetOnce(ctx)
-	if rec.count("team_migrate_failed") != 1 || rec.count("provision: team migration still failing") != 1 {
-		t.Fatalf("second failure: errors %d warns %d", rec.count("team_migrate_failed"), rec.count("provision: team migration still failing"))
+	if rec.count(provision.TeamStuckAfterMigration) != 1 || rec.count("provision: team migration still failing") != 1 {
+		t.Fatalf("second failure: errors %d warns %d", rec.count(provision.TeamStuckAfterMigration), rec.count("provision: team migration still failing"))
 	}
 	// Fixed by hand: the next due pass migrates it and says so.
 	sc.mu.Lock()

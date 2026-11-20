@@ -192,7 +192,7 @@ type Worker struct {
 	seed func(ctx context.Context, exec Execer, ownerHandle string, guard func(context.Context) error) error
 
 	mu      sync.Mutex
-	backoff map[int64]retry // team id → next attempt
+	backoff map[int64]retry  // team id → next attempt
 	set     schemacompat.Set // the binary's migration declarations (X3)
 
 	// fleet (X3): per-team retry after a failed migration, the target version whose failure was
@@ -200,8 +200,8 @@ type Worker struct {
 	fleetRetry  map[int64]retry
 	fleetFailed map[int64]string
 	teamOneAt   time.Time
-	capLog  time.Time       // last "cap reached" log
-	tripLog time.Time       // last "spare breaker open" log
+	capLog      time.Time // last "cap reached" log
+	tripLog     time.Time // last "spare breaker open" log
 }
 
 type retry struct {
