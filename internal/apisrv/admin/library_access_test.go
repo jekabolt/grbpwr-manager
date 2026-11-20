@@ -8,9 +8,6 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/feature"
 	"github.com/jekabolt/grbpwr-manager/internal/rbac"
-	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func libraryCtx(az *authsrv.AdminAuthz, features ...feature.Key) context.Context {
@@ -77,46 +74,5 @@ func TestLibraryAccessHelpers(t *testing.T) {
 	}
 	if (libraryAccess{}).AnyRead() || (libraryAccess{FilesRead: true}).FolderWrite() {
 		t.Error("no read / read-only must not pass")
-	}
-}
-
-// P0 ships the contract only: the new RPCs answer Unimplemented until B1/B2 land, so beta behaves
-// exactly as before.
-func TestLibraryRPCsAreUnimplementedInP0(t *testing.T) {
-	s := &Server{}
-	ctx := libraryCtx(&authsrv.AdminAuthz{Super: true})
-	calls := map[string]func() error{
-		"ListLibraryItems": func() error { _, err := s.ListLibraryItems(ctx, &pb_admin.ListLibraryItemsRequest{}); return err },
-		"GetLibraryFacets": func() error { _, err := s.GetLibraryFacets(ctx, &pb_admin.GetLibraryFacetsRequest{}); return err },
-		"ListLibraryFolders": func() error {
-			_, err := s.ListLibraryFolders(ctx, &pb_admin.ListLibraryFoldersRequest{})
-			return err
-		},
-		"CreateLibraryFolder": func() error {
-			_, err := s.CreateLibraryFolder(ctx, &pb_admin.CreateLibraryFolderRequest{})
-			return err
-		},
-		"RenameLibraryFolder": func() error {
-			_, err := s.RenameLibraryFolder(ctx, &pb_admin.RenameLibraryFolderRequest{})
-			return err
-		},
-		"MoveLibraryFolder": func() error {
-			_, err := s.MoveLibraryFolder(ctx, &pb_admin.MoveLibraryFolderRequest{})
-			return err
-		},
-		"DeleteLibraryFolder": func() error {
-			_, err := s.DeleteLibraryFolder(ctx, &pb_admin.DeleteLibraryFolderRequest{})
-			return err
-		},
-		"MoveLibraryItems": func() error { _, err := s.MoveLibraryItems(ctx, &pb_admin.MoveLibraryItemsRequest{}); return err },
-		"CopyLibraryFileToMedia": func() error {
-			_, err := s.CopyLibraryFileToMedia(ctx, &pb_admin.CopyLibraryFileToMediaRequest{})
-			return err
-		},
-	}
-	for name, call := range calls {
-		if code := status.Code(call()); code != codes.Unimplemented {
-			t.Errorf("%s: code %v, want Unimplemented", name, code)
-		}
 	}
 }
