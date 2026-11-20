@@ -352,3 +352,63 @@ func TestAllowPreRBAC(t *testing.T) {
 		t.Error("a pre-RBAC token is not super: super-only methods stay closed")
 	}
 }
+
+// altMethods is the whole set of methods a second section may grant (X7). A new Alt anywhere else
+// fails TestOnlyTheCardMethodsCarryAlt: widening a member's reach is a decision, not a side effect.
+var altMethods = map[string]Requirement{
+	"GetStyleSizeChart":    {Section: SectionProducts, Access: entity.AccessRead, Alt: SectionTechCards},
+	"UpdateStyleSizeChart": {Section: SectionProducts, Access: entity.AccessWrite, Alt: SectionTechCards},
+	"UpdateStyle":          {Section: SectionProducts, Access: entity.AccessWrite, Alt: SectionTechCards},
+	"GetStyleEconomics":    {Section: SectionAnalytics, Access: entity.AccessRead, Alt: SectionCosting},
+	"GetAlertSettings":     {Section: SectionAnalytics, Access: entity.AccessRead, Alt: SectionTechCards},
+}
+
+func TestOnlyTheCardMethodsCarryAlt(t *testing.T) {
+	for name, req := range methodRequirements {
+		want, listed := altMethods[name]
+		switch {
+		case listed && req != want:
+			t.Errorf("%s = %+v, want %+v", name, req, want)
+		case !listed && req.Alt != "":
+			t.Errorf("%s gained Alt %q; only %v may carry one", name, req.Alt, keys(altMethods))
+		}
+	}
+	for name := range altMethods {
+		if _, ok := methodRequirements[name]; !ok {
+			t.Errorf("%s is in altMethods but not mapped", name)
+		}
+	}
+}
+
+func keys(m map[string]Requirement) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestAltNeedsTheSameAccess(t *testing.T) {
+	read := map[string]entity.AccessLevel{SectionTechCards: entity.AccessRead, SectionCosting: entity.AccessRead}
+	cases := []struct {
+		method string
+		perms  map[string]entity.AccessLevel
+		want   bool
+	}{
+		{"GetStyleSizeChart", read, true},
+		{"GetAlertSettings", read, true},
+		{"GetStyleEconomics", read, true},
+		{"UpdateStyleSizeChart", read, false},
+		{"UpdateStyle", read, false},
+		{"UpdateStyleSizeChart", map[string]entity.AccessLevel{SectionTechCards: entity.AccessWrite}, true},
+		{"UpdateStyle", map[string]entity.AccessLevel{SectionTechCards: entity.AccessWrite}, true},
+		// costing grants only economics, tech_cards does not grant economics
+		{"GetStyleEconomics", map[string]entity.AccessLevel{SectionTechCards: entity.AccessWrite}, false},
+		{"GetStyleSizeChart", map[string]entity.AccessLevel{SectionCosting: entity.AccessWrite}, false},
+	}
+	for _, c := range cases {
+		if got := Allow(MethodPrefix+c.method, false, c.perms); got != c.want {
+			t.Errorf("%s with %v: Allow = %v, want %v", c.method, c.perms, got, c.want)
+		}
+	}
+}
