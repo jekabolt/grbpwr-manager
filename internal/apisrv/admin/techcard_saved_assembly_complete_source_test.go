@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -60,6 +59,11 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 				ctx = tenant.With(ctx, tenant.Team{ID: 2})
 				main.URL = "https://files.grbpwr.com/base/t/1234567890abcdef/tech-card-patterns/main.dxf"
 				pocket.URL = "https://files.grbpwr.com/base/t/1234567890abcdef/tech-card-patterns/pocket.dxf"
+				teamMain := entity.PatternObjectAccess{Id: 41, ObjectKey: "base/t/1234567890abcdef/tech-card-patterns/main.dxf"}
+				teamPocket := entity.PatternObjectAccess{Id: 42, ObjectKey: "base/t/1234567890abcdef/tech-card-patterns/pocket.dxf"}
+				objects.EXPECT().EnsureByKeys(mock.Anything, []entity.PatternObjectRef{
+					{Key: teamMain.ObjectKey, Filename: "main.dxf"}, {Key: teamPocket.ObjectKey, Filename: "pocket.dxf"},
+				}).Return(map[entity.PatternObjectID]entity.PatternObjectAccess{teamMain.ID(): teamMain, teamPocket.ID(): teamPocket}, nil).Once()
 			} else {
 				mainObject := entity.PatternObjectAccess{Id: 41, ObjectKey: mainKey}
 				access := map[entity.PatternObjectID]entity.PatternObjectAccess{mainObject.ID(): mainObject}
@@ -147,12 +151,10 @@ func TestGetTechCardSavedAssemblySnapshotCompleteSourceMintsEveryRow(t *testing.
 			require.Equal(t, complete.GetRows()[0].GetDownloadUrl(), res.GetRow().GetDownloadUrl())
 			for _, row := range complete.GetRows() {
 				if tc.private {
-					download, err := url.Parse(row.GetDownloadUrl())
-					require.NoError(t, err)
-					require.Empty(t, download.Host)
-					require.Empty(t, download.Scheme)
-					require.Equal(t, "/api/files/proxy", download.Path)
-					require.Equal(t, url.Values{"url": {row.GetUrl()}}, download.Query())
+					// Lane X1: team 2 gets its own public link (v2 token, team signed inside).
+					tok := strings.TrimSuffix(strings.TrimPrefix(row.GetDownloadUrl(), "https://backend.example/api/p/"), "?dl=1")
+					require.True(t, strings.HasPrefix(tok, "i2."), row.GetDownloadUrl())
+					require.Equal(t, 3, strings.Count(tok, "."), row.GetDownloadUrl())
 				} else {
 					require.True(t, strings.HasPrefix(row.GetDownloadUrl(), "https://backend.example/api/p/i"))
 					require.True(t, strings.HasSuffix(row.GetDownloadUrl(), "?dl=1"))
