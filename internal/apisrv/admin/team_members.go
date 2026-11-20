@@ -170,7 +170,10 @@ func (s *Server) inviteLink(slug, token string) string {
 
 func invitePB(pepper string, inv platformstore.TeamInvite, now time.Time) *pb_admin.TeamInvite {
 	st := "pending"
-	if !inv.ExpiresAt.After(now) {
+	switch {
+	case inv.Bounced: // its letter did not reach the address (X6); the fix is a new invite
+		st = "bounced"
+	case !inv.ExpiresAt.After(now):
 		st = "expired"
 	}
 	return &pb_admin.TeamInvite{

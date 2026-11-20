@@ -71,14 +71,21 @@ type TeamInvite struct {
 	ExpiresAt time.Time `db:"expires_at"`
 	// Name is the person's name as the inviter typed it ("" = none).
 	Name string `db:"name"`
+	// Bounced: a letter of this invite (written with or after it) bounced, drew a spam complaint or
+	// was held back because the address is suppressed (X6).
+	Bounced bool `db:"bounced"`
 }
 
 // OpenInvites lists the team's invites that were neither accepted nor revoked (an expired one
 // included: the screen offers to resend it), newest first.
 func (s *Store) OpenInvites(ctx context.Context, teamID int64) ([]TeamInvite, error) {
 	var out []TeamInvite
-	if err := s.db.SelectContext(ctx, &out, `SELECT id, email, role, created_at, expires_at, name FROM team_invite
-WHERE team_id = ? AND accepted_at IS NULL AND revoked_at IS NULL ORDER BY created_at DESC, id DESC`, teamID); err != nil {
+	if err := s.db.SelectContext(ctx, &out, `SELECT i.id, i.email, i.role, i.created_at, i.expires_at, i.name,
+  EXISTS (SELECT 1 FROM platform_email e WHERE e.template = 'invite' AND e.to_email = i.email
+    AND e.created_at >= i.created_at - INTERVAL 5 SECOND
+    AND (e.delivery IN ('bounced', 'complained') OR (e.status = 'failed' AND e.last_error LIKE 'suppressed:%'))) AS bounced
+FROM team_invite i
+WHERE i.team_id = ? AND i.accepted_at IS NULL AND i.revoked_at IS NULL ORDER BY i.created_at DESC, i.id DESC`, teamID); err != nil {
 		return nil, fmt.Errorf("platformstore: open invites: %w", err)
 	}
 	return out, nil

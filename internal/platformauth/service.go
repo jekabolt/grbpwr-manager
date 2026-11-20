@@ -104,6 +104,8 @@ type Service struct {
 	// sessionRead, sessionWrite: the device list and its sign-outs; passwordChange: change / set
 	// password tries; googleLink: Google connect starts — each per account (P0 §1.4).
 	sessionRead, sessionWrite, passwordChange, googleLink *ratelimit.Limiter
+	// guard is the sign-up abuse guard (X6): bot check, address check, letter breaker.
+	guard *signupGuard
 	// logoSlots bounds the logos decoded at once (memory: a 4096-px image is tens of MB decoded).
 	logoSlots chan struct{}
 }
@@ -169,6 +171,11 @@ func New(d Deps) (*Service, error) {
 	if s.options == nil {
 		s.options = OptionsFromConfig(d.Config.OAuth)
 	}
+	gc, bad := GuardFromConfig(d.Config)
+	for _, k := range bad {
+		slog.Default().Warn("teams: unreadable sign-up guard setting, default used", slog.String("key", k))
+	}
+	s.guard = newSignupGuard(gc, d.Config.TokenPepper, func() time.Time { return d.Now().UTC() }, d.Store.SignupLetterStats)
 	if err := CheckPepper(s.pepper); err != nil {
 		s.ready = err
 	} else if s.base == "" || strings.Contains(s.base, "/") {
@@ -192,6 +199,9 @@ func (s *Service) Close() {
 		s.profileRead, s.profileWrite, s.avatarSet, s.sessionRead, s.sessionWrite, s.passwordChange, s.googleLink,
 		s.restoreIP, s.accountDelete} {
 		l.Stop()
+	}
+	if s.guard != nil {
+		s.guard.stop()
 	}
 }
 
@@ -374,6 +384,12 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 		return nil, err
 	}
 	if !s.signUpIP.Allow(middleware.GetClientIP(ctx)) {
+		return &auth.SignUpResponse{}, nil
+	}
+	if drop, err := s.guardSignUp(ctx, email); err != nil || drop {
+		if err != nil {
+			return nil, err
+		}
 		return &auth.SignUpResponse{}, nil
 	}
 	logo, err := s.processLogo(ctx, req.GetLogo())

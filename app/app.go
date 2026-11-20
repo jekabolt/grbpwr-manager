@@ -58,6 +58,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/patternaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/oauthflow"
+	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
@@ -1104,6 +1105,19 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		if h := authS.OAuthHandler(); h != nil {
 			a.hs.SetOAuthHandler(h)
+		}
+		if h := authS.SignupChallengeHandler(); h != nil {
+			a.hs.SetSignupChallengeHandler(h)
+		}
+		// Resend's delivery events for the platform letters (X6): mounted only with a signing secret.
+		if secret := strings.TrimSpace(a.c.Platform.MailWebhookSecret); secret != "" {
+			h, err := platformmail.NewEventHandler(a.platform.DB(), secret)
+			if err != nil {
+				return err
+			}
+			a.hs.SetPlatformMailHandler(h)
+		} else {
+			slog.Default().WarnContext(ctx, "teams: PLATFORM_MAIL_WEBHOOK_SECRET is empty; bounces and complaints are not recorded")
 		}
 	}
 

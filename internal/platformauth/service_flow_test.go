@@ -113,8 +113,9 @@ func newFlowWith(t *testing.T, approval bool) *flow {
 	f := &flow{t: t, st: st, teams: &fakeTeams{ensured: map[string][]entity.AdminPermission{}, pwSet: map[string]string{}, disabled: map[string]bool{}, pending: map[string]bool{}, dropped: map[string][]string{}},
 		clock: time.Now().UTC().Truncate(time.Second), behind: map[int64]bool{}}
 	svc, err := New(Deps{
-		Store:   st,
-		Config:  platformstore.Config{BaseDomain: "beta.lekalo.studio", TokenPepper: testPepper, OperatorEmails: "delivered+b3op@resend.dev"},
+		Store: st,
+		Config: platformstore.Config{BaseDomain: "beta.lekalo.studio", TokenPepper: testPepper, OperatorEmails: "delivered+b3op@resend.dev",
+			SignupMXCheck: "false"}, // no DNS in tests (X6)
 		JWT:     jwtauth.New("HS256", []byte("flow-test-secret-flow-test-secret-0123456789"), nil),
 		Hasher:  ph,
 		TeamTTL: time.Hour,

@@ -172,7 +172,7 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`, t
 	}
 	before := snapshot()
 
-	if n, err := set.Exec(db, "mysql", src, migrate.Up); err != nil || n != 1 {
+	if n, err := set.ExecMax(db, "mysql", src, migrate.Up, 1); err != nil || n != 1 {
 		t.Fatalf("0009: applied %d, %v", n, err)
 	}
 	if after := snapshot(); after != before {
@@ -297,8 +297,8 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`, t
 		t.Fatalf("open after 0009: %v", err)
 	}
 	defer st.Close()
-	if n := count(`SELECT COUNT(*) FROM platform_migrations`); n != 9 {
-		t.Fatalf("platform_migrations rows = %d, want 9", n)
+	if n := count(`SELECT COUNT(*) FROM platform_migrations`); n != 10 { // Open applies 0010 (X6) too
+		t.Fatalf("platform_migrations rows = %d, want 10", n)
 	}
 }
 

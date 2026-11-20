@@ -82,6 +82,23 @@ type Config struct {
 	TermsVersion string `mapstructure:"terms_version"`
 	// OAuth: provider sign-in settings (OAUTH_*). Optional; read only in teams mode.
 	OAuth OAuthConfig `mapstructure:"oauth"`
+	// Mail and sign-up abuse settings (X6). All optional with safe defaults; kept as text where an
+	// unreadable value must not stop a boot (read through platformauth.GuardFromConfig).
+	// ResendAPIKey (PLATFORM_RESEND_API_KEY): the platform letters' own Resend key; empty = the
+	// shared MAILER key. MailWebhookSecret (PLATFORM_MAIL_WEBHOOK_SECRET): the Svix secret of the
+	// delivery events route; empty = the route is not mounted.
+	ResendAPIKey      string `mapstructure:"resend_api_key"`
+	MailWebhookSecret string `mapstructure:"mail_webhook_secret"`
+	// SignupBotCheck (off | log | enforce), SignupPowMax, SignupMinSubmit (a duration),
+	// SignupMXCheck (bool), SignupBlockedDomains (comma-separated), SignupLettersPerHour,
+	// SignupMaxBouncePct: PLATFORM_SIGNUP_*.
+	SignupBotCheck       string `mapstructure:"signup_bot_check"`
+	SignupPowMax         string `mapstructure:"signup_pow_max"`
+	SignupMinSubmit      string `mapstructure:"signup_min_submit"`
+	SignupMXCheck        string `mapstructure:"signup_mx_check"`
+	SignupBlockedDomains string `mapstructure:"signup_blocked_domains"`
+	SignupLettersPerHour string `mapstructure:"signup_letters_per_hour"`
+	SignupMaxBouncePct   string `mapstructure:"signup_max_bounce_pct"`
 }
 
 // OAuthConfig is sign in with Google / Apple (OAUTH_*). Parsed only: nothing set (or teams mode
