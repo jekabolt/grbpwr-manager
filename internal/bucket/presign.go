@@ -64,6 +64,12 @@ var (
 // come from stored data (the upload's own filename), NEVER from a request parameter — it
 // lands in a response header. An empty value falls back to the object key's basename.
 func (b *Bucket) PresignPatternObject(ctx context.Context, objectKey string, download bool, downloadName string) (string, time.Time, error) {
+	// Its one caller is the signed-out /api/p route, and pattern urls come from a client-saved card:
+	// a key the link's team does not own (another team's prefix, or team #1's legacy keys for any
+	// other team) is never signed, whatever row names it.
+	if err := b.refuseForeignKey(ctx, strings.Trim(objectKey, "/")); err != nil {
+		return "", time.Time{}, err
+	}
 	return b.presignManagedObject(ctx, objectKey, patternObjectPathSegment, download, downloadName)
 }
 

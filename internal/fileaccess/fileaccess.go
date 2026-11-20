@@ -176,7 +176,16 @@ func (s *Service) LinkURL(fileID, epoch int) string {
 	if s == nil || fileID <= 0 {
 		return ""
 	}
-	return s.baseURL + "/api/f/" + s.minter.Mint(patterntoken.ScopeFile, int64(fileID), epoch)
+	return s.LinkURLFor(patterntoken.TeamOne, fileID, epoch)
+}
+
+// LinkURLFor is LinkURL of a file of team `team`: team #1 keeps its v1 url, any other team gets a
+// v2 token that carries (and signs) the team.
+func (s *Service) LinkURLFor(team int64, fileID, epoch int) string {
+	if s == nil || fileID <= 0 {
+		return ""
+	}
+	return s.baseURL + "/api/f/" + s.minter.MintFor(team, patterntoken.ScopeFile, int64(fileID), epoch)
 }
 
 // Handler адаптирует ServeFile под монтирование в http-сервере.
@@ -278,11 +287,18 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 		notFound("ip rate limited")
 		return
 	}
-	scope, id, epoch, err := s.minter.Parse(token)
+	team, scope, id, epoch, err := s.minter.ParseTeam(token)
 	if err != nil {
 		notFound("bad token")
 		return
 	}
+	// The second lock behind the edge, which binds this request to the token's own signed team
+	// (tenantbind): a token of any other team never reaches a row of the team this request runs as.
+	if team != patterntoken.LinkTeam(ctx) {
+		notFound("team mismatch")
+		return
+	}
+	teamKey := "t" + strconv.FormatInt(team, 10) + "|"
 	// СКОУП-ALLOWLIST. Здесь id — это id ФАЙЛА, а токены 'i'/'p' несут id строки
 	// pattern_object_access, 'c' — id тех-карты, 'r' — id прогона. Все четыре пространства
 	// пересекаются числами, поэтому принятый чужой скоуп означал бы выдачу файла, у которого
@@ -294,7 +310,7 @@ func (s *Service) ServeFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ключ по РАСПАРСЕННОМУ id: Parse уже пришпилил каноническое написание, но бюджет — про
 	// файл, а строковый ключ выдал бы новое ведро на каждый вариант написания токена.
-	if !s.tokenLimiter.Allow(ip + "|f|" + strconv.Itoa(int(id))) {
+	if !s.tokenLimiter.Allow(ip + "|" + teamKey + "f|" + strconv.Itoa(int(id))) {
 		notFound("token rate limited")
 		return
 	}

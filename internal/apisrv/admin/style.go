@@ -392,6 +392,9 @@ func (s *Server) CloneStyleForSeason(ctx context.Context, req *pb_admin.CloneSty
 		// is pointed at the offending line rather than at the clone attempt.
 		return nil, techCardConvertErr(err)
 	}
+	if err := s.refuseForeignPatternURLs(ctx, techCardPatternURLs(insert.Patterns)); err != nil {
+		return nil, err
+	}
 	// The clone copies the pieces, so a fresh fingerprint would read a stale topstitch line as measured on
 	// today's pattern: each line keeps its freshness, as a restore does.
 	markRestoredTopstitchLines(insert, restoredTopstitchStale(pbInsert))
