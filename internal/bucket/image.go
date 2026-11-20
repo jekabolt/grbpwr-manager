@@ -57,15 +57,15 @@ func (b *Bucket) uploadImageToBucket(ctx context.Context, img io.Reader, folder,
 	userMetaData := map[string]string{"x-amz-acl": "public-read"}
 	cacheControl := "max-age=31536000"
 
-	_, err = b.Client.PutObject(ctx, b.Config.S3BucketName, fp, r,
+	_, err = b.put(ctx, fp, r,
 		int64(r.Len()), minio.PutObjectOptions{
 			ContentType:  contentType.String(),
 			CacheControl: cacheControl,
 			UserMetadata: userMetaData,
-		},
+		}, false,
 	)
 	if err != nil {
-		return "", "", fmt.Errorf("error putting object: %v", err)
+		return "", "", fmt.Errorf("error putting object: %w", err)
 	}
 
 	sum := sha256.Sum256(data)

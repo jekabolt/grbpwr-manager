@@ -301,6 +301,10 @@ func tcupWriteUploadFailure(ctx context.Context, w http.ResponseWriter, username
 		writeUploadError(w, http.StatusRequestTimeout, "the upload timed out")
 		return
 	}
+	if bucket.IsStorageFull(err) {
+		writeUploadError(w, http.StatusInsufficientStorage, "storage full")
+		return
+	}
 	slog.Default().ErrorContext(ctx, "tech card import: can't store the uploaded archive",
 		slog.String("username", username), slog.String("import_id", importID),
 		slog.String("err", err.Error()))

@@ -82,6 +82,9 @@ type Config struct {
 	// operator's console password. Kept as text so an unreadable value never stops a boot; read
 	// through SecondStepOn (default off: the console answers a token on the password, as before).
 	OperatorSecondStep string `mapstructure:"operator_second_step"`
+	// StorageCapGB (TEAM_STORAGE_CAP_GB, X11): the storage cap of a team with no cap of its own, in GB;
+	// "0" / "off" = no cap. Kept as text, read through StorageCapDefault (default 20).
+	StorageCapGB string `mapstructure:"storage_cap_gb"`
 	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
 	// read through Terms. Optional, read only in teams mode.
 	TermsVersion string `mapstructure:"terms_version"`

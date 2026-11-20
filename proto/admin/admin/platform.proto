@@ -104,6 +104,15 @@ service PlatformService {
       body: "*"
     };
   }
+
+  // SetTeamStorageCap sets how much file storage a team may use: cap_bytes > 0, or no_cap. An upload
+  // that would take the team over its cap is refused; nothing stored is touched.
+  rpc SetTeamStorageCap(SetTeamStorageCapRequest) returns (SetTeamStorageCapResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/storage-cap"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
@@ -123,6 +132,10 @@ message PlatformTeam {
   bool schema_ok = 9;
   // purge_at is set only while status is deleted: the moment the team's data is wiped.
   google.protobuf.Timestamp purge_at = 10;
+  // storage_used_bytes is the team's file storage in use (counted at upload / delete, recounted daily).
+  int64 storage_used_bytes = 11;
+  // storage_cap_bytes is the team's storage cap; 0 = no cap.
+  int64 storage_cap_bytes = 12;
 }
 
 // PlatformMember is one member of a team as the console sees it.
@@ -185,6 +198,17 @@ message SetTeamStatusRequest {
 }
 
 message SetTeamStatusResponse {
+  PlatformTeam team = 1;
+}
+
+message SetTeamStorageCapRequest {
+  string team_slug = 1;
+  // cap_bytes is the new cap; ignored when no_cap is set.
+  int64 cap_bytes = 2;
+  bool no_cap = 3;
+}
+
+message SetTeamStorageCapResponse {
   PlatformTeam team = 1;
 }
 

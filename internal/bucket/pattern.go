@@ -73,12 +73,12 @@ func (b *Bucket) UploadPatternFile(ctx context.Context, raw []byte, objectName s
 	}
 
 	r := bytes.NewReader(raw)
-	_, err = b.Client.PutObject(ctx, b.S3BucketName, fp, r, int64(r.Len()),
+	_, err = b.put(ctx, fp, r, int64(r.Len()),
 		minio.PutObjectOptions{
 			ContentType:  string(contentType),
 			CacheControl: "max-age=31536000",
 			UserMetadata: map[string]string{"x-amz-acl": "public-read"},
-		})
+		}, false)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "can't upload pattern file",
 			slog.String("err", err.Error()))

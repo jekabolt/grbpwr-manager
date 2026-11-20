@@ -69,6 +69,8 @@ type Bucket struct {
 	// proxyOnce/proxyHTTP: the one guarded client of read-only proxy reads (proxyClient).
 	proxyOnce sync.Once
 	proxyHTTP *http.Client
+	// meter counts and caps each team's bytes (meter.go); nil = off.
+	meter StorageMeter
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {
@@ -291,7 +293,7 @@ func (b *Bucket) DeleteObjects(ctx context.Context, urls ...string) error {
 			}
 			continue
 		}
-		if err := b.Client.RemoveObject(ctx, b.S3BucketName, key, minio.RemoveObjectOptions{}); err != nil {
+		if err := b.removeMetered(ctx, key); err != nil {
 			slog.Default().ErrorContext(ctx, "can't remove object from bucket",
 				slog.String("key", key), slog.String("err", err.Error()))
 			if firstErr == nil {
