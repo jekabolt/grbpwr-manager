@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/observability"
+
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
@@ -35,9 +37,10 @@ const (
 //   - a database AHEAD of the binary (a rollback) is never touched: it is served while it carries
 //     no breaking migration this binary predates (schemacompat);
 //   - a failed team is isolated: its real progress is recorded, it is retried with backoff
-//     (fleetFirstBackoff doubling to fleetMaxBackoff), and reported as ONE error
-//     TeamStuckAfterMigration per team per target version; it keeps serving while its version is
-//     still servable.
+//     (fleetFirstBackoff doubling to fleetMaxBackoff), and reported as one error
+//     observability.MsgTeamStuckAfterMigration per team per target version per process (the retry
+//     state is in memory: a restart or another instance reports again); it keeps serving while its
+//     version is still servable.
 //
 // Team #1 is never migrated here (store.New does it at boot); it is only fingerprinted, every
 // teamOneCheckEvery. Each database is migrated under its lease (DBLeaseKey, scheduling) and its
@@ -45,9 +48,21 @@ const (
 // control-plane statement, never a transaction held across the migration; a database whose lease
 // another instance holds is skipped this pass.
 func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
+	_, err := w.fleetPass(ctx)
+	return err
+}
+
+// FleetPass is what one fleet pass did to teams (slugs, never ids).
+type FleetPass struct {
+	Migrated, Failed []string
+	Skipped          int // another worker held the database
+}
+
+func (w *Worker) fleetPass(ctx context.Context) (FleetPass, error) {
+	var pass FleetPass
 	latest := w.schema.Latest()
 	if latest == "" {
-		return errors.New("provision: no embedded migrations")
+		return pass, errors.New("provision: no embedded migrations")
 	}
 	var errs []error
 
@@ -58,7 +73,7 @@ func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
 	}
 	for _, sp := range spares {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return pass, ctx.Err()
 		}
 		if sp.SchemaVersion.String == latest || w.set.Ahead(sp.SchemaVersion.String) {
 			continue
@@ -71,7 +86,7 @@ func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
 	teams, err := w.pf.SchemaTeams(ctx)
 	if err != nil {
 		w.log.ErrorContext(ctx, "provision: list teams", slog.String("err", err.Error()))
-		return errors.Join(append(errs, err)...)
+		return pass, errors.Join(append(errs, err)...)
 	}
 	var todo []platformstore.SchemaTeam
 	for _, t := range teams {
@@ -82,15 +97,15 @@ func (w *Worker) MigrateFleetOnce(ctx context.Context) error {
 		todo = append(todo, t)
 	}
 	sort.Slice(todo, func(i, j int) bool { return todo[i].ID < todo[j].ID })
-	errs = append(errs, w.migrateTeams(ctx, todo)...)
+	errs = append(errs, w.migrateTeams(ctx, todo, &pass)...)
 
 	w.checkTeamOne(ctx, latest)
-	return errors.Join(errs...)
+	return pass, errors.Join(errs...)
 }
 
 // migrateTeams runs the canary (todo[0]) alone, then the rest at most fleetParallel at once,
 // starting no new team after fleetBreaker failures or once ctx ends.
-func (w *Worker) migrateTeams(ctx context.Context, todo []platformstore.SchemaTeam) []error {
+func (w *Worker) migrateTeams(ctx context.Context, todo []platformstore.SchemaTeam, pass *FleetPass) []error {
 	if len(todo) == 0 {
 		return nil
 	}
@@ -103,9 +118,15 @@ func (w *Worker) migrateTeams(ctx context.Context, todo []platformstore.SchemaTe
 		err := w.migrateTeam(ctx, t)
 		mu.Lock()
 		defer mu.Unlock()
-		if err != nil {
+		switch {
+		case errors.Is(err, errSkipped):
+			pass.Skipped++
+		case err != nil:
 			errs = append(errs, err)
+			pass.Failed = append(pass.Failed, t.Slug)
 			failed++
+		default:
+			pass.Migrated = append(pass.Migrated, t.Slug)
 		}
 	}
 	run(todo[0]) // canary
@@ -169,7 +190,7 @@ func (w *Worker) fleetResult(ctx context.Context, t platformstore.SchemaTeam, er
 		w.log.InfoContext(ctx, "team_migrate_recovered", slog.String("team", t.Slug),
 			slog.String("version", latest))
 	case err != nil && reported != latest:
-		w.log.ErrorContext(ctx, TeamStuckAfterMigration, slog.String("team", t.Slug),
+		w.log.ErrorContext(ctx, observability.MsgTeamStuckAfterMigration, slog.String("team", t.Slug),
 			slog.String("err", err.Error()), slog.String("version", latest))
 	case err != nil:
 		w.log.WarnContext(ctx, "provision: team migration still failing", slog.String("team", t.Slug),
@@ -218,11 +239,9 @@ func (w *Worker) migrateSpare(ctx context.Context, dbName string) error {
 func (w *Worker) migrateTeam(ctx context.Context, t platformstore.SchemaTeam) (err error) {
 	id, slug, dbName := t.ID, t.Slug, t.DBName
 	defer func() {
-		if errors.Is(err, errSkipped) {
-			err = nil
-			return
+		if !errors.Is(err, errSkipped) { // skipped: neither a success nor a failure; the caller counts it
+			w.fleetResult(ctx, t, err)
 		}
-		w.fleetResult(ctx, t, err)
 	}()
 	if err := w.allowed(dbName); err != nil {
 		return fmt.Errorf("database name refused: %w", err)
@@ -270,11 +289,6 @@ func (w *Worker) migrateTeam(ctx context.Context, t platformstore.SchemaTeam) (e
 	}
 	return err
 }
-
-// TeamStuckAfterMigration is the one error a failed team migration emits (once per team per
-// target version). X12's Sentry alert matches this exact text and the "team" attr (the slug,
-// never the id): keep it stable, details go into attrs.
-const TeamStuckAfterMigration = "team stuck after migration"
 
 // errSkipped: another worker has the database; neither a success nor a failure of this one.
 var errSkipped = errors.New("provision: skipped")
@@ -330,4 +344,66 @@ func (w *Worker) compare(ctx context.Context, slug, version string, lines []stri
 		}
 	}
 	w.log.WarnContext(ctx, "schema_drift", attrs...)
+}
+
+// FleetReport is the outcome of MigrateFleet (the pre-deploy migrate-fleet command).
+type FleetReport struct {
+	Latest   string
+	Migrated []string // migrated in this run
+	Failed   []string // failed in this run and still behind (each reported once)
+	Behind   int      // teams still below Latest when the run ended (failed, locked elsewhere, out of time)
+	Passes   int
+}
+
+// MigrateFleet runs fleet passes until a pass migrates nothing new (every team current, failed and
+// waiting for its backoff, or held by another worker) or ctx ends, then counts the teams still
+// behind. Same canary, parallelism, breaker and leases as the background fleet: it is meant to run
+// with the NEW binary before a deploy, so teams are current when the new code starts serving. A
+// failed team never stops the others; err is only for a run that could not happen (control plane
+// unreadable, no embedded migrations).
+func (w *Worker) MigrateFleet(ctx context.Context) (FleetReport, error) {
+	rep := FleetReport{Latest: w.schema.Latest()}
+	if rep.Latest == "" {
+		return rep, errors.New("provision: no embedded migrations")
+	}
+	failed := map[string]bool{}
+	for ctx.Err() == nil {
+		pass, err := w.fleetPass(ctx)
+		rep.Passes++
+		rep.Migrated = append(rep.Migrated, pass.Migrated...)
+		for _, s := range pass.Migrated {
+			delete(failed, s)
+		}
+		for _, s := range pass.Failed {
+			failed[s] = true
+		}
+		if len(pass.Migrated) == 0 && len(pass.Failed) == 0 {
+			if err != nil && pass.Skipped == 0 && ctx.Err() == nil {
+				// Nothing started and the pass errored: the control plane itself (no team to blame).
+				if _, lerr := w.pf.SchemaTeams(ctx); lerr != nil {
+					return rep, lerr
+				}
+			}
+			break
+		}
+		if len(pass.Migrated) == 0 && pass.Skipped == 0 {
+			break // only failures: the rest wait for their backoff
+		}
+	}
+	for s := range failed {
+		rep.Failed = append(rep.Failed, s)
+	}
+	sort.Strings(rep.Failed)
+	// Teams still behind: a fresh read (the fleet state above is this process's view only).
+	rctx := context.WithoutCancel(ctx)
+	teams, err := w.pf.SchemaTeams(rctx)
+	if err != nil {
+		return rep, err
+	}
+	for _, t := range teams {
+		if v := t.SchemaVersion.String; v != rep.Latest && !w.set.Ahead(v) {
+			rep.Behind++
+		}
+	}
+	return rep, nil
 }

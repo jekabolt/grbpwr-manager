@@ -22,14 +22,14 @@ func TestControlPlaneAheadByAdditiveMigrationsStillOpens(t *testing.T) {
 	}
 	again.Close()
 
-	if _, err := st.DB().Exec(`INSERT INTO platform_migrations (id, applied_at) VALUES ('0009_zz_diverged.sql', NOW())`); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO platform_migrations (id, applied_at) VALUES ('0005_zz_diverged.sql', NOW())`); err != nil {
 		t.Fatal(err)
 	}
 	if again, err := platformstore.Open(ctx, d); err == nil {
 		again.Close()
 		t.Fatal("a diverged history must still refuse")
 	}
-	if _, err := st.DB().Exec(`DELETE FROM platform_migrations WHERE id = '0009_zz_diverged.sql'`); err != nil {
+	if _, err := st.DB().Exec(`DELETE FROM platform_migrations WHERE id = '0005_zz_diverged.sql'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`INSERT INTO platform_migrations (id, applied_at) VALUES ('9999_breaking_drop.sql', NOW())`); err != nil {
