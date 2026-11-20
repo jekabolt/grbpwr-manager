@@ -664,7 +664,8 @@ func (s *Store) RequestPasswordReset(ctx context.Context, email string, now time
 }
 
 // SyncOperators makes is_operator match the list: a listed email without an account gets an active
-// user with an unusable password (the owner sets it through reset) and no team; everyone else is 0.
+// user with an unusable password (the owner sets it through reset) and no team; everyone else is 0,
+// and an account no longer listed loses its authenticator app, so re-listing it later sets one up anew.
 // It returns how many accounts it created.
 func (s *Store) SyncOperators(ctx context.Context, emails []string, now time.Time, unusable func() (string, error),
 	handleBase func(email string) string) (int, error) {
@@ -692,7 +693,7 @@ func (s *Store) SyncOperators(ctx context.Context, emails []string, now time.Tim
 			if _, err := tx.ExecContext(ctx, `UPDATE platform_user SET is_operator = 0 WHERE is_operator <> 0`); err != nil {
 				return fmt.Errorf("platformstore: sync operators: %w", err)
 			}
-			return nil
+			return dropRemovedOperatorAppsTx(ctx, tx, now)
 		}
 		q, args, err := sqlx.In(`UPDATE platform_user
 SET is_operator = CASE WHEN email IS NOT NULL AND email IN (?) THEN 1 ELSE 0 END`, emails)
@@ -702,7 +703,7 @@ SET is_operator = CASE WHEN email IS NOT NULL AND email IN (?) THEN 1 ELSE 0 END
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("platformstore: sync operators: %w", err)
 		}
-		return nil
+		return dropRemovedOperatorAppsTx(ctx, tx, now)
 	})
 	return created, err
 }
@@ -732,6 +733,41 @@ func (s *Store) AuditAuth(ctx context.Context, actorUserID, teamID int64, action
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO platform_audit (actor_user_id, team_id, action, detail, ip, created_at)
 VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`, actor, team, action, det, ipv); err != nil {
 		return fmt.Errorf("platformstore: audit: %w", err)
+	}
+	return nil
+}
+
+// dropRemovedOperatorAppsTx removes the authenticator app, recovery codes and live tickets of every
+// account that is no longer an operator.
+func dropRemovedOperatorAppsTx(ctx context.Context, tx *sqlx.Tx, now time.Time) error {
+	var ids []int64
+	if err := tx.SelectContext(ctx, &ids, `SELECT user_id FROM operator_totp
+UNION SELECT user_id FROM operator_recovery_code
+UNION SELECT user_id FROM operator_second_step WHERE used_at IS NULL`); err != nil {
+		return fmt.Errorf("platformstore: operator apps: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	q, args, err := sqlx.In(`SELECT id FROM platform_user WHERE id IN (?) AND is_operator <> 0`, ids)
+	if err != nil {
+		return fmt.Errorf("platformstore: operator apps: %w", err)
+	}
+	var keep []int64
+	if err := tx.SelectContext(ctx, &keep, q, args...); err != nil {
+		return fmt.Errorf("platformstore: operator apps: %w", err)
+	}
+	listed := make(map[int64]bool, len(keep))
+	for _, id := range keep {
+		listed[id] = true
+	}
+	for _, id := range ids {
+		if listed[id] {
+			continue
+		}
+		if err := dropOperatorAppTx(ctx, tx, id, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

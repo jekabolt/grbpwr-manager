@@ -501,7 +501,12 @@ func TestEdgeTeamOneStandardProfileGatesPromo(t *testing.T) {
 func TestEdgePlatformChain(t *testing.T) {
 	srv := newEdgeServer(t, newEdge())
 	const m = "/admin.PlatformService/ListTeams"
-	op := teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42})
+	// PLATFORM_OPERATOR_SECOND_STEP off (the default): a console token without the claim passes.
+	if _, err := callAdmin(srv, m, teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42}), ""); err != nil {
+		t.Fatalf("switch off: console token without the second step refused: %v", err)
+	}
+	srv.platform.cfg.OperatorSecondStep = "on"
+	op := teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42, SecondStep: true})
 	ctx, err := callAdmin(srv, m, op, "")
 	if err != nil {
 		t.Fatalf("operator refused: %v", err)
@@ -513,10 +518,13 @@ func TestEdgePlatformChain(t *testing.T) {
 		t.Fatal("a team is bound on a platform call")
 	}
 	for name, tok := range map[string]string{
-		"non-operator": teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 43}),
-		"team token":   teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudTeam, TeamID: 7, UserID: 42}),
-		"legacy token": legacyToken(t, srv),
-		"dead session": teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42, SessionID: "gone"}),
+		"non-operator": teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 43, SecondStep: true}),
+		// A console session without the app code (issued before the second step, or a password-only
+		// token) never reaches PlatformService, so it never enters a team either (gap 4).
+		"no second step": teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42}),
+		"team token":     teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudTeam, TeamID: 7, UserID: 42}),
+		"legacy token":   legacyToken(t, srv),
+		"dead session":   teamToken(t, srv, authjwt.TeamClaims{Audience: authjwt.AudConsole, UserID: 42, SessionID: "gone", SecondStep: true}),
 	} {
 		if _, err := callAdmin(srv, m, tok, ""); err == nil {
 			t.Errorf("%s passed the platform chain", name)

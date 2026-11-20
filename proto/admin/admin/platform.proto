@@ -90,6 +90,20 @@ service PlatformService {
       body: "*"
     };
   }
+  // ListOperators lists the console operators and whether each has an authenticator app.
+  rpc ListOperators(ListOperatorsRequest) returns (ListOperatorsResponse) {
+    option (google.api.http) = {get: "/api/platform/operators"};
+  }
+
+  // ResetOperatorApp removes an operator's authenticator app and recovery codes (lost phone) and signs that
+  // operator out of the console; their next sign-in sets an app up again behind a mailed code. Every operator
+  // gets a letter. Needs the calling operator's own password.
+  rpc ResetOperatorApp(ResetOperatorAppRequest) returns (ResetOperatorAppResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/operators/reset-app"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
@@ -223,3 +237,25 @@ message RestoreTeamRequest {
 message RestoreTeamResponse {
   PlatformTeam team = 1;
 }
+
+// PlatformOperator is one console operator.
+message PlatformOperator {
+  string email = 1;
+  // app_set_up: an authenticator app is confirmed.
+  bool app_set_up = 2;
+  int32 recovery_codes_left = 3;
+}
+
+message ListOperatorsRequest {}
+
+message ListOperatorsResponse {
+  repeated PlatformOperator operators = 1;
+}
+
+message ResetOperatorAppRequest {
+  string email = 1;
+  // password is the calling operator's own console password.
+  string password = 2;
+}
+
+message ResetOperatorAppResponse {}

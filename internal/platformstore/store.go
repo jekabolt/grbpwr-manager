@@ -78,6 +78,10 @@ type Config struct {
 	// SignupApproval (PLATFORM_SIGNUP_APPROVAL, §21): kept as text so an unreadable value never
 	// stops a boot; read through SignupApprovalOn. Optional, read only in teams mode.
 	SignupApproval string `mapstructure:"signup_approval"`
+	// OperatorSecondStep (PLATFORM_OPERATOR_SECOND_STEP): the authenticator-app code after an
+	// operator's console password. Kept as text so an unreadable value never stops a boot; read
+	// through SecondStepOn (default off: the console answers a token on the password, as before).
+	OperatorSecondStep string `mapstructure:"operator_second_step"`
 	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
 	// read through Terms. Optional, read only in teams mode.
 	TermsVersion string `mapstructure:"terms_version"`
@@ -178,6 +182,17 @@ func (c Config) SignupApprovalOn() bool {
 		return b
 	}
 	return true
+}
+
+// SecondStepOn reads OperatorSecondStep: off unless it is "on", "yes" or parses as true.
+func (c Config) SecondStepOn() bool {
+	v := strings.ToLower(strings.TrimSpace(c.OperatorSecondStep))
+	switch v {
+	case "on", "yes":
+		return true
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
 }
 
 // Terms reads TermsVersion: DefaultTermsVersion when empty or wider than the column.

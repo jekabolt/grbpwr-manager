@@ -100,12 +100,14 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// + 0007 exact identity collations (column changes only) + 0008 team_brand (W1, one table)
 	// + 0009 profile (P0: account_avatar, oauth_link_ticket + columns, keys and ENUM members)
 	// + 0010 team_schema_min_code (X3, one column)
-	// + 0011 mail delivery (X6: platform_mail_suppression + platform_email delivery columns).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 11 {
+	// + 0011 mail delivery (X6: platform_mail_suppression + platform_email delivery columns)
+	// + 0012 operator second step (operator_totp, operator_recovery_code, operator_second_step,
+	// platform_flag).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 12 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 21 {
-		t.Fatalf("tables = %d (want 20 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 25 {
+		t.Fatalf("tables = %d (want 24 + platform_migrations), %v", n, err)
 	}
 	return st
 }

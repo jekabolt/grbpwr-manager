@@ -300,6 +300,34 @@ service AuthService {
       body: "*"
     };
   }
+  // OperatorSetupMail is the first of three steps of a console sign-in by an operator with no authenticator app
+  // yet (SignInResponse.second_step = SETUP): the code mailed to the operator's address. The answer is the new
+  // app's key and its otpauth:// link (the page draws the QR). Errors: invalid or expired code (also a used,
+  // expired or burned ticket), too many attempts.
+  rpc OperatorSetupMail(OperatorSetupMailRequest) returns (OperatorSetupMailResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/operator/setup-mail"
+      body: "*"
+    };
+  }
+
+  // OperatorSetupConfirm confirms the new app with one of its codes and returns the console token and ten
+  // recovery codes, shown only this once.
+  rpc OperatorSetupConfirm(OperatorSetupConfirmRequest) returns (OperatorSetupConfirmResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/operator/setup-confirm"
+      body: "*"
+    };
+  }
+
+  // OperatorVerify is the second step of a console sign-in (second_step = CODE): a six-digit app code, or a
+  // recovery code (each works once). Errors: invalid or expired code, too many attempts (locked for a while).
+  rpc OperatorVerify(OperatorVerifyRequest) returns (OperatorVerifyResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/operator/verify"
+      body: "*"
+    };
+  }
 }
 
 // LoginRequest is the request message for the Login RPC.
@@ -449,6 +477,56 @@ message SignInResponse {
   // account_deleted_until is set, with no token and no teams, when the password is right but the account is
   // deleted and can still be restored until this time (RequestAccountRestore).
   google.protobuf.Timestamp account_deleted_until = 3;
+  // second_step is set, with no token, on a console sign-in: the operator must pass a code from an
+  // authenticator app (CODE) or set one up first (SETUP: a code was mailed). ticket names this sign-in
+  // in OperatorVerify / OperatorSetupMail / OperatorSetupConfirm and lives 10 minutes.
+  OperatorSecondStep second_step = 4;
+  string ticket = 5;
+  // setup_letter_sent is false on SETUP when this hour's mail limit is spent (no new code was mailed).
+  bool setup_letter_sent = 6;
+}
+
+enum OperatorSecondStep {
+  OPERATOR_SECOND_STEP_UNKNOWN = 0;
+  OPERATOR_SECOND_STEP_CODE = 1;
+  OPERATOR_SECOND_STEP_SETUP = 2;
+}
+
+message OperatorSetupMailRequest {
+  string ticket = 1;
+  // code is the six-digit code from the setup letter.
+  string code = 2;
+}
+
+message OperatorSetupMailResponse {
+  // secret is the app key in base32, to type by hand.
+  string secret = 1;
+  // otpauth_url is the otpauth://totp/... link the QR code carries.
+  string otpauth_url = 2;
+}
+
+message OperatorSetupConfirmRequest {
+  string ticket = 1;
+  // code is a six-digit code from the new app.
+  string code = 2;
+}
+
+message OperatorSetupConfirmResponse {
+  string token = 1;
+  // recovery_codes are shown once; each signs in once instead of an app code.
+  repeated string recovery_codes = 2;
+}
+
+message OperatorVerifyRequest {
+  string ticket = 1;
+  // code is a six-digit app code or a recovery code (xxxx-xxxx).
+  string code = 2;
+}
+
+message OperatorVerifyResponse {
+  string token = 1;
+  // recovery_codes_left is set when a recovery code was used: how many are left.
+  int32 recovery_codes_left = 2;
 }
 
 message IssueHandoffRequest {

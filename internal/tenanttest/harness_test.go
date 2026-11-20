@@ -232,7 +232,7 @@ WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`, dbOne
 	if x.tokBAsOne, err = mint(jwt.TeamClaims{Handle: "bravo", UserID: uidB, TeamID: 1, SessionID: sidB, Audience: jwt.AudTeam, Super: true}); err != nil {
 		return err
 	}
-	if x.tokOp, err = mint(jwt.TeamClaims{Handle: "oper", UserID: uidOp, SessionID: sidOp, Audience: jwt.AudConsole}); err != nil {
+	if x.tokOp, err = mint(jwt.TeamClaims{Handle: "oper", UserID: uidOp, SessionID: sidOp, Audience: jwt.AudConsole, SecondStep: true}); err != nil {
 		return err
 	}
 	return nil

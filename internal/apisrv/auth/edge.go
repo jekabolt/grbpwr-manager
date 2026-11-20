@@ -435,6 +435,11 @@ func (s *Server) platformChain(ctx context.Context, method string) (context.Cont
 		}
 		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
 	}
+	// With PLATFORM_OPERATOR_SECOND_STEP on, a console token minted without the authenticator-app
+	// step (before the switch, or by a password alone) opens nothing.
+	if s.platform.cfg.SecondStepOn() && !claims.SecondStep {
+		return ctx, status.Error(codes.Unauthenticated, "unauthorized")
+	}
 	ok, err := s.edge.SessionActive(ctx, claims.SessionID)
 	if err != nil {
 		return ctx, status.Error(codes.Unavailable, "session check unavailable")

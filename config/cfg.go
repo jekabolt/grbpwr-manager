@@ -574,6 +574,7 @@ func bindEnvVars() {
 	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
 	viper.BindEnv("platform.allowed_origin_regex", "HTTP_ALLOWED_ORIGIN_REGEX")
 	viper.BindEnv("platform.signup_approval", "PLATFORM_SIGNUP_APPROVAL")
+	viper.BindEnv("platform.operator_second_step", "PLATFORM_OPERATOR_SECOND_STEP")
 	viper.BindEnv("platform.terms_version", "PLATFORM_TERMS_VERSION")
 	// X6: platform mail key and delivery events, sign-up abuse limits (all optional).
 	viper.BindEnv("platform.resend_api_key", "PLATFORM_RESEND_API_KEY")
