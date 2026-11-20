@@ -724,6 +724,7 @@ type ConfirmJoinParams struct {
 
 // ConfirmJoinCode verifies the pending account's email and immediately runs the join decision.
 func (s *Store) ConfirmJoinCode(ctx context.Context, p ConfirmJoinParams) (JoinDecisionResult, error) {
+	p.Attempt.Purpose = "verify_join"
 	var pre struct {
 		TeamID int64 `db:"team_id"`
 		Gen    int64 `db:"gen"`
