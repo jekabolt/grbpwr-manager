@@ -335,10 +335,11 @@ WHERE team_id = ? AND role = 'owner' AND status = 'active' FOR UPDATE`, teamID);
 			return err
 		}
 		var m struct {
-			Role   string `db:"role"`
-			Handle string `db:"handle"`
+			Role   string         `db:"role"`
+			Handle string         `db:"handle"`
+			Email  sql.NullString `db:"email"`
 		}
-		if err := tx.GetContext(ctx, &m, `SELECT m.role, u.handle FROM team_member m JOIN platform_user u ON u.id = m.user_id
+		if err := tx.GetContext(ctx, &m, `SELECT m.role, u.handle, u.email FROM team_member m JOIN platform_user u ON u.id = m.user_id
 WHERE m.team_id = ? AND m.user_id = ? AND m.status = 'active' FOR UPDATE`, teamID, userID); err != nil {
 			if isNoRows(err) {
 				return ErrNotMember
@@ -356,6 +357,14 @@ WHERE m.team_id = ? AND m.user_id = ? AND m.status = 'active' FOR UPDATE`, teamI
 			_, err := tx.ExecContext(ctx, `UPDATE team_member SET status = 'removed' WHERE team_id = ? AND user_id = ?`, teamID, userID)
 			if err != nil {
 				return fmt.Errorf("platformstore: remove member: %w", err)
+			}
+			// A removed member must not walk back in through a still-live invite (by its letter or
+			// the team join link) or an open join request: both need a fresh decision now.
+			if err := revokeLiveInvitesTx(ctx, tx, teamID, m.Email.String, p.Now); err != nil {
+				return err
+			}
+			if err := closePendingJoinRequestsTx(ctx, tx, teamID, userID, p.Now); err != nil {
+				return err
 			}
 		} else if _, err := tx.ExecContext(ctx, `UPDATE team_member SET role = ? WHERE team_id = ? AND user_id = ?`, role, teamID, userID); err != nil {
 			return fmt.Errorf("platformstore: set role: %w", err)

@@ -50,10 +50,34 @@ service AuthService {
 
   // TEAMS (multi-tenant identity)
 
-  // SignUp creates a pending user and a pending team and sends a verify letter.
+  // SignUp creates a pending user and team, or a teamless join intent when join_link is set.
   rpc SignUp(SignUpRequest) returns (SignUpResponse) {
     option (google.api.http) = {
       post: "/api/auth/sign-up"
+      body: "*"
+    };
+  }
+
+  // JoinLinkInfo returns the team name for the current host's join link.
+  rpc JoinLinkInfo(JoinLinkInfoRequest) returns (JoinLinkInfoResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/join-link-info"
+      body: "*"
+    };
+  }
+
+  // JoinTeam explicitly joins or requests access using the current host's join link.
+  rpc JoinTeam(JoinTeamRequest) returns (JoinTeamResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/join-team"
+      body: "*"
+    };
+  }
+
+  // ConfirmJoinCode confirms a join sign-up's email and runs its join decision.
+  rpc ConfirmJoinCode(ConfirmJoinCodeRequest) returns (ConfirmJoinCodeResponse) {
+    option (google.api.http) = {
+      post: "/api/auth/confirm-join-code"
       body: "*"
     };
   }
@@ -428,9 +452,41 @@ message SignUpRequest {
   // at the first space into first/last name (the rest goes to last; each at most 60 characters); empty = no
   // name; at most 80 characters after trimming; a bad value refuses the request with bad_name.
   string name = 8;
+  // join_link creates no team. The pending account receives a join code for the team named by the
+  // current host or X-Team header.
+  string join_link = 9;
 }
 
 message SignUpResponse {}
+
+message JoinLinkInfoRequest {
+  string link = 1;
+}
+
+message JoinLinkInfoResponse {
+  string team_name = 1;
+}
+
+message JoinTeamRequest {
+  string link = 1;
+}
+
+message JoinTeamResponse {
+  // state is already_member, joined or pending.
+  string state = 1;
+}
+
+message ConfirmJoinCodeRequest {
+  string email = 1;
+  string code = 2;
+  // password is the one set at the join sign-up: the code works only for whoever set it.
+  string password = 3;
+}
+
+message ConfirmJoinCodeResponse {
+  // state is already_member, joined or pending.
+  string state = 1;
+}
 
 message CheckTeamSlugRequest {
   string slug = 1;

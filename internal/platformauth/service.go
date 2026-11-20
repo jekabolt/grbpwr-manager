@@ -251,13 +251,24 @@ func (s *Service) letter(purpose, email string, ttl time.Duration, now time.Time
 		switch purpose {
 		case PurposeVerify:
 			l.Link = s.rootURL("/confirm", "token", tok)
+		case PurposeVerifyJoin:
+			l.Template = "join_code"
+			if team != nil {
+				l.Link = "https://" + team.Slug + "." + s.base + "/join"
+			}
 		case PurposeReset:
 			l.Link = s.rootURL("/reset", "token", tok)
 		case PurposeRestore:
 			l.Link = s.rootURL("/restore", "token", tok)
 		}
 		if team != nil {
-			nt.TeamID = team.ID
+			// A join confirmation is pinned by platform_join_intent, never by email_token.team_id:
+			// that column is the ordinary sign-up path to an owner membership.
+			if purpose == PurposeVerifyJoin {
+				l.TeamID = team.ID
+			} else {
+				nt.TeamID = team.ID
+			}
 			l.TeamName, l.Slug = team.Name, team.Slug
 		}
 		return nt, l, nil
@@ -349,8 +360,9 @@ func (s *Service) CheckTeamSlug(ctx context.Context, req *auth.CheckTeamSlugRequ
 	return resp, nil
 }
 
-// SignUp registers the person and a pending team and queues one letter with a code and a link. It
-// answers {} whether or not the email was known; only a bad field or a taken address is an error.
+// SignUp registers the person and a pending team, or a teamless join intent when join_link is set,
+// and queues one letter with a code and a link. It answers {} whether or not the email was known;
+// only a bad field or a taken address is an error.
 // The team's brand, when the sheet carries one, is written with the team (NormalizeTeamBrand: a bad
 // value refuses the whole sheet with its key before anything is written).
 func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.SignUpResponse, error) {
@@ -363,6 +375,9 @@ func (s *Service) SignUp(ctx context.Context, req *auth.SignUpRequest) (*auth.Si
 	}
 	if err := CheckPassword(req.GetPassword()); err != nil {
 		return nil, errBad(err.Error())
+	}
+	if link := strings.TrimSpace(req.GetJoinLink()); link != "" {
+		return s.signUpForJoin(ctx, req, email, link)
 	}
 	name, err := CleanTeamName(req.GetTeamName())
 	if err != nil {
@@ -454,6 +469,12 @@ func (s *Service) ResendVerification(ctx context.Context, req *auth.ResendVerifi
 		return &auth.ResendVerificationResponse{}, nil
 	}
 	now := s.now()
+	if sent, err := s.d.Store.ResendJoinVerification(ctx, email, now, MaxLettersPerEmailHr,
+		s.letter(PurposeVerifyJoin, email, VerifyTTL, now)); err != nil {
+		s.log(ctx, "resend join verification", err)
+	} else if sent {
+		return &auth.ResendVerificationResponse{}, nil
+	}
 	if _, err := s.d.Store.ResendVerification(ctx, email, now, MaxLettersPerEmailHr, s.letter(PurposeVerify, email, VerifyTTL, now)); err != nil {
 		s.log(ctx, "resend verification", err)
 	}

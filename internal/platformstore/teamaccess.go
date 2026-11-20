@@ -117,7 +117,7 @@ password_changed_at = ? WHERE id = ?`, hash, changed, userID); err != nil {
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify') AND used_at IS NULL`, now, userID); err != nil {
+		`UPDATE email_token SET used_at = ? WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify', 'verify_join') AND used_at IS NULL`, now, userID); err != nil {
 		return CredentialChange{}, fmt.Errorf("platformstore: expire hand-offs, sign-in codes and verify letters: %w", err)
 	}
 	return c, nil
@@ -157,7 +157,7 @@ password_changed_at = ? WHERE id = ?`, hash, now, userID); err != nil {
 		c.SIDs, c.Devices = d.SIDs, d.Devices
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE email_token SET used_at = ?
-WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify', 'reset') AND used_at IS NULL`, now, userID); err != nil {
+WHERE user_id = ? AND purpose IN ('handoff', 'signin', 'verify', 'verify_join', 'reset') AND used_at IS NULL`, now, userID); err != nil {
 		return keptChainChange{}, fmt.Errorf("platformstore: expire codes and letters: %w", err)
 	}
 	if err := expireLinkFlowsTx(ctx, tx, userID, now); err != nil {

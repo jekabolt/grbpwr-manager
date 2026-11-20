@@ -19,6 +19,9 @@ func TestPlatformRPCsOffWithoutControlPlane(t *testing.T) {
 	ctx := context.Background()
 	calls := map[string]func() error{
 		"SignUp":               func() error { _, err := s.SignUp(ctx, &auth.SignUpRequest{}); return err },
+		"JoinLinkInfo":         func() error { _, err := s.JoinLinkInfo(ctx, &auth.JoinLinkInfoRequest{}); return err },
+		"JoinTeam":             func() error { _, err := s.JoinTeam(ctx, &auth.JoinTeamRequest{}); return err },
+		"ConfirmJoinCode":      func() error { _, err := s.ConfirmJoinCode(ctx, &auth.ConfirmJoinCodeRequest{}); return err },
 		"CheckTeamSlug":        func() error { _, err := s.CheckTeamSlug(ctx, &auth.CheckTeamSlugRequest{}); return err },
 		"VerifyEmail":          func() error { _, err := s.VerifyEmail(ctx, &auth.VerifyEmailRequest{}); return err },
 		"ResendVerification":   func() error { _, err := s.ResendVerification(ctx, &auth.ResendVerificationRequest{}); return err },

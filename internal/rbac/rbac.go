@@ -934,11 +934,15 @@ var methodRequirements = map[string]Requirement{
 	"ResetAccountPassword":     wr(SectionAccounts),
 	// team members (multi-tenant): people and invites of the calling team (ListTeamMembers is on the
 	// allowlist: every member opens the workspace screen)
-	"InviteTeamMember":  wr(SectionAccounts),
-	"RevokeTeamInvite":  wr(SectionAccounts),
-	"ResendTeamInvite":  wr(SectionAccounts),
-	"RemoveTeamMember":  wr(SectionAccounts),
-	"SetTeamMemberRole": wr(SectionAccounts),
+	"InviteTeamMember":       wr(SectionAccounts),
+	"RevokeTeamInvite":       wr(SectionAccounts),
+	"ResendTeamInvite":       wr(SectionAccounts),
+	"GetTeamJoinLink":        wr(SectionAccounts),
+	"RotateTeamJoinLink":     wr(SectionAccounts),
+	"ApproveTeamJoinRequest": wr(SectionAccounts),
+	"DeclineTeamJoinRequest": wr(SectionAccounts),
+	"RemoveTeamMember":       wr(SectionAccounts),
+	"SetTeamMemberRole":      wr(SectionAccounts),
 	// workspace screen: the team's brand data and a member's section rights (owner-only writes)
 	"SetTeamBrand":        wr(SectionAccounts),
 	"SetTeamMemberAccess": wr(SectionAccounts),
