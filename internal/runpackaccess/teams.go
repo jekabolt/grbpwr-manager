@@ -5,21 +5,7 @@ import (
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
-
-// PublicLinksAllowed refuses minting a public link (/api/rp) outside team #1.
-//
-// The v1 token is (scope, id, epoch) with no team, and the resolving route is bound to team #1, so
-// a link minted in team 2 for local run 7 would open team #1's run 7. A ctx with no team is teams
-// mode off (or a legacy caller) and is allowed exactly as before. Until the v2 token lands.
-func PublicLinksAllowed(ctx context.Context) error {
-	if t, ok := tenant.From(ctx); ok && t.ID != tenant.TeamOneID {
-		return status.Error(codes.FailedPrecondition, "public_links_team_one_only")
-	}
-	return nil
-}
 
 // statsKey identifies one pending batch: the team the accesses were recorded under, or none.
 type statsKey struct {
