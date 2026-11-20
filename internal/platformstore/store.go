@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jekabolt/grbpwr-manager/internal/schemacompat"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jmoiron/sqlx"
 	migrate "github.com/rubenv/sql-migrate"
@@ -247,7 +248,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 func migrateUp(ctx context.Context, db *sqlx.DB) error {
 	src := &migrate.EmbedFileSystemMigrationSource{FileSystem: migrations, Root: "sql"}
 	set := migrate.MigrationSet{TableName: migrationsTable}
-	if err := tolerateAhead(ctx, db.DB, &set, src); err != nil {
+	if err := schemacompat.TolerateAhead(ctx, db.DB, migrationsTable, &set, src); err != nil {
 		return fmt.Errorf("platformstore: migrations: read applied: %w", err)
 	}
 	type result struct {

@@ -67,3 +67,28 @@ func TestTeamMigrationKilledMidwayResumes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "a resumed database must equal a clean one")
 }
+
+// Owner 20.11: code N starts on grbpwr's own database at N+1 (a rollback over an additive
+// release); a diverged history or a newer breaking migration still refuses.
+func TestTeamOneBootsOnSchemaAheadAndRefusesDiverged(t *testing.T) {
+	ctx := context.Background()
+	add := func(id string) {
+		_, err := testDB.ExecContext(ctx, `INSERT INTO gorp_migrations (id, applied_at) VALUES (?, NOW())`, id)
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = testDB.ExecContext(context.Background(), `DELETE FROM gorp_migrations WHERE id = ?`, id) })
+	}
+	del := func(id string) {
+		_, err := testDB.ExecContext(ctx, `DELETE FROM gorp_migrations WHERE id = ?`, id)
+		require.NoError(t, err)
+	}
+
+	add("9999_from_a_newer_release.sql")
+	require.NoError(t, MigrateDSN(ctx, testCfg.DSN), "code N must start on schema N+1")
+
+	add("0001_zz_diverged.sql")
+	require.Error(t, MigrateDSN(ctx, testCfg.DSN), "a diverged history must still refuse")
+	del("0001_zz_diverged.sql")
+
+	add("9999_breaking_drop_x.sql")
+	require.Error(t, MigrateDSN(ctx, testCfg.DSN), "a newer breaking migration must still refuse")
+}
