@@ -118,9 +118,9 @@ func TestCopyLibraryFileInvisibleIsNotFound(t *testing.T) {
 	require.Equal(t, codes.NotFound, status.Code(err))
 }
 
-// A pdf (and gif, dxf…) stays a document: refused before any lookup, read or upload.
+// A pdf (and avif, dxf, glb…) stays a document: refused before any lookup, read or upload.
 func TestCopyLibraryFilePdfIsNotCopyable(t *testing.T) {
-	for _, ct := range []string{"application/pdf", "image/gif", "image/vnd.dxf"} {
+	for _, ct := range []string{"application/pdf", "image/avif", "image/vnd.dxf", "model/gltf-binary"} {
 		f := newCopyFixture(t, nil)
 		f.files.EXPECT().GetFileById(mock.Anything, 5).Return(libFile(5, ct, []byte("x")), nil)
 		_, err := f.s.CopyLibraryFileToMedia(copierCtx(), &pb_admin.CopyLibraryFileToMediaRequest{FileId: 5})

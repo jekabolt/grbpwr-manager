@@ -118,6 +118,12 @@ func (h *slogHandler) capture(ctx context.Context, r slog.Record) {
 		ev = client.EventFromMessage(r.Message, level)
 	}
 	ev.Logger = "slog"
+	if team := teamOf(ctx, extra); team != "" {
+		if ev.Tags == nil {
+			ev.Tags = map[string]string{}
+		}
+		ev.Tags[TagTeam] = team
+	}
 	ev.Contexts["log"] = extra
 	if len(key) > 2 {
 		ev.Message = strings.Join(append([]string{r.Message}, key[2:]...), " ")

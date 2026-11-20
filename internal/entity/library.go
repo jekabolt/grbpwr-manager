@@ -272,11 +272,13 @@ func FileKindOf(contentType string) LibraryKind {
 	}
 }
 
-// CopyableToMediaContentTypes are the file content types CopyLibraryFileToMedia accepts: raster
-// types the image pipeline can re-encode into three sizes, svg as a vector, mp4/webm as a video.
-// gif, avif and dxf stay documents.
+// CopyableToMediaContentTypes are the file content types CopyLibraryFileToMedia accepts: every type
+// a media upload door stores through the bucket verb the copy calls. Raster jpeg/png/webp/heic go
+// through the 3-size re-encode, gif through the same image verb's verbatim path (it keeps the
+// animation, exactly as the image door does), svg as a vector, mp4/webm as a video. avif, heif and
+// dxf are refused by every door; a glb model needs a client-rendered preview the copy cannot make.
 var CopyableToMediaContentTypes = []string{
-	"image/jpeg", "image/png", "image/webp", "image/heic",
+	"image/jpeg", "image/png", "image/webp", "image/heic", "image/gif",
 	"image/svg+xml",
 	"video/mp4", "video/webm",
 }

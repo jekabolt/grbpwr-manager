@@ -47,6 +47,9 @@ func CapturePanic(ctx context.Context, p any, route string) {
 		if route != "" {
 			scope.SetTag("route", route)
 		}
+		if team := teamOf(ctx, nil); team != "" {
+			scope.SetTag(TagTeam, team)
+		}
 		hub.CaptureEvent(ev)
 	})
 }

@@ -1109,7 +1109,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	// Set up database health checker if store supports it
 	if mysqlStore, ok := a.db.(*store.MYSQLStore); ok {
-		healthChecker := httpapi.NewDatabaseHealthChecker(mysqlStore.Ping)
+		healthChecker := httpapi.NewDatabaseHealthChecker(readinessPing(mysqlStore.Ping, a.platform))
 		a.hs.SetHealthChecker(healthChecker)
 	}
 

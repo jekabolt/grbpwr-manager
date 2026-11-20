@@ -40,8 +40,10 @@ func Init(c Config, release string) (bool, error) {
 		release = ""
 	}
 	err := sentry.Init(sentry.ClientOptions{
-		Dsn:              dsn,
-		Environment:      EnvironmentOf(c),
+		Dsn:         dsn,
+		Environment: EnvironmentOf(c),
+		// Every event says which install it came from (beta / prod), next to its team (team.go).
+		Tags:             map[string]string{TagInstall: InstallOf(EnvironmentOf(c))},
 		Release:          release,
 		SendDefaultPII:   false,
 		AttachStacktrace: true,

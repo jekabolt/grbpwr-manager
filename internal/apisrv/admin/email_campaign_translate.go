@@ -62,6 +62,9 @@ func (s *Server) AutoTranslateEmailCampaign(
 	}
 	const purpose = entity.AIPurposeEmailTranslate
 	translator := translate.New(s.ai.Completer(purpose))
+	if b := s.translateBrand(ctx); !b.House {
+		translator = translator.WithBrand(b.Name)
+	}
 	if !translator.Enabled() {
 		return nil, s.aiOffRefusal(purpose, campaignTranslateNotConfiguredMsg)
 	}

@@ -102,7 +102,7 @@ func (s *Server) CopyLibraryFileToMedia(ctx context.Context, req *pb_admin.CopyL
 		m, err = s.bucket.UploadContentNonRaster(ctx, raw, "image/svg+xml", folder, name)
 	case strings.HasPrefix(ct, "video/"):
 		m, err = s.bucket.UploadContentVideo(ctx, raw, folder, name, ct)
-	default: // raster: jpeg, png, webp, heic — the cases bucket.decodeImage handles (sniffed, not declared)
+	default: // raster jpeg, png, webp, heic (3 sizes) and gif (verbatim): the image door's verb, sniffed, not declared
 		m, err = s.bucket.UploadContentImage(ctx, "data:"+ct+";base64,"+base64.StdEncoding.EncodeToString(raw), folder, name)
 	}
 	if err != nil {
