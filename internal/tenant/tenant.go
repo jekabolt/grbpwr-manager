@@ -34,6 +34,9 @@ type Team struct {
 	Slug, Name, DBName, FileKey, Profile string
 	Status                               Status
 	SchemaVersion                        string
+	// SchemaMinCode is the newest breaking migration applied to the team's database ("" = none):
+	// only a binary that embeds it may serve the team (X3, internal/schemacompat).
+	SchemaMinCode string
 }
 
 // Team #1 is today's grbpwr database, adopted in place.

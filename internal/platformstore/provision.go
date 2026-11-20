@@ -51,6 +51,7 @@ type SchemaTeam struct {
 	DBName        string         `db:"db_name"`
 	Status        string         `db:"status"`
 	SchemaVersion sql.NullString `db:"schema_version"`
+	SchemaMinCode sql.NullString `db:"schema_min_code"`
 }
 
 // SpareCounts counts ready spares at one schema version, spares still being created (since a moment:

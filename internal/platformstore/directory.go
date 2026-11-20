@@ -51,6 +51,7 @@ type teamRow struct {
 	Profile       string         `db:"profile"`
 	Status        string         `db:"status"`
 	SchemaVersion sql.NullString `db:"schema_version"`
+	SchemaMinCode sql.NullString `db:"schema_min_code"`
 }
 
 func (r teamRow) team() tenant.Team {
@@ -63,6 +64,7 @@ func (r teamRow) team() tenant.Team {
 		Profile:       r.Profile,
 		Status:        tenant.Status(r.Status),
 		SchemaVersion: r.SchemaVersion.String,
+		SchemaMinCode: r.SchemaMinCode.String,
 	}
 }
 
