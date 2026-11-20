@@ -806,6 +806,7 @@ type JoinRequestDecisionParams struct {
 	IP                string
 	Now               time.Time
 	Permissions       []byte
+	Role              string // member (default) or owner
 	ApprovedLink      string
 	Stage             func(context.Context, JoinMember) error
 	Enable            func(context.Context, JoinMember) (bool, error)
@@ -870,12 +871,16 @@ WHERE id = ?`, p.Now, p.Actor.UserID, p.RequestID); err != nil {
 				return err
 			}
 		}
-		inv := Invite{TeamID: p.TeamID, Role: "member"}
+		role := p.Role
+		if role != "owner" {
+			role = "member"
+		}
+		inv := Invite{TeamID: p.TeamID, Role: role}
 		if err := reserveMembershipTx(ctx, tx, inv, u.ID, p.Now); err != nil {
 			return err
 		}
 		r = joinReservation{state: JoinJoined, email: u.Email.String, member: JoinMember{
-			TeamID: p.TeamID, UserID: u.ID, Handle: u.Handle, Role: "member", Permissions: p.Permissions,
+			TeamID: p.TeamID, UserID: u.ID, Handle: u.Handle, Role: role, Permissions: p.Permissions,
 			RequestID: p.RequestID, Gen: row.Gen,
 		}}
 		return nil

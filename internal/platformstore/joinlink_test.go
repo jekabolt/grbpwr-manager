@@ -250,15 +250,15 @@ func TestJoinRequestDeclineCooldownAndApproveResume(t *testing.T) {
 	var staged platformstore.JoinMember
 	approved, err := st.ApproveJoinRequest(ctx, platformstore.JoinRequestDecisionParams{
 		TeamID: 2, RequestID: second.ID, Actor: platformstore.Actor{UserID: owner}, Now: now.Add(30*24*time.Hour + time.Minute),
-		Permissions: []byte(`[{"section":"orders","access":"write"}]`), ApprovedLink: "https://acme.example/",
+		Permissions: []byte(`[{"section":"orders","access":"write"}]`), Role: "owner", ApprovedLink: "https://acme.example/",
 		Stage:  func(_ context.Context, m platformstore.JoinMember) error { staged = m; return nil },
 		Enable: func(context.Context, platformstore.JoinMember) (bool, error) { return true, nil },
 	})
 	if err != nil || approved.State != platformstore.JoinJoined || staged.Gen != link.Gen {
 		t.Fatalf("approve retry = %+v staged %+v, %v", approved, staged, err)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM team_member WHERE team_id = 2 AND user_id = ? AND status = 'active'`, stranger); n != 1 {
-		t.Fatalf("active membership = %d", n)
+	if n := countRows(t, st, `SELECT COUNT(*) FROM team_member WHERE team_id = 2 AND user_id = ? AND status = 'active' AND role = 'owner'`, stranger); n != 1 || staged.Role != "owner" {
+		t.Fatalf("active owner membership = %d, staged role %q", n, staged.Role)
 	}
 	if n := countRows(t, st, `SELECT COUNT(*) FROM platform_email WHERE template = 'join_approved' AND to_email = 'new@x.io'`); n != 1 {
 		t.Fatalf("join approved letters = %d", n)

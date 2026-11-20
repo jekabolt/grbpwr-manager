@@ -15883,6 +15883,8 @@ message RotateTeamJoinLinkResponse {
 
 message ApproveTeamJoinRequestRequest {
   string request_ref = 1;
+  // role is "member" (default) or "owner"; rights are the ordinary invite defaults.
+  string role = 2;
 }
 
 message ApproveTeamJoinRequestResponse {}

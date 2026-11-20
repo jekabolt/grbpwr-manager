@@ -392,6 +392,11 @@ type joinRequestAdmins interface {
 }
 
 func (s *Server) stageJoinRequest(ctx context.Context, m platformstore.JoinMember, perms []entity.AdminPermission) error {
+	// An owner is a super admin with no rows, the way EnsureAdmin stages one for SetTeamMemberRole.
+	super := m.Role == roleOwner
+	if super {
+		perms = nil
+	}
 	admins, ok := s.repo.Admin().(joinRequestAdmins)
 	if !ok {
 		return errors.New("admin repository cannot stage team joins")
@@ -400,7 +405,7 @@ func (s *Server) stageJoinRequest(ctx context.Context, m platformstore.JoinMembe
 	if err != nil {
 		return fmt.Errorf("join request hash: %w", err)
 	}
-	if err := admins.StageJoin(ctx, m.Handle, hash, false, perms); err != nil {
+	if err := admins.StageJoin(ctx, m.Handle, hash, super, perms); err != nil {
 		return fmt.Errorf("stage join request: %w", err)
 	}
 	if s.invalidateAdminAuth != nil {
@@ -436,6 +441,13 @@ func (s *Server) ApproveTeamJoinRequest(ctx context.Context, req *pb_admin.Appro
 	if err != nil {
 		return nil, err
 	}
+	role := strings.ToLower(strings.TrimSpace(req.GetRole()))
+	if role == "" {
+		role = roleMember
+	}
+	if role != roleOwner && role != roleMember {
+		return nil, status.Error(codes.InvalidArgument, "bad_role")
+	}
 	pending, err := s.joinRequest(ctx, p, req.GetRequestRef(), true)
 	if err != nil {
 		return nil, err
@@ -448,7 +460,7 @@ func (s *Server) ApproveTeamJoinRequest(ctx context.Context, req *pb_admin.Appro
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	res, err := s.platform.store.ApproveJoinRequest(ctx, platformstore.JoinRequestDecisionParams{
 		TeamID: p.w.Team.ID, RequestID: pending.ID, Actor: p.actor(), IP: middleware.GetClientIP(ctx), Now: now,
-		Permissions: raw, ApprovedLink: s.teamHomeLink(p.w.Team.Slug),
+		Permissions: raw, Role: role, ApprovedLink: s.teamHomeLink(p.w.Team.Slug),
 		Stage: func(ctx context.Context, m platformstore.JoinMember) error {
 			return s.stageJoinRequest(ctx, m, perms)
 		},
