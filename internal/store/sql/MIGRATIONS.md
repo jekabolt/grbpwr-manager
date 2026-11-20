@@ -12,6 +12,13 @@ team while its schema fits the running code; these rules keep that window open.
 - An index, a backfill, seeded reference rows: a team behind only lazy files stays open.
 - Only when the code of this release works without it.
 
+## Changing a column's shape — `breaking` unless `-- compat: safe <reason>`
+- `MODIFY COLUMN` (narrower type, NULL → NOT NULL), `ADD COLUMN … NOT NULL` without DEFAULT, `ALTER COLUMN …
+  DROP DEFAULT`: under STRICT_ALL_TABLES the code one release back may fail to write ("data too long", 1364).
+- The lint refuses them undeclared. Widening, or a column every older binary always writes: `-- compat: safe
+  <why older code still writes it>`. Otherwise ship it as a breaking file (below). `safe` never excuses a removal.
+- Prefer `ADD COLUMN … NOT NULL DEFAULT <x>`: additive, nothing to declare.
+
 ## Removing or renaming — two releases, never one PR
 1. Release 1: stop using the old name in code (renaming: add the new column, write both, read the new).
 2. Release 2: `NNNN_breaking_<what>.sql` with `-- compat: breaking <reason>`.

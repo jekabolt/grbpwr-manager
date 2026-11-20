@@ -7,6 +7,9 @@
 //     only be served by a binary that embeds it.
 //   - lazy: "-- compat: lazy <reason>": the code of its release does not need it yet (an index, a
 //     backfill, seeded reference rows); a team behind only lazy migrations stays open.
+//   - safe: "-- compat: safe <reason>": a shape change the lint treats as breaking by default
+//     (MODIFY COLUMN, ADD COLUMN NOT NULL without DEFAULT, DROP DEFAULT) that the author states older
+//     code still survives (it widens, or older code always writes the column). Otherwise default.
 //
 // The gate is then a window instead of equality: binary B serves team T when T's version is at
 // least B's Need (its newest non-lazy migration) and T's min code (newest breaking migration
@@ -68,11 +71,11 @@ func IsBreaking(id string) bool { return strings.Contains(id, BreakingMarker) }
 
 // Header is what a migration declares in "-- compat:" comment lines.
 type Header struct {
-	Breaking, Lazy bool
-	Reason         string
+	Breaking, Lazy, Safe bool
+	Reason               string
 }
 
-// ParseHeader reads the "-- compat: breaking|lazy <reason>" lines of a migration body. A reason is
+// ParseHeader reads the "-- compat: breaking|lazy|safe <reason>" lines of a migration body. A reason is
 // required; an unknown word, both words, or a repeated line is an error.
 func ParseHeader(body string) (Header, error) {
 	var h Header
@@ -93,8 +96,10 @@ func ParseHeader(body string) (Header, error) {
 			h.Breaking = true
 		case "lazy":
 			h.Lazy = true
+		case "safe":
+			h.Safe = true
 		default:
-			return Header{}, fmt.Errorf("%s %q: want breaking or lazy", headerPrefix, word)
+			return Header{}, fmt.Errorf("%s %q: want breaking, lazy or safe", headerPrefix, word)
 		}
 		if reason == "" {
 			return Header{}, fmt.Errorf("%s %s needs a reason", headerPrefix, word)

@@ -33,9 +33,13 @@ type compatProblem struct {
 	Problem   string
 }
 
-// destructiveChange is one DROP / RENAME / CHANGE and the old name it removes.
+// destructiveChange is one DROP / RENAME / CHANGE and the old name it removes (Shape false), or a
+// shape change older code may not survive under STRICT_ALL_TABLES (Shape true): MODIFY COLUMN,
+// ADD COLUMN NOT NULL without DEFAULT, ALTER COLUMN DROP DEFAULT. The name stays, so only a
+// declaration settles it: "breaking", or "safe" with the reason older code still writes it.
 type destructiveChange struct {
 	What, Name string
+	Shape      bool
 }
 
 // detectCompatProblems checks declarations and destructive statements of migrations numbered
@@ -68,13 +72,22 @@ func detectCompatProblems(migrations []namedMigration, enforceAfter int) ([]comp
 		if len(changes) == 0 {
 			continue
 		}
-		if !header.Breaking {
+		if header.Breaking {
 			for _, c := range changes {
-				problems = append(problems, compatProblem{m.Name, fmt.Sprintf("%s %s breaks the code one release back: declare it breaking in its own release (MIGRATIONS.md)", c.What, c.Name)})
+				if !c.Shape {
+					removed[m.Name] = append(removed[m.Name], c)
+				}
 			}
 			continue
 		}
-		removed[m.Name] = changes
+		for _, c := range changes {
+			switch {
+			case !c.Shape:
+				problems = append(problems, compatProblem{m.Name, fmt.Sprintf("%s %s breaks the code one release back: declare it breaking in its own release (MIGRATIONS.md)", c.What, c.Name)})
+			case !header.Safe:
+				problems = append(problems, compatProblem{m.Name, fmt.Sprintf("%s %s may break writes of the code one release back (narrower type, NOT NULL, no default): declare \"-- compat: safe <why older code still writes it>\" or make it breaking (MIGRATIONS.md)", c.What, c.Name)})
+			}
+		}
 	}
 	return problems, removed, nil
 }
@@ -114,10 +127,10 @@ func statementChanges(statement string) ([]destructiveChange, error) {
 	switch {
 	case tokenIs(tokens[0], "drop") && tokenIs(tokens[1], "table"):
 		name, _ := objectName(tokens, 2)
-		return []destructiveChange{{"DROP TABLE", name}}, nil
+		return []destructiveChange{{"DROP TABLE", name, false}}, nil
 	case tokenIs(tokens[0], "rename") && tokenIs(tokens[1], "table"):
 		name, _ := objectName(tokens, 2)
-		return []destructiveChange{{"RENAME TABLE", name}}, nil
+		return []destructiveChange{{"RENAME TABLE", name, false}}, nil
 	case tokenIs(tokens[0], "alter") && tokenIs(tokens[1], "table"):
 		table, bodyStart := objectName(tokens, 2)
 		if table == "" || bodyStart >= len(tokens) {
@@ -150,30 +163,74 @@ func alterClauseChange(table string, clause []sqlToken) (destructiveChange, bool
 			next++
 		}
 		if name, _ := objectName(clause, next); name != "" {
-			return destructiveChange{"DROP COLUMN " + table + ".", name}, true
+			return destructiveChange{"DROP COLUMN " + table + ".", name, false}, true
 		}
 	case tokenIs(clause[0], "rename"):
 		if tokenIs(clause[1], "index") || tokenIs(clause[1], "key") {
 			return destructiveChange{}, false
 		}
 		if tokenIs(clause[1], "to") || tokenIs(clause[1], "as") {
-			return destructiveChange{"RENAME TABLE", table}, true
+			return destructiveChange{"RENAME TABLE", table, false}, true
 		}
 		if tokenIs(clause[1], "column") {
 			next++
 		}
 		if name, _ := objectName(clause, next); name != "" {
-			return destructiveChange{"RENAME COLUMN " + table + ".", name}, true
+			return destructiveChange{"RENAME COLUMN " + table + ".", name, false}, true
 		}
 	case tokenIs(clause[0], "change"):
 		if tokenIs(clause[1], "column") {
 			next++
 		}
 		if name, _ := objectName(clause, next); name != "" {
-			return destructiveChange{"CHANGE COLUMN " + table + ".", name}, true
+			return destructiveChange{"CHANGE COLUMN " + table + ".", name, false}, true
 		}
+	case tokenIs(clause[0], "modify"):
+		if tokenIs(clause[1], "column") {
+			next++
+		}
+		if name, _ := objectName(clause, next); name != "" {
+			return destructiveChange{"MODIFY COLUMN " + table + ".", name, true}, true
+		}
+	case tokenIs(clause[0], "alter"):
+		if tokenIs(clause[1], "column") {
+			next++
+		}
+		name, after := objectName(clause, next)
+		if name != "" && after+1 < len(clause) && tokenIs(clause[after], "drop") && tokenIs(clause[after+1], "default") {
+			return destructiveChange{"DROP DEFAULT " + table + ".", name, true}, true
+		}
+	case tokenIs(clause[0], "add"):
+		for _, w := range []string{"index", "key", "unique", "primary", "foreign", "constraint", "check", "fulltext", "spatial", "partition", "("} {
+			if tokenIs(clause[1], w) || clause[1].Text == w {
+				return destructiveChange{}, false
+			}
+		}
+		if tokenIs(clause[1], "column") {
+			next++
+		}
+		name, after := objectName(clause, next)
+		if name == "" || !notNullWithoutDefault(clause[after:]) {
+			return destructiveChange{}, false
+		}
+		return destructiveChange{"ADD COLUMN NOT NULL without DEFAULT " + table + ".", name, true}, true
 	}
 	return destructiveChange{}, false
+}
+
+// notNullWithoutDefault: a column definition that older code's INSERTs (which do not name the
+// column) would fail on: NOT NULL with no DEFAULT, not AUTO_INCREMENT, not generated.
+func notNullWithoutDefault(def []sqlToken) bool {
+	notNull := false
+	for i, t := range def {
+		switch {
+		case tokenIs(t, "default"), tokenIs(t, "auto_increment"), tokenIs(t, "generated"), tokenIs(t, "as"):
+			return false
+		case tokenIs(t, "not") && i+1 < len(def) && tokenIs(def[i+1], "null"):
+			notNull = true
+		}
+	}
+	return notNull
 }
 
 // stillUsedAllowed lists the names a migration says Go code writes for another reason.
