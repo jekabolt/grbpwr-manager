@@ -129,7 +129,7 @@ func TestDay30EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { root.Close() }) // registered first: runs after the drops below
+	t.Cleanup(func() { _ = root.Close() }) // registered first: runs after the drops below
 	gone, live := itPrefix+"gone0001", itPrefix+"live0001"
 	reset := func() {
 		for _, db := range []string{itCP, itOne, gone, live} {
@@ -154,7 +154,7 @@ func TestDay30EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pf.Close()
+	defer func() { _ = pf.Close() }()
 	for _, q := range []string{
 		`INSERT INTO team (id, slug, name, db_name, status, purge_at) VALUES (1, 'grbpwr', 'grbpwr', '` + itOne + `', 'deleted', '2026-01-01')`,
 		`INSERT INTO platform_user (id, email, handle, password_hash, status) VALUES (11, 'o@x.io', 'own', 'h', 'active'),

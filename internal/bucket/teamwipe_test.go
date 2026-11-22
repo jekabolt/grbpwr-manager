@@ -77,7 +77,7 @@ func (f *wipeS3) RemoveObjects(_ context.Context, _ string, in <-chan minio.Obje
 		f.removed = append(f.removed, ob)
 		keep := f.objs[:0]
 		for _, o := range f.objs {
-			if !(o.Key == ob.Key && o.VersionID == ob.VersionID) {
+			if o.Key != ob.Key || o.VersionID != ob.VersionID {
 				keep = append(keep, o)
 			}
 		}
