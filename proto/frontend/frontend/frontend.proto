@@ -27,9 +27,10 @@ service FrontendService {
   }
 
   // GetShopProfile answers the shop the request is for (header x-shop-host, else Origin): brand,
-  // address, Stripe publishable key and cache namespace (lane X18). A closed shop answers open=false.
+  // addresses, legal, Stripe (lane X18). A closed shop answers open=false; any other storefront call
+  // of a closed shop is NotFound "shop_closed", an unknown x-shop-host NotFound "shop_not_found".
   rpc GetShopProfile(GetShopProfileRequest) returns (GetShopProfileResponse) {
-    option (google.api.http) = {get: "/api/frontend/shop"};
+    option (google.api.http) = {get: "/api/frontend/shop/profile"};
   }
 
   // Get a colourway by its public base SKU.
@@ -241,41 +242,63 @@ message GetHeroResponse {
 message GetShopProfileRequest {}
 
 message GetShopProfileResponse {
-  ShopProfile shop = 1;
+  ShopProfile profile = 1;
 }
 
-// ShopProfile is what a storefront needs to draw the shop (lane X18).
+// ShopProfile is what a storefront needs to draw the shop (lane X18; shape agreed with the
+// storefront lane X18-L2). Empty strings / lists = not set; the storefront draws its default.
 message ShopProfile {
+  // shop_key is the shop's stable key ("t{n}"); a revalidation post to the shop is signed with
+  // hex(HKDF-SHA256(SHOP_REVALIDATE_MASTER, salt empty, info "revalidate:" + shop_key, 32 bytes)).
+  string shop_key = 1;
   // name is the brand name.
-  string name = 1;
-  // logo_url is the brand logo (absolute URL); empty = none.
-  string logo_url = 2;
+  string name = 2;
+  // legal_name is the legal entity that sells.
+  string legal_name = 3;
+  string description = 4;
+  // logo_url is the brand logo (absolute https URL); empty = none.
+  string logo_url = 5;
+  // email is the shop's contact address.
+  string email = 6;
+  // address is the legal address on one line.
+  string address = 7;
+  // colors is always present; empty fields = the storefront's default.
+  ShopColors colors = 8;
+  repeated ShopSocial socials = 9;
   // primary_host is the shop's main address (no scheme).
-  string primary_host = 3;
-  // open: the shop takes orders; false = draw a closed page.
-  bool open = 4;
-  string legal_entity = 5;
-  string legal_address = 6;
-  string contact_email = 7;
-  string website = 8;
-  ShopStripe stripe = 9;
+  string primary_host = 10;
+  // hosts are every address the shop answers on (live), primary first.
+  repeated string hosts = 11;
+  // currencies the shop sells in (ISO 4217); empty = the storefront's dictionary decides.
+  repeated string currencies = 12;
   // base_currency is the shop's base currency (ISO 4217).
-  string base_currency = 10;
-  // cache_namespace prefixes the storefront's cache tags: "" for grbpwr, "t{n}" for any other shop.
-  // Revalidation posts carry the same value in "namespace".
-  string cache_namespace = 11;
-  // accent_color is the brand colour ("#rrggbb"); empty = the storefront's default.
-  string accent_color = 12;
+  string base_currency = 13;
+  // stripe_account_id is the connected account Stripe.js loads with (Connect only).
+  string stripe_account_id = 14;
+  // stripe_publishable_key is the shop's own key (own keys); empty with Connect = the platform key.
+  string stripe_publishable_key = 15;
+  // open: the shop takes orders; false = draw a closed page.
+  bool open = 16;
+  // legal: page slug ("privacy-policy", "terms-conditions", "terms-of-sale", "legal-notice",
+  // "return-exchange", "membership", "faq", "tier-<slug>", optionally ".<locale>") -> markdown.
+  map<string, string> legal = 17;
+  string website = 18;
+  // stripe_mode: "live" or "test"; empty = checkout off.
+  string stripe_mode = 19;
 }
 
-// ShopStripe is the public half of the shop's Stripe setup.
-message ShopStripe {
-  // publishable_key is the key Stripe.js loads with; empty = checkout off.
-  string publishable_key = 1;
-  // account_id is the connected account for Stripe.js (Connect only; empty for own keys / grbpwr).
-  string account_id = 2;
-  // mode: "live" or "test".
-  string mode = 3;
+// ShopColors are the brand colours ("#rrggbb").
+message ShopColors {
+  string accent = 1;
+  string accent_secondary = 2;
+  string background = 3;
+  string text = 4;
+}
+
+// ShopSocial is one social link of the shop.
+message ShopSocial {
+  string text = 1;
+  string href = 2;
 }
 
 message GetColorwayRequest {
