@@ -23,6 +23,8 @@ type Server struct {
 	// dropSession drops a revoked session from the edge's in-process cache
 	// (tenantbind.Binder.InvalidateSession). nil = nothing to drop.
 	dropSession func(sid string)
+	// dropShop drops a team's cached shop answers after an operator closes or reopens it (X18).
+	dropShop func(teamID int64)
 	// checkPassword checks the calling operator's own console password under the sign-in limiters
 	// (platformauth.Service.CheckOperatorPassword). nil = DeleteTeam answers UNAVAILABLE.
 	checkPassword func(ctx context.Context, userID int64, password string) error

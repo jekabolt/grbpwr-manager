@@ -1,0 +1,553 @@
+package platformstore
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+)
+
+// Shops of teams (X18). Lock order: these tables stand after the team row (never before it) and are
+// taken in the order team_shop → shop_host → team_stripe; no shop transaction locks anything of
+// 2–6 (accounts, memberships, sessions, invites, tokens).
+
+var (
+	// ErrShopHostTaken: the host is attached to another team.
+	ErrShopHostTaken = errors.New("platformstore: shop host taken")
+	// ErrShopHostNotFound: the team has no such host.
+	ErrShopHostNotFound = errors.New("platformstore: shop host not found")
+	// ErrShopHostManaged: the platform address cannot be removed by hand.
+	ErrShopHostManaged = errors.New("platformstore: shop host managed")
+	// ErrShopHostNotLive: only a live host can be the main address.
+	ErrShopHostNotLive = errors.New("platformstore: shop host not live")
+	// ErrShopHostLimit: the team has as many custom hosts as it may.
+	ErrShopHostLimit = errors.New("platformstore: shop host limit")
+)
+
+// ShopHostMax bounds the custom hosts of one team.
+const ShopHostMax = 10
+
+// Shop host kinds and statuses (shop_host.kind / status).
+const (
+	ShopHostSubdomain = "subdomain"
+	ShopHostCustom    = "custom"
+	ShopHostLegacy    = "legacy"
+
+	ShopHostRecordsNeeded = "records_needed"
+	ShopHostVerifying     = "verifying"
+	ShopHostLive          = "live"
+	ShopHostFailed        = "failed"
+)
+
+// ShopRecord is one DNS record a custom host needs (stored as JSON on its row).
+type ShopRecord struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Found bool   `json:"found"`
+}
+
+// ShopHost is one host of a team's shop.
+type ShopHost struct {
+	Host       string
+	TeamID     int64
+	Kind       string
+	Managed    bool
+	Primary    bool
+	Status     string
+	RedirectTo string
+	Records    []ShopRecord
+	CreatedAt  time.Time
+	VerifiedAt *time.Time
+	CheckedAt  *time.Time
+}
+
+type shopHostRow struct {
+	Host       string     `db:"host"`
+	TeamID     int64      `db:"team_id"`
+	Kind       string     `db:"kind"`
+	Managed    bool       `db:"managed"`
+	Primary    bool       `db:"is_primary"`
+	Status     string     `db:"status"`
+	RedirectTo string     `db:"redirect_to"`
+	Records    []byte     `db:"records"`
+	CreatedAt  time.Time  `db:"created_at"`
+	VerifiedAt *time.Time `db:"verified_at"`
+	CheckedAt  *time.Time `db:"checked_at"`
+}
+
+const shopHostColumns = `host, team_id, kind, managed, is_primary, status, redirect_to, records, created_at, verified_at, checked_at`
+
+func (r shopHostRow) host() ShopHost {
+	h := ShopHost{Host: r.Host, TeamID: r.TeamID, Kind: r.Kind, Managed: r.Managed, Primary: r.Primary, Status: r.Status,
+		RedirectTo: r.RedirectTo, CreatedAt: r.CreatedAt, VerifiedAt: r.VerifiedAt, CheckedAt: r.CheckedAt}
+	if len(r.Records) > 0 {
+		_ = json.Unmarshal(r.Records, &h.Records) // a row we wrote; an unreadable one shows no records
+	}
+	return h
+}
+
+func recordsJSON(rs []ShopRecord) ([]byte, error) {
+	if rs == nil {
+		rs = []ShopRecord{}
+	}
+	b, err := json.Marshal(rs)
+	if err != nil {
+		return nil, fmt.Errorf("platformstore: shop records: %w", err)
+	}
+	return b, nil
+}
+
+// TeamShop is a team's shop switch, the operator's close and its mail sender. A team without a row
+// has the zero value (off).
+type TeamShop struct {
+	TeamID           int64      `db:"team_id"`
+	Enabled          bool       `db:"enabled"`
+	EnabledAt        *time.Time `db:"enabled_at"`
+	ClosedByOperator bool       `db:"closed_by_operator"`
+	MailFromName     string     `db:"mail_from_name"`
+	MailReplyTo      string     `db:"mail_reply_to"`
+}
+
+// TeamStripe is a team's Stripe setup as stored (X18-L3 writes it). The sealed keys stay sealed here.
+type TeamStripe struct {
+	TeamID              int64      `db:"team_id"`
+	Kind                string     `db:"kind"`
+	AccountID           *string    `db:"account_id"`
+	AccountName         string     `db:"account_name"`
+	Mode                string     `db:"mode"`
+	ChargesEnabled      bool       `db:"charges_enabled"`
+	PayoutsEnabled      bool       `db:"payouts_enabled"`
+	DetailsSubmitted    bool       `db:"details_submitted"`
+	FeeBps              int        `db:"fee_bps"`
+	PublishableKey      string     `db:"publishable_key"`
+	SecretKeySealed     []byte     `db:"secret_key_sealed"`
+	WebhookSecretSealed []byte     `db:"webhook_secret_sealed"`
+	KeyLast4            string     `db:"key_last4"`
+	ConnectedAt         *time.Time `db:"connected_at"`
+	DisconnectedAt      *time.Time `db:"disconnected_at"`
+}
+
+// ShopHostTeam is the team a host belongs to; ok=false when no team has it.
+func (s *Store) ShopHostTeam(ctx context.Context, host string) (int64, bool, error) {
+	var id int64
+	if err := s.db.GetContext(ctx, &id, `SELECT team_id FROM shop_host WHERE host = ?`, host); err != nil {
+		if isNoRows(err) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("platformstore: shop host team: %w", err)
+	}
+	return id, true, nil
+}
+
+// ShopHosts lists a team's hosts: the platform address first, then by attach time.
+func (s *Store) ShopHosts(ctx context.Context, teamID int64) ([]ShopHost, error) {
+	var rows []shopHostRow
+	if err := s.db.SelectContext(ctx, &rows, `SELECT `+shopHostColumns+` FROM shop_host WHERE team_id = ?
+ORDER BY (kind = 'subdomain') DESC, created_at, host`, teamID); err != nil {
+		return nil, fmt.Errorf("platformstore: shop hosts: %w", err)
+	}
+	out := make([]ShopHost, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.host())
+	}
+	return out, nil
+}
+
+// ShopHost reads one host of a team.
+func (s *Store) ShopHost(ctx context.Context, teamID int64, host string) (ShopHost, error) {
+	var r shopHostRow
+	if err := s.db.GetContext(ctx, &r, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ?`, host, teamID); err != nil {
+		if isNoRows(err) {
+			return ShopHost{}, ErrShopHostNotFound
+		}
+		return ShopHost{}, fmt.Errorf("platformstore: shop host: %w", err)
+	}
+	return r.host(), nil
+}
+
+// OpenShopHosts lists every host of every shop that is on and not closed by the operator (the CORS
+// allow-list of /api/frontend). Hosts of a team that is not active are left out.
+func (s *Store) OpenShopHosts(ctx context.Context) ([]string, error) {
+	var hosts []string
+	if err := s.db.SelectContext(ctx, &hosts, `SELECT h.host FROM shop_host h
+JOIN team_shop ts ON ts.team_id = h.team_id
+JOIN team t ON t.id = h.team_id
+WHERE ts.enabled = 1 AND ts.closed_by_operator = 0 AND t.status = 'active'
+ORDER BY h.host`); err != nil {
+		return nil, fmt.Errorf("platformstore: open shop hosts: %w", err)
+	}
+	return hosts, nil
+}
+
+// TeamShop reads a team's shop row; a team without one is off (zero value with TeamID set).
+func (s *Store) TeamShop(ctx context.Context, teamID int64) (TeamShop, error) {
+	var ts TeamShop
+	err := s.db.GetContext(ctx, &ts, `SELECT team_id, enabled, enabled_at, closed_by_operator, mail_from_name, mail_reply_to
+FROM team_shop WHERE team_id = ?`, teamID)
+	if err != nil {
+		if isNoRows(err) {
+			return TeamShop{TeamID: teamID}, nil
+		}
+		return TeamShop{}, fmt.Errorf("platformstore: team shop: %w", err)
+	}
+	return ts, nil
+}
+
+// lockTeamShop makes sure the team's shop row exists and locks it (the first lock of every shop write).
+func lockTeamShop(ctx context.Context, tx *sqlx.Tx, teamID int64) (TeamShop, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT IGNORE INTO team_shop (team_id) VALUES (?)`, teamID); err != nil {
+		return TeamShop{}, fmt.Errorf("platformstore: team shop row: %w", err)
+	}
+	var ts TeamShop
+	if err := tx.GetContext(ctx, &ts, `SELECT team_id, enabled, enabled_at, closed_by_operator, mail_from_name, mail_reply_to
+FROM team_shop WHERE team_id = ? FOR UPDATE`, teamID); err != nil {
+		return TeamShop{}, fmt.Errorf("platformstore: lock team shop: %w", err)
+	}
+	return ts, nil
+}
+
+// SetShopEnabled turns a team's shop on or off. Turning it on puts its platform address subdomain
+// (a live, managed host) in place: a platform address of an old slug is replaced, and it becomes the
+// main address when the team has no other. Turning it off keeps every host (they stop answering).
+func (s *Store) SetShopEnabled(ctx context.Context, teamID int64, enabled bool, subdomain string, by int64, now time.Time) error {
+	now = now.UTC()
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		ts, err := lockTeamShop(ctx, tx, teamID)
+		if err != nil {
+			return err
+		}
+		if enabled {
+			if err := ensureSubdomainTx(ctx, tx, teamID, subdomain, now); err != nil {
+				return err
+			}
+		}
+		enabledAt := ts.EnabledAt
+		if enabled && !ts.Enabled {
+			enabledAt = &now
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE team_shop SET enabled = ?, enabled_at = ?, updated_by = ?, updated_at = ?
+WHERE team_id = ?`, enabled, enabledAt, nullID(by), now, teamID); err != nil {
+			return fmt.Errorf("platformstore: set shop enabled: %w", err)
+		}
+		return nil
+	})
+}
+
+// EnsureShopSubdomain puts the team's platform address in place (a rename moved its slug) without
+// touching the switch. A no-op when it is already there.
+func (s *Store) EnsureShopSubdomain(ctx context.Context, teamID int64, subdomain string, now time.Time) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		return ensureSubdomainTx(ctx, tx, teamID, subdomain, now.UTC())
+	})
+}
+
+func ensureSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, subdomain string, now time.Time) error {
+	if subdomain == "" {
+		return errors.New("platformstore: shop subdomain is empty")
+	}
+	var hosts []shopHostRow
+	if err := tx.SelectContext(ctx, &hosts, `SELECT `+shopHostColumns+` FROM shop_host WHERE team_id = ? FOR UPDATE`, teamID); err != nil {
+		return fmt.Errorf("platformstore: shop hosts: %w", err)
+	}
+	have, primary, oldPrimary := false, false, false
+	for _, h := range hosts {
+		if h.Host == subdomain {
+			have = true
+			continue
+		}
+		if h.Primary {
+			primary = true
+			if h.Kind == ShopHostSubdomain {
+				oldPrimary = true
+			}
+		}
+	}
+	// A platform address of an old slug goes (the new one replaces it).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE team_id = ? AND kind = 'subdomain' AND host <> ?`, teamID, subdomain); err != nil {
+		return fmt.Errorf("platformstore: old shop subdomain: %w", err)
+	}
+	if oldPrimary {
+		primary = false
+	}
+	if !have {
+		var owner int64
+		err := tx.GetContext(ctx, &owner, `SELECT team_id FROM shop_host WHERE host = ? FOR UPDATE`, subdomain)
+		switch {
+		case err == nil:
+			return ErrShopHostTaken
+		case !isNoRows(err):
+			return fmt.Errorf("platformstore: shop subdomain owner: %w", err)
+		}
+		recs, err := recordsJSON(nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shop_host (host, team_id, kind, managed, is_primary, status, records, created_at, verified_at)
+VALUES (?, ?, 'subdomain', 1, 0, 'live', ?, ?, ?)`, subdomain, teamID, recs, now, now); err != nil {
+			if dupKey(err, "PRIMARY") {
+				return ErrShopHostTaken
+			}
+			return fmt.Errorf("platformstore: add shop subdomain: %w", err)
+		}
+	}
+	if !primary {
+		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 1 WHERE host = ? AND team_id = ?`, subdomain, teamID); err != nil {
+			return fmt.Errorf("platformstore: shop subdomain primary: %w", err)
+		}
+	}
+	return nil
+}
+
+// AttachShopHost adds a custom host of the team with the records it needs. Attaching a host the team
+// already has refreshes its records and status; another team's host is ErrShopHostTaken.
+func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
+	now = now.UTC()
+	recs, err := recordsJSON(records)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var cur shopHostRow
+		err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host)
+		switch {
+		case err == nil && cur.TeamID != teamID:
+			return ErrShopHostTaken
+		case err == nil && cur.Kind != ShopHostCustom:
+			return ErrShopHostManaged
+		case err == nil:
+			_, err = tx.ExecContext(ctx, `UPDATE shop_host SET status = ?, records = ?, checked_at = ? WHERE host = ?`, status, recs, now, host)
+			if err != nil {
+				return fmt.Errorf("platformstore: refresh shop host: %w", err)
+			}
+			return nil
+		case !isNoRows(err):
+			return fmt.Errorf("platformstore: shop host owner: %w", err)
+		}
+		var n int
+		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM shop_host WHERE team_id = ? AND kind = 'custom'`, teamID); err != nil {
+			return fmt.Errorf("platformstore: count shop hosts: %w", err)
+		}
+		if n >= ShopHostMax {
+			return ErrShopHostLimit
+		}
+		var verified *time.Time
+		if status == ShopHostLive {
+			verified = &now
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shop_host (host, team_id, kind, managed, is_primary, status, records, created_at, verified_at, checked_at)
+VALUES (?, ?, 'custom', 0, 0, ?, ?, ?, ?, ?)`, host, teamID, status, recs, now, verified, now); err != nil {
+			if dupKey(err, "PRIMARY") {
+				return ErrShopHostTaken
+			}
+			return fmt.Errorf("platformstore: attach shop host: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetShopHostStatus stores a check's answer for a custom host of the team. A host that stops being
+// live loses the main address to the platform address.
+func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
+	now = now.UTC()
+	recs, err := recordsJSON(records)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var cur shopHostRow
+		if err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ? FOR UPDATE`, host, teamID); err != nil {
+			if isNoRows(err) {
+				return ErrShopHostNotFound
+			}
+			return fmt.Errorf("platformstore: lock shop host: %w", err)
+		}
+		if cur.Kind != ShopHostCustom {
+			return ErrShopHostManaged
+		}
+		verified := cur.VerifiedAt
+		if status == ShopHostLive && cur.Status != ShopHostLive {
+			verified = &now
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET status = ?, records = ?, checked_at = ?, verified_at = ? WHERE host = ?`,
+			status, recs, now, verified, host); err != nil {
+			return fmt.Errorf("platformstore: shop host status: %w", err)
+		}
+		if cur.Primary && status != ShopHostLive {
+			return primaryToSubdomainTx(ctx, tx, teamID, host)
+		}
+		return nil
+	})
+}
+
+// RemoveShopHost deletes a custom host of the team. When it was the main address, the platform
+// address takes over.
+func (s *Store) RemoveShopHost(ctx context.Context, teamID int64, host string) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var cur shopHostRow
+		if err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ? FOR UPDATE`, host, teamID); err != nil {
+			if isNoRows(err) {
+				return ErrShopHostNotFound
+			}
+			return fmt.Errorf("platformstore: lock shop host: %w", err)
+		}
+		if cur.Managed || cur.Kind != ShopHostCustom {
+			return ErrShopHostManaged
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ?`, host); err != nil {
+			return fmt.Errorf("platformstore: remove shop host: %w", err)
+		}
+		if cur.Primary {
+			return primaryToSubdomainTx(ctx, tx, teamID, host)
+		}
+		return nil
+	})
+}
+
+func primaryToSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, from string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 0 WHERE host = ?`, from); err != nil {
+		return fmt.Errorf("platformstore: drop shop primary: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 1 WHERE team_id = ? AND kind = 'subdomain'`, teamID); err != nil {
+		return fmt.Errorf("platformstore: shop primary to subdomain: %w", err)
+	}
+	return nil
+}
+
+// SetShopPrimary makes a live host of the team its main address.
+func (s *Store) SetShopPrimary(ctx context.Context, teamID int64, host string) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var cur shopHostRow
+		if err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ? FOR UPDATE`, host, teamID); err != nil {
+			if isNoRows(err) {
+				return ErrShopHostNotFound
+			}
+			return fmt.Errorf("platformstore: lock shop host: %w", err)
+		}
+		if cur.Status != ShopHostLive || cur.RedirectTo != "" {
+			return ErrShopHostNotLive
+		}
+		if cur.Primary {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 0 WHERE team_id = ? AND is_primary = 1`, teamID); err != nil {
+			return fmt.Errorf("platformstore: drop shop primary: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 1 WHERE host = ?`, host); err != nil {
+			return fmt.Errorf("platformstore: set shop primary: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetShopMail stores the sender name and reply-to of the team's letters (already normalised).
+func (s *Store) SetShopMail(ctx context.Context, teamID int64, fromName, replyTo string, by int64) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE team_shop SET mail_from_name = ?, mail_reply_to = ?, updated_by = ?, updated_at = UTC_TIMESTAMP(3)
+WHERE team_id = ?`, fromName, replyTo, nullID(by), teamID); err != nil {
+			return fmt.Errorf("platformstore: set shop mail: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetShopClosed closes (or reopens) a team's shop by the operator; the team's own switch stays.
+func (s *Store) SetShopClosed(ctx context.Context, teamID int64, closed bool) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE team_shop SET closed_by_operator = ?, updated_at = UTC_TIMESTAMP(3) WHERE team_id = ?`,
+			closed, teamID); err != nil {
+			return fmt.Errorf("platformstore: set shop closed: %w", err)
+		}
+		return nil
+	})
+}
+
+// TeamStripe reads a team's Stripe row; ok=false when it has none.
+func (s *Store) TeamStripe(ctx context.Context, teamID int64) (TeamStripe, bool, error) {
+	var st TeamStripe
+	err := s.db.GetContext(ctx, &st, `SELECT team_id, kind, account_id, account_name, mode, charges_enabled, payouts_enabled,
+details_submitted, fee_bps, publishable_key, secret_key_sealed, webhook_secret_sealed, key_last4, connected_at, disconnected_at
+FROM team_stripe WHERE team_id = ?`, teamID)
+	if err != nil {
+		if isNoRows(err) {
+			return TeamStripe{}, false, nil
+		}
+		return TeamStripe{}, false, fmt.Errorf("platformstore: team stripe: %w", err)
+	}
+	return st, true, nil
+}
+
+// DeleteTeamShopTx removes every shop row of a team (the hard delete of a team row calls it, beside
+// its brand).
+func DeleteTeamShopTx(ctx context.Context, tx *sqlx.Tx, teamID int64) error {
+	for _, q := range []string{
+		`DELETE FROM team_shop WHERE team_id = ?`,
+		`DELETE FROM shop_host WHERE team_id = ?`,
+		`DELETE FROM team_stripe WHERE team_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, teamID); err != nil {
+			return fmt.Errorf("platformstore: delete team shop: %w", err)
+		}
+	}
+	return nil
+}
+
+// ShopSummary is a team's shop as the console's team row shows it.
+type ShopSummary struct {
+	Enabled     bool   `db:"enabled"`
+	Closed      bool   `db:"closed_by_operator"`
+	PrimaryHost string `db:"primary_host"`
+	Payable     bool   `db:"payable"`
+}
+
+// ShopSummaries reads the shops of teams in one query; a team without a shop row is missing.
+func (s *Store) ShopSummaries(ctx context.Context, teamIDs []int64) (map[int64]ShopSummary, error) {
+	out := make(map[int64]ShopSummary, len(teamIDs))
+	if len(teamIDs) == 0 {
+		return out, nil
+	}
+	q, args, err := sqlx.In(`SELECT ts.team_id, ts.enabled, ts.closed_by_operator, COALESCE(h.host, '') AS primary_host,
+(st.team_id IS NOT NULL AND st.charges_enabled = 1 AND st.disconnected_at IS NULL) AS payable
+FROM team_shop ts
+LEFT JOIN shop_host h ON h.primary_team = ts.team_id
+LEFT JOIN team_stripe st ON st.team_id = ts.team_id
+WHERE ts.team_id IN (?)`, teamIDs)
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		TeamID int64 `db:"team_id"`
+		ShopSummary
+	}
+	if err := s.db.SelectContext(ctx, &rows, s.db.Rebind(q), args...); err != nil {
+		return nil, fmt.Errorf("platformstore: shop summaries: %w", err)
+	}
+	for _, r := range rows {
+		out[r.TeamID] = r.ShopSummary
+	}
+	return out, nil
+}

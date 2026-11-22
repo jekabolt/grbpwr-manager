@@ -36,6 +36,7 @@ type Server struct {
 	rateLimiter       *ratelimit.MultiKeyLimiter
 	reservationMgr    *stockreserve.Manager
 	storefront        *storefrontAuthRuntime
+	shops             *shopState // nil = teams mode off (X18)
 }
 
 // New creates a new server with frontend handlers.

@@ -103,6 +103,9 @@ type IssueOpts struct {
 	// minted for, written as claim "cg" when above 0. The edge in teams mode refuses a legacy token
 	// whose generation is not the account's current one; a token without the claim is generation 0.
 	CredGen int64
+	// TeamID (storefront tokens of a team shop only, X18) is written as claim "tid" when above 0:
+	// the shop's team, for the storefront to read. The shop's derived key and audience enforce it.
+	TeamID int64
 }
 
 func NewToken(jwtAuth *jwtauth.JWTAuth, ttl time.Duration) (string, error) {
@@ -140,6 +143,9 @@ func NewTokenWithSubjectOptsAt(jwtAuth *jwtauth.JWTAuth, ttl time.Duration, subj
 		}
 		if opts.IncludeJti {
 			claims["jti"] = uuid.New().String()
+		}
+		if opts.TeamID > 0 {
+			claims[claimTeamID] = opts.TeamID
 		}
 	}
 	_, ts, err := jwtAuth.Encode(claims)

@@ -102,6 +102,10 @@ type Binder struct {
 	legacyOrigins map[string]bool
 	behind        func(tenant.Team) bool // nil = every team is current
 	tokenTeams    TokenTeams             // nil = every public link is team #1 (token.go)
+	// shops: the shop lookups (shop.go); nil = teams mode off, every storefront call is the
+	// storefront team. storefrontHosts: hosts of HTTP_ALLOWED_ORIGINS (the storefront's own).
+	shops           shopPlane
+	storefrontHosts map[string]bool
 
 	cacheMu   sync.Mutex
 	features  map[int64]featureEntry
@@ -112,6 +116,9 @@ type Binder struct {
 	// lookup that raced one never stores the answer it read before the change.
 	credGens  map[string]credGenEntry
 	credEpoch uint64
+	// shopHosts / shopStates cache the shop lookups (shop.go; cacheTTL, InvalidateShop drops them).
+	shopHosts  map[string]shopHostEntry
+	shopStates map[int64]shopStateEntry
 }
 
 // New returns the binder for team #1 with teams mode off. UsePlatform switches teams mode on.
@@ -167,8 +174,10 @@ func (b *Binder) usePlane(p controlPlane, cfg platformstore.Config) {
 	b.storefrontID = sf
 	b.baseDomain = strings.ToLower(strings.Trim(strings.TrimSpace(cfg.BaseDomain), "."))
 	b.legacyOrigins = legacy
+	b.shops, _ = p.(shopPlane)
 	b.mu.Unlock()
 	b.InvalidateTeam(0)
+	b.InvalidateShop(0)
 }
 
 func (b *Binder) state() (controlPlane, tenant.Directory) {
@@ -641,10 +650,20 @@ func (b *Binder) bindFor(ctx context.Context, c Class) (context.Context, error) 
 	}
 }
 
-// Unary binds the team of a unary call by its method's class.
+// Unary binds the team of a unary call by its method's class. A storefront call is bound to the shop
+// it names (shop.go) and refused while that shop is closed (GetShopProfile still answers).
 func (b *Binder) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		bound, err := b.bindFor(ctx, ClassifyMethod(info.FullMethod))
+		class := ClassifyMethod(info.FullMethod)
+		if class == ClassStorefront {
+			sh, origin := shopMD(ctx)
+			bound, err := b.bindStorefront(ctx, sh, origin, info.FullMethod != shopProfileMethod)
+			if err != nil {
+				return nil, err
+			}
+			return handler(bound, req)
+		}
+		bound, err := b.bindFor(ctx, class)
 		if err != nil {
 			return nil, err
 		}
@@ -655,7 +674,15 @@ func (b *Binder) Unary() grpc.UnaryServerInterceptor {
 // Stream binds the team of a stream by its method's class.
 func (b *Binder) Stream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		bound, err := b.bindFor(ss.Context(), ClassifyMethod(info.FullMethod))
+		class := ClassifyMethod(info.FullMethod)
+		var bound context.Context
+		var err error
+		if class == ClassStorefront {
+			sh, origin := shopMD(ss.Context())
+			bound, err = b.bindStorefront(ss.Context(), sh, origin, true)
+		} else {
+			bound, err = b.bindFor(ss.Context(), class)
+		}
 		if err != nil {
 			return err
 		}
@@ -671,13 +698,31 @@ func (b *Binder) Middleware(next http.Handler) http.Handler {
 			b.serveToken(w, r, next)
 			return
 		}
-		bound, err := b.bindFor(r.Context(), class)
+		var bound context.Context
+		var err error
+		if class == ClassStorefront && isFrontendPath(r.URL.Path) {
+			// The shop is bound here for the request's own handlers; the gRPC call behind the gateway
+			// binds it again and refuses a closed shop (Unary).
+			sh, origin := shopHeaders(r)
+			bound, err = b.bindStorefront(r.Context(), sh, origin, false)
+		} else {
+			bound, err = b.bindFor(r.Context(), class)
+		}
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			if status.Code(err) == codes.Unavailable {
+			switch status.Code(err) {
+			case codes.Unavailable:
 				w.WriteHeader(http.StatusServiceUnavailable)
-			} else {
+			case codes.NotFound:
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"` + status.Convert(err).Message() + `"}`))
+				return
+			default:
 				w.WriteHeader(http.StatusForbidden)
+			}
+			if m := status.Convert(err).Message(); m == MsgShopMismatch {
+				_, _ = w.Write([]byte(`{"error":"` + m + `"}`))
+				return
 			}
 			_, _ = w.Write([]byte(`{"error":"team unavailable"}`))
 			return

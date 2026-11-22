@@ -1108,6 +1108,7 @@ func (a *App) Start(ctx context.Context) error {
 		binder.UseTokenTeams(linkTokens.TokenTeam)
 	}
 	a.useSchemaGate(binder)
+	a.wireShops(ctx, binder, adminS, frontendS)
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)

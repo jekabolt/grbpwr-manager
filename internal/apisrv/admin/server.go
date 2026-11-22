@@ -60,6 +60,8 @@ type Server struct {
 	platform platformHandle
 	// noShop: no storefront on this installation (noshop.go); storefront side effects are skipped.
 	noShop bool
+	// shopW wires the shop screen of teams (shop.go, X18); nil = no shop screen.
+	shopW *ShopWiring
 
 	repo   dependency.Repository
 	bucket dependency.FileStore
@@ -326,9 +328,15 @@ func (s *Server) revalidateAsync(ctx context.Context, data *dto.RevalidationData
 	if s.noShop {
 		return
 	}
+	re := s.re
 	team, ok := s.storefrontTeamOf(ctx)
 	if !ok {
-		return
+		// Any other team's change redraws that team's own shop (X18), never the storefront.
+		t, has := tenant.From(ctx)
+		if s.shopW == nil || s.shopW.Revalidator == nil || !has || t.ID <= 0 {
+			return
+		}
+		team, re = t, s.shopW.Revalidator
 	}
 	rctx := s.revalCtx
 	if team.ID > 0 {
@@ -346,7 +354,7 @@ func (s *Server) revalidateAsync(ctx context.Context, data *dto.RevalidationData
 		// in flight, so concurrency stays bounded.
 		s.revalidateSem <- struct{}{}
 		defer func() { <-s.revalidateSem }()
-		if err := s.re.RevalidateAll(rctx, data); err != nil {
+		if err := re.RevalidateAll(rctx, data); err != nil {
 			slog.Default().ErrorContext(rctx, "async storefront revalidation failed",
 				slog.String("err", err.Error()),
 			)

@@ -22,6 +22,7 @@ type storefrontAuthRuntime struct {
 	loginPepper                string
 	refreshPepper              string
 	magicLinkBaseURL           string
+	teamID                     int64 // 0 = the storefront team's (env keys); else a shop team's derived keys
 }
 
 func newStorefrontAuthRuntime(p *storefront.Config) (*storefrontAuthRuntime, error) {

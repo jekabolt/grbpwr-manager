@@ -66,6 +66,9 @@ type Config struct {
 	// StorefrontNone: TENANT_STOREFRONT_TEAM_ID=none in teams mode — this installation has no shop.
 	// Read it through NoShop.
 	StorefrontNone bool `mapstructure:"-"`
+	// ShopZone (PLATFORM_SHOP_ZONE, X18): the zone of shop addresses, {slug}.<ShopZone>; empty =
+	// "shop." + BaseDomain. Read through ShopZoneHost.
+	ShopZone string `mapstructure:"shop_zone"`
 	// Team1Profile: TENANT_TEAM1_PROFILE, the feature profile EnsureTeamOne gives team #1
 	// (Team1ProfileAll, the default, or Team1ProfileProduction). Teams mode only.
 	Team1Profile string `mapstructure:"team1_profile"`
@@ -212,6 +215,19 @@ func (c Config) Enabled() bool { return strings.TrimSpace(c.DSN) != "" }
 // NoShop reports an installation without a storefront: teams mode with TENANT_STOREFRONT_TEAM_ID=none.
 // It is the one predicate every no-shop decision reads (mounts, workers, side effects).
 func (c Config) NoShop() bool { return c.Enabled() && c.StorefrontNone }
+
+// ShopZoneHost is the zone of shop addresses: PLATFORM_SHOP_ZONE, else "shop." + BaseDomain; "" with
+// neither set.
+func (c Config) ShopZoneHost() string {
+	z := strings.ToLower(strings.Trim(strings.TrimSpace(c.ShopZone), "."))
+	if z != "" {
+		return z
+	}
+	if b := strings.ToLower(strings.Trim(strings.TrimSpace(c.BaseDomain), ".")); b != "" {
+		return "shop." + b
+	}
+	return ""
+}
 
 // LegacyOrigins splits LegacyAdminOrigins.
 func (c Config) LegacyOrigins() []string { return splitList(c.LegacyAdminOrigins) }

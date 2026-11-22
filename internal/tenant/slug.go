@@ -19,13 +19,14 @@ var (
 )
 
 // IsReservedSlug reports whether s is a name the platform keeps for itself (hosts, mail CNAMEs,
-// product names). send / rsend are live Resend CNAMEs on lekalo.studio.
+// product names). send / rsend are live Resend CNAMEs on lekalo.studio; shop is the shop zone
+// (shop.lekalo.studio, X18).
 func IsReservedSlug(s string) bool {
 	switch s {
 	case "www", "api", "app", "admin", "console", "beta", "staging", "dev", "vpn",
 		"mail", "smtp", "imap", "send", "rsend", "bounce",
 		"files", "cdn", "static", "assets", "status", "docs", "help", "support",
-		"auth", "login", "signup", "register", "billing", "backend",
+		"auth", "login", "signup", "register", "billing", "backend", "shop",
 		"grbpwr", "lekalo", "zoho", "resend":
 		return true
 	}

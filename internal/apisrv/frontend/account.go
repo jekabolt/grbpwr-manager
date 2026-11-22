@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
@@ -71,26 +70,20 @@ func randomMagicToken() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func (s *Server) requireStorefrontAuth() error {
-	if s.storefront == nil {
-		return status.Error(codes.FailedPrecondition, "storefront account API is not configured")
-	}
-	return nil
-}
-
 func (s *Server) storefrontEmailFromAccess(ctx context.Context) (string, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return "", err
 	}
 	tok, err := getBearerToken(ctx)
 	if err != nil || tok == "" {
 		return "", status.Error(codes.Unauthenticated, "missing access token")
 	}
-	sub, jti, _, err := jwt.VerifyTokenFull(s.storefront.accessJwtAuth, tok, s.storefront.accessExpectations)
+	sub, jti, _, err := jwt.VerifyTokenFull(rt.accessJwtAuth, tok, rt.accessExpectations)
 	if err != nil || sub == "" {
 		return "", status.Error(codes.Unauthenticated, "invalid or expired access token")
 	}
-	if s.storefront.accessJtiRevocationEnabled && jti != "" {
+	if rt.accessJtiRevocationEnabled && jti != "" {
 		denylisted, err := s.repo.StorefrontAccount().IsJtiDenylisted(ctx, jti)
 		if err != nil {
 			slog.Default().ErrorContext(ctx, "jti denylist check failed", slog.String("err", err.Error()))
@@ -104,7 +97,8 @@ func (s *Server) storefrontEmailFromAccess(ctx context.Context) (string, error) 
 }
 
 func (s *Server) issueAccessAndRefresh(ctx context.Context, email string) (accessToken, refreshToken string, accessExp time.Time, acc *entity.StorefrontAccount, err error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return "", "", time.Time{}, nil, err
 	}
 	acc, err = s.repo.StorefrontAccount().GetOrCreateAccountByEmail(ctx, email)
@@ -116,14 +110,14 @@ func (s *Server) issueAccessAndRefresh(ctx context.Context, email string) (acces
 		return "", "", time.Time{}, nil, err
 	}
 	now := time.Now().UTC()
-	h := tokenhash.Hash(s.storefront.refreshPepper, rawRefresh)
+	h := tokenhash.Hash(rt.refreshPepper, rawRefresh)
 	fid := uuid.New().String()
-	expAt := now.Add(s.storefront.refreshTTL)
+	expAt := now.Add(rt.refreshTTL)
 	if _, err := s.repo.StorefrontAccount().InsertRefreshToken(ctx, acc.ID, h, fid, expAt); err != nil {
 		return "", "", time.Time{}, nil, fmt.Errorf("refresh token: %w", err)
 	}
-	accessExp = now.Add(s.storefront.accessTTL)
-	accessToken, err = jwt.NewTokenWithSubjectOptsAt(s.storefront.accessJwtAuth, s.storefront.accessTTL, email, s.storefront.accessIssueOpts, now)
+	accessExp = now.Add(rt.accessTTL)
+	accessToken, err = jwt.NewTokenWithSubjectOptsAt(rt.accessJwtAuth, rt.accessTTL, email, rt.accessIssueOpts, now)
 	if err != nil {
 		return "", "", time.Time{}, nil, err
 	}
@@ -132,7 +126,8 @@ func (s *Server) issueAccessAndRefresh(ctx context.Context, email string) (acces
 
 // RequestAccountLogin queues OTP + magic link email.
 func (s *Server) RequestAccountLogin(ctx context.Context, req *pb_frontend.RequestAccountLoginRequest) (*pb_frontend.RequestAccountLoginResponse, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return nil, err
 	}
 	email := normalizeEmail(req.GetEmail())
@@ -153,15 +148,16 @@ func (s *Server) RequestAccountLogin(ctx context.Context, req *pb_frontend.Reque
 		slog.Default().ErrorContext(ctx, "account login magic", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't start login")
 	}
-	otpHash := tokenhash.Hash(s.storefront.loginPepper, "otp:"+email+":"+otp)
-	magicHash := tokenhash.Hash(s.storefront.loginPepper, "magic:"+magic)
-	exp := time.Now().UTC().Add(s.storefront.loginChallengeTTL)
+	otpHash := tokenhash.Hash(rt.loginPepper, "otp:"+email+":"+otp)
+	magicHash := tokenhash.Hash(rt.loginPepper, "magic:"+magic)
+	exp := time.Now().UTC().Add(rt.loginChallengeTTL)
 	if err := s.repo.StorefrontAccount().InsertLoginChallenge(ctx, email, otpHash, magicHash, exp); err != nil {
 		slog.Default().ErrorContext(ctx, "insert login challenge", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't start login")
 	}
-	magicURL, err := url.Parse(s.storefront.magicLinkBaseURL)
+	magicURL, err := s.magicLinkBase(ctx, rt)
 	if err != nil {
+		slog.Default().ErrorContext(ctx, "magic link base", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "invalid magic_link_base_url")
 	}
 	q := magicURL.Query()
@@ -176,7 +172,8 @@ func (s *Server) RequestAccountLogin(ctx context.Context, req *pb_frontend.Reque
 
 // VerifyAccountLoginCode completes login with OTP.
 func (s *Server) VerifyAccountLoginCode(ctx context.Context, req *pb_frontend.VerifyAccountLoginCodeRequest) (*pb_frontend.VerifyAccountLoginResponse, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return nil, err
 	}
 	email := normalizeEmail(req.GetEmail())
@@ -188,7 +185,7 @@ func (s *Server) VerifyAccountLoginCode(ctx context.Context, req *pb_frontend.Ve
 	if err := s.rateLimiter.CheckAccountVerify(ip, email, ""); err != nil {
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
-	if _, err := s.repo.StorefrontAccount().ConsumeLoginChallengeOTP(ctx, email, code, s.storefront.loginPepper); err != nil {
+	if _, err := s.repo.StorefrontAccount().ConsumeLoginChallengeOTP(ctx, email, code, rt.loginPepper); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.Unauthenticated, "invalid or expired code")
 		}
@@ -200,7 +197,8 @@ func (s *Server) VerifyAccountLoginCode(ctx context.Context, req *pb_frontend.Ve
 
 // VerifyAccountMagicLink completes login with magic token.
 func (s *Server) VerifyAccountMagicLink(ctx context.Context, req *pb_frontend.VerifyAccountMagicLinkRequest) (*pb_frontend.VerifyAccountLoginResponse, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return nil, err
 	}
 	tok := strings.TrimSpace(req.GetToken())
@@ -213,7 +211,7 @@ func (s *Server) VerifyAccountMagicLink(ctx context.Context, req *pb_frontend.Ve
 	if err := s.rateLimiter.CheckAccountVerify(ip, "", magicKey); err != nil {
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
-	email, err := s.repo.StorefrontAccount().ConsumeLoginChallengeMagic(ctx, tok, s.storefront.loginPepper)
+	email, err := s.repo.StorefrontAccount().ConsumeLoginChallengeMagic(ctx, tok, rt.loginPepper)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.Unauthenticated, "invalid or expired link")
@@ -244,7 +242,8 @@ func (s *Server) finishLogin(ctx context.Context, email string) (*pb_frontend.Ve
 
 // RefreshAccountSession rotates refresh token and issues new access token.
 func (s *Server) RefreshAccountSession(ctx context.Context, req *pb_frontend.RefreshAccountSessionRequest) (*pb_frontend.RefreshAccountSessionResponse, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return nil, err
 	}
 	raw := strings.TrimSpace(req.GetRefreshToken())
@@ -256,7 +255,7 @@ func (s *Server) RefreshAccountSession(ctx context.Context, req *pb_frontend.Ref
 		return nil, status.Error(codes.ResourceExhausted, err.Error())
 	}
 	now := time.Now().UTC()
-	newRaw, email, err := s.repo.StorefrontAccount().RotateRefreshToken(ctx, raw, s.storefront.refreshPepper, s.storefront.refreshTTL, now)
+	newRaw, email, err := s.repo.StorefrontAccount().RotateRefreshToken(ctx, raw, rt.refreshPepper, rt.refreshTTL, now)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, status.Error(codes.Unauthenticated, "invalid refresh token")
@@ -267,8 +266,8 @@ func (s *Server) RefreshAccountSession(ctx context.Context, req *pb_frontend.Ref
 		slog.Default().ErrorContext(ctx, "refresh rotate", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "can't refresh session")
 	}
-	accessExp := now.Add(s.storefront.accessTTL)
-	access, err := jwt.NewTokenWithSubjectOptsAt(s.storefront.accessJwtAuth, s.storefront.accessTTL, email, s.storefront.accessIssueOpts, now)
+	accessExp := now.Add(rt.accessTTL)
+	access, err := jwt.NewTokenWithSubjectOptsAt(rt.accessJwtAuth, rt.accessTTL, email, rt.accessIssueOpts, now)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "can't issue access token")
 	}
@@ -282,7 +281,8 @@ func (s *Server) RefreshAccountSession(ctx context.Context, req *pb_frontend.Ref
 // RevokeAccountSession logs out this client: JTI denylist for the access token and revoke this
 // refresh token's family. Requires Bearer token and refresh_token.
 func (s *Server) RevokeAccountSession(ctx context.Context, req *pb_frontend.RevokeAccountSessionRequest) (*pb_frontend.RevokeAccountSessionResponse, error) {
-	if err := s.requireStorefrontAuth(); err != nil {
+	rt, err := s.sfAuth(ctx)
+	if err != nil {
 		return nil, err
 	}
 	rawRefresh := strings.TrimSpace(req.GetRefreshToken())
@@ -293,7 +293,7 @@ func (s *Server) RevokeAccountSession(ctx context.Context, req *pb_frontend.Revo
 	if err != nil || tok == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing access token")
 	}
-	sub, jti, expAt, err := jwt.VerifyTokenFull(s.storefront.accessJwtAuth, tok, s.storefront.accessExpectations)
+	sub, jti, expAt, err := jwt.VerifyTokenFull(rt.accessJwtAuth, tok, rt.accessExpectations)
 	if err != nil || sub == "" {
 		return nil, status.Error(codes.Unauthenticated, "invalid or expired access token")
 	}
@@ -307,7 +307,7 @@ func (s *Server) RevokeAccountSession(ctx context.Context, req *pb_frontend.Revo
 	if jti != "" {
 		denylistExp := expAt
 		if denylistExp.IsZero() {
-			denylistExp = time.Now().UTC().Add(s.storefront.accessTTL)
+			denylistExp = time.Now().UTC().Add(rt.accessTTL)
 		}
 		if err := s.repo.StorefrontAccount().InsertJtiDenylist(ctx, jti, acc.ID, denylistExp); err != nil {
 			slog.Default().ErrorContext(ctx, "insert jti denylist failed", slog.String("err", err.Error()))

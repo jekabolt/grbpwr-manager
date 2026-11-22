@@ -569,6 +569,7 @@ func bindEnvVars() {
 	viper.BindEnv("platform.db_prefix", "TENANT_DB_PREFIX")
 	viper.BindEnv("platform.team1_db", "TENANT_TEAM1_DB")
 	viper.BindEnv("platform.storefront_team_id", "TENANT_STOREFRONT_TEAM_ID")
+	viper.BindEnv("platform.shop_zone", "PLATFORM_SHOP_ZONE")
 	viper.BindEnv("platform.team1_profile", "TENANT_TEAM1_PROFILE")
 	viper.BindEnv("platform.spares", "TENANT_SPARES")
 	viper.BindEnv("platform.provision_per_hour", "TENANT_PROVISION_PER_HOUR")
@@ -646,6 +647,7 @@ func bindEnvVars() {
 	viper.BindEnv("storefront_auth.access_jwt_ttl", "STOREFRONT_AUTH_ACCESS_JWT_TTL")
 	viper.BindEnv("storefront_auth.refresh_ttl", "STOREFRONT_AUTH_REFRESH_TTL")
 	viper.BindEnv("storefront_auth.login_challenge_ttl", "STOREFRONT_AUTH_LOGIN_CHALLENGE_TTL")
+	viper.BindEnv("storefront_auth.shop_master", "STOREFRONT_AUTH_SHOP_MASTER")
 	viper.BindEnv("storefront_auth.login_pepper", "STOREFRONT_AUTH_LOGIN_PEPPER")
 	viper.BindEnv("storefront_auth.refresh_pepper", "STOREFRONT_AUTH_REFRESH_PEPPER")
 	viper.BindEnv("storefront_auth.magic_link_base_url", "STOREFRONT_AUTH_MAGIC_LINK_BASE_URL")
@@ -786,6 +788,7 @@ func bindEnvVars() {
 	viper.BindEnv("revalidation.revalidate_secret", "REVALIDATION_REVALIDATE_SECRET")
 	viper.BindEnv("revalidation.http_timeout", "REVALIDATION_HTTP_TIMEOUT")
 	viper.BindEnv("revalidation.domains", "REVALIDATION_DOMAINS")
+	viper.BindEnv("revalidation.shop_master", "SHOP_REVALIDATE_MASTER")
 
 	// GA4 Analytics
 	viper.BindEnv("ga4.enabled", "GA4_ENABLED")

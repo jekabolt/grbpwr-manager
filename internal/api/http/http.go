@@ -202,6 +202,10 @@ type Server struct {
 	// budgetZone: the owner's AI budget zone, read live (SetBudgetZone); the console counts the
 	// month of AI spend in it.
 	budgetZone func() string
+	// shopOrigin admits team shops' origins on /api/frontend (SetShopOrigins, X18); nil = none.
+	shopOrigin func(origin string) bool
+	// shopInvalidate drops a team's cached shop answers (SetShopInvalidator, X18); nil = none.
+	shopInvalidate func(teamID int64)
 }
 
 // TenantBinder puts the request's team into its context at the edge (internal/tenantbind).
@@ -215,6 +219,31 @@ type TenantBinder interface {
 // Start; unset = the default zone.
 func (s *Server) SetBudgetZone(fn func() string) {
 	s.budgetZone = fn
+}
+
+// SetShopOrigins admits the team shops' origins on the storefront API (X18 CORS). Call before
+// Start; unset = the base CORS rules everywhere (teams mode off, today's behaviour).
+func (s *Server) SetShopOrigins(allowed func(origin string) bool) {
+	s.shopOrigin = allowed
+}
+
+// SetShopInvalidator hands the console the edge's shop cache drop (X18). Call before Start.
+func (s *Server) SetShopInvalidator(fn func(teamID int64)) {
+	s.shopInvalidate = fn
+}
+
+// corsByPath runs front for /api/frontend and base for every other path.
+func corsByPath(base, front func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		b, f := base(next), front(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if p := r.URL.Path; p == "/api/frontend" || strings.HasPrefix(p, "/api/frontend/") {
+				f.ServeHTTP(w, r)
+				return
+			}
+			b.ServeHTTP(w, r)
+		})
+	}
 }
 
 // SetTenantBinder installs the edge team binder. Unset = requests carry no team (tests).
@@ -555,6 +584,8 @@ func corsMiddleware(allowedOrigins []string, allowDevOrigins bool) func(http.Han
 func corsAllowedHeaders() []string {
 	return []string{"Content-Type", "Authorization", "X-Requested-With", "Accept",
 		"Grpc-Metadata-Authorization", "Grpc-Metadata-X-Team", "Origin",
+		// The shop a storefront call is for (X18): plain, or as gRPC metadata.
+		"X-Shop-Host", "Grpc-Metadata-X-Shop-Host",
 		// The sign-up bot check (X6): the solved challenge and the honeypot.
 		"Grpc-Metadata-X-Signup-Proof", "Grpc-Metadata-X-Signup-Trap"}
 }
@@ -581,6 +612,12 @@ func compileOriginRegex(expr string) (*regexp.Regexp, error) {
 // was. With a regex one AllowOriginFunc answers — go-chi/cors ignores AllowedOrigins once a func is
 // set — as the exact list (with its wildcards) OR the dev prefixes OR the regex.
 func buildCORS(allowedOrigins []string, allowDevOrigins bool, originRegex string) (func(http.Handler) http.Handler, error) {
+	return buildCORSWith(allowedOrigins, allowDevOrigins, originRegex, nil)
+}
+
+// buildCORSWith is buildCORS that also admits every origin extra admits (the team shops of the
+// storefront API, X18). nil extra = buildCORS.
+func buildCORSWith(allowedOrigins []string, allowDevOrigins bool, originRegex string, extra func(string) bool) (func(http.Handler) http.Handler, error) {
 	re, err := compileOriginRegex(originRegex)
 	if err != nil {
 		return nil, err
@@ -603,6 +640,12 @@ func buildCORS(allowedOrigins []string, allowDevOrigins bool, originRegex string
 		MaxAge:           3600,
 	}
 	switch {
+	case extra != nil:
+		list := originMatcher(origins)
+		opts.AllowedOrigins = nil
+		opts.AllowOriginFunc = func(_ *http.Request, origin string) bool {
+			return (len(origins) > 0 && list(origin)) || (re != nil && re.MatchString(strings.ToLower(origin))) || extra(origin)
+		}
 	case re != nil:
 		list := originMatcher(origins)
 		opts.AllowedOrigins = nil
@@ -786,7 +829,17 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 			// Start validated the regex before listening; this cannot fail there.
 			panic(err)
 		}
-		r.Use(corsMW)
+		// The storefront API also admits the team shops' origins (X18); every other route keeps the
+		// base rules. Teams mode off (no shop origins) it is the base handler everywhere.
+		if s.shopOrigin != nil {
+			frontCORS, err := buildCORSWith(s.c.AllowedOrigins, s.c.AllowDevOrigins, s.c.AllowedOriginRegex, s.shopOrigin)
+			if err != nil {
+				panic(err)
+			}
+			r.Use(corsByPath(corsMW, frontCORS))
+		} else {
+			r.Use(corsMW)
+		}
 		if s.c.BlockLocalOriginWrites && !s.c.AllowDevOrigins {
 			r.Use(localDevWriteGuard)
 		}
@@ -1053,6 +1106,9 @@ func (s *Server) frontendJSONGateway(ctx context.Context) (http.Handler, error) 
 				return key, true
 			case observability.RequestIDHeader:
 				return forwardRequestID(key)
+			case tenantbind.ShopHostHeader:
+				// The shop the call is for (X18); Grpc-Metadata-X-Shop-Host arrives as the same key.
+				return tenantbind.ShopHostMD, true
 			default:
 				return runtime.DefaultHeaderMatcher(key)
 			}
@@ -1226,6 +1282,8 @@ func (s *Server) Start(ctx context.Context,
 	// The tenant binder learns the control plane from the auth server (teams mode), and the
 	// admin chain gets the binder. Teams mode off the binder stays static (team #1 only).
 	if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
+		// x-shop-host naming one of the storefront's own hosts is the storefront team (X18).
+		b.SetStorefrontOrigins(s.c.AllowedOrigins)
 		if st, cfg, on := authServer.PlatformStore(); on {
 			b.UsePlatform(st, cfg)
 			// A member removed or re-roled is refused on the next call, not after the cache TTL.
@@ -1310,6 +1368,10 @@ func (s *Server) Start(ctx context.Context,
 		if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
 			ps.SetInvalidator(b.InvalidateTeam)
 			ps.SetSessionInvalidator(b.InvalidateSession)
+			ps.SetShopInvalidator(b.InvalidateShop)
+		}
+		if s.shopInvalidate != nil {
+			ps.SetShopInvalidator(s.shopInvalidate)
 		}
 		pb_admin.RegisterPlatformServiceServer(s.gs, ps)
 		s.platformOn = true

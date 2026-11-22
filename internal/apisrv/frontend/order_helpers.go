@@ -27,6 +27,11 @@ func (s *Server) getOrderExpirationDuration(ctx context.Context, handler depende
 }
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
+	// A team shop never charges through the storefront team's Stripe (X18): until its own payments
+	// land (lane L3), its checkout is refused here, the one door every payment path goes through.
+	if err := s.shopPaymentsGate(ctx); err != nil {
+		return nil, err
+	}
 	var handler dependency.Invoicer
 	switch pm {
 	case entity.CARD:
