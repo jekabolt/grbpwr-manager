@@ -6,10 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	pb_admin "github.com/jekabolt/grbpwr-manager/proto/gen/admin"
 	pb_common "github.com/jekabolt/grbpwr-manager/proto/gen/common"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -142,4 +145,49 @@ func TestFileURLUnaryIsAPassThroughWhenOff(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, resp, out)
 	require.Equal(t, ownFile+"?sig", resp.GetMedia().GetFullSize().GetMediaUrl())
+}
+
+// TestSignSkipNamesAreRealFields: a renamed or moved field must fail here, not silently get signed
+// again and break the seals the skip list exists for.
+func TestSignSkipNamesAreRealFields(t *testing.T) {
+	require.NotEmpty(t, signSkip)
+	for name := range signSkip {
+		d, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
+		require.NoError(t, err, name)
+		_, isField := d.(protoreflect.FieldDescriptor)
+		require.True(t, isField, "%s is not a field", name)
+	}
+}
+
+// TestFileURLCallLeavesRowIdentityBare: the saved-row urls stay the stored string (sealed and
+// compared by both sides), while the media of the same response is still signed.
+func TestFileURLCallLeavesRowIdentityBare(t *testing.T) {
+	fx := &fakeFileURLs{needle: "/b/t/aaaa/"}
+	const dxf = "https://h.test/b/t/aaaa/main.webp" // the fake signs ".webp"
+	card := &pb_admin.GetTechCardResponse{TechCard: &pb_common.TechCard{Id: 7,
+		TechCard:               &pb_common.TechCardInsert{Patterns: []*pb_common.TechCardSizePattern{{Url: dxf, LineKey: "L"}}},
+		ResolvedTechnicalMedia: []*pb_common.TechCardMediaFull{{Media: media(ownFile)}},
+	}}
+	out := call(t, fx, &pb_admin.GetTechCardRequest{}, card, nil).(*pb_admin.GetTechCardResponse)
+	require.Equal(t, dxf, out.GetTechCard().GetTechCard().GetPatterns()[0].GetUrl())
+	require.Equal(t, ownFile+"?sig",
+		out.GetTechCard().GetResolvedTechnicalMedia()[0].GetMedia().GetMedia().GetFullSize().GetMediaUrl())
+
+	// The saved Assembly read: identity urls and every sealed list stay byte-identical, free text
+	// included; there is nothing else to sign, so the very same value goes back.
+	row := func() *pb_admin.TechCardSavedPatternRowIdentity {
+		return &pb_admin.TechCardSavedPatternRowIdentity{TechCardId: 7, Url: dxf, DownloadUrl: "/api/p/token?dl=1"}
+	}
+	snapshot := &pb_admin.GetTechCardSavedAssemblySnapshotResponse{
+		Row:              row(),
+		Operations:       []*pb_common.TechCardOperation{{Note: "see " + ownFile}},
+		CompleteSourceV1: &pb_admin.TechCardSavedAssemblyCompleteSourceV1{Rows: []*pb_admin.TechCardSavedPatternRowIdentity{row()}},
+	}
+	require.Same(t, snapshot, call(t, fx, &pb_admin.GetTechCardSavedAssemblySnapshotRequest{}, snapshot, nil))
+	require.Equal(t, 2, fx.signs, "only the card's two media strings were signed")
+
+	// A tab loaded before the skip list sends a signed identity url back: it is cut to the stored form.
+	req := &pb_admin.GetTechCardSavedAssemblySnapshotRequest{ExpectedUrl: dxf + "?sig"}
+	call(t, fx, req, nil, nil)
+	require.Equal(t, dxf, req.GetExpectedUrl())
 }
