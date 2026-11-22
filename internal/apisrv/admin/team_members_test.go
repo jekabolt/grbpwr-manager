@@ -168,6 +168,17 @@ func TestTeamMembersFlow(t *testing.T) {
 	require.NoError(t, st.DB().Get(&payload, `SELECT payload FROM platform_email WHERE to_email = 'new@x.io' ORDER BY id DESC LIMIT 1`))
 	require.Contains(t, payload, "https://acme.beta.lekalo.studio/join#token=")
 	require.NotContains(t, payload, `"code"`)
+	// No name set: the letter is «from» the handle.
+	require.Contains(t, payload, `"from": "ann"`)
+	// With a name set, the letter is «from» the name, not the handle.
+	_, err = st.DB().Exec(`UPDATE platform_user SET first_name = 'Ann', last_name = 'Tester' WHERE id = 101`)
+	require.NoError(t, err)
+	named, err := s.InviteTeamMember(ann, &pb_admin.InviteTeamMemberRequest{Email: "named@x.io", Role: "member"})
+	require.NoError(t, err)
+	require.NoError(t, st.DB().Get(&payload, `SELECT payload FROM platform_email WHERE to_email = 'named@x.io' ORDER BY id DESC LIMIT 1`))
+	require.Contains(t, payload, `"from": "Ann Tester"`)
+	_, err = s.RevokeTeamInvite(ann, &pb_admin.RevokeTeamInviteRequest{InviteRef: named.Invite.InviteRef})
+	require.NoError(t, err)
 	var perms string
 	require.NoError(t, st.DB().Get(&perms, `SELECT permissions FROM team_invite WHERE email = 'new@x.io'`))
 	require.Contains(t, perms, `"products"`)
@@ -259,5 +270,5 @@ func TestTeamMembersFlow(t *testing.T) {
 
 	var audits int
 	require.NoError(t, st.DB().Get(&audits, `SELECT COUNT(*) FROM platform_audit WHERE team_id = 2 AND action LIKE 'member_%'`))
-	require.Equal(t, 6, audits) // invite, resend, revoke, remove, role ×2 (the repair is not a change)
+	require.Equal(t, 8, audits) // invite ×2, resend, revoke ×2, remove, role ×2 (the repair is not a change)
 }
