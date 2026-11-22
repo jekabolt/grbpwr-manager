@@ -78,6 +78,27 @@ func (b *Bucket) PreviewTeamFiles(ctx context.Context, fileKey string) (WipeStat
 	return wipePrefix(ctx, b.Client, b.S3BucketName, prefix, 0, true)
 }
 
+// PreflightTeamFiles runs, without listing or deleting anything, the checks a wipe of the team's
+// files would fail on: the prefix guard (TeamWipePrefix) and the bucket's versioning call. The
+// worker runs it before the irreversible claim, so a team whose files cannot be wiped stays
+// restorable.
+func (b *Bucket) PreflightTeamFiles(ctx context.Context, fileKey string) error {
+	prefix, err := TeamWipePrefix(b.Config, fileKey)
+	if err != nil {
+		return err
+	}
+	return preflightPrefix(ctx, b.Client, b.S3BucketName, prefix)
+}
+
+// preflightPrefix is wipePrefix's guards and its versioning call, nothing else.
+func preflightPrefix(ctx context.Context, cli wipeClient, bucketName, prefix string) error {
+	if bucketName == "" || prefix == "" || !strings.HasSuffix(prefix, "/") || strings.Count(prefix, "/") < 3 {
+		return fmt.Errorf("%w: prefix %q", ErrWipePrefix, prefix)
+	}
+	_, err := versioned(ctx, cli, bucketName)
+	return err
+}
+
 // versioned reports whether the bucket may hold old versions (versioning enabled or suspended).
 func versioned(ctx context.Context, cli wipeClient, bucketName string) (bool, error) {
 	v, err := cli.GetBucketVersioning(ctx, bucketName)

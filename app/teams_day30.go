@@ -34,6 +34,14 @@ func (d teamDatabases) Size(ctx context.Context, name string) (bool, int64, erro
 	return store.TeamDBSize(ctx, d.baseDSN, d.prefix, d.platformDB, name)
 }
 
+func (d teamDatabases) CheckDrop(name string) error {
+	team1DB, err := store.DSNDatabase(d.baseDSN)
+	if err != nil {
+		return fmt.Errorf("base dsn: %w", err)
+	}
+	return store.CheckDropName(d.prefix, team1DB, d.platformDB, name)
+}
+
 // startDay30 starts the day-30 loop; nil stop when teams mode is off or PLATFORM_PURGE_MODE=off.
 func (a *App) startDay30(ctx context.Context) (func(), error) {
 	if a.platform == nil {

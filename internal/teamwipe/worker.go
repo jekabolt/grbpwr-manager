@@ -79,6 +79,8 @@ type Store interface {
 	MarkWipeDBDropped(ctx context.Context, teamID int64, now time.Time) error
 	MarkWipeFailed(ctx context.Context, teamID int64, reason string, count bool, now time.Time) (int, error)
 	DBNameReferenced(ctx context.Context, dbName string) (bool, error)
+	FileKeyReferenced(ctx context.Context, fileKey string) (bool, error)
+	TeamWipeTombstone(ctx context.Context, teamID int64) (bool, error)
 	FinishTeamWipe(ctx context.Context, teamID int64, now time.Time) (platformstore.WipedTeam, error)
 	PreviewTeamWipe(ctx context.Context, teamID int64) (platformstore.TeamWipePreview, error)
 }
@@ -87,6 +89,9 @@ type Store interface {
 type Files interface {
 	WipeTeamFiles(ctx context.Context, fileKey string, maxBatches int) (bucket.WipeStats, error)
 	PreviewTeamFiles(ctx context.Context, fileKey string) (bucket.WipeStats, error)
+	// PreflightTeamFiles runs the prefix guard and the bucket call a wipe would fail on; nothing is
+	// listed or deleted.
+	PreflightTeamFiles(ctx context.Context, fileKey string) error
 }
 
 // Databases drops and measures team databases (store.DropTeamDB / store.TeamDBSize bound to the
@@ -94,6 +99,8 @@ type Files interface {
 type Databases interface {
 	Drop(ctx context.Context, dbName string) (store.DropResult, error)
 	Size(ctx context.Context, dbName string) (exists bool, bytes int64, err error)
+	// CheckDrop is the allow-list Drop applies (store.CheckDropName), without touching the server.
+	CheckDrop(dbName string) error
 }
 
 // Worker runs the day-30 pass now and then.
@@ -231,6 +238,9 @@ func (w *Worker) dryTeams(ctx context.Context) {
 				attrs = append(attrs, slog.Int64("objects", fs.Objects), slog.Int64("bytes", fs.Bytes))
 			}
 		}
+		if err := w.preflight(ctx, p.DBName, p.FileKey); err != nil {
+			attrs = append(attrs, slog.String("preflight_err", err.Error()))
+		}
 		slog.Default().InfoContext(ctx, "teams: wipe (dry): team would be wiped", attrs...)
 	}
 	slog.Default().InfoContext(ctx, "teams: wipe (dry): teams due", slog.Int("count", len(ids)))
@@ -307,6 +317,24 @@ func (w *Worker) wipeTeams(ctx context.Context) {
 		if id == tenant.TeamOneID {
 			continue
 		}
+		// The claim cannot be undone: a team whose steps would fail on its own values (a file key
+		// the prefix guard refuses, a bucket we cannot read, a database name the drop guard
+		// refuses) is not claimed and stays restorable.
+		p, err := w.st.PreviewTeamWipe(ctx, id)
+		if err != nil {
+			if !errors.Is(err, platformstore.ErrTeamNotFound) { // restored meanwhile: nothing to say
+				logErr(ctx, "teams: wipe: preflight read", err, slog.Int64("team_id", id))
+			}
+			continue
+		}
+		if err := w.preflight(ctx, p.DBName, p.FileKey); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Default().WarnContext(ctx, "teams: wipe not claimed: preflight failed", slog.String("team", p.Slug),
+				slog.String("err", err.Error()))
+			continue
+		}
 		if err := extend(); err != nil {
 			if errors.Is(err, errLease) {
 				slog.Default().WarnContext(ctx, "teams: wipe: lease lost, pass stopped")
@@ -329,6 +357,52 @@ func (w *Worker) wipeTeams(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// preflight runs, on a due team's values, the checks its wipe steps would fail on, without writing
+// anything: the file prefix guard and the bucket's versioning call, and the database drop guard.
+func (w *Worker) preflight(ctx context.Context, dbName, fileKey string) error {
+	if fileKey != "" {
+		if w.files == nil {
+			return errors.New("files: no file store")
+		}
+		if err := w.files.PreflightTeamFiles(ctx, fileKey); err != nil {
+			return fmt.Errorf("files: %w", err)
+		}
+	}
+	if dbName != "" {
+		if w.dbs == nil {
+			return errors.New("database: no database access")
+		}
+		if err := w.dbs.CheckDrop(dbName); err != nil {
+			return fmt.Errorf("database: %w", err)
+		}
+	}
+	return nil
+}
+
+// errFilesFenced: the file step found the team row changed or its file key named again; nothing is
+// deleted.
+var errFilesFenced = errors.New("files fenced")
+
+// filesFence is checked before every delete call of the file step, as DBNameReferenced is before the
+// drop: the team row must still be the claimed tombstone and no team row may name the file key.
+func (w *Worker) filesFence(ctx context.Context, tw platformstore.TeamWipe) error {
+	tomb, err := w.st.TeamWipeTombstone(ctx, tw.TeamID)
+	if err != nil {
+		return err
+	}
+	if !tomb {
+		return fmt.Errorf("%w: team row is not a claimed tombstone", errFilesFenced)
+	}
+	held, err := w.st.FileKeyReferenced(ctx, tw.FileKey.String)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("%w: file key is still named by a team", errFilesFenced)
+	}
+	return nil
 }
 
 // runWipe runs the remaining steps of one claimed wipe: files → database → finalize. A failed step
@@ -376,6 +450,14 @@ func (w *Worker) runWipe(ctx context.Context, tw platformstore.TeamWipe, extend 
 					_ = w.st.AddWipeObjects(ctx, tw.TeamID, deleted)
 					return err
 				}
+			}
+			if err := w.filesFence(ctx, tw); err != nil {
+				_ = w.st.AddWipeObjects(ctx, tw.TeamID, deleted)
+				if errors.Is(err, errFilesFenced) && ctx.Err() == nil {
+					slog.Default().ErrorContext(ctx, "teams: wipe files refused", slog.String("team", tw.Slug),
+						slog.String("err", err.Error()))
+				}
+				return fail("files", err, true)
 			}
 			st, err := w.files.WipeTeamFiles(ctx, tw.FileKey.String, fileBatchesPerCall)
 			deleted += st.Objects

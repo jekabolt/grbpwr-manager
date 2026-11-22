@@ -86,6 +86,14 @@ func (d dbs) Size(ctx context.Context, n string) (bool, int64, error) {
 	return store.TeamDBSize(ctx, d.base, itPrefix, itCP, n)
 }
 
+func (d dbs) CheckDrop(n string) error {
+	db, err := store.DSNDatabase(d.base)
+	if err != nil {
+		return err
+	}
+	return store.CheckDropName(itPrefix, db, itCP, n)
+}
+
 // files is the bucket: keys per file key; wipes delete only their own key's objects.
 type files struct{ objects map[string]int }
 
@@ -98,6 +106,8 @@ func (f *files) WipeTeamFiles(_ context.Context, fk string, _ int) (bucket.WipeS
 func (f *files) PreviewTeamFiles(_ context.Context, fk string) (bucket.WipeStats, error) {
 	return bucket.WipeStats{Objects: int64(f.objects[fk])}, nil
 }
+
+func (f *files) PreflightTeamFiles(context.Context, string) error { return nil }
 
 func schemaExists(t *testing.T, root *sql.DB, name string) bool {
 	t.Helper()

@@ -147,6 +147,30 @@ func TestTeamWipeClaimAndFinish(t *testing.T) {
 	if ref, _ := st.DBNameReferenced(ctx, "lk_t_acme0001"); !ref {
 		t.Fatal("acme database not referenced")
 	}
+	if ref, err := st.FileKeyReferenced(ctx, wipeFK); err != nil || ref {
+		t.Fatalf("file key still referenced %v %v", ref, err)
+	}
+	if tomb, err := st.TeamWipeTombstone(ctx, 8); err != nil || !tomb {
+		t.Fatalf("claimed team not a tombstone %v %v", tomb, err)
+	}
+	for _, id := range []int64{1, 2, 7, 404} {
+		if tomb, err := st.TeamWipeTombstone(ctx, id); err != nil || tomb {
+			t.Fatalf("team %d read as a tombstone %v %v", id, tomb, err)
+		}
+	}
+	// A file key a team row names again (set by hand) is referenced, and that row is no tombstone.
+	if _, err := st.DB().Exec(`UPDATE team SET file_key = ? WHERE id = 8`, wipeFK); err != nil {
+		t.Fatal(err)
+	}
+	if ref, _ := st.FileKeyReferenced(ctx, wipeFK); !ref {
+		t.Fatal("file key named by a team row not referenced")
+	}
+	if tomb, _ := st.TeamWipeTombstone(ctx, 8); tomb {
+		t.Fatal("row with a file key read as a tombstone")
+	}
+	if _, err := st.DB().Exec(`UPDATE team SET file_key = NULL WHERE id = 8`); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok, err := st.ClaimTeamWipe(ctx, 8, now); err != nil || ok {
 		t.Fatalf("second claim %v %v", ok, err)
 	}

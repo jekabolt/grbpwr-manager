@@ -195,3 +195,27 @@ func itoa(i int) string {
 	}
 	return string(b)
 }
+
+func TestPreflightPrefix(t *testing.T) {
+	ctx := context.Background()
+	prefix := "lekalo/t/" + testFK + "/"
+	f := &wipeS3{objs: []minio.ObjectInfo{{Key: prefix + "a"}}}
+	if err := preflightPrefix(ctx, f, "b", prefix); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.listedVers) != 0 || len(f.removed) != 0 || len(f.objs) != 1 {
+		t.Fatal("preflight listed or deleted")
+	}
+	if err := preflightPrefix(ctx, &wipeS3{verErr: errors.New("no access")}, "b", prefix); err == nil {
+		t.Fatal("versioning error must fail the preflight")
+	}
+	for _, c := range [][2]string{{"", prefix}, {"b", ""}, {"b", "lekalo/t/"}, {"b", "lekalo/t/x"}} {
+		if err := preflightPrefix(ctx, &wipeS3{}, c[0], c[1]); !errors.Is(err, ErrWipePrefix) {
+			t.Errorf("bucket %q prefix %q accepted", c[0], c[1])
+		}
+	}
+	b := &Bucket{Config: &Config{TeamsMode: false, BaseFolder: "lekalo"}}
+	if err := b.PreflightTeamFiles(ctx, testFK); !errors.Is(err, ErrWipePrefix) {
+		t.Fatalf("teams mode off: %v", err)
+	}
+}

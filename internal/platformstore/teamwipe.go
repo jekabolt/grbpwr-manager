@@ -310,6 +310,43 @@ func (s *Store) DBNameReferenced(ctx context.Context, dbName string) (bool, erro
 	return n > 0, nil
 }
 
+// FileKeyReferenced reports whether any team row still names fileKey. After the claim a wiped team's
+// file key is named by no row: files someone still holds are never deleted.
+func (s *Store) FileKeyReferenced(ctx context.Context, fileKey string) (bool, error) {
+	var n int
+	if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM team WHERE file_key = ?`, fileKey); err != nil {
+		return true, fmt.Errorf("platformstore: file key referenced: %w", err)
+	}
+	return n > 0, nil
+}
+
+// TeamWipeTombstone reports whether the team row is still the tombstone the claim left (the check
+// FinishTeamWipe makes): deleted, with no purge_at, db_name or file_key. A missing row, team #1 or a
+// row changed by hand is false.
+func (s *Store) TeamWipeTombstone(ctx context.Context, teamID int64) (bool, error) {
+	if teamID == tenant.TeamOneID {
+		return false, nil
+	}
+	var cur struct {
+		Status  string         `db:"status"`
+		PurgeAt sql.NullTime   `db:"purge_at"`
+		DBName  sql.NullString `db:"db_name"`
+		FileKey sql.NullString `db:"file_key"`
+	}
+	if err := s.db.GetContext(ctx, &cur, `SELECT status, purge_at, db_name, file_key FROM team WHERE id = ?`, teamID); err != nil {
+		if isNoRows(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("platformstore: team wipe tombstone: %w", err)
+	}
+	return claimedTombstone(cur.Status, cur.PurgeAt, cur.DBName, cur.FileKey), nil
+}
+
+// claimedTombstone: the claim left the row deleted with nothing to route, restore or migrate.
+func claimedTombstone(status string, purgeAt sql.NullTime, dbName, fileKey sql.NullString) bool {
+	return status == "deleted" && !purgeAt.Valid && !dbName.Valid && !fileKey.Valid
+}
+
 // WipedTeam is what a finished wipe deleted from the control plane.
 type WipedTeam struct {
 	Slug string
@@ -370,7 +407,7 @@ func (s *Store) FinishTeamWipe(ctx context.Context, teamID int64, now time.Time)
 		}
 		// The claim left the row deleted with nothing to route, restore or migrate; anything else
 		// means someone changed it by hand — stop rather than erase a live team.
-		if cur.Status != "deleted" || cur.PurgeAt.Valid || cur.DBName.Valid || cur.FileKey.Valid {
+		if !claimedTombstone(cur.Status, cur.PurgeAt, cur.DBName, cur.FileKey) {
 			return fmt.Errorf("platformstore: finish wipe: team row is not a claimed tombstone (status %s)", cur.Status)
 		}
 		if w.FilesPending() || w.DBPending() {

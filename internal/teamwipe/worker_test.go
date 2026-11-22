@@ -3,6 +3,7 @@ package teamwipe
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,10 @@ type fake struct {
 	dropRes   store.DropResult
 	attempts  int
 	refs      bool
+	fkRefs    bool
+	notTomb   bool
+	fileErr   error // PreflightTeamFiles
+	dropErr   error // CheckDrop
 }
 
 func (f *fake) log(s string) { f.calls = append(f.calls, s) }
@@ -107,6 +112,26 @@ func (f *fake) MarkWipeFailed(_ context.Context, _ int64, reason string, count b
 
 func (f *fake) DBNameReferenced(context.Context, string) (bool, error) { return f.refs, nil }
 
+func (f *fake) FileKeyReferenced(context.Context, string) (bool, error) {
+	f.log("fkRefs")
+	return f.fkRefs, nil
+}
+
+func (f *fake) TeamWipeTombstone(context.Context, int64) (bool, error) {
+	f.log("tomb")
+	return !f.notTomb, nil
+}
+
+func (f *fake) PreflightTeamFiles(context.Context, string) error {
+	f.log("preflightFiles")
+	return f.fileErr
+}
+
+func (f *fake) CheckDrop(string) error {
+	f.log("checkDrop")
+	return f.dropErr
+}
+
 func (f *fake) FinishTeamWipe(context.Context, int64, time.Time) (platformstore.WipedTeam, error) {
 	f.log("finish")
 	return platformstore.WipedTeam{Slug: "xd3-test", Finished: true}, nil
@@ -153,7 +178,7 @@ func joined(f *fake) string { return strings.Join(f.calls, ",") }
 func TestTickOnOrder(t *testing.T) {
 	f := newFake()
 	run(ModeOn, f)
-	want := "purgeAccounts,acquire,open,dueTeams,claim,wipeFiles,filesDone,drop,dbDropped,finish,release"
+	want := "purgeAccounts,acquire,open,dueTeams,preview,preflightFiles,checkDrop,claim,tomb,fkRefs,wipeFiles,filesDone,drop,dbDropped,finish,release"
 	if got := joined(f); got != want {
 		t.Fatalf("calls\n got %s\nwant %s", got, want)
 	}
@@ -177,7 +202,7 @@ func TestTickOffAndDryWriteNothing(t *testing.T) {
 	run(ModeDry, f)
 	for _, c := range f.calls {
 		switch c {
-		case "dueAccounts", "dueTeams", "preview", "size", "previewFiles":
+		case "dueAccounts", "dueTeams", "preview", "size", "previewFiles", "preflightFiles", "checkDrop":
 		default:
 			t.Fatalf("dry made a writing call %q (%s)", c, joined(f))
 		}
@@ -241,10 +266,66 @@ func TestTickResumeAndRetry(t *testing.T) {
 }
 
 func TestTickNoFileStore(t *testing.T) {
+	// A wipe claimed before (resumed) fails its file step; a due team is not claimed (preflight).
 	f := newFake()
+	f.open = []platformstore.TeamWipe{wipeOf(8)}
 	w := New(ModeOn, f, nil, f, func() (string, error) { return "!", nil }, time.Hour, time.Hour)
 	w.Tick(context.Background())
 	if got := joined(f); !strings.Contains(got, "failed:files") || strings.Contains(got, "drop") {
 		t.Fatalf("no file store: %s", got)
+	}
+	if got := joined(f); strings.Contains(got, "claim") {
+		t.Fatalf("no file store: claimed: %s", got)
+	}
+}
+
+// A due team whose steps would fail on its own values is never claimed: it stays restorable.
+func TestTickPreflightSkipsClaim(t *testing.T) {
+	for name, set := range map[string]func(*fake){
+		"files":    func(f *fake) { f.fileErr = bucket.ErrWipePrefix },
+		"database": func(f *fake) { f.dropErr = errors.New("platform database") },
+	} {
+		f := newFake()
+		set(f)
+		run(ModeOn, f)
+		if got := joined(f); strings.Contains(got, "claim") || strings.Contains(got, "wipeFiles") ||
+			strings.Contains(got, "drop") || strings.Contains(got, "failed") {
+			t.Fatalf("%s: claimed after a failed preflight: %s", name, got)
+		}
+	}
+	// No file store or no database access: the same, before any claim.
+	f := newFake()
+	New(ModeOn, f, nil, f, func() (string, error) { return "!", nil }, time.Hour, time.Hour).Tick(context.Background())
+	if got := joined(f); strings.Contains(got, "claim") {
+		t.Fatalf("claimed without a file store: %s", got)
+	}
+	f = newFake()
+	New(ModeOn, f, f, nil, func() (string, error) { return "!", nil }, time.Hour, time.Hour).Tick(context.Background())
+	if got := joined(f); strings.Contains(got, "claim") {
+		t.Fatalf("claimed without database access: %s", got)
+	}
+}
+
+// The file step deletes nothing when the team row is no longer the claimed tombstone or a team row
+// names the file key again; the step fails and counts an attempt, the database waits.
+func TestTickFilesFence(t *testing.T) {
+	for name, set := range map[string]func(*fake){
+		"not a tombstone": func(f *fake) { f.notTomb = true },
+		"key referenced":  func(f *fake) { f.fkRefs = true },
+	} {
+		f := newFake()
+		set(f)
+		run(ModeOn, f)
+		if got := joined(f); strings.Contains(got, "wipeFiles") || strings.Contains(got, "drop") ||
+			strings.Contains(got, "finish") || !strings.Contains(got, "failed:files") || f.attempts != 1 {
+			t.Fatalf("%s: %s attempts %d", name, got, f.attempts)
+		}
+	}
+	// Checked before every delete call, not only the first.
+	f := newFake()
+	f.filesDone = false
+	run(ModeOn, f)
+	if got := joined(f); strings.Count(got, "tomb,fkRefs,wipeFiles") != fileCallsPerStep {
+		t.Fatalf("fence per call: %s", got)
 	}
 }
