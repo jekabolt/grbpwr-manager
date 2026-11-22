@@ -195,6 +195,8 @@ type Server struct {
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
 	tenantBinder            TenantBinder
+	// teamFair: per-team shares of the pool and of heavy work (X15, teams_fair.go). nil = none.
+	teamFair grpc.UnaryServerInterceptor
 	// platformOn: PlatformService is registered (teams mode); /api/platform is mounted.
 	platformOn bool
 	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
@@ -1278,6 +1280,9 @@ func (s *Server) Start(ctx context.Context,
 			observability.TeamUnaryInterceptor(),
 			grpcSlog.UnaryServerInterceptor(log.InterceptorLogger(slog.Default()), opts...),
 			authServer.UnaryAdminAuthInterceptor(),
+			// After auth (the team of an admin call is bound): one team's share of the pool, of
+			// heavy work and of AI calls (X15); a pass-through when unset.
+			s.teamFairUnary(),
 			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
 			// caller's «recent techcards» row, best-effort, once the handler has succeeded.
 			adminServer.RecentTechCardsUnary(),

@@ -1,0 +1,113 @@
+package app
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/jekabolt/grbpwr-manager/internal/teamfair"
+	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
+)
+
+// Per-team shares (X15, gap 14; tmp/plans/teams/lanes/X15-design.md). Every value is optional: the
+// defaults are derived from MYSQL_MAX_OPEN_CONNECTIONS (teamfair.Defaults). TEAM_FAIR=off turns the
+// gate into a pass-through.
+const (
+	envTeamFair          = "TEAM_FAIR"
+	envTeamLightParallel = "TEAM_LIGHT_PARALLEL"
+	envTeamHeavyParallel = "TEAM_HEAVY_PARALLEL"
+	envHeavyParallel     = "HEAVY_PARALLEL"
+	envTeamAIParallel    = "TEAM_AI_PARALLEL"
+	envTeamRate          = "TEAM_RATE"
+	envTeamBurst         = "TEAM_BURST"
+	envBackgroundSlots   = "BACKGROUND_PARALLEL"
+)
+
+func envPositiveInt(name string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+// teamFairConfig is teamfair.Defaults(pool) with the env overrides applied.
+func teamFairConfig(pool int, getenv func(string) string) teamfair.Config {
+	cfg := teamfair.Defaults(pool)
+	cfg.Off = strings.EqualFold(strings.TrimSpace(getenv(envTeamFair)), "off")
+	num := func(name string) int {
+		n, err := strconv.Atoi(strings.TrimSpace(getenv(name)))
+		if err != nil || n < 1 {
+			return 0
+		}
+		return n
+	}
+	if n := num(envTeamLightParallel); n > 0 {
+		cfg.Team.Light = n
+	}
+	if n := num(envTeamHeavyParallel); n > 0 {
+		cfg.Team.Heavy = n
+	}
+	if n := num(envHeavyParallel); n > 0 {
+		cfg.GlobalHeavy = n
+	}
+	if n := num(envTeamAIParallel); n > 0 {
+		cfg.Team.AI = n
+	}
+	if n := num(envTeamRate); n > 0 {
+		cfg.Team.Rate = float64(n)
+	}
+	if n := num(envTeamBurst); n > 0 {
+		cfg.Team.Burst = n
+	}
+	return cfg
+}
+
+// backgroundParallel — how many team ticks ALL team workers run at once together: max(2, pool/3),
+// BACKGROUND_PARALLEL overrides. Each worker alone still runs up to teamWorkerParallel teams; this
+// shared bound keeps four workers from wanting sixteen connections of a pool of five.
+func backgroundParallel(pool int) int {
+	if n := envPositiveInt(envBackgroundSlots); n > 0 {
+		return n
+	}
+	n := pool / 3
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// backgroundSlots is the process-wide semaphore of team worker ticks, created on first use.
+type backgroundSlots struct {
+	once sync.Once
+	c    chan struct{}
+}
+
+func (a *App) backgroundSlots() chan struct{} {
+	a.bg.once.Do(func() {
+		pool := 0
+		if a.c != nil {
+			pool = a.c.DB.MaxOpenConnections
+		}
+		a.bg.c = make(chan struct{}, backgroundParallel(pool))
+	})
+	return a.bg.c
+}
+
+// initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
+// Storefront calls get their own share, apart from the same team's admin.
+func (a *App) initTeamFair(ctx context.Context) {
+	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, os.Getenv)
+	a.fair = teamfair.NewEdge(teamfair.New(cfg), func(m string) bool {
+		return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront
+	})
+	a.hs.SetTeamFair(a.fair.Unary())
+	slog.Default().InfoContext(ctx, "per-team shares",
+		slog.Bool("off", cfg.Off), slog.Int("light", cfg.Team.Light), slog.Int("heavy", cfg.Team.Heavy),
+		slog.Int("heavy_all", cfg.GlobalHeavy), slog.Int("shop", cfg.Shop.Light), slog.Int("ai", cfg.Team.AI),
+		slog.Float64("rate", cfg.Team.Rate), slog.Int("burst", cfg.Team.Burst),
+		slog.Int("background", cap(a.backgroundSlots())))
+}

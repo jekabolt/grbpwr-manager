@@ -70,6 +70,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/storefrontcleanup"
 	"github.com/jekabolt/grbpwr-manager/internal/stripereconcile"
 	"github.com/jekabolt/grbpwr-manager/internal/taskarchive"
+	"github.com/jekabolt/grbpwr-manager/internal/teamfair"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 	"github.com/jekabolt/grbpwr-manager/internal/tiermanagement"
@@ -160,6 +161,10 @@ type App struct {
 	platform *platformstore.Store
 	// workerTeams is the live directory in teams mode and a static team #1 directory otherwise.
 	workerTeams tenant.Directory
+	// fair is the per-team bulkhead (X15, teams_fair.go); bg bounds team worker ticks of all
+	// workers together.
+	fair *teamfair.Edge
+	bg   backgroundSlots
 	// These stop the control-plane workers plus the delayed per-team board repair before DB close.
 	stopTeamsMail     func()
 	stopProvisioner   func()
@@ -1101,6 +1106,7 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	a.hs.SetTenantBinder(binder)
+	a.initTeamFair(ctx)
 	// Public links carry their team signed in the token (patterntoken v2, lane X1): the edge binds
 	// each /api/p|pv|rp|f request to that team. Same pepper as the link services below, which fail
 	// the boot on an empty one.
@@ -1215,17 +1221,17 @@ func (a *App) Start(ctx context.Context) error {
 	// the admin authorization middleware by hand. That wrapping is the whole of its
 	// authentication: without it the endpoint would be open, since the gRPC
 	// interceptor never sees a plain HTTP route.
-	a.hs.SetFileUploadHandler(authS.WithAdminAuthz(a.adminS.FileUploadHandler()))
+	a.hs.SetFileUploadHandler(authS.WithAdminAuthz(a.fair.HTTP(teamfair.Heavy, a.adminS.FileUploadHandler())))
 	// Перезаливка превью (POST /api/files/{id}/preview) — тот же случай и та же
 	// ручная обёртка авторизацией: картинка приходит multipart-ом, мимо gRPC, а
 	// значит мимо интерцептора, который проверяет права у всех остальных методов.
-	a.hs.SetFilePreviewHandler(authS.WithAdminAuthz(a.adminS.FilePreviewHandler()))
+	a.hs.SetFilePreviewHandler(authS.WithAdminAuthz(a.fair.HTTP(teamfair.Heavy, a.adminS.FilePreviewHandler())))
 	// Импорт тех-карты архивом (POST /api/techcard-archive/upload) — третий и последний
 	// админский write мимо gRPC: 256-мегабайтный ZIP в одно gRPC-сообщение не влезает. Та же
 	// ручная обёртка авторизацией и по той же причине: интерцептор, проверяющий права у всех
 	// остальных методов, простого HTTP-маршрута не видит вовсе. Сам маршрут дополнительно
 	// требует tech_cards:write внутри хендлера — обёртка аутентифицирует, секцию решает он.
-	a.hs.SetTechCardArchiveUploadHandler(authS.WithAdminAuthz(a.adminS.TechCardArchiveUploadHandler()))
+	a.hs.SetTechCardArchiveUploadHandler(authS.WithAdminAuthz(a.fair.HTTP(teamfair.Heavy, a.adminS.TechCardArchiveUploadHandler())))
 	// Authenticated file proxy (GET /api/files/proxy, lane V1): replaces the Vercel function
 	// media-proxy for installations without functions. Same admin chain as the uploads; the bucket
 	// decides which urls (managed hosts, the caller's team prefix). Not mounted when the file store is

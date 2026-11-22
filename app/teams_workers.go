@@ -44,7 +44,17 @@ func (a *App) initWorkerTeams() error {
 
 func (a *App) workerTeamLoop(name string, scope teamWorkerScope) teamWorkerLoop {
 	return func(ctx context.Context, tick func(context.Context) bool) bool {
-		return runTeamWorkerTick(ctx, a.workerTeams, name, scope, teamWorkerParallel, tick)
+		slots := a.backgroundSlots()
+		return runTeamWorkerTick(ctx, a.workerTeams, name, scope, teamWorkerParallel, func(teamCtx context.Context) bool {
+			// One shared bound across every team worker (X15): ticks of all workers together.
+			select {
+			case slots <- struct{}{}:
+			case <-teamCtx.Done():
+				return false
+			}
+			defer func() { <-slots }()
+			return tick(teamCtx)
+		})
 	}
 }
 
