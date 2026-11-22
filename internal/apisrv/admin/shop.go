@@ -443,19 +443,19 @@ func (s *Server) SetShopMail(ctx context.Context, req *pb_admin.SetShopMailReque
 }
 
 // Payments are lane X18-L3.
-var errStripeLater = status.Error(codes.Unimplemented, "stripe_not_ready")
+func errStripeLater() error { return status.Error(codes.Unimplemented, "stripe_not_ready") }
 
 // StartStripeConnect — lane X18-L3.
 func (s *Server) StartStripeConnect(context.Context, *pb_admin.StartStripeConnectRequest) (*pb_admin.StartStripeConnectResponse, error) {
-	return nil, errStripeLater
+	return nil, errStripeLater()
 }
 
 // SetStripeKeys — lane X18-L3.
 func (s *Server) SetStripeKeys(context.Context, *pb_admin.SetStripeKeysRequest) (*pb_admin.SetStripeKeysResponse, error) {
-	return nil, errStripeLater
+	return nil, errStripeLater()
 }
 
 // DisconnectStripe — lane X18-L3.
 func (s *Server) DisconnectStripe(context.Context, *pb_admin.DisconnectStripeRequest) (*pb_admin.DisconnectStripeResponse, error) {
-	return nil, errStripeLater
+	return nil, errStripeLater()
 }
