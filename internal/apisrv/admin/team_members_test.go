@@ -98,7 +98,7 @@ func membersStore(t *testing.T) *platformstore.Store {
 	require.NoError(t, testdbguard.CheckMySQLDSN(d))
 	root, err := sql.Open("mysql", membersDSN(t, ""))
 	require.NoError(t, err)
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	for _, q := range []string{"DROP DATABASE IF EXISTS `" + membersDB + "`", "CREATE DATABASE `" + membersDB + "` CHARACTER SET utf8mb4"} {
 		_, err := root.Exec(q)
 		require.NoError(t, err)
@@ -106,13 +106,13 @@ func membersStore(t *testing.T) *platformstore.Store {
 	t.Cleanup(func() {
 		if r, err := sql.Open("mysql", membersDSN(t, "")); err == nil {
 			_, _ = r.Exec("DROP DATABASE IF EXISTS `" + membersDB + "`")
-			r.Close()
+			_ = r.Close()
 		}
 	})
 	ctx := context.Background()
 	st, err := platformstore.Open(ctx, d)
 	require.NoError(t, err)
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.EnsureTeamOne(ctx, "grbpwr_test", []platformstore.TeamOneAdmin{{Username: "boss", PasswordHash: "h", Super: true}}))
 	for _, q := range []string{
 		`INSERT INTO platform_user (id, email, handle, password_hash, status) VALUES

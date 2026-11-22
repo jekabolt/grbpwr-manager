@@ -247,7 +247,7 @@ func TestTeamBrandMigrationRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, `SET SESSION sql_mode = 'ANSI'`); err != nil {
 		t.Fatal(err)
 	}
