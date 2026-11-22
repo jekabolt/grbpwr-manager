@@ -3,10 +3,11 @@ package teamfair
 import (
 	"context"
 	"errors"
-	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,22 +72,52 @@ func TestLightCapIsPerTeam(t *testing.T) {
 	}
 }
 
-// The storefront of a team has its own share.
-func TestShopKeyIsSeparate(t *testing.T) {
-	g := testGate(1, 1, 1)
-	r := mustAcquire(t, g, Key{TeamID: 1}, Light)
+// Storefront calls are never gated: 50 concurrent slow storefront calls of team #1, while its admin
+// share is full and the gate is tiny, never get ResourceExhausted.
+func TestStorefrontNeverRefused(t *testing.T) {
+	g := New(Config{Team: Limits{Light: 1, Heavy: 1, AI: 1, Rate: 1, Burst: 1},
+		GlobalHeavy: 1, LightWait: 10 * time.Millisecond, HeavyWait: 10 * time.Millisecond})
+	shop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
+	e := NewEdge(g, shop)
+	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
+	r := mustAcquire(t, g, Key{TeamID: 1}, Light) // team #1's admin share is full
 	defer r()
-	rs := mustAcquire(t, g, Key{TeamID: 1, Shop: true}, Light)
-	rs()
-	// The shop has no rate bucket and pool-1 slots.
-	d := Defaults(5)
-	if d.Shop.Light != 4 || !math.IsInf(d.Shop.Rate, 1) {
-		t.Fatalf("shop defaults %+v", d.Shop)
+	var wg sync.WaitGroup
+	var refused atomic.Int64
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) {
+				time.Sleep(50 * time.Millisecond) // a Stripe wait
+				return nil, nil
+			})
+			if status.Code(err) == codes.ResourceExhausted {
+				refused.Add(1)
+			}
+		}()
 	}
-	sg := New(d)
-	for i := 0; i < 1000; i++ {
-		mustAcquire(t, sg, Key{TeamID: 1, Shop: true}, Light)()
+	wg.Wait()
+	if n := refused.Load(); n != 0 {
+		t.Fatalf("%d of 50 storefront calls refused", n)
 	}
+}
+
+// An upload takes only its team's heavy slot: another team's heavy work runs past it even with a
+// global heavy bound of 1, and the uploading team's light calls are not touched.
+func TestUploadTakesOnlyTeamHeavy(t *testing.T) {
+	g := testGate(1, 1, 1)
+	ru := mustAcquire(t, g, teamA, Upload)
+	mustAcquire(t, g, teamB, Heavy)()
+	mustAcquire(t, g, teamA, Light)()
+	if _, err := g.Acquire(context.Background(), teamA, Heavy); !IsBusy(err) {
+		t.Fatalf("A's heavy during its upload: %v", err)
+	}
+	if _, err := g.Acquire(context.Background(), teamA, Upload); !IsBusy(err) {
+		t.Fatalf("A's second upload: %v", err)
+	}
+	ru()
+	mustAcquire(t, g, teamA, Upload)()
 }
 
 // Heavy: one per team, a global bound, and a heavy call takes a light slot of its team.
@@ -254,7 +285,7 @@ func TestUnaryEdge(t *testing.T) {
 	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != BusyCode {
 		t.Fatalf("got %v", err)
 	}
-	// The shop of the same team and a call with no team pass.
+	// The shop of the same team (ungated) and a call with no team pass.
 	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +304,7 @@ func TestHTTPEdge(t *testing.T) {
 	e := NewEdge(g, nil)
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 2})
 	rel := mustAcquire(t, g, Key{TeamID: 2}, Heavy)
-	h := e.HTTP(Heavy, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	h := e.HTTP(Upload, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/files/upload", nil).WithContext(ctx))

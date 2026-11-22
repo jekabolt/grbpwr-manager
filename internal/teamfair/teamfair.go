@@ -16,14 +16,14 @@
 // heavy), so there is no deadlock. A wait longer than Config.LightWait / HeavyWait, or an empty
 // token bucket, is a BusyError (the edge answers ResourceExhausted "team_busy" / HTTP 429).
 //
-// Storefront calls of a team get their own key (Key.Shop, Config.Shop: no rate bucket, all of the
-// pool but one connection), so the shop never queues behind the same team's admin. A call with no team (sign-in, the operator console) is not gated.
+// Storefront calls are never gated (Edge skips them): a customer at checkout is never refused on a
+// timer, and the shop never queues behind its team's admin. A call with no team (sign-in, the
+// operator console) is not gated either.
 package teamfair
 
 import (
 	"context"
 	"errors"
-	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,6 +39,10 @@ const (
 	Light Lane = iota
 	Heavy
 	AI
+	// Upload: a plain HTTP upload whose body streams for as long as the client's link allows. It
+	// takes only its team's heavy slot — never a global one, so a slow upload of one team cannot
+	// block every other team's heavy work; the edge bounds the body read (uploadReadTimeout).
+	Upload
 )
 
 func (l Lane) String() string {
@@ -47,6 +51,8 @@ func (l Lane) String() string {
 		return "heavy"
 	case AI:
 		return "ai"
+	case Upload:
+		return "upload"
 	}
 	return "light"
 }
@@ -68,7 +74,7 @@ type Limits struct {
 	Light int     // calls in flight
 	Heavy int     // heavy calls at a time
 	AI    int     // synchronous AI calls at a time
-	Rate  float64 // calls per second, sustained; +Inf = no bucket
+	Rate  float64 // calls per second, sustained
 	Burst int     // calls at once from a full bucket
 }
 
@@ -78,9 +84,6 @@ type Config struct {
 	Off bool
 	// Team is every team's default share.
 	Team Limits
-	// Shop is the storefront's share (Key.Shop): many customers, so no rate bucket, and it may use
-	// all of the pool but one connection.
-	Shop Limits
 	// GlobalHeavy bounds heavy calls of all teams together.
 	GlobalHeavy int
 	// LightWait / HeavyWait bound the queue wait of a light / heavy-or-ai call.
@@ -102,13 +105,8 @@ func Defaults(pool int) Config {
 	if gh < 1 {
 		gh = 1
 	}
-	shop := pool - 1
-	if shop < 2 {
-		shop = 2
-	}
 	return Config{
 		Team:        Limits{Light: light, Heavy: 1, AI: 2, Rate: 50, Burst: 200},
-		Shop:        Limits{Light: shop, Heavy: 1, AI: 2, Rate: math.Inf(1), Burst: 1},
 		GlobalHeavy: gh,
 		LightWait:   10 * time.Second,
 		HeavyWait:   5 * time.Minute,
@@ -138,14 +136,9 @@ func (l Limits) fill(d Limits) Limits {
 // Key names whose share a call takes.
 type Key struct {
 	TeamID int64
-	// Shop: a storefront call (its own share, apart from the team's admin).
-	Shop bool
 }
 
 func (k Key) String() string {
-	if k.Shop {
-		return "shop:" + strconv.FormatInt(k.TeamID, 10)
-	}
 	return "team:" + strconv.FormatInt(k.TeamID, 10)
 }
 
@@ -192,7 +185,6 @@ type Gate struct {
 func New(cfg Config) *Gate {
 	d := Defaults(5)
 	cfg.Team = cfg.Team.fill(d.Team)
-	cfg.Shop = cfg.Shop.fill(d.Shop)
 	if cfg.GlobalHeavy <= 0 {
 		cfg.GlobalHeavy = d.GlobalHeavy
 	}
@@ -233,9 +225,7 @@ func (g *Gate) Stats() Stats {
 
 func (g *Gate) shareOf(k Key) *share {
 	want := g.cfg.Team
-	if k.Shop {
-		want = g.cfg.Shop
-	} else if p := g.over.Load(); p != nil {
+	if p := g.over.Load(); p != nil {
 		if l, ok := (*p)(k.TeamID); ok {
 			want = l.fill(g.cfg.Team)
 		}
@@ -305,6 +295,8 @@ func (g *Gate) Acquire(ctx context.Context, k Key, lane Lane) (release func(), e
 		chain = []chan struct{}{s.heavy, s.light, g.heavy}
 	case AI:
 		chain = []chan struct{}{s.ai}
+	case Upload:
+		chain = []chan struct{}{s.heavy}
 	default:
 		chain = []chan struct{}{s.light}
 	}

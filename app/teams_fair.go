@@ -98,7 +98,7 @@ func (a *App) backgroundSlots() chan struct{} {
 }
 
 // initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
-// Storefront calls get their own share, apart from the same team's admin.
+// Storefront calls are not gated (customers are never refused on a timer).
 func (a *App) initTeamFair(ctx context.Context) {
 	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, os.Getenv)
 	a.fair = teamfair.NewEdge(teamfair.New(cfg), func(m string) bool {
@@ -107,7 +107,7 @@ func (a *App) initTeamFair(ctx context.Context) {
 	a.hs.SetTeamFair(a.fair.Unary())
 	slog.Default().InfoContext(ctx, "per-team shares",
 		slog.Bool("off", cfg.Off), slog.Int("light", cfg.Team.Light), slog.Int("heavy", cfg.Team.Heavy),
-		slog.Int("heavy_all", cfg.GlobalHeavy), slog.Int("shop", cfg.Shop.Light), slog.Int("ai", cfg.Team.AI),
+		slog.Int("heavy_all", cfg.GlobalHeavy), slog.Int("ai", cfg.Team.AI),
 		slog.Float64("rate", cfg.Team.Rate), slog.Int("burst", cfg.Team.Burst),
 		slog.Int("background", cap(a.backgroundSlots())))
 }

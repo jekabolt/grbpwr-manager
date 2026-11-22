@@ -16,20 +16,25 @@ import (
 // BusyCode is the status message of a refusal: one machine word the client can match.
 const BusyCode = "team_busy"
 
+// uploadReadTimeout bounds how long an upload's body may take to arrive (the server has no
+// ReadTimeout: it also carries long streams). 256 MiB at ~4 Mbit/s fits.
+const uploadReadTimeout = 10 * time.Minute
+
 // warnEvery bounds the WARN log of refusals: at most one line per key per minute.
 const warnEvery = time.Minute
 
 // Edge adapts a Gate to the gRPC chain and to plain HTTP handlers.
 type Edge struct {
 	g *Gate
-	// shop reports a storefront method (its own share). nil = none.
+	// shop reports a storefront method: never gated. nil = none.
 	shop func(fullMethod string) bool
 
 	mu   sync.Mutex
 	warn map[Key]time.Time
 }
 
-// NewEdge wraps g (nil g = pass-through). shop marks storefront methods.
+// NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which pass ungated:
+// customers are never refused on a timer.
 func NewEdge(g *Gate, shop func(fullMethod string) bool) *Edge {
 	return &Edge{g: g, shop: shop, warn: map[Key]time.Time{}}
 }
@@ -72,10 +77,10 @@ func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 		t, ok := tenant.From(ctx)
-		if !ok {
+		if !ok || (e.shop != nil && e.shop(info.FullMethod)) {
 			return handler(ctx, req)
 		}
-		k := Key{TeamID: t.ID, Shop: e.shop != nil && e.shop(info.FullMethod)}
+		k := Key{TeamID: t.ID}
 		lane := LaneOf(info.FullMethod)
 		release, err := e.g.Acquire(ctx, k, lane)
 		if err != nil {
@@ -90,7 +95,8 @@ func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 }
 
 // HTTP gates a plain HTTP handler (an admin upload) as one call of lane. Wrap it INSIDE the auth
-// wrapper, which binds the team. Busy = 429 {"error":"team_busy"}.
+// wrapper, which binds the team. Busy = 429 {"error":"team_busy"}. For Upload the body read gets a
+// deadline (uploadReadTimeout) once the slot is taken, so a stalled client frees the slot.
 func (e *Edge) HTTP(lane Lane, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if e == nil || e.g == nil || e.g.cfg.Off {
@@ -116,6 +122,10 @@ func (e *Edge) HTTP(lane Lane, next http.Handler) http.Handler {
 			return
 		}
 		defer release()
+		if lane == Upload {
+			// Best effort: a writer that cannot set deadlines (a test recorder) is left as is.
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadReadTimeout))
+		}
 		next.ServeHTTP(w, r)
 	})
 }
