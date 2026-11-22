@@ -179,7 +179,7 @@ func TestLibraryFilePeople(t *testing.T) {
 
 		names, err := s.Admin().ListSpecialties(ctx)
 		require.NoError(t, err)
-		require.Contains(t, names, "технолог", "the seeded vocabulary must be reachable by the picker")
+		require.Contains(t, names, "technologist", "the seeded vocabulary must be reachable by the picker")
 	})
 
 	t.Run("the picker read excludes disabled accounts", func(t *testing.T) {
@@ -281,19 +281,23 @@ func TestFilesPeopleMigrationsAreRerunnable(t *testing.T) {
 		`UPDATE library_file SET uploaded_by_id = NULL WHERE id = ?`, legacy)
 	require.NoError(t, err)
 
-	seedCount := func() int {
+	countName := func(name string) int {
 		var n int
 		require.NoError(t, testDB.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM admin_specialty WHERE name = 'дизайнер'`).Scan(&n))
+			`SELECT COUNT(*) FROM admin_specialty WHERE name = ?`, name).Scan(&n))
 		return n
 	}
+	// 0486 renamed the seed to English; a rerun of 0315 seeds the Russian row again, and the
+	// rerun of 0486 must fold it back into the English one.
+	seedCount := func() int { return countName("designer") }
 	require.Equal(t, 1, seedCount())
 
 	for i := range 2 {
 		_, err := testDB.ExecContext(ctx,
-			`DELETE FROM gorp_migrations WHERE id IN ('0314_files_people.sql', '0315_admin_specialties.sql')`)
+			`DELETE FROM gorp_migrations WHERE id IN ('0314_files_people.sql', '0315_admin_specialties.sql', '0486_admin_specialty_english.sql')`)
 		require.NoError(t, err)
-		require.NoError(t, Migrate(testDB), "re-applying 0314/0315 over an applied schema (pass %d)", i+1)
+		require.NoError(t, Migrate(testDB), "re-applying 0314/0315/0486 over an applied schema (pass %d)", i+1)
+		require.Equal(t, 0, countName("дизайнер"), "0486 must fold a re-seeded Russian row into the English one")
 
 		var uploadedByID sql.NullInt64
 		var uploadedBy string

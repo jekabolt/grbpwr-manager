@@ -82,6 +82,23 @@ func TestTeamBrand(t *testing.T) {
 	if got, _, _ := st.TeamBrand(ctx, 1); got.LegalEntity != "GRBPWR LTD" {
 		t.Fatal("acme's write reached team #1")
 	}
+	// A new brand name renames the team (header, sign-in page, letters); the slug stays.
+	if _, err := set(2, ann, false, platformstore.TeamBrand{BrandName: "acme atelier"}); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM team WHERE id = 2 AND name = 'acme atelier' AND slug = 'acme'`) != 1 {
+		t.Fatal("the brand name did not reach the team name")
+	}
+	// An empty brand name leaves the team name alone.
+	if _, err := set(2, ann, false, platformstore.TeamBrand{}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM team WHERE id = 2 AND name = 'acme atelier'`) != 1 {
+		t.Fatal("an empty brand name renamed the team")
+	}
+	if _, err := set(2, ann, false, acme); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
 	// An operator may write; a member may not; nor an owner of another team.
 	if _, err := set(2, op, true, acme); err != nil {
 		t.Fatalf("operator: %v", err)
@@ -230,7 +247,7 @@ func TestTeamBrandMigrationRerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.ExecContext(ctx, `SET SESSION sql_mode = 'ANSI'`); err != nil {
 		t.Fatal(err)
 	}
