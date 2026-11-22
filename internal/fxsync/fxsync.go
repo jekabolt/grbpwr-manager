@@ -188,6 +188,9 @@ func baseCurrency() string {
 func (w *Worker) runOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, "fxsync")
 
+	// The fetch has its own timeout; each team's upsert gets a fresh one once it runs, so the wait
+	// for a shared background slot (app/teams_workers.go, X15) never eats into a team's budget.
+	base := ctx
 	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
 	defer cancel()
 
@@ -204,6 +207,8 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 		return true
 	}
 	upsert := func(teamCtx context.Context) bool {
+		teamCtx, cancel := context.WithTimeout(teamCtx, tickTimeout)
+		defer cancel()
 		if err := w.store.UpsertCostingFxRates(teamCtx, rates); err != nil {
 			w.tracker.MarkError(err)
 			slog.Default().ErrorContext(teamCtx, "fxsync: upsert failed", slog.String("err", err.Error()))
@@ -214,9 +219,9 @@ func (w *Worker) runOnce(ctx context.Context) bool {
 	}
 	ok := false
 	if w.teams == nil {
-		ok = upsert(ctx)
+		ok = upsert(base)
 	} else {
-		ok = w.teams(ctx, upsert)
+		ok = w.teams(base, upsert)
 	}
 	if !ok {
 		return false

@@ -16,6 +16,9 @@ cmd/main.go	commitHash
 cmd/main.go	rootCmd
 cmd/main.go	version
 cmd/main.go	versionCmd
+cmd/migrate_fleet.go	fleetStrict
+cmd/migrate_fleet.go	fleetTimeout
+cmd/migrate_fleet.go	migrateFleetCmd
 cmd/operator_reset.go	operatorResetCmd
 cmd/operator_reset.go	operatorResetEmail
 cmd/seed.go	seedCmd
@@ -457,6 +460,10 @@ internal/dto/techcard_production.go	topstitchModeTokenToPb
 internal/dto/techcard_production.go	validOperationReview
 internal/dto/techcard_seam_decisions.go	seamDecisionActionFromPb
 internal/dto/techcard_seam_decisions.go	seamGuessTierFromPb
+internal/dto/techcard_seams.go	pointClosureIntentFromPb
+internal/dto/techcard_seams.go	pointClosureIntentToPb
+internal/dto/techcard_seams.go	pointClosureRoleFromPb
+internal/dto/techcard_seams.go	pointClosureRoleToPb
 internal/dto/techcard_seams.go	seamDirectionFromPb
 internal/dto/techcard_seams.go	seamDirectionToPb
 internal/dto/techcard_seams.go	seamKindFromPb
@@ -508,7 +515,9 @@ internal/entity/fitting.go	ValidFittingVerdicts
 internal/entity/fitting.go	fittingChangeZoneTokens
 internal/entity/fulfillment.go	OrderStatusToFulfillmentColumn
 internal/entity/inventory.go	ValidMaterialMovementTypes
+internal/entity/library.go	CopyableToMediaContentTypes
 internal/entity/library_file_access.go	ValidLibraryFileAccessLevels
+internal/entity/library_ratios.go	NamedRatios
 internal/entity/material.go	ValidMaterialClasses
 internal/entity/material.go	ValidMaterialLabelTypes
 internal/entity/material.go	ValidMaterialPriceSources
@@ -729,6 +738,7 @@ internal/middleware/clientid.go	trustedProxyHops
 internal/observability/capture.go	limits
 internal/observability/observability.go	enabled
 internal/observability/scrub.go	identityKeys
+internal/observability/team.go	teamAttrKeys
 internal/openrouter/openrouter.go	ErrBudgetExhausted
 internal/openrouter/openrouter.go	ErrModelUnavailable
 internal/openrouter/openrouter.go	ErrNotConfigured
@@ -756,10 +766,15 @@ internal/store/ai/ai.go	usageSnapshotBound
 internal/store/bqcache/write.go	funnelAnalysisCols
 internal/store/content/media_usage.go	mediaRefRegistry
 internal/store/content/media_usage.go	mediaUsageQuery
+internal/store/content/media_usage.go	mediaUsedIDsUnion
 internal/store/content/media_usage_json.go	mediaJSONHolderQuery
+internal/store/content/media_usage_json.go	mediaJSONUsedHolderQuery
 internal/store/design/band.go	designCountCardOutputsByColorway
 internal/store/design/band.go	designListCardOutputs
 internal/store/fileslibrary/roles.go	defaultProjectRoles
+internal/store/library/query.go	fileKindSQL
+internal/store/library/query.go	mediaFreeSQL
+internal/store/library/query.go	mediaUsedSQL
 internal/store/membership/membership.go	qualifyingStatuses
 internal/store/metrics/apportion.go	costAdjExpr
 internal/store/metrics/apportion.go	itemAdjExpr
@@ -769,6 +784,7 @@ internal/store/metrics/style.go	styleLifetimeFrom
 internal/store/metrics/style.go	styleLifetimeTo
 internal/store/metrics/util.go	ga4APISyncTypes
 internal/store/migrationlint/retroactive.go	sqlIdentifierPattern
+internal/store/model/neutral_placement_authority.go	ErrNeutralPlacementModelMoved
 internal/store/order/payment.go	settledEURReconcileTolerance
 internal/store/order/status.go	ValidStatusTransitions
 internal/store/probegate/probegate.go	ciServiceHosts

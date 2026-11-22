@@ -44,8 +44,27 @@ func (a *App) initWorkerTeams() error {
 
 func (a *App) workerTeamLoop(name string, scope teamWorkerScope) teamWorkerLoop {
 	return func(ctx context.Context, tick func(context.Context) bool) bool {
-		return runTeamWorkerTick(ctx, a.workerTeams, name, scope, teamWorkerParallel, tick)
+		if !sharesBackgroundSlots(name) {
+			return runTeamWorkerTick(ctx, a.workerTeams, name, scope, teamWorkerParallel, tick)
+		}
+		slots := a.backgroundSlots()
+		return runTeamWorkerTick(ctx, a.workerTeams, name, scope, teamWorkerParallel, func(teamCtx context.Context) bool {
+			// One shared bound across every team worker (X15): ticks of all workers together.
+			select {
+			case slots <- struct{}{}:
+			case <-teamCtx.Done():
+				return false
+			}
+			defer func() { <-slots }()
+			return tick(teamCtx)
+		})
 	}
+}
+
+// sharesBackgroundSlots: archivecleanup is bucket listing (up to its 5-minute tick timeout on a
+// slow bucket) with one small UPDATE; in the shared slots it could hold both for minutes (X15).
+func sharesBackgroundSlots(name string) bool {
+	return name != "archivecleanup"
 }
 
 // runTeamWorkerTick binds each team to its own context and isolates its result. ListActive excludes
