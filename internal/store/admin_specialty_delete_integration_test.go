@@ -26,6 +26,15 @@ func TestAdminSpecialtyDeletion(t *testing.T) {
 	s, err := NewForTest(ctx, *testCfg)
 	require.NoError(t, err)
 
+	t.Run("seeded specialties read in English (0486)", func(t *testing.T) {
+		names, err := s.Admin().ListSpecialties(ctx)
+		require.NoError(t, err)
+		require.Contains(t, names, "pattern maker")
+		require.Contains(t, names, "videographer")
+		require.NotContains(t, names, "конструктор")
+		require.NotContains(t, names, "видеограф")
+	})
+
 	t.Run("свободную позицию удаляет, имя сопоставляя без учёта регистра", func(t *testing.T) {
 		kirillID, _ := insertAdminFixture(ctx, t, "test-spec-kirill")
 		require.NoError(t, s.Admin().SetSpecialties(ctx, kirillID, nil, []string{"тестспец"}))
@@ -88,10 +97,10 @@ func TestAdminSpecialtyDeletion(t *testing.T) {
 		})
 
 		// Имя, которое в словаре УЖЕ есть (пусть и набранное иначе), словарь не растит.
-		require.NoError(t, s.Admin().SetSpecialties(ctx, adminID, nil, []string{"Конструктор"}))
+		require.NoError(t, s.Admin().SetSpecialties(ctx, adminID, nil, []string{"Pattern Maker"}))
 		account, err := s.Admin().GetAccountWithPermissions(ctx, adminUsernameByID(ctx, t, adminID))
 		require.NoError(t, err)
-		require.Equal(t, []string{"конструктор"}, account.Specialties)
+		require.Equal(t, []string{"pattern maker"}, account.Specialties)
 
 		// А настоящее новое имя за потолком — отказ, и он остался ровно тем же.
 		err = s.Admin().SetSpecialties(ctx, adminID, nil, []string{"тестпереполнение"})
@@ -102,7 +111,7 @@ func TestAdminSpecialtyDeletion(t *testing.T) {
 		// Отказ не тронул то, что человек нёс до него: транзакция откатилась целиком.
 		account, err = s.Admin().GetAccountWithPermissions(ctx, adminUsernameByID(ctx, t, adminID))
 		require.NoError(t, err)
-		require.Equal(t, []string{"конструктор"}, account.Specialties)
+		require.Equal(t, []string{"pattern maker"}, account.Specialties)
 	})
 }
 
