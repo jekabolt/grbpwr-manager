@@ -137,6 +137,22 @@ func (s *Server) people(ctx context.Context) (peopleCtx, error) {
 	return p, nil
 }
 
+// inviterName is the «from» of an invite letter: the inviter's first + last name, else their
+// @username, else the handle. A failed profile read falls back to the handle, never fails the invite.
+func (s *Server) inviterName(ctx context.Context, p peopleCtx) string {
+	prof, err := s.platform.store.Profile(ctx, p.userID)
+	if err != nil {
+		return p.handle
+	}
+	if name := platformstore.DisplayName(prof.FirstName, prof.LastName); name != "" {
+		return name
+	}
+	if prof.PublicUsername != "" {
+		return prof.PublicUsername
+	}
+	return p.handle
+}
+
 func peopleErr(ctx context.Context, op string, err error) error {
 	switch {
 	case errors.Is(err, platformstore.ErrLastOwner):
@@ -543,6 +559,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 		return nil, peopleErr(ctx, "token", err)
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	from := s.inviterName(ctx, p)
 	inv, err := s.platform.store.UpsertInvite(ctx, platformstore.InviteParams{
 		TeamID: p.w.Team.ID, Email: email, Role: role, Permissions: perms, KeepPermissions: !named, TokenHash: hash,
 		Name:      platformstore.DisplayName(first, last),
@@ -550,7 +567,7 @@ func (s *Server) InviteTeamMember(ctx context.Context, req *pb_admin.InviteTeamM
 		TeamCap: s.platform.cfg.InviteTeamCap(),
 		Letter: platformstore.Letter{
 			To: email, Template: "invite", Link: s.inviteLink(p.w.Team.Slug, token),
-			TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle,
+			TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: from,
 		},
 	})
 	if err != nil {
@@ -621,11 +638,12 @@ func (s *Server) ResendTeamInvite(ctx context.Context, req *pb_admin.ResendTeamI
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	link := s.inviteLink(p.w.Team.Slug, token)
+	from := s.inviterName(ctx, p)
 	if err := s.platform.store.ResendInvite(ctx, platformstore.ResendParams{
 		TeamID: p.w.Team.ID, InviteID: inv.ID, Actor: p.actor(), TokenHash: hash, ExpiresAt: now.Add(InviteTTL),
 		Now: now, MaxPerHour: inviteLettersPerHour, TeamCap: s.platform.cfg.InviteTeamCap(),
 		Letter: func(platformstore.TeamInvite) platformstore.Letter {
-			return platformstore.Letter{Template: "invite", Link: link, TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: p.handle}
+			return platformstore.Letter{Template: "invite", Link: link, TeamName: p.w.Team.Name, Slug: p.w.Team.Slug, From: from}
 		},
 	}); err != nil {
 		return nil, peopleErr(ctx, "resend invite", err)

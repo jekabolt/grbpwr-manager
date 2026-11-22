@@ -15,6 +15,7 @@ func classes() map[string]Class {
 		// Keep: shared dictionaries, fixed catalogs, statuses, and required neutral settings.
 		"acct_account":                 Keep,
 		"admin_specialty":              Keep,
+		"admin_specialty_link":         Keep,
 		"ai_provider":                  Keep,
 		"ai_route":                     Keep,
 		"ai_settings":                  Keep,
