@@ -195,6 +195,8 @@ type Server struct {
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
 	tenantBinder            TenantBinder
+	// fileURLs: signed urls of private team files (X13, file_urls.go); nil = off.
+	fileURLs FileURLRewriter
 	// platformOn: PlatformService is registered (teams mode); /api/platform is mounted.
 	platformOn bool
 	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
@@ -1281,6 +1283,8 @@ func (s *Server) Start(ctx context.Context,
 			// After auth (the caller is resolved): GetTechCard and tech-card writes stamp the
 			// caller's «recent techcards» row, best-effort, once the handler has succeeded.
 			adminServer.RecentTechCardsUnary(),
+			// Private team files (X13): signed urls out, the signature cut off what comes back in.
+			s.fileURLUnary(),
 			// Innermost: an upload over the team's storage cap is one code, not a 500.
 			storageFullUnary(),
 		),

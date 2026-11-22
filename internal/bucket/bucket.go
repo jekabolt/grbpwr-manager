@@ -73,6 +73,8 @@ type Bucket struct {
 	// meter counts and caps each team's bytes (meter.go); empty = off. Atomic: the app turns it on
 	// after workers that write the bucket have started.
 	meter atomic.Pointer[meterBox]
+	// signer signs the urls of private team files (teamsign.go, lane X13); built on first use.
+	signer teamURLSigner
 }
 
 func New(c *Config, mediaStore dependency.Media) (dependency.FileStore, error) {

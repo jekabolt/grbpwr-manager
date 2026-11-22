@@ -816,6 +816,9 @@ func (a *App) Start(ctx context.Context) error {
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		aiRouter.SetURLSigner(bk.SignFileURL) // X13: a team's private pictures reach the provider signed
+	}
 	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
 	//
 	// Лиза строки черновика идеи обязана переживать платную цепочку, а длину цепочки задают БАЗЫ
@@ -978,6 +981,7 @@ func (a *App) Start(ctx context.Context) error {
 		a.wireDesignTeams() // teams mode on: one tick per active team with `ai` on (teams_ai.go)
 		if bk, ok := a.b.(*bucket.Bucket); ok {
 			a.dgw.SetStorageGate(bk.StorageRoom) // X11: a full team never pays (no-op until the meter is on)
+			a.dgw.SetURLSigner(bk.SignFileURL)   // X13: References of a team's private files go out signed
 		}
 		if err = a.dgw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
@@ -1232,6 +1236,9 @@ func (a *App) Start(ctx context.Context) error {
 	// not a *bucket.Bucket.
 	if bk, ok := a.b.(*bucket.Bucket); ok {
 		a.hs.SetFileProxyHandler(authS.WithAdminAuthz(admin.FileProxyHandler(bk.OpenProxyObject)))
+		if a.c.Bucket.TeamsMode {
+			a.hs.SetFileURLRewriter(bk) // X13: signed urls of private team files out, signatures cut off in
+		}
 	}
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.

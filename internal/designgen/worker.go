@@ -52,6 +52,9 @@ type Worker struct {
 	// storageGate: the team's storage cap, asked before a fresh run pays (SetStorageGate, X11).
 	storageGate func(ctx context.Context) error
 
+	// urlSigner signs the provider's fetch urls of private team files (SetURLSigner, X13).
+	urlSigner func(ctx context.Context, rawURL string) string
+
 	// now is the pickup guard's clock (submitSettleGrace); nil = time.Now. Tests set it.
 	now func() time.Time
 
