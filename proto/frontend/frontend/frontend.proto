@@ -26,6 +26,12 @@ service FrontendService {
     option (google.api.http) = {get: "/api/frontend/hero"};
   }
 
+  // GetShopProfile answers the shop the request is for (header x-shop-host, else Origin): brand,
+  // address, Stripe publishable key and cache namespace (lane X18). A closed shop answers open=false.
+  rpc GetShopProfile(GetShopProfileRequest) returns (GetShopProfileResponse) {
+    option (google.api.http) = {get: "/api/frontend/shop"};
+  }
+
   // Get a colourway by its public base SKU.
   rpc GetColorway(GetColorwayRequest) returns (GetColorwayResponse) {
     option (google.api.http) = {get: "/api/frontend/colorways/{base_sku}"};
@@ -230,6 +236,46 @@ message GetHeroRequest {}
 message GetHeroResponse {
   common.HeroFullWithTranslations hero = 1;
   common.Dictionary dictionary = 2;
+}
+
+message GetShopProfileRequest {}
+
+message GetShopProfileResponse {
+  ShopProfile shop = 1;
+}
+
+// ShopProfile is what a storefront needs to draw the shop (lane X18).
+message ShopProfile {
+  // name is the brand name.
+  string name = 1;
+  // logo_url is the brand logo (absolute URL); empty = none.
+  string logo_url = 2;
+  // primary_host is the shop's main address (no scheme).
+  string primary_host = 3;
+  // open: the shop takes orders; false = draw a closed page.
+  bool open = 4;
+  string legal_entity = 5;
+  string legal_address = 6;
+  string contact_email = 7;
+  string website = 8;
+  ShopStripe stripe = 9;
+  // base_currency is the shop's base currency (ISO 4217).
+  string base_currency = 10;
+  // cache_namespace prefixes the storefront's cache tags: "" for grbpwr, "t{n}" for any other shop.
+  // Revalidation posts carry the same value in "namespace".
+  string cache_namespace = 11;
+  // accent_color is the brand colour ("#rrggbb"); empty = the storefront's default.
+  string accent_color = 12;
+}
+
+// ShopStripe is the public half of the shop's Stripe setup.
+message ShopStripe {
+  // publishable_key is the key Stripe.js loads with; empty = checkout off.
+  string publishable_key = 1;
+  // account_id is the connected account for Stripe.js (Connect only; empty for own keys / grbpwr).
+  string account_id = 2;
+  // mode: "live" or "test".
+  string mode = 3;
 }
 
 message GetColorwayRequest {
