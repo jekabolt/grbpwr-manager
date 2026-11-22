@@ -161,11 +161,22 @@ func (s *Store) SetTeamBrand(ctx context.Context, p SetTeamBrandParams) ([]strin
 			prev = cur[0]
 		}
 		changed = brandChanges(prev, next)
-		return execBrandUpsert(ctx, tx, p.TeamID, next, p.Actor.UserID)
+		if err := execBrandUpsert(ctx, tx, p.TeamID, next, p.Actor.UserID); err != nil {
+			return err
+		}
+		// The brand name is the team's name everywhere it shows (header, sign-in page, letters):
+		// a new non-empty one renames the team; the slug stays.
+		if next.BrandName != "" && next.BrandName != prev.BrandName {
+			if _, err := tx.ExecContext(ctx, `UPDATE team SET name = ? WHERE id = ?`, next.BrandName, p.TeamID); err != nil {
+				return fmt.Errorf("platformstore: brand name to team name: %w", err)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.dir.Invalidate(p.TeamID)
 	return changed, nil
 }
 
