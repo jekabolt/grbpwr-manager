@@ -173,6 +173,7 @@ type App struct {
 	stopProvisioner   func()
 	stopAIRollup      func()
 	stopStorage       func() // X11: storage recount (teams_storage.go)
+	stopDay30         func() // D3: day-30 purge and wipe (teams_day30.go)
 	stopTaskBoardHeal func()
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
@@ -1474,6 +1475,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
 	// failed before store.New assigned a.db.
+	if a.stopDay30 != nil {
+		a.stopDay30()
+	}
 	if a.stopStorage != nil {
 		a.stopStorage()
 	}
@@ -1753,7 +1757,10 @@ func (a *App) startTeamsWorkers(ctx context.Context) error {
 		return fmt.Errorf("ai spend rollup: %w", err)
 	}
 	a.stopAIRollup = stop
-	a.stopStorage = a.startStorageMeter(ctx) // X11: storage cap + daily recount (teams_storage.go)
+	a.stopStorage = a.startStorageMeter(ctx)              // X11: storage cap + daily recount (teams_storage.go)
+	if a.stopDay30, err = a.startDay30(ctx); err != nil { // D3: day-30 purge and wipe (teams_day30.go)
+		return fmt.Errorf("day-30 loop: %w", err)
+	}
 	return nil
 }
 

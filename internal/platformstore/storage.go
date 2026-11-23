@@ -167,10 +167,12 @@ type StorageTeam struct {
 	FileKey sql.NullString `db:"file_key"`
 }
 
-// StorageTeams lists every team with its file key (deleted ones too: their files stay until purge).
+// StorageTeams lists every team with its file key (deleted ones too: their files stay until the
+// day-30 wipe; a wiped tombstone, purge_at NULL after the claim, is left out).
 func (s *Store) StorageTeams(ctx context.Context) ([]StorageTeam, error) {
 	var out []StorageTeam
-	if err := s.db.SelectContext(ctx, &out, `SELECT id, file_key FROM team ORDER BY id`); err != nil {
+	if err := s.db.SelectContext(ctx, &out, `SELECT id, file_key FROM team
+WHERE status <> 'deleted' OR purge_at IS NOT NULL ORDER BY id`); err != nil {
 		return nil, fmt.Errorf("platformstore: storage teams: %w", err)
 	}
 	return out, nil

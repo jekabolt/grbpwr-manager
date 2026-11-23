@@ -501,19 +501,23 @@ FROM team_stripe WHERE team_id = ?`, teamID)
 	return st, true, nil
 }
 
-// DeleteTeamShopTx removes every shop row of a team (the hard delete of a team row calls it, beside
-// its brand).
-func DeleteTeamShopTx(ctx context.Context, tx *sqlx.Tx, teamID int64) error {
-	for _, q := range []string{
-		`DELETE FROM team_shop WHERE team_id = ?`,
-		`DELETE FROM shop_host WHERE team_id = ?`,
-		`DELETE FROM team_stripe WHERE team_id = ?`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, teamID); err != nil {
-			return fmt.Errorf("platformstore: delete team shop: %w", err)
+// shopTables are a team's shop rows in the control plane.
+func shopTables() []string { return []string{"team_shop", "shop_host", "team_stripe"} }
+
+// DeleteTeamShopTx removes every shop row of a team (the day-30 wipe's finish calls it beside the
+// team's other control-plane rows) and answers the rows deleted, by table. Its hosts are free again.
+func DeleteTeamShopTx(ctx context.Context, tx *sqlx.Tx, teamID int64) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, table := range shopTables() {
+		r, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE team_id = ?`, teamID)
+		if err != nil {
+			return nil, fmt.Errorf("platformstore: delete team shop: %s: %w", table, err)
+		}
+		if n, _ := r.RowsAffected(); n > 0 {
+			out[table] = n
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // ShopSummary is a team's shop as the console's team row shows it.
