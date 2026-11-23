@@ -221,6 +221,11 @@ func TestPutObjectOnlyInPut(t *testing.T) {
 		src, err := os.ReadFile(f)
 		require.NoError(t, err)
 		for _, call := range []string{".PutObject(", ".FPutObject(", ".CopyObject(", ".ComposeObject(", ".RemoveObject(", ".RemoveObjects(", "PresignedPut"} {
+			// The day-30 wipe (D3) deletes a whole wiped team's prefix unmetered: its team_storage
+			// row goes with the team's rows at finalize, so there is no count left to keep.
+			if f == "teamwipe.go" && call == ".RemoveObjects(" {
+				continue
+			}
 			require.NotContains(t, string(src), call, "%s writes the bucket outside put / removeMetered", f)
 		}
 	}
