@@ -15,7 +15,7 @@ import (
 // wireShops turns on the shops of teams (X18, teams mode): the shop screen, the console's shop
 // column, the storefront profile and per-shop customer keys, CORS for shop origins, and per-shop
 // revalidation. The storefront team (grbpwr) keeps today's storefront untouched. Custom domains go
-// through a fake provider until lane L5 brings the Vercel one.
+// to the Vercel project when VERCEL_TOKEN and VERCEL_PROJECT_ID are set, else to a fake provider.
 func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin.Server, frontendS *frontend.Server) {
 	if a.platform == nil {
 		return
@@ -50,7 +50,9 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	if hr, ok := a.re.(shop.HostRevalidator); ok {
 		re.Shop = hr
 	}
-	adminS.SetShops(admin.ShopWiring{Domains: &shop.FakeDomains{}, Invalidate: invalidate, Revalidator: re})
+	domains := a.shopDomainProvider(ctx)
+	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re})
+	a.startShopDomains(ctx, domains, invalidate, re)
 	if frontendS != nil {
 		frontendS.SetShops(frontend.ShopDeps{
 			StorefrontID: sf,

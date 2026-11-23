@@ -70,7 +70,7 @@ func (s *Server) shopCaller(ctx context.Context, owner bool) (peopleCtx, error) 
 
 func shopErr(ctx context.Context, op string, err error) error {
 	switch {
-	case errors.Is(err, platformstore.ErrShopHostTaken):
+	case errors.Is(err, platformstore.ErrShopHostTaken), errors.Is(err, shop.ErrDomainTaken):
 		return status.Error(codes.AlreadyExists, "host_taken")
 	case errors.Is(err, platformstore.ErrShopHostNotFound):
 		return status.Error(codes.NotFound, "host_not_found")
@@ -309,6 +309,9 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 		return nil, shopErr(ctx, "attach", platformstore.ErrShopHostTaken)
 	}
 	state, err := s.shopW.Domains.Attach(ctx, host)
+	if errors.Is(err, shop.ErrDomainTaken) || errors.Is(err, shop.ErrBadHost) {
+		return nil, shopErr(ctx, "attach", err)
+	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "shop: domain provider attach", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Unavailable, "domain_provider")
