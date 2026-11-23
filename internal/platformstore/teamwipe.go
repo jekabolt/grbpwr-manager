@@ -422,6 +422,14 @@ func (s *Store) FinishTeamWipe(ctx context.Context, teamID int64, now time.Time)
 				res.Rows[table] = n
 			}
 		}
+		// Its shop (X18): the hosts, the switch, the Stripe setup; its domains are free again.
+		shopRows, err := DeleteTeamShopTx(ctx, tx, teamID)
+		if err != nil {
+			return fmt.Errorf("platformstore: finish wipe: %w", err)
+		}
+		for table, n := range shopRows {
+			res.Rows[table] = n
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO team_slug_history (slug, team_id, retired_at, redirect_until)
 VALUES (?, ?, ?, ?) AS n ON DUPLICATE KEY UPDATE team_id = n.team_id, retired_at = n.retired_at,
 redirect_until = GREATEST(team_slug_history.redirect_until, n.redirect_until)`,
@@ -496,7 +504,7 @@ WHERE id = ? AND id <> ? AND status = 'deleted'`, teamID, tenant.TeamOneID); err
 		}
 		p.ClosedWithPending = n > 0
 	}
-	for _, table := range wipeTeamTables() {
+	for _, table := range append(wipeTeamTables(), shopTables()...) {
 		var n int64
 		if err := s.db.GetContext(ctx, &n, `SELECT COUNT(*) FROM `+table+` WHERE team_id = ?`, teamID); err != nil {
 			return TeamWipePreview{}, fmt.Errorf("platformstore: preview wipe: %s: %w", table, err)

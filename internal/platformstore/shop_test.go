@@ -117,13 +117,13 @@ func TestShopHosts(t *testing.T) {
 		t.Fatal("stripe row from nowhere")
 	}
 
-	// The hard delete of a team takes every shop row.
+	// The wipe's finish takes every shop row.
 	tx, err := st.DB().Beginx()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := platformstore.DeleteTeamShopTx(ctx, tx, 2); err != nil {
-		t.Fatal(err)
+	if rows, err := platformstore.DeleteTeamShopTx(ctx, tx, 2); err != nil || rows["team_shop"] != 1 {
+		t.Fatalf("delete shop rows %v %v", rows, err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)

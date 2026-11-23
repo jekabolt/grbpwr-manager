@@ -3,6 +3,7 @@ package platformstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +44,8 @@ func seedWipe(t *testing.T, st *platformstore.Store) {
 func teamRows(t *testing.T, st *platformstore.Store, teamID int64) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	for _, table := range []string{"team_member", "user_session", "team_invite", "team_feature", "email_token", "team_logo", "team_brand"} {
+	for _, table := range []string{"team_member", "user_session", "team_invite", "team_feature", "email_token", "team_logo", "team_brand",
+		"team_shop", "shop_host", "team_stripe"} {
 		var n int
 		if err := st.DB().Get(&n, `SELECT COUNT(*) FROM `+table+` WHERE team_id = ?`, teamID); err != nil {
 			t.Fatal(err)
@@ -99,6 +101,18 @@ func TestTeamWipeClaimAndFinish(t *testing.T) {
 	ctx := context.Background()
 	seedWipe(t, st)
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	// Shops (X18): the wiped team's go, acme's stay.
+	for _, id := range []int64{2, 8} {
+		if err := st.SetShopEnabled(ctx, id, true, fmt.Sprintf("t%d.shop.lekalo.studio", id), 0, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AttachShopHost(ctx, 8, "xgone.com", platformstore.ShopHostLive, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO team_stripe (team_id, kind) VALUES (8, 'connect')`); err != nil {
+		t.Fatal(err)
+	}
 	acmeBefore := teamRows(t, st, 2)
 
 	ids, err := st.DueTeamWipes(ctx, 50)
@@ -200,13 +214,20 @@ func TestTeamWipeClaimAndFinish(t *testing.T) {
 	if err != nil || !res.Finished || res.Slug != "xgone" {
 		t.Fatalf("finish %+v %v", res, err)
 	}
+	if res.Rows["shop_host"] != 2 || res.Rows["team_shop"] != 1 || res.Rows["team_stripe"] != 1 {
+		t.Fatalf("shop rows wiped %v", res.Rows)
+	}
+	if _, taken, _ := st.ShopHostTeam(ctx, "xgone.com"); taken {
+		t.Fatal("the wiped team's domain is still taken")
+	}
 	for table, c := range teamRows(t, st, 8) {
 		if c != 0 {
 			t.Fatalf("%s keeps %d rows of the wiped team", table, c)
 		}
 	}
 	if got := teamRows(t, st, 2); len(got) != len(acmeBefore) || got["team_member"] != acmeBefore["team_member"] ||
-		got["user_session"] != acmeBefore["user_session"] || got["team_feature"] != acmeBefore["team_feature"] {
+		got["user_session"] != acmeBefore["user_session"] || got["team_feature"] != acmeBefore["team_feature"] ||
+		got["shop_host"] != 1 || got["team_shop"] != 1 {
 		t.Fatalf("acme rows changed %v → %v", acmeBefore, got)
 	}
 	var slug string
