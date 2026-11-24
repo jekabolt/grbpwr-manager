@@ -957,15 +957,16 @@ var methodRequirements = map[string]Requirement{
 	"SetTeamMemberAccess": wr(SectionAccounts),
 	// shop screen (lane X18): the calling team's shop, domains, payments and mail. Owner-only writes
 	// (wr(SectionAccounts) + the handler's owner rule), as the workspace screen.
-	"SetShopEnabled":     wr(SectionAccounts),
-	"AttachShopDomain":   wr(SectionAccounts),
-	"CheckShopDomain":    wr(SectionAccounts),
-	"RemoveShopDomain":   wr(SectionAccounts),
-	"SetShopPrimaryHost": wr(SectionAccounts),
-	"SetShopMail":        wr(SectionAccounts),
-	"StartStripeConnect": wr(SectionAccounts),
-	"SetStripeKeys":      wr(SectionAccounts),
-	"DisconnectStripe":   wr(SectionAccounts),
+	"SetShopEnabled":      wr(SectionAccounts),
+	"AttachShopDomain":    wr(SectionAccounts),
+	"CheckShopDomain":     wr(SectionAccounts),
+	"RemoveShopDomain":    wr(SectionAccounts),
+	"SetShopPrimaryHost":  wr(SectionAccounts),
+	"SetShopMail":         wr(SectionAccounts),
+	"StartStripeConnect":  wr(SectionAccounts),
+	"FinishStripeConnect": wr(SectionAccounts),
+	"SetStripeKeys":       wr(SectionAccounts),
+	"DisconnectStripe":    wr(SectionAccounts),
 	// УДАЛЕНИЕ ПОЗИЦИИ СЛОВАРЯ СПЕЦИАЛЬНОСТЕЙ — ЗДЕСЬ, А НЕ В allowlist РЯДОМ С ЗАПИСЬЮ.
 	// SetAccountSpecialties внизу разрешён всем аутентифицированным, потому что человек правит СВОЁ
 	// самоописание, и новое имя только добавляется: ни у кого на экране ничего не пропадает.

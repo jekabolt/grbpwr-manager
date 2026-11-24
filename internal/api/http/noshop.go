@@ -100,6 +100,7 @@ func (s *Server) mountShopWebhooks(r chi.Router) {
 	if s.stripeWebhookHandler != nil {
 		r.Post("/api/webhooks/stripe", s.stripeWebhookHandler.HandleStripeEvent)
 	}
+	s.mountShopStripeWebhooks(r)
 	if s.aftershipWebhookHandler != nil {
 		r.Post("/api/webhooks/aftership", s.aftershipWebhookHandler.HandleAftershipEvent)
 	}

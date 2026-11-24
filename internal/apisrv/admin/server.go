@@ -412,6 +412,9 @@ func (s *Server) StopRateLimiter() {
 }
 
 func (s *Server) getPaymentHandler(ctx context.Context, pm entity.PaymentMethodName) (dependency.Invoicer, error) {
+	if h, ok, err := s.teamPaymentHandler(ctx, pm); ok {
+		return h, err
+	}
 	var handler dependency.Invoicer
 	switch pm {
 	case entity.CARD:

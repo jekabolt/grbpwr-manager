@@ -318,6 +318,8 @@ type (
 		CancelOrder(ctx context.Context, orderUUID string) error
 		GetStuckPlacedOrders(ctx context.Context, olderThan time.Time) ([]entity.Order, error)
 		GetExpiredAwaitingPaymentOrders(ctx context.Context, now time.Time) ([]entity.Order, error)
+		// CountBusyCardOrders counts card orders awaiting a payment or a refund, or paid since paidSince (X18-L3).
+		CountBusyCardOrders(ctx context.Context, paidSince time.Time) (int, error)
 		// GetShippedOrdersForDeliverySync returns Shipped orders with a shipping_date for the
 		// delivery-sync worker (AfterShip poll + timer safety net).
 		GetShippedOrdersForDeliverySync(ctx context.Context) ([]entity.ShipmentToAutoDeliver, error)

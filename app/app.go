@@ -65,6 +65,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/shopdomains"
+	"github.com/jekabolt/grbpwr-manager/internal/shoppay"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	designstore "github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -175,6 +176,7 @@ type App struct {
 	stopStorage       func() // X11: storage recount (teams_storage.go)
 	stopDay30         func() // D3: day-30 purge and wipe (teams_day30.go)
 	stopTaskBoardHeal func()
+	shopPay           *shoppay.Service // X18-L3: team shops' Stripe (teams_shop_pay.go); nil = off
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
 }
@@ -1128,6 +1130,7 @@ func (a *App) Start(ctx context.Context) error {
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)
+		a.startShopPay(ctx) // after SetPlatform: its changes redraw shops through adminS
 		adminS.SetTeamOneCredentials(authS)
 		a.hs.SetTeamLogoHandler(authS.TeamLogoHandler())
 		a.hs.SetAvatarHandler(authS.AvatarHandler())
@@ -1478,6 +1481,7 @@ func (a *App) Stop(ctx context.Context) {
 		a.stripeTest.StopAllMonitors(monStopCtx)
 	}
 	monStopCancel()
+	a.stopShopPay(ctx)
 
 	if a.bqc != nil {
 		a.bqc.Close()

@@ -192,6 +192,7 @@ type Server struct {
 	signupChallengeHandler  http.Handler // X6, platform_mail.go
 	platformMailHandler     http.Handler // X6, platform_mail.go
 	stripeWebhookHandler    StripeWebhookHandler
+	shopStripe              *ShopStripeHandlers // X18-L3, shop_stripe.go
 	aftershipWebhookHandler AftershipWebhookHandler
 	healthRegistry          *health.Registry
 	tenantBinder            TenantBinder
@@ -867,6 +868,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		if s.oauthHandler != nil {
 			r.Mount("/auth/oauth", s.oauthHandler)
 		}
+		s.mountShopStripeCallback(r)
 		// The sign-up proof-of-work challenge (teams mode, X6): a GET with no body.
 		if s.signupChallengeHandler != nil {
 			r.Method(http.MethodGet, "/auth/signup-challenge", s.signupChallengeHandler)

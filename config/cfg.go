@@ -37,6 +37,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
 	"github.com/jekabolt/grbpwr-manager/internal/shop"
+	"github.com/jekabolt/grbpwr-manager/internal/shoppay"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/store/tenantdb"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront"
@@ -113,6 +114,7 @@ type Config struct {
 	JPK                JPKConfig                 `mapstructure:"jpk"`
 	StripePayment      stripe.Config             `mapstructure:"stripe_payment"`
 	StripePaymentTest  stripe.Config             `mapstructure:"stripe_payment_test"`
+	ShopStripe         shoppay.Config            `mapstructure:"shop_stripe"` // team shops' Stripe (X18-L3); unset = no team payments
 	Revalidation       revalidation.Config       `mapstructure:"revalidation"`
 	GA4                ga4.Config                `mapstructure:"ga4"`
 	GA4MP              ga4mp.Config              `mapstructure:"ga4mp"`
@@ -786,6 +788,13 @@ func bindEnvVars() {
 	viper.BindEnv("stripe_payment_test.pub_key", "STRIPE_PAYMENT_TEST_PUB_KEY")
 	viper.BindEnv("stripe_payment_test.invoice_expiration", "STRIPE_PAYMENT_TEST_INVOICE_EXPIRATION")
 	viper.BindEnv("stripe_payment_test.webhook_secret", "STRIPE_PAYMENT_TEST_WEBHOOK_SECRET")
+
+	// Team shops' Stripe (X18-L3, internal/shoppay)
+	viper.BindEnv("shop_stripe.connect_client_id", "STRIPE_CONNECT_CLIENT_ID")
+	viper.BindEnv("shop_stripe.connect_secret_key", "STRIPE_CONNECT_SECRET_KEY")
+	viper.BindEnv("shop_stripe.connect_publishable_key", "STRIPE_CONNECT_PUBLISHABLE_KEY")
+	viper.BindEnv("shop_stripe.connect_webhook_secret", "STRIPE_CONNECT_WEBHOOK_SECRET")
+	viper.BindEnv("shop_stripe.master", "SHOP_STRIPE_MASTER")
 
 	// Revalidation
 	viper.BindEnv("revalidation.project_id", "REVALIDATION_PROJECT_ID")
