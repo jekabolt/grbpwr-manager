@@ -16,6 +16,8 @@ type memStore struct {
 	mu    sync.Mutex
 	hosts map[int64][]platformstore.ShopHost
 	sets  int
+	// unproven: hosts whose DNS proof is missing; «live» is stored as «verifying» (platformstore gate).
+	unproven map[string]bool
 }
 
 func (m *memStore) ShopHosts(_ context.Context, teamID int64) ([]platformstore.ShopHost, error) {
@@ -24,18 +26,21 @@ func (m *memStore) ShopHosts(_ context.Context, teamID int64) ([]platformstore.S
 	return append([]platformstore.ShopHost(nil), m.hosts[teamID]...), nil
 }
 
-func (m *memStore) SetShopHostStatus(_ context.Context, teamID int64, host, status string, recs []platformstore.ShopRecord, now time.Time) error {
+func (m *memStore) SetShopHostStatus(_ context.Context, teamID int64, host, status string, recs []platformstore.ShopRecord, now time.Time) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if status == platformstore.ShopHostLive && m.unproven[host] {
+		status = platformstore.ShopHostVerifying
+	}
 	for i, h := range m.hosts[teamID] {
 		if h.Host == host {
 			m.sets++
 			h.Status, h.Records, h.CheckedAt = status, recs, &now
 			m.hosts[teamID][i] = h
-			return nil
+			return status, nil
 		}
 	}
-	return platformstore.ErrShopHostNotFound
+	return "", platformstore.ErrShopHostNotFound
 }
 
 type countingDomains struct {
@@ -111,6 +116,40 @@ func TestPendingDomainGoesLive(t *testing.T) {
 	w.RunOnce(ctx)
 	if dp.checks != 2 {
 		t.Fatalf("live host polled: %d", dp.checks)
+	}
+}
+
+// A host live on the provider whose team has not published the TXT proof is stored as
+// «verifying»: the first tick is a change (records_needed → verifying), the next ones are not, so
+// caches and the storefront are not hit on every check.
+func TestLiveWithoutProofIsNoChange(t *testing.T) {
+	base := time.Date(2026, 11, 23, 11, 50, 0, 0, time.UTC)
+	st, dp, w, changed, now := setup(t, custom("brand.com", platformstore.ShopHostRecordsNeeded, base))
+	st.unproven = map[string]bool{"brand.com": true}
+	dp.Live["brand.com"] = true
+	ctx := context.Background()
+	if !w.RunOnce(ctx) {
+		t.Fatal("tick failed")
+	}
+	if st.hosts[7][0].Status != platformstore.ShopHostVerifying || len(*changed) != 1 {
+		t.Fatalf("first tick: status=%s changed=%v", st.hosts[7][0].Status, *changed)
+	}
+	*now = now.Add(time.Minute)
+	if !w.RunOnce(ctx) {
+		t.Fatal("tick failed")
+	}
+	if dp.checks != 2 {
+		t.Fatalf("verifying host not re-checked: checks=%d", dp.checks)
+	}
+	if st.hosts[7][0].Status != platformstore.ShopHostVerifying || len(*changed) != 1 {
+		t.Fatalf("second tick changed: status=%s changed=%v", st.hosts[7][0].Status, *changed)
+	}
+	// The proof shows up: now it is a change.
+	delete(st.unproven, "brand.com")
+	*now = now.Add(time.Minute)
+	w.RunOnce(ctx)
+	if st.hosts[7][0].Status != platformstore.ShopHostLive || len(*changed) != 2 {
+		t.Fatalf("proof seen: status=%s changed=%v", st.hosts[7][0].Status, *changed)
 	}
 }
 

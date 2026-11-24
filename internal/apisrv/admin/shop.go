@@ -362,7 +362,7 @@ func (s *Server) CheckShopDomain(ctx context.Context, req *pb_admin.CheckShopDom
 			slog.Default().ErrorContext(ctx, "shop: domain provider check", slog.String("err", err.Error()))
 			return nil, status.Error(codes.Unavailable, "domain_provider")
 		}
-		if err := s.platform.store.SetShopHostStatus(ctx, p.w.Team.ID, host, validShopStatus(state.Status), shopRecords(state.Records), time.Now()); err != nil {
+		if _, err := s.platform.store.SetShopHostStatus(ctx, p.w.Team.ID, host, validShopStatus(state.Status), shopRecords(state.Records), time.Now()); err != nil {
 			return nil, shopErr(ctx, "check", err)
 		}
 		if state.Status != cur.Status {

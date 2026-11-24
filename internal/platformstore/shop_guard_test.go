@@ -63,7 +63,7 @@ func TestShopHostTakeoverGuards(t *testing.T) {
 	// A proof of another team (or of nobody) keeps it off; the team's own puts it live.
 	proofs := proofFake{proofKey(3, "acme.com"): true}
 	st.SetShopHostProof(proofs)
-	if err := st.SetShopHostStatus(ctx, 2, "acme.com", platformstore.ShopHostLive, []platformstore.ShopRecord{{Type: "A", Name: "@", Value: "76.76.21.21", Found: true}}, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "acme.com", platformstore.ShopHostLive, []platformstore.ShopRecord{{Type: "A", Name: "@", Value: "76.76.21.21", Found: true}}, now); err != nil {
 		t.Fatal(err)
 	}
 	h := hostStatus(t, st, 2, "acme.com")
@@ -71,7 +71,7 @@ func TestShopHostTakeoverGuards(t *testing.T) {
 		t.Fatalf("another team's proof: %+v", h)
 	}
 	proofs[proofKey(2, "acme.com")] = true
-	if err := st.SetShopHostStatus(ctx, 2, "acme.com", platformstore.ShopHostLive, nil, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "acme.com", platformstore.ShopHostLive, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if h := hostStatus(t, st, 2, "acme.com"); h.Status != platformstore.ShopHostLive || !h.Records[0].Found || h.VerifiedAt == nil {
@@ -265,7 +265,7 @@ func TestShopHostOnceLiveStaysTheTeams(t *testing.T) {
 
 	// The TXT is gone (or the resolver failed) and the provider still says live: nothing changes.
 	proofs[proofKey(2, "victim.com")] = false
-	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostLive || !h.Primary || h.VerifiedAt == nil {
@@ -274,7 +274,7 @@ func TestShopHostOnceLiveStaysTheTeams(t *testing.T) {
 	stays("lapsed proof")
 
 	// The provider says it is not live: demoted, the platform address is main, still the team's.
-	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostFailed, nil, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostFailed, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostFailed || h.Primary {
@@ -293,7 +293,7 @@ func TestShopHostOnceLiveStaysTheTeams(t *testing.T) {
 		t.Fatalf("live without the proof: %+v", h)
 	}
 	proofs[proofKey(2, "victim.com")] = true
-	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostLive {

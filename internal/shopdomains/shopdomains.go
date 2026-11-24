@@ -38,7 +38,9 @@ const (
 // Store is what the worker reads and writes in the control plane (platformstore.Store).
 type Store interface {
 	ShopHosts(ctx context.Context, teamID int64) ([]platformstore.ShopHost, error)
-	SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []platformstore.ShopRecord, now time.Time) error
+	// SetShopHostStatus returns the status it stored: a provider «live» stays «verifying» until the
+	// team's DNS proof is seen.
+	SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []platformstore.ShopRecord, now time.Time) (string, error)
 }
 
 // Worker re-checks pending custom domains.
@@ -210,16 +212,19 @@ func (w *Worker) check(ctx context.Context, teamID int64, h platformstore.ShopHo
 	for _, r := range state.Records {
 		recs = append(recs, platformstore.ShopRecord{Type: r.Type, Name: r.Name, Value: r.Value, Found: r.Found})
 	}
-	if err := w.st.SetShopHostStatus(ctx, teamID, h.Host, status, recs, w.now()); errors.Is(err, platformstore.ErrShopHostNotFound) {
+	stored, err := w.st.SetShopHostStatus(ctx, teamID, h.Host, status, recs, w.now())
+	if errors.Is(err, platformstore.ErrShopHostNotFound) {
 		return true // removed while the check ran
 	} else if err != nil {
 		w.tracker.MarkError(err)
 		slog.Default().ErrorContext(ctx, "shopdomains: store status", slog.String("host", h.Host), slog.String("err", err.Error()))
 		return false
 	}
-	if status != h.Status {
+	// Compare what the store kept, not what the provider said: a host live on the provider but
+	// still without its proof stays «verifying», and that is no change.
+	if stored != h.Status {
 		slog.Default().InfoContext(ctx, "shopdomains: domain state changed",
-			slog.String("host", h.Host), slog.String("from", h.Status), slog.String("to", status))
+			slog.String("host", h.Host), slog.String("from", h.Status), slog.String("to", stored))
 		if w.changed != nil {
 			w.changed(ctx, teamID)
 		}
