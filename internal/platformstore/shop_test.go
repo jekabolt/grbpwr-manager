@@ -57,7 +57,7 @@ func TestShopHosts(t *testing.T) {
 		t.Fatalf("custom host %+v %v", h, err)
 	}
 	recs[0].Found = true
-	if err := st.SetShopHostStatus(ctx, 2, "shop.acme.com", platformstore.ShopHostLive, recs, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "shop.acme.com", platformstore.ShopHostLive, recs, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.SetShopPrimary(ctx, 2, "shop.acme.com"); err != nil {
@@ -75,7 +75,7 @@ func TestShopHosts(t *testing.T) {
 	}
 
 	// The custom host fails its check: the platform address is main again.
-	if err := st.SetShopHostStatus(ctx, 2, "shop.acme.com", platformstore.ShopHostFailed, recs, now); err != nil {
+	if _, err := st.SetShopHostStatus(ctx, 2, "shop.acme.com", platformstore.ShopHostFailed, recs, now); err != nil {
 		t.Fatal(err)
 	}
 	if h, _ := st.ShopHost(ctx, 2, sub); !h.Primary {

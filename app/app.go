@@ -64,6 +64,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/runpackaccess"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
+	"github.com/jekabolt/grbpwr-manager/internal/shopdomains"
 	"github.com/jekabolt/grbpwr-manager/internal/stockreserve"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	designstore "github.com/jekabolt/grbpwr-manager/internal/store/design"
@@ -104,6 +105,8 @@ type App struct {
 	ap  *acctposting.Worker
 	sr  *stripereconcile.Worker
 	fxw *fxsync.Worker
+	// sdw re-checks team shops' pending custom domains (X18-L5); nil without the Vercel provider.
+	sdw *shopdomains.Worker
 	// aiRecon fetches each provider's own daily cost report. Nil only when the explicit
 	// AI_RECONCILE_ENABLED kill switch is off; it must stop before both the registry and DB.
 	aiRecon *reconcile.Worker
@@ -1430,6 +1433,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.fxw != nil {
 		_ = a.fxw.Stop()
 	}
+	if a.sdw != nil {
+		_ = a.sdw.Stop()
+	}
 	if a.aiRecon != nil {
 		_ = a.aiRecon.Stop()
 	}
@@ -1584,6 +1590,9 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 	}
 	if a.fxw != nil {
 		addWorker(a.fxw)
+	}
+	if a.sdw != nil {
+		addWorker(a.sdw)
 	}
 	if a.aiRecon != nil {
 		addWorker(a.aiRecon)

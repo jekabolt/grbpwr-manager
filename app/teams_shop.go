@@ -21,7 +21,7 @@ import (
 // wireShops turns on the shops of teams (X18, teams mode): the shop screen, the console's shop
 // column, the storefront profile and per-shop customer keys, CORS for shop origins, and per-shop
 // revalidation. The storefront team (grbpwr) keeps today's storefront untouched. Custom domains go
-// through a fake provider until lane L5 brings the Vercel one.
+// to the Vercel project when VERCEL_TOKEN and VERCEL_PROJECT_ID are set, else to a fake provider.
 func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin.Server, frontendS *frontend.Server) error {
 	if m := strings.TrimSpace(a.c.Revalidation.ShopMaster); m != "" && m == strings.TrimSpace(a.c.StorefrontAuth.ShopMaster) {
 		// One master would let a revalidation secret of a shop be derived next to its customer keys.
@@ -77,10 +77,11 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 			slog.Default().ErrorContext(ctx, "shops: a legacy host was attached by another team; taken back", slog.String("host", h))
 		}
 	}
-	domains := shop.DomainProvider(&shop.FakeDomains{})
+	domains := a.shopDomainProvider(ctx)
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
 		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...)})
 	go drainShopDomains(ctx, st, domains)
+	a.startShopDomains(ctx, domains, invalidate, re)
 	if frontendS != nil {
 		frontendS.SetShops(frontend.ShopDeps{
 			StorefrontID: sf,
