@@ -108,6 +108,9 @@ type App struct {
 	fxw *fxsync.Worker
 	// sdw re-checks team shops' pending custom domains (X18-L5); nil without the Vercel provider.
 	sdw *shopdomains.Worker
+	// problems are boot faults that left a feature off without stopping the server; GET /statusz
+	// lists them (noteProblem).
+	problems []string
 	// aiRecon fetches each provider's own daily cost report. Nil only when the explicit
 	// AI_RECONCILE_ENABLED kill switch is off; it must stop before both the registry and DB.
 	aiRecon *reconcile.Worker
@@ -353,7 +356,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	// Storefront checkout holds. nil on a no-shop installation: admin and order cleanup nil-check it.
+	// Storefront checkout holds (the storefront team's and the team shops' checkouts).
 	var reservationMgr *stockreserve.Manager
 	// reservations is the same manager as the interface admin and order cleanup take. Assigned only
 	// when non-nil: a nil *Manager inside the interface would pass their nil checks and panic.
@@ -1091,12 +1094,15 @@ func (a *App) Start(ctx context.Context) error {
 	})
 	a.adminS = adminS
 
-	// No shop: FrontendService is neither built nor registered (the HTTP server answers its routes
-	// with Unavailable / 503, see httpapi.SetNoShop).
+	// FrontendService is built on every installation: without a storefront team (no shop) it serves
+	// team shops only (teams mode; the edge refuses a call that names no shop), has no env Stripe and
+	// needs no legacy STOREFRONT_AUTH_* keys (team-shop customers sign in with keys from
+	// STOREFRONT_AUTH_SHOP_MASTER). With a storefront team a bad STOREFRONT_AUTH_* still stops boot.
 	var frontendS *frontend.Server
 	if a.shopGate(ctx, "storefront") {
-		frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
-		if err != nil {
+		if a.c.Platform.NoShop() {
+			frontendS = frontend.NewTeamShops(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
+		} else if frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth); err != nil {
 			slog.Default().ErrorContext(ctx, "failed create frontend server",
 				slog.String("err", err.Error()),
 			)
@@ -1110,6 +1116,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
 	a.hs.SetNoShop(a.c.Platform.NoShop())
+	// Team shops are served whenever a storefront API exists in teams mode, with or without a
+	// storefront team.
+	a.hs.SetTeamShops(frontendS != nil && a.platform != nil)
 	a.hs.SetBudgetZone(a.aireg.BudgetTimezone)
 	binder, err := tenantbind.NewCompat(a.teamOne)
 	if err != nil {
@@ -1547,7 +1556,7 @@ func newStripeProcessor(
 // started (nil) are skipped. ga4Client is passed explicitly because it is a
 // local in Start, not a field on App.
 func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
-	reg := &health.Registry{}
+	reg := &health.Registry{Problems: append([]string(nil), a.problems...)}
 
 	// Workers. Each appended only if non-nil and actually implements Reporter.
 	// a.ma is a dependency.Mailer interface; the concrete *mail.Mailer is a
@@ -1785,4 +1794,11 @@ func (a *App) bucketOpenURL() func(ctx context.Context, rawURL string) (io.ReadC
 		return bk.OpenManagedURL
 	}
 	return nil
+}
+
+// noteProblem records a boot fault that leaves a feature off without stopping the server: an ERROR
+// log now and a line in GET /statusz "problems".
+func (a *App) noteProblem(ctx context.Context, msg string) {
+	slog.Default().ErrorContext(ctx, msg)
+	a.problems = append(a.problems, msg)
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/shopspring/decimal"
 )
 
@@ -38,8 +39,11 @@ func DefaultLimits() Limits {
 	}
 }
 
-// Reservation represents a temporary stock hold
+// Reservation represents a temporary stock hold. Every hold belongs to one team (X18): team
+// databases reuse product, size and order ids, so a hold is keyed by team as well and one shop's
+// holds never count against another's stock.
 type Reservation struct {
+	TeamID       int64
 	ProductID    int
 	SizeID       int
 	Quantity     decimal.Decimal
@@ -52,9 +56,22 @@ type Reservation struct {
 
 // productSizeKey is the composite key for the per-product-size index
 type productSizeKey struct {
+	TeamID    int64
 	ProductID int
 	SizeID    int
 }
+
+// teamOf is the team a call's holds belong to: the team bound to ctx, else team #1 (the grbpwr
+// storefront, and the only team with teams mode off), so an unbound caller keeps today's holds.
+func teamOf(ctx context.Context) int64 {
+	if t, ok := tenant.From(ctx); ok && t.ID > 0 {
+		return t.ID
+	}
+	return tenant.TeamOneID
+}
+
+// scoped is a session or order key of one team.
+func scoped(team int64, id string) string { return fmt.Sprintf("%d/%s", team, id) }
 
 // sessionRateEntry tracks per-session Reserve call rate
 type sessionRateEntry struct {
@@ -65,11 +82,11 @@ type sessionRateEntry struct {
 // Manager handles stock reservations with TTL and abuse prevention
 type Manager struct {
 	mu            sync.RWMutex
-	reservations  map[string]*Reservation      // key: "productID-sizeID-sessionID"
-	bySession     map[string][]string          // sessionID -> reservation keys
-	byOrder       map[string][]string          // orderUUID -> reservation keys
-	byProductSize map[productSizeKey][]string  // (productID, sizeID) -> reservation keys (O(1) lookup)
-	sessionRates  map[string]*sessionRateEntry // per-session call rate
+	reservations  map[string]*Reservation      // key: "teamID-productID-sizeID-sessionID"
+	bySession     map[string][]string          // scoped(team, sessionID) -> reservation keys
+	byOrder       map[string][]string          // scoped(team, orderUUID) -> reservation keys
+	byProductSize map[productSizeKey][]string  // (team, productID, sizeID) -> reservation keys (O(1) lookup)
+	sessionRates  map[string]*sessionRateEntry // scoped(team, sessionID) -> call rate
 	cartTTL       time.Duration
 	orderTTL      time.Duration
 	limits        Limits
@@ -135,7 +152,7 @@ func (rm *Manager) ReserveIfAvailable(ctx context.Context, totalStock decimal.De
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	reservedOthers := rm.reservedQuantityLocked(productID, sizeID, sessionID)
+	reservedOthers := rm.reservedQuantityLocked(teamOf(ctx), productID, sizeID, sessionID)
 	available := totalStock.Sub(reservedOthers)
 	if available.LessThanOrEqual(decimal.Zero) {
 		return decimal.Zero, nil
@@ -165,18 +182,20 @@ func (rm *Manager) reserveLocked(ctx context.Context, sessionID string, productI
 		return fmt.Errorf("quantity %s exceeds maximum %s per item", qty.String(), rm.limits.MaxQtyPerItem.String())
 	}
 
+	team := teamOf(ctx)
+	sessKey := scoped(team, sessionID)
 	// Rate limit per session
-	if !rm.allowSessionRate(sessionID) {
+	if !rm.allowSessionRate(sessKey) {
 		return fmt.Errorf("too many reservation requests, please slow down")
 	}
 
-	key := fmt.Sprintf("%d-%d-%s", productID, sizeID, sessionID)
-	psKey := productSizeKey{ProductID: productID, SizeID: sizeID}
+	key := fmt.Sprintf("%d-%d-%d-%s", team, productID, sizeID, sessionID)
+	psKey := productSizeKey{TeamID: team, ProductID: productID, SizeID: sizeID}
 	existing, isUpdate := rm.reservations[key]
 
 	// Per-session item count check (only for new reservations)
 	if !isUpdate {
-		sessionKeys := rm.bySession[sessionID]
+		sessionKeys := rm.bySession[sessKey]
 		if len(sessionKeys) >= rm.limits.MaxItemsPerSession {
 			return fmt.Errorf("maximum %d items per cart reached", rm.limits.MaxItemsPerSession)
 		}
@@ -211,6 +230,7 @@ func (rm *Manager) reserveLocked(ctx context.Context, sessionID string, productI
 		}
 
 		rm.reservations[key] = &Reservation{
+			TeamID:       team,
 			ProductID:    productID,
 			SizeID:       sizeID,
 			Quantity:     qty,
@@ -222,6 +242,7 @@ func (rm *Manager) reserveLocked(ctx context.Context, sessionID string, productI
 	} else {
 		// New reservation
 		rm.reservations[key] = &Reservation{
+			TeamID:    team,
 			ProductID: productID,
 			SizeID:    sizeID,
 			Quantity:  qty,
@@ -231,7 +252,7 @@ func (rm *Manager) reserveLocked(ctx context.Context, sessionID string, productI
 		}
 
 		// Track by session
-		rm.bySession[sessionID] = append(rm.bySession[sessionID], key)
+		rm.bySession[sessKey] = append(rm.bySession[sessKey], key)
 
 		// Track by product-size for O(1) quantity lookups
 		rm.byProductSize[psKey] = append(rm.byProductSize[psKey], key)
@@ -253,7 +274,9 @@ func (rm *Manager) Commit(ctx context.Context, sessionID, orderUUID string) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	keys := rm.bySession[sessionID]
+	team := teamOf(ctx)
+	orderKey := scoped(team, orderUUID)
+	keys := rm.bySession[scoped(team, sessionID)]
 	newExpiry := time.Now().UTC().Add(rm.orderTTL)
 
 	for _, key := range keys {
@@ -263,7 +286,7 @@ func (rm *Manager) Commit(ctx context.Context, sessionID, orderUUID string) {
 			res.RefreshCount = 0 // reset for order phase
 
 			// Track by order
-			rm.byOrder[orderUUID] = append(rm.byOrder[orderUUID], key)
+			rm.byOrder[orderKey] = append(rm.byOrder[orderKey], key)
 
 			slog.Default().DebugContext(ctx, "reservation committed to order",
 				slog.String("order_uuid", orderUUID),
@@ -280,7 +303,8 @@ func (rm *Manager) Release(ctx context.Context, orderUUID string) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	keys := rm.byOrder[orderUUID]
+	orderKey := scoped(teamOf(ctx), orderUUID)
+	keys := rm.byOrder[orderKey]
 	for _, key := range keys {
 		if res, exists := rm.reservations[key]; exists {
 			slog.Default().DebugContext(ctx, "reservation released",
@@ -292,7 +316,7 @@ func (rm *Manager) Release(ctx context.Context, orderUUID string) {
 		}
 	}
 
-	delete(rm.byOrder, orderUUID)
+	delete(rm.byOrder, orderKey)
 }
 
 // ReleaseSession frees all reservations for a session (cart abandoned)
@@ -300,7 +324,8 @@ func (rm *Manager) ReleaseSession(ctx context.Context, sessionID string) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	keys := rm.bySession[sessionID]
+	sessKey := scoped(teamOf(ctx), sessionID)
+	keys := rm.bySession[sessKey]
 	for _, key := range keys {
 		if res, exists := rm.reservations[key]; exists && res.OrderUUID == "" {
 			slog.Default().DebugContext(ctx, "session reservation released",
@@ -312,27 +337,28 @@ func (rm *Manager) ReleaseSession(ctx context.Context, sessionID string) {
 		}
 	}
 
-	delete(rm.bySession, sessionID)
-	delete(rm.sessionRates, sessionID)
+	delete(rm.bySession, sessKey)
+	delete(rm.sessionRates, sessKey)
 }
 
-// GetReservedQuantity returns total reserved qty for a product-size (excluding current session)
-// Uses the byProductSize index for O(k) where k = reservations for this product-size, not O(n) total.
-func (rm *Manager) GetReservedQuantity(productID, sizeID int, excludeSessionID string) decimal.Decimal {
+// GetReservedQuantity returns total reserved qty for a product-size of ctx's team (excluding current
+// session). Uses the byProductSize index for O(k) where k = reservations for this product-size, not
+// O(n) total.
+func (rm *Manager) GetReservedQuantity(ctx context.Context, productID, sizeID int, excludeSessionID string) decimal.Decimal {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	return rm.reservedQuantityLocked(productID, sizeID, excludeSessionID)
+	return rm.reservedQuantityLocked(teamOf(ctx), productID, sizeID, excludeSessionID)
 }
 
 // reservedQuantityLocked sums active (non-expired) reservations for a product-size,
 // excluding excludeSessionID. The caller must hold rm.mu (read or write). Shared by
 // GetReservedQuantity (RLock) and ReserveIfAvailable (Lock) so availability is
 // computed identically in both.
-func (rm *Manager) reservedQuantityLocked(productID, sizeID int, excludeSessionID string) decimal.Decimal {
+func (rm *Manager) reservedQuantityLocked(team int64, productID, sizeID int, excludeSessionID string) decimal.Decimal {
 	total := decimal.Zero
 	now := time.Now().UTC()
 
-	psKey := productSizeKey{ProductID: productID, SizeID: sizeID}
+	psKey := productSizeKey{TeamID: team, ProductID: productID, SizeID: sizeID}
 	keys := rm.byProductSize[psKey]
 
 	for _, key := range keys {
@@ -347,8 +373,8 @@ func (rm *Manager) reservedQuantityLocked(productID, sizeID int, excludeSessionI
 }
 
 // GetAvailableStock returns actual available stock minus reservations
-func (rm *Manager) GetAvailableStock(totalStock decimal.Decimal, productID, sizeID int, excludeSessionID string) decimal.Decimal {
-	reserved := rm.GetReservedQuantity(productID, sizeID, excludeSessionID)
+func (rm *Manager) GetAvailableStock(ctx context.Context, totalStock decimal.Decimal, productID, sizeID int, excludeSessionID string) decimal.Decimal {
+	reserved := rm.GetReservedQuantity(ctx, productID, sizeID, excludeSessionID)
 	available := totalStock.Sub(reserved)
 
 	if available.LessThan(decimal.Zero) {
@@ -393,10 +419,11 @@ func (rm *Manager) runCleanupOnce() {
 
 			// Clean up byOrder
 			if res.OrderUUID != "" {
-				if orderKeys, ok := rm.byOrder[res.OrderUUID]; ok {
-					rm.byOrder[res.OrderUUID] = removeKey(orderKeys, key)
-					if len(rm.byOrder[res.OrderUUID]) == 0 {
-						delete(rm.byOrder, res.OrderUUID)
+				orderKey := scoped(res.TeamID, res.OrderUUID)
+				if orderKeys, ok := rm.byOrder[orderKey]; ok {
+					rm.byOrder[orderKey] = removeKey(orderKeys, key)
+					if len(rm.byOrder[orderKey]) == 0 {
+						delete(rm.byOrder, orderKey)
 					}
 				}
 			}
@@ -429,15 +456,16 @@ func (rm *Manager) removeReservation(key string, res *Reservation) {
 	delete(rm.reservations, key)
 
 	// Clean up bySession
-	if sessionKeys, ok := rm.bySession[res.SessionID]; ok {
-		rm.bySession[res.SessionID] = removeKey(sessionKeys, key)
-		if len(rm.bySession[res.SessionID]) == 0 {
-			delete(rm.bySession, res.SessionID)
+	sessKey := scoped(res.TeamID, res.SessionID)
+	if sessionKeys, ok := rm.bySession[sessKey]; ok {
+		rm.bySession[sessKey] = removeKey(sessionKeys, key)
+		if len(rm.bySession[sessKey]) == 0 {
+			delete(rm.bySession, sessKey)
 		}
 	}
 
 	// Clean up byProductSize
-	psKey := productSizeKey{ProductID: res.ProductID, SizeID: res.SizeID}
+	psKey := productSizeKey{TeamID: res.TeamID, ProductID: res.ProductID, SizeID: res.SizeID}
 	if psKeys, ok := rm.byProductSize[psKey]; ok {
 		rm.byProductSize[psKey] = removeKey(psKeys, key)
 		if len(rm.byProductSize[psKey]) == 0 {
@@ -446,14 +474,14 @@ func (rm *Manager) removeReservation(key string, res *Reservation) {
 	}
 }
 
-// allowSessionRate checks if a session is within its Reserve call rate limit.
+// allowSessionRate checks if a session (scoped to its team) is within its Reserve call rate limit.
 // Must be called with rm.mu held.
-func (rm *Manager) allowSessionRate(sessionID string) bool {
+func (rm *Manager) allowSessionRate(sessKey string) bool {
 	now := time.Now().UTC()
-	entry, exists := rm.sessionRates[sessionID]
+	entry, exists := rm.sessionRates[sessKey]
 
 	if !exists || now.After(entry.expiresAt) {
-		rm.sessionRates[sessionID] = &sessionRateEntry{
+		rm.sessionRates[sessKey] = &sessionRateEntry{
 			count:     1,
 			expiresAt: now.Add(time.Minute),
 		}

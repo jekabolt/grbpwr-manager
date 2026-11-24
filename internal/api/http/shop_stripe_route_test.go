@@ -6,17 +6,19 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc"
 
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 )
 
-func shopStripeRouter(t *testing.T, noShop bool) http.Handler {
+func shopStripeRouter(t *testing.T, noShop bool, teamShops ...bool) http.Handler {
 	t.Helper()
 	s := New(&Config{Address: "127.0.0.1", Port: "1"})
 	s.SetStripeWebhookHandler(nopWebhooks{})
 	s.SetHealthRegistry(&health.Registry{})
 	s.SetNoShop(noShop)
+	s.SetTeamShops(len(teamShops) > 0 && teamShops[0])
 	answer := func(code int) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) })
 	}
@@ -70,5 +72,43 @@ func TestShopStripeRoutes(t *testing.T) {
 		if rec := serve(h, http.MethodPost, p, ""); rec.Code != http.StatusServiceUnavailable || rec.Body.String() != noShopBody {
 			t.Errorf("no shop %s: %d %q", p, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestNoStorefrontTeamShops — no storefront team, team shops on: the storefront gateway is the real
+// one and the team Stripe webhooks reach their handlers; the storefront team's own webhooks (env
+// Stripe, AfterShip, Resend) keep the 503.
+func TestNoStorefrontTeamShops(t *testing.T) {
+	h := shopStripeRouter(t, true, true)
+	for _, c := range []struct {
+		path string
+		want int
+	}{
+		{"/api/webhooks/stripe/connect", http.StatusAccepted},
+		{"/api/webhooks/stripe/team/abc", http.StatusTeapot},
+	} {
+		if rec := serve(h, http.MethodPost, c.path, ""); rec.Code != c.want {
+			t.Errorf("%s: %d, want %d", c.path, rec.Code, c.want)
+		}
+	}
+	for _, p := range []string{"/api/webhooks/stripe", "/api/webhooks/aftership", "/api/webhooks/resend"} {
+		if rec := serve(h, http.MethodPost, p, ""); rec.Code != http.StatusServiceUnavailable || rec.Body.String() != noShopBody {
+			t.Errorf("%s: %d %q, want the no-shop 503", p, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := serve(h, http.MethodGet, "/api/frontend/hero", ""); rec.Body.String() == noShopBody {
+		t.Fatal("team shops on: the frontend gateway answered the no-shop body")
+	}
+	s := New(&Config{})
+	s.SetNoShop(true)
+	s.SetTeamShops(true)
+	called := false
+	_ = s.noShopStreamInterceptor()(nil, nil, &grpc.StreamServerInfo{FullMethod: frontendMethodPrefix() + "GetHero"},
+		func(any, grpc.ServerStream) error { called = true; return nil })
+	if !called {
+		t.Fatal("team shops on: a FrontendService call was stopped")
+	}
+	if _, ok := s.unknownServiceOption().(grpc.EmptyServerOption); !ok {
+		t.Fatal("team shops on: the unknown-service handler is installed")
 	}
 }

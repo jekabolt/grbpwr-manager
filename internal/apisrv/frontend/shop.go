@@ -95,13 +95,17 @@ func deriveShopAuth(base *storefrontAuthRuntime, master string, teamID int64) (*
 
 // sfAuth is the customer-auth runtime of the request's shop.
 func (s *Server) sfAuth(ctx context.Context) (*storefrontAuthRuntime, error) {
-	if s.storefront == nil {
-		return nil, status.Error(codes.FailedPrecondition, "storefront account API is not configured")
-	}
 	sh := s.shops
 	t, ok := tenant.From(ctx)
 	if sh == nil || !ok || t.ID == 0 || t.ID == sh.d.StorefrontID {
+		if s.storefront == nil {
+			// No storefront team (team shops only): no legacy customer keys to sign with.
+			return nil, status.Error(codes.FailedPrecondition, "storefront account API is not configured")
+		}
 		return s.storefront, nil
+	}
+	if s.shopBase == nil {
+		return nil, status.Error(codes.FailedPrecondition, "storefront account API is not configured")
 	}
 	if v, ok := sh.auths.Load(t.ID); ok {
 		return v.(*storefrontAuthRuntime), nil
@@ -109,7 +113,7 @@ func (s *Server) sfAuth(ctx context.Context) (*storefrontAuthRuntime, error) {
 	if sh.d.Master == "" {
 		return nil, status.Error(codes.Unavailable, "shop accounts are not configured")
 	}
-	rt, err := deriveShopAuth(s.storefront, sh.d.Master, t.ID)
+	rt, err := deriveShopAuth(s.shopBase, sh.d.Master, t.ID)
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "derive shop auth", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Internal, "shop accounts unavailable")

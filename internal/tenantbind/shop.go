@@ -201,7 +201,13 @@ func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenan
 	case id == 0:
 		id = fromOrigin
 	}
-	if id == 0 || id == b.StorefrontTeamID() {
+	sf := b.StorefrontTeamID()
+	if id == 0 && sf <= 0 {
+		// No storefront team (TENANT_STOREFRONT_TEAM_ID=none): a request that names no team shop
+		// has no shop to run as.
+		return tenant.Team{}, false, status.Error(codes.NotFound, MsgShopNotFound)
+	}
+	if id == 0 || id == sf {
 		t, err := b.StorefrontTeam(ctx)
 		return t, true, err
 	}

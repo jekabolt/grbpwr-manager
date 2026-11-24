@@ -202,8 +202,10 @@ type Server struct {
 	teamFair grpc.UnaryServerInterceptor
 	// platformOn: PlatformService is registered (teams mode); /api/platform is mounted.
 	platformOn bool
-	// noShop: no storefront on this installation (SetNoShop); see noshop.go.
-	noShop bool
+	// noShop: no storefront team on this installation (SetNoShop); teamShops: the storefront API
+	// serves team shops all the same (SetTeamShops). See noshop.go.
+	noShop    bool
+	teamShops bool
 	// budgetZone: the owner's AI budget zone, read live (SetBudgetZone); the console counts the
 	// month of AI spend in it.
 	budgetZone func() string
@@ -724,7 +726,7 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 		return nil, err
 	}
 	var frontendHandler http.Handler = http.HandlerFunc(noShopHTTP)
-	if !s.noShop {
+	if !s.storefrontOff() {
 		if frontendHandler, err = s.frontendJSONGateway(ctx); err != nil {
 			return nil, err
 		}
@@ -949,8 +951,12 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	if s.platformMailHandler != nil {
 		r.Method(http.MethodPost, "/api/webhooks/platform-mail", s.platformMailHandler)
 	}
-	// No shop: every webhook path answers the fixed 503 instead.
+	// No shop: every webhook path answers the fixed 503 instead, but the team shops' Stripe webhooks
+	// (static routes chi prefers over the catch-all) when team shops are served.
 	if s.noShop {
+		if s.teamShops {
+			s.mountShopStripeWebhooks(r)
+		}
 		r.HandleFunc("/api/webhooks/*", noShopHTTP)
 	} else {
 		s.mountShopWebhooks(r)
@@ -1164,7 +1170,9 @@ type statuszResponse struct {
 	// staleThreshold (or that have never run); a convenience summary.
 	Stale    []string         `json:"stale,omitempty"`
 	Breakers []statuszBreaker `json:"breakers,omitempty"`
-	Runtime  statuszRuntime   `json:"runtime"`
+	// Problems are boot-time configuration faults that left a feature off (health.Registry.Problems).
+	Problems []string       `json:"problems,omitempty"`
+	Runtime  statuszRuntime `json:"runtime"`
 }
 
 type statuszDB struct {
@@ -1244,6 +1252,8 @@ func (s *Server) handleStatusz(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Workers = append(resp.Workers, ws)
 	}
+
+	resp.Problems = append(resp.Problems, reg.Problems...)
 
 	for _, b := range reg.Breakers {
 		if b.StateFunc == nil {
@@ -1365,8 +1375,9 @@ func (s *Server) Start(ctx context.Context,
 		s.unknownServiceOption(),
 	)
 	pb_admin.RegisterAdminServiceServer(s.gs, adminServer)
-	// No shop: FrontendService is not registered; its calls answer Unavailable (noshop.go).
-	if !s.noShop {
+	// No storefront API (no shop and no team shops): FrontendService is not registered; its calls
+	// answer Unavailable (noshop.go).
+	if !s.storefrontOff() {
 		pb_frontend.RegisterFrontendServiceServer(s.gs, frontendServer)
 	}
 	pb_auth.RegisterAuthServiceServer(s.gs, authServer)

@@ -96,7 +96,7 @@ func TestTeamWebhookCannotPayAnotherTeam(t *testing.T) {
 		t.Fatalf("short address: %d", code)
 	}
 	// A disconnected team's address is gone.
-	if err := r.svc.Disconnect(context.Background(), r.team(teamA)); err != nil {
+	if err := r.svc.Disconnect(context.Background(), r.team(teamA), false); err != nil {
 		t.Fatal(err)
 	}
 	if code := post(h, pathA, mine, sign(mine, "whsec_alpha")); code != http.StatusNotFound {
@@ -385,7 +385,7 @@ func TestConnectFlow(t *testing.T) {
 	// Disconnect waits for the team's card orders, then the row goes first, then the
 	// deauthorization; idempotent.
 	r.orders.set(teamA, 1)
-	if err := r.svc.Disconnect(ctx, a); refusal(err) != "FailedPrecondition shop_payments_busy" {
+	if err := r.svc.Disconnect(ctx, a, false); refusal(err) != "FailedPrecondition shop_payments_busy" {
 		t.Fatalf("busy disconnect: %v", err)
 	}
 	if row := r.st.row(teamA); row.DisconnectedAt != nil || len(r.stripe.deauth) != 0 {
@@ -395,11 +395,11 @@ func TestConnectFlow(t *testing.T) {
 		t.Fatalf("refund window from %v", got)
 	}
 	r.orders.set(teamA, 0)
-	if err := r.svc.Disconnect(ctx, a); err != nil {
+	if err := r.svc.Disconnect(ctx, a, false); err != nil {
 		t.Fatal(err)
 	}
 	r.orders.set(teamA, 1) // an already disconnected shop stays disconnected
-	if err := r.svc.Disconnect(ctx, a); err != nil {
+	if err := r.svc.Disconnect(ctx, a, false); err != nil {
 		t.Fatal(err)
 	}
 	if row := r.st.row(teamA); row.DisconnectedAt == nil || len(r.stripe.deauth) != 1 || r.stripe.deauth[0] != "acct_A" {
@@ -576,7 +576,7 @@ func TestRegistryFor(t *testing.T) {
 		t.Fatalf("live account on a test platform: %v", err)
 	}
 	// Disconnected: refused, processor stopped.
-	if err := r.svc.Disconnect(ctx, a); err != nil {
+	if err := r.svc.Disconnect(ctx, a, false); err != nil {
 		t.Fatal(err)
 	}
 	if !r.builds()[1].isStopped() {

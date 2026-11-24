@@ -115,6 +115,19 @@ func TestRevalidatorRoutes(t *testing.T) {
 	}
 }
 
+// Without a storefront team (StorefrontID 0) team #1 is a team shop like any other: the grbpwr
+// storefront is never revalidated.
+func TestRevalidatorNoStorefront(t *testing.T) {
+	base, sh := &allRe{}, &hostRe{}
+	r := &Revalidator{Base: base, Shop: sh, Target: func(_ context.Context, id int64) (string, bool, error) {
+		return "one.shop.example", id == 1, nil
+	}}
+	_ = r.RevalidateAll(tenant.With(context.Background(), tenant.Team{ID: 1}), &dto.RevalidationData{})
+	if base.n != 0 || sh.host != "one.shop.example" || sh.key != "t1" {
+		t.Fatalf("no storefront: base %d, shop %q %q", base.n, sh.host, sh.key)
+	}
+}
+
 func TestOrigins(t *testing.T) {
 	calls := 0
 	o := NewOrigins("shop.beta.lekalo.studio", func(context.Context) ([]string, error) {

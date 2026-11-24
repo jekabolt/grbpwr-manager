@@ -19,7 +19,7 @@ func shopAuthServer(t *testing.T, master string) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{storefront: base}
+	s := &Server{storefront: base, shopBase: base}
 	s.SetShops(ShopDeps{StorefrontID: 1, Master: master})
 	return s
 }

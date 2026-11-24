@@ -108,11 +108,27 @@ func (s *Service) FinishConnect(ctx context.Context, t tenant.Team, userID int64
 
 func (s *Service) finishConnect(ctx context.Context, t tenant.Team, st connectState, code string) error {
 	ctx = tenant.With(ctx, t)
+	// Own keys saved meanwhile refuse before anything is authorized at Stripe.
+	if row, has, err := s.d.Store.TeamStripe(ctx, t.ID); err != nil {
+		return err
+	} else if has && row.DisconnectedAt == nil && row.Kind == platformstore.StripeKindKeys {
+		return status.Error(codes.FailedPrecondition, "stripe_keys_set")
+	}
 	acct, livemode, err := s.d.Stripe.ExchangeCode(ctx, code)
 	if err != nil {
 		slog.Default().WarnContext(ctx, "shoppay: oauth exchange", slog.Int64("team", t.ID), slog.String("stripe", stripeErrCode(err)))
 		return errConnectExpired()
 	}
+	// A refusal below leaves the account authorized for the platform and connected to no team. It is
+	// not deauthorized: the authorization is one per platform and account, not per team, and another
+	// team's finish for the same account may have exchanged its code already (outside any lock, since
+	// the account is only known after the exchange). Deauthorizing here could cut that shop off. An
+	// authorization with no team row is never charged through; a later connect reuses it.
+	return s.connectExchanged(ctx, t, st, acct, livemode)
+}
+
+// connectExchanged connects account acct (just authorized by the OAuth exchange) to team t.
+func (s *Service) connectExchanged(ctx context.Context, t tenant.Team, st connectState, acct string, livemode bool) error {
 	mode := modeOf(livemode)
 	if mode != s.d.Config.ConnectMode() {
 		return status.Error(codes.FailedPrecondition, "stripe_wrong_mode")

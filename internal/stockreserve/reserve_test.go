@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/shopspring/decimal"
 )
 
@@ -29,7 +30,7 @@ func TestManager_Reserve(t *testing.T) {
 		t.Fatalf("Failed to reserve: %v", err)
 	}
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("Expected 5 reserved, got %s", reserved.String())
 	}
@@ -45,12 +46,12 @@ func TestManager_GetAvailableStock(t *testing.T) {
 	mgr.Reserve(ctx, "session1", 1, 1, decimal.NewFromInt(3))
 	mgr.Reserve(ctx, "session2", 1, 1, decimal.NewFromInt(2))
 
-	available := mgr.GetAvailableStock(totalStock, 1, 1, "session3")
+	available := mgr.GetAvailableStock(context.Background(), totalStock, 1, 1, "session3")
 	if !available.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("Expected 5 available, got %s", available.String())
 	}
 
-	available = mgr.GetAvailableStock(totalStock, 1, 1, "session1")
+	available = mgr.GetAvailableStock(context.Background(), totalStock, 1, 1, "session1")
 	if !available.Equal(decimal.NewFromInt(8)) {
 		t.Errorf("Expected 8 available for session1, got %s", available.String())
 	}
@@ -64,13 +65,13 @@ func TestManager_Commit(t *testing.T) {
 	mgr.Reserve(ctx, "session1", 1, 1, decimal.NewFromInt(5))
 	mgr.Commit(ctx, "session1", "order-uuid-123")
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("Expected 5 reserved after commit, got %s", reserved.String())
 	}
 
 	mgr.mu.RLock()
-	orderKeys := mgr.byOrder["order-uuid-123"]
+	orderKeys := mgr.byOrder[scoped(tenant.TeamOneID, "order-uuid-123")]
 	mgr.mu.RUnlock()
 
 	if len(orderKeys) != 1 {
@@ -87,7 +88,7 @@ func TestManager_Release(t *testing.T) {
 	mgr.Commit(ctx, "session1", "order-uuid-123")
 	mgr.Release(ctx, "order-uuid-123")
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.Zero) {
 		t.Errorf("Expected 0 reserved after release, got %s", reserved.String())
 	}
@@ -102,8 +103,8 @@ func TestManager_ReleaseSession(t *testing.T) {
 	mgr.Reserve(ctx, "session1", 2, 1, decimal.NewFromInt(3))
 	mgr.ReleaseSession(ctx, "session1")
 
-	reserved1 := mgr.GetReservedQuantity(1, 1, "")
-	reserved2 := mgr.GetReservedQuantity(2, 1, "")
+	reserved1 := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
+	reserved2 := mgr.GetReservedQuantity(context.Background(), 2, 1, "")
 
 	if !reserved1.Equal(decimal.Zero) {
 		t.Errorf("Expected 0 reserved for product 1, got %s", reserved1.String())
@@ -120,14 +121,14 @@ func TestManager_Expiration(t *testing.T) {
 
 	mgr.Reserve(ctx, "session1", 1, 1, decimal.NewFromInt(5))
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("Expected 5 reserved initially, got %s", reserved.String())
 	}
 
 	time.Sleep(200 * time.Millisecond)
 
-	reserved = mgr.GetReservedQuantity(1, 1, "")
+	reserved = mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.Zero) {
 		t.Errorf("Expected 0 reserved after expiration, got %s", reserved.String())
 	}
@@ -141,7 +142,7 @@ func TestManager_UpdateReservation(t *testing.T) {
 	mgr.Reserve(ctx, "session1", 1, 1, decimal.NewFromInt(5))
 	mgr.Reserve(ctx, "session1", 1, 1, decimal.NewFromInt(3))
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.NewFromInt(3)) {
 		t.Errorf("Expected 3 reserved after update, got %s", reserved.String())
 	}
@@ -270,7 +271,7 @@ func TestManager_TTLNotExtendedOnUpdate(t *testing.T) {
 	// Original TTL was 200ms, we're now at ~150ms. Wait another 100ms (total ~250ms).
 	time.Sleep(100 * time.Millisecond)
 
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.Zero) {
 		t.Errorf("Expected 0 after original TTL expired (TTL should not refresh), got %s", reserved.String())
 	}
@@ -299,7 +300,7 @@ func TestManager_MaxTTLRefreshesEnforced(t *testing.T) {
 	}
 
 	// Verify quantity was updated even at refresh limit
-	reserved := mgr.GetReservedQuantity(1, 1, "")
+	reserved := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !reserved.Equal(decimal.NewFromInt(4)) {
 		t.Errorf("Expected 4 after qty-only update, got %s", reserved.String())
 	}
@@ -345,13 +346,13 @@ func TestManager_ProductSizeIndexCorrect(t *testing.T) {
 	mgr.Reserve(ctx, "s3", 1, 2, decimal.NewFromInt(1)) // different size
 
 	// product 1, size 1 should have 5 total
-	total := mgr.GetReservedQuantity(1, 1, "")
+	total := mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !total.Equal(decimal.NewFromInt(5)) {
 		t.Errorf("Expected 5 for product 1 size 1, got %s", total.String())
 	}
 
 	// product 1, size 2 should have 1
-	total = mgr.GetReservedQuantity(1, 2, "")
+	total = mgr.GetReservedQuantity(context.Background(), 1, 2, "")
 	if !total.Equal(decimal.NewFromInt(1)) {
 		t.Errorf("Expected 1 for product 1 size 2, got %s", total.String())
 	}
@@ -359,7 +360,7 @@ func TestManager_ProductSizeIndexCorrect(t *testing.T) {
 	// Release s1 and check index cleaned up
 	mgr.ReleaseSession(ctx, "s1")
 
-	total = mgr.GetReservedQuantity(1, 1, "")
+	total = mgr.GetReservedQuantity(context.Background(), 1, 1, "")
 	if !total.Equal(decimal.NewFromInt(3)) {
 		t.Errorf("Expected 3 after releasing s1, got %s", total.String())
 	}

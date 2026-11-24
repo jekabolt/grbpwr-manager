@@ -25,8 +25,9 @@ type ShopPayments interface {
 	FinishConnect(ctx context.Context, t tenant.Team, userID int64, operator bool, token string) error
 	// SetKeys checks the team's own keys with Stripe and stores them sealed.
 	SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec string) error
-	// Disconnect turns the team's Stripe off (idempotent).
-	Disconnect(ctx context.Context, t tenant.Team) error
+	// Disconnect turns the team's Stripe off (idempotent). operator = an entered console operator,
+	// who may cut it off while the team's card orders still need it (shop_payments_busy for owners).
+	Disconnect(ctx context.Context, t tenant.Team, operator bool) error
 	// WebhookURL is where a team with own keys points its Stripe webhook ("" = not available).
 	WebhookURL(teamID int64) string
 	// For is the team's processor of payment method pm.
@@ -107,16 +108,21 @@ func (s *Server) SetStripeKeys(ctx context.Context, req *pb_admin.SetStripeKeysR
 	return &pb_admin.SetStripeKeysResponse{Shop: out}, nil
 }
 
-// DisconnectStripe turns the team's Stripe off: checkout stops at once.
+// DisconnectStripe turns the team's Stripe off: checkout stops at once. An owner waits for the team's
+// card orders (shop_payments_busy); an entered console operator does not (fraud cut-off).
 func (s *Server) DisconnectStripe(ctx context.Context, _ *pb_admin.DisconnectStripeRequest) (*pb_admin.DisconnectStripeResponse, error) {
 	p, pay, err := s.shopPayer(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := pay.Disconnect(ctx, p.w.Team); err != nil {
+	if err := pay.Disconnect(ctx, p.w.Team, p.w.Operator); err != nil {
 		return nil, shopErr(ctx, "stripe disconnect", err)
 	}
-	s.peopleAudit(ctx, p, "shop.stripe_disconnect", map[string]string{})
+	detail := map[string]string{}
+	if p.w.Operator {
+		detail["operator"] = "true"
+	}
+	s.peopleAudit(ctx, p, "shop.stripe_disconnect", detail)
 	out, err := s.shopOf(ctx, p)
 	if err != nil {
 		return nil, err
@@ -157,13 +163,11 @@ func (s *Server) teamPaymentHandler(ctx context.Context, pm entity.PaymentMethod
 	return h, true, err
 }
 
-// legacyPaymentTeam is the team that pays through the env processors: the storefront team, or team #1
-// when there is no storefront (its old orders keep their processors).
+// legacyPaymentTeam is the team that pays through the env processors: the storefront team. Without a
+// storefront team (TENANT_STOREFRONT_TEAM_ID=none) there are no env processors, so it is 0 and every
+// team, team #1 included, pays through its own shop Stripe.
 func (s *Server) legacyPaymentTeam() int64 {
-	if id := s.storefrontID(); id > 0 {
-		return id
-	}
-	return tenant.TeamOneID
+	return s.storefrontID()
 }
 
 // ShopPaymentsChanged is the team shops' Stripe hook (shoppay.Deps.Changed): the team's cached shop

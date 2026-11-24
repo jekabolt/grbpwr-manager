@@ -26,6 +26,18 @@ func (s *Server) SetNoShop(on bool) {
 	s.noShop = on
 }
 
+// SetTeamShops marks a storefront API that serves team shops (teams mode, a frontend server built).
+// On a no-shop installation (SetNoShop) the storefront gateway, FrontendService and the team shops'
+// Stripe webhooks are then mounted all the same: the edge binds each call to the shop its host names
+// and refuses one that names none (tenantbind, shop_not_found). The storefront team's own webhooks
+// (Resend, Stripe, AfterShip) still answer the fixed 503. Call before Start.
+func (s *Server) SetTeamShops(on bool) {
+	s.teamShops = on
+}
+
+// storefrontOff: no storefront API at all (no shop, no team shops).
+func (s *Server) storefrontOff() bool { return s.noShop && !s.teamShops }
+
 // noShopHTTP answers a storefront or webhook route on a no-shop installation.
 func noShopHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -75,7 +87,7 @@ func passStream(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, h grpc.
 
 // noShopStreamInterceptor is noShopStream on a no-shop installation and a pass-through otherwise.
 func (s *Server) noShopStreamInterceptor() grpc.StreamServerInterceptor {
-	if s.noShop {
+	if s.storefrontOff() {
 		return noShopStream
 	}
 	return passStream
@@ -84,7 +96,7 @@ func (s *Server) noShopStreamInterceptor() grpc.StreamServerInterceptor {
 // unknownServiceOption installs noShopUnknownService on a no-shop installation only; with a shop
 // grpc-go keeps its own unknown-service answer.
 func (s *Server) unknownServiceOption() grpc.ServerOption {
-	if s.noShop {
+	if s.storefrontOff() {
 		return grpc.UnknownServiceHandler(noShopUnknownService)
 	}
 	return grpc.EmptyServerOption{}

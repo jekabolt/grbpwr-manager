@@ -169,7 +169,10 @@ func (b *Binder) usePlane(p controlPlane, cfg platformstore.Config) {
 		}
 	}
 	sf := cfg.StorefrontTeamID
-	if sf <= 0 {
+	switch {
+	case cfg.NoShop():
+		sf = 0 // no storefront team: only team shops, each by its own host
+	case sf <= 0:
 		sf = tenant.TeamOneID
 	}
 	b.mu.Lock()
@@ -218,11 +221,18 @@ func (b *Binder) teamBySlug(ctx context.Context, slug string) (tenant.Team, erro
 	return dir.BySlug(ctx, strings.ToLower(slug))
 }
 
-// StorefrontTeam is the team the public storefront and the webhooks run as.
+// ErrNoStorefront: the installation has no storefront team (TENANT_STOREFRONT_TEAM_ID=none).
+var ErrNoStorefront = errors.New("tenantbind: no storefront team on this installation")
+
+// StorefrontTeam is the team the public storefront and the webhooks run as. ErrNoStorefront when
+// there is none (TENANT_STOREFRONT_TEAM_ID=none): only team shops run, each by its own host.
 func (b *Binder) StorefrontTeam(ctx context.Context) (tenant.Team, error) {
 	b.mu.RLock()
 	id := b.storefrontID
 	b.mu.RUnlock()
+	if id <= 0 {
+		return tenant.Team{}, ErrNoStorefront
+	}
 	return b.TeamByID(ctx, id)
 }
 
@@ -618,6 +628,12 @@ func (b *Binder) bindFor(ctx context.Context, c Class) (context.Context, error) 
 	teams := b.TeamsMode()
 	switch c {
 	case ClassStorefront:
+		if b.StorefrontTeamID() <= 0 {
+			// No storefront team (TENANT_STOREFRONT_TEAM_ID=none): the only routes of this class that
+			// are mounted are the team shops' Stripe webhooks, which bind their team themselves (by the
+			// event's account or the address's token). Nothing runs as a guessed team.
+			return ctx, nil
+		}
 		t, err := b.StorefrontTeam(ctx)
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, "storefront team unavailable")

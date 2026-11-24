@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/teamlogo"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
@@ -78,7 +79,9 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		}
 	}
 	domains := a.shopDomainProvider(ctx)
-	pay := a.newShopPay(ctx, b, adminS, frontendS != nil && !cfg.NoShop()) // X18-L3, teams_shop_pay.go
+	// Team payments run with or without a storefront team: only the storefront team's own (env) Stripe
+	// is gone on a no-shop installation.
+	pay := a.newShopPay(ctx, b, adminS, frontendS != nil) // X18-L3, teams_shop_pay.go
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
 		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
 		Payments: shopPayments(pay)})
@@ -94,8 +97,11 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 			Payments:     frontendShopPayments(pay),
 		})
 	}
-	if a.c.StorefrontAuth.ShopMaster == "" {
-		slog.Default().WarnContext(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is empty; team shop customers cannot sign in")
+	switch m := a.c.StorefrontAuth.ShopMaster; {
+	case m == "":
+		a.noteProblem(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is empty; team shop customers cannot sign in")
+	case len(m) < jwt.MinSymmetricSecretBytes:
+		a.noteProblem(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is shorter than 32 bytes; team shop customers cannot sign in")
 	}
 	if cfg.ShopZoneHost() == "" {
 		slog.Default().WarnContext(ctx, "shops: no shop zone (PLATFORM_SHOP_ZONE / base domain); shops cannot be turned on")

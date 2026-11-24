@@ -24,7 +24,9 @@ type Target func(ctx context.Context, teamID int64) (host string, ok bool, err e
 // Revalidator routes a revalidation by the team in ctx: the storefront team goes to the grbpwr
 // storefront exactly as before; any other team's open shop is revalidated at its main address under
 // its shop key; a team with no open shop is a no-op. It fails closed: a ctx with no team revalidates
-// nothing (never the grbpwr storefront on a guess) and logs it.
+// nothing (never the grbpwr storefront on a guess) and logs it. StorefrontID is the resolved
+// storefront team (wireShops); <= 0 means the installation has none (TENANT_STOREFRONT_TEAM_ID=none),
+// and then Base is never called.
 type Revalidator struct {
 	Base         AllRevalidator
 	Shop         HostRevalidator
@@ -36,14 +38,11 @@ type Revalidator struct {
 func (r *Revalidator) RevalidateAll(ctx context.Context, data *dto.RevalidationData) error {
 	t, ok := tenant.From(ctx)
 	sf := r.StorefrontID
-	if sf <= 0 {
-		sf = tenant.TeamOneID
-	}
 	switch {
 	case !ok:
 		slog.Default().WarnContext(ctx, "shop revalidate: no team in ctx; skipped")
 		return nil
-	case t.ID == sf:
+	case sf > 0 && t.ID == sf:
 		return r.Base.RevalidateAll(ctx, data)
 	case r.Shop == nil || r.Target == nil:
 		return nil // a team shop without the shop path wired: never the grbpwr storefront

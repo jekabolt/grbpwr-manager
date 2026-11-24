@@ -64,8 +64,8 @@ type Config struct {
 	StorefrontTeam string `mapstructure:"storefront_team_id"`
 	// StorefrontTeamID: the team the public storefront reads (1 = grbpwr). 0 when StorefrontNone.
 	StorefrontTeamID int64 `mapstructure:"-"`
-	// StorefrontNone: TENANT_STOREFRONT_TEAM_ID=none in teams mode — this installation has no shop.
-	// Read it through NoShop.
+	// StorefrontNone: TENANT_STOREFRONT_TEAM_ID=none in teams mode — this installation has no storefront
+	// team (no legacy grbpwr shop, no env Stripe). Team shops still run. Read it through NoShop.
 	StorefrontNone bool `mapstructure:"-"`
 	// ShopZone (PLATFORM_SHOP_ZONE, X18): the zone of shop addresses, {slug}.<ShopZone>; empty =
 	// "shop." + BaseDomain. Read through ShopZoneHost.
@@ -216,8 +216,9 @@ func (c Config) Terms() string {
 // Enabled reports teams mode: a control-plane DSN is configured.
 func (c Config) Enabled() bool { return strings.TrimSpace(c.DSN) != "" }
 
-// NoShop reports an installation without a storefront: teams mode with TENANT_STOREFRONT_TEAM_ID=none.
-// It is the one predicate every no-shop decision reads (mounts, workers, side effects).
+// NoShop reports an installation without a storefront team: teams mode with
+// TENANT_STOREFRONT_TEAM_ID=none. It gates only the storefront team's own parts (the legacy grbpwr
+// shop, env Stripe, its workers, webhooks and mail); team shops resolved by their host run either way.
 func (c Config) NoShop() bool { return c.Enabled() && c.StorefrontNone }
 
 // ShopZoneHost is the zone of shop addresses: PLATFORM_SHOP_ZONE, else "shop." + BaseDomain; "" with
