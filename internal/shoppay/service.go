@@ -51,8 +51,10 @@ type Deps struct {
 	Factory    Factory
 	// Stripe is nil = the real Stripe with Config's platform key.
 	Stripe StripeAPI
-	// Invalidate drops this instance's cached answers about a team's shop (optional).
-	Invalidate func(teamID int64)
+	// Changed runs after a team's payments changed (optional): drop this instance's cached answers
+	// about the shop and redraw its profile (the storefront reads the Stripe account / key there).
+	// ctx always carries the team.
+	Changed func(ctx context.Context, teamID int64)
 	// Now is nil = time.Now.
 	Now func() time.Time
 }
@@ -127,6 +129,15 @@ func (s *Service) For(ctx context.Context, t tenant.Team, pm entity.PaymentMetho
 		return nil, notReady()
 	}
 	return s.reg.For(tenant.With(ctx, t), t, pm)
+}
+
+// ConnectPublishableKey is the platform's publishable key a connected team's storefront loads
+// Stripe.js with (with the team's account); "" while Connect is off.
+func (s *Service) ConnectPublishableKey() string {
+	if !s.connectReady() {
+		return ""
+	}
+	return strings.TrimSpace(s.d.Config.ConnectPublishableKey)
 }
 
 // WebhookURL is the address a team with its own keys gives Stripe for its webhook endpoint; "" while
@@ -223,7 +234,7 @@ func (s *Service) SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec stri
 	if err != nil {
 		return storeErr(err)
 	}
-	s.changed(ctx, t.ID)
+	s.changed(ctx, t)
 	return nil
 }
 
@@ -248,7 +259,7 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 	if _, err := s.d.Store.DisconnectTeamStripe(ctx, t.ID, "", s.d.Now()); err != nil {
 		return err
 	}
-	s.changed(ctx, t.ID)
+	s.changed(ctx, t)
 	if row.Kind == platformstore.StripeKindConnect && acct != "" && s.d.Config.ConnectReady() {
 		if err := s.d.Stripe.Deauthorize(ctx, acct); err != nil {
 			// The account stays authorized at Stripe; its events find no team here and are dropped.
@@ -259,10 +270,11 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 }
 
 // changed forgets the team's processor and its cached shop answers.
-func (s *Service) changed(ctx context.Context, teamID int64) {
-	s.reg.Drop(ctx, teamID)
-	if s.d.Invalidate != nil {
-		s.d.Invalidate(teamID)
+func (s *Service) changed(ctx context.Context, t tenant.Team) {
+	ctx = tenant.With(ctx, t) // the Connect callback's request carries no team
+	s.reg.Drop(ctx, t.ID)
+	if s.d.Changed != nil {
+		s.d.Changed(ctx, t.ID)
 	}
 }
 
@@ -310,8 +322,8 @@ func (s *Service) sync(ctx context.Context, teamID int64, acct platformstore.Str
 		slog.Default().WarnContext(ctx, "shoppay: account sync write", slog.Int64("team", teamID), slog.String("err", err.Error()))
 		return
 	}
-	if ok && s.d.Invalidate != nil {
-		s.d.Invalidate(teamID)
+	if ok && s.d.Changed != nil {
+		s.d.Changed(ctx, teamID)
 	}
 }
 

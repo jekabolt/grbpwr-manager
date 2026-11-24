@@ -109,7 +109,7 @@ func (s *Service) connectEvent(ctx context.Context, ev stripe.Event) int {
 			return http.StatusInternalServerError
 		}
 		if done {
-			s.changed(tctx, t.ID)
+			s.changed(tctx, t)
 			if err := s.d.Store.AuditAuth(tctx, 0, t.ID, "shop.stripe_deauthorized", map[string]string{}, ""); err != nil {
 				slog.Default().WarnContext(ctx, "shoppay: audit", slog.String("err", err.Error()))
 			}

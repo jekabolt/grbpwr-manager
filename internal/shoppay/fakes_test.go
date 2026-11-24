@@ -348,7 +348,7 @@ func newRig(t *testing.T) *rig {
 	r.st.roles[[2]int64{ownerA, teamA}] = "owner"
 	r.st.roles[[2]int64{ownerB, teamB}] = "owner"
 	r.svc = New(context.Background(), Deps{
-		Config:     Config{ConnectClientID: "ca_test", ConnectSecretKey: testPlatformKey, ConnectWebhookSecret: testConnectSecret, Master: testMaster},
+		Config:     Config{ConnectClientID: "ca_test", ConnectSecretKey: testPlatformKey, ConnectPublishableKey: "pk_test_platform", ConnectWebhookSecret: testConnectSecret, Master: testMaster},
 		APIBase:    "https://api.example.com",
 		BaseDomain: "example.com",
 		Store:      r.st,

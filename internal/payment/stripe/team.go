@@ -38,6 +38,8 @@ type TeamOptions struct {
 	MonitorBase context.Context
 	// Backends overrides Stripe's endpoints (tests); nil = Stripe.
 	Backends *stripe.Backends
+	// Reservations releases checkout holds (nil = none). Set before the restarted monitors run.
+	Reservations dependency.StockReservationManager
 }
 
 // NewTeam builds a team's card processor. ctx must carry the team: the payment method and the
@@ -80,6 +82,7 @@ func NewTeam(ctx context.Context, c *Config, rep dependency.Repository, m depend
 		preOrderStore:   preorderpayment.NewStore(ttl),
 		monParentCtx:    monParentCtx,
 		monParentCancel: monParentCancel,
+		reservationMgr:  o.Reservations,
 	}
 	if err := p.initAddressesFromUnpaidOrders(ctx); err != nil {
 		p.StopAllMonitors(ctx)

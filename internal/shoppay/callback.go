@@ -110,7 +110,7 @@ func (s *Service) finishConnect(ctx context.Context, t tenant.Team, st connectSt
 	if err := s.d.Store.AuditAuth(ctx, st.User, t.ID, "shop.stripe_connected", map[string]string{"mode": mode}, ip); err != nil {
 		slog.Default().WarnContext(ctx, "shoppay: audit", slog.String("err", err.Error()))
 	}
-	s.changed(ctx, t.ID)
+	s.changed(ctx, t)
 	return resultConnected
 }
 

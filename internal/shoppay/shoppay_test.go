@@ -507,7 +507,26 @@ func TestStateAndPaths(t *testing.T) {
 	if s := c.String(); strings.Contains(s, "sk_live_secret") || strings.Contains(s, "whsec_secret") || strings.Contains(s, testMaster) || strings.Contains(fmt.Sprintf("%#v %v %+v", c, c, c), "sk_live") {
 		t.Fatalf("config prints a secret: %s", s)
 	}
-	if c.ConnectMode() != ModeLive || !c.ConnectReady() || (Config{Master: testMaster}).ConnectReady() {
+	if c.ConnectMode() != ModeLive || c.ConnectReady() || (Config{Master: testMaster}).ConnectReady() {
+		t.Fatal("config readiness without the publishable key")
+	}
+	c.ConnectPublishableKey = "pk_test_x"
+	if c.ConnectReady() {
+		t.Fatal("a publishable key of the other mode is accepted")
+	}
+	c.ConnectPublishableKey = "pk_live_x"
+	if !c.ConnectReady() {
 		t.Fatal("config readiness")
+	}
+}
+
+func TestConnectPublishableKeyOnlyWhileConnectIsOn(t *testing.T) {
+	r := newRig(t)
+	if got := r.svc.ConnectPublishableKey(); got != "pk_test_platform" {
+		t.Fatalf("publishable key %q", got)
+	}
+	off := New(context.Background(), Deps{Config: Config{Master: testMaster, ConnectPublishableKey: "pk_test_platform"}, Store: r.st, Teams: r.teams, Factory: r.svc.d.Factory})
+	if off.ConnectPublishableKey() != "" {
+		t.Fatal("publishable key without Connect")
 	}
 }

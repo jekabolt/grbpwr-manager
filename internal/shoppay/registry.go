@@ -45,16 +45,29 @@ type ProcessorSpec struct {
 // Factory builds a team's processor. ctx carries the team.
 type Factory func(ctx context.Context, spec ProcessorSpec) (Processor, error)
 
+// StripeFactoryDeps is what real team processors share with the storefront's.
+type StripeFactoryDeps struct {
+	Repo       dependency.Repository
+	Mailer     dependency.Mailer
+	InvoiceTTL time.Duration
+	// Reservations releases a team order's checkout hold once it is paid or expired (nil = none).
+	Reservations dependency.StockReservationManager
+	// Backends is nil = Stripe's API (tests point it at a fake).
+	Backends *stripe.Backends
+}
+
 // NewStripeFactory builds real processors: the team's payment monitors run under a context that
-// carries the team and outlives the request that built them (stopped by the registry).
-func NewStripeFactory(rep dependency.Repository, mailer dependency.Mailer, invoiceTTL time.Duration, backends *stripe.Backends) Factory {
+// carries the team and outlives the request that built them (stopped by the registry). A team's
+// purchases never reach the storefront's analytics (no GA4 client is set).
+func NewStripeFactory(d StripeFactoryDeps) Factory {
 	return func(ctx context.Context, spec ProcessorSpec) (Processor, error) {
-		p, err := stripeproc.NewTeam(ctx, &stripeproc.Config{Enabled: true, SecretKey: spec.SecretKey, InvoiceExpiration: invoiceTTL},
-			rep, mailer, spec.Method, stripeproc.TeamOptions{
-				Account:     spec.Account,
-				FeeBps:      spec.FeeBps,
-				MonitorBase: tenant.With(context.Background(), spec.Team),
-				Backends:    backends,
+		p, err := stripeproc.NewTeam(ctx, &stripeproc.Config{Enabled: true, SecretKey: spec.SecretKey, InvoiceExpiration: d.InvoiceTTL},
+			d.Repo, d.Mailer, spec.Method, stripeproc.TeamOptions{
+				Account:      spec.Account,
+				FeeBps:       spec.FeeBps,
+				MonitorBase:  tenant.With(context.Background(), spec.Team),
+				Backends:     d.Backends,
+				Reservations: d.Reservations,
 			})
 		if err != nil {
 			return nil, err

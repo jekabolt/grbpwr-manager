@@ -22,6 +22,10 @@ type Config struct {
 	// publishable key the storefront loads Stripe.js with: STRIPE_CONNECT_SECRET_KEY. Its mode is the
 	// mode of every connected team.
 	ConnectSecretKey string `mapstructure:"connect_secret_key"`
+	// ConnectPublishableKey is the same platform account's publishable key (pk_…, same mode): a
+	// connected team's storefront loads Stripe.js with it and the team's account.
+	// STRIPE_CONNECT_PUBLISHABLE_KEY.
+	ConnectPublishableKey string `mapstructure:"connect_publishable_key"`
 	// ConnectWebhookSecret signs the platform's Connect webhook endpoint (whsec_…):
 	// STRIPE_CONNECT_WEBHOOK_SECRET. Empty = the Connect endpoint answers 404.
 	ConnectWebhookSecret string `mapstructure:"connect_webhook_secret"`
@@ -39,6 +43,7 @@ func (c Config) String() string {
 		return "set"
 	}
 	return "shoppay.Config{connect_client_id:" + set(c.ConnectClientID) + " connect_secret_key:" + set(c.ConnectSecretKey) +
+		" connect_publishable_key:" + set(c.ConnectPublishableKey) +
 		" connect_webhook_secret:" + set(c.ConnectWebhookSecret) + " master:" + set(c.Master) + "}"
 }
 
@@ -55,7 +60,9 @@ func (c Config) KeysReady() bool { return c.masterOK() }
 
 // ConnectReady: teams can connect a Stripe account.
 func (c Config) ConnectReady() bool {
-	return c.masterOK() && strings.HasPrefix(strings.TrimSpace(c.ConnectClientID), "ca_") && keyMode(c.ConnectSecretKey) != ""
+	mode := keyMode(c.ConnectSecretKey)
+	return c.masterOK() && strings.HasPrefix(strings.TrimSpace(c.ConnectClientID), "ca_") && mode != "" &&
+		publishableMode(strings.TrimSpace(c.ConnectPublishableKey)) == mode
 }
 
 // ConnectMode is the mode of the platform key: live | test ("" when unset).
