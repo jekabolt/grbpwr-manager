@@ -63,8 +63,10 @@ func (a *App) workerTeamLoop(name string, scope teamWorkerScope) teamWorkerLoop 
 
 // sharesBackgroundSlots: archivecleanup is bucket listing (up to its 5-minute tick timeout on a
 // slow bucket) with one small UPDATE; in the shared slots it could hold both for minutes (X15).
+// shopmail carries sign-in codes that expire in minutes: it must not queue behind other workers'
+// ticks, and its own tick is small (10 rows, a 15-second deadline per team).
 func sharesBackgroundSlots(name string) bool {
-	return name != "archivecleanup"
+	return name != "archivecleanup" && name != "shopmail"
 }
 
 // runTeamWorkerTick binds each team to its own context and isolates its result. ListActive excludes
