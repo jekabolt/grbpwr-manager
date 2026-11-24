@@ -78,14 +78,14 @@ func newNonce() (string, error) {
 }
 
 // cleanReturn validates the admin path the owner lands on after Stripe: a path on the team's own
-// admin host, never another host. "" = the shop screen.
+// admin host, never another host, without a fragment (the callback adds its own). "" = the shop screen.
 func cleanReturn(p string) (string, bool) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return defaultReturn, true
 	}
 	if len(p) > maxReturnPath || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") ||
-		strings.ContainsAny(p, "\\\r\n\t ") || strings.Contains(p, "://") {
+		strings.ContainsAny(p, "\\\r\n\t #") || strings.Contains(p, "://") {
 		return "", false
 	}
 	return p, true

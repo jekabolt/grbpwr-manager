@@ -15,11 +15,12 @@ import (
 
 // Everything secret here derives from SHOP_STRIPE_MASTER (HKDF-SHA256, one info per purpose): the
 // AES-GCM key that seals a team's secret key and webhook secret, the HMAC key of the Connect state,
-// and the HMAC key of the per-team webhook addresses.
+// the HMAC key of the per-team webhook addresses and the AES-GCM key of the Connect finish token.
 const (
 	infoSeal    = "shop-stripe-seal"
 	infoState   = "shop-stripe-state"
 	infoWebhook = "shop-stripe-webhook-path"
+	infoFinish  = "shop-stripe-connect-finish"
 
 	// What a sealed blob holds (its AAD names the team and the field: a blob moved to another team
 	// or another column does not open).
@@ -35,6 +36,7 @@ var errNoMaster = errors.New("shoppay: SHOP_STRIPE_MASTER is not set or shorter 
 
 type keys struct {
 	ring    *keyring.Ring
+	finish  *keyring.Ring
 	state   []byte
 	webhook []byte
 }
@@ -53,7 +55,14 @@ func newKeys(master string) (*keys, error) {
 	if err != nil {
 		return nil, err
 	}
+	fin, err := derive(infoFinish)
+	if err != nil {
+		return nil, err
+	}
 	k := &keys{ring: ring}
+	if k.finish, err = keyring.New(base64.StdEncoding.EncodeToString(fin)); err != nil {
+		return nil, err
+	}
 	if k.state, err = derive(infoState); err != nil {
 		return nil, err
 	}

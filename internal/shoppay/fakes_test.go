@@ -185,6 +185,32 @@ func (f *fakeTeams) Operator(_ context.Context, userID int64) (bool, error) {
 	return f.operators[userID], nil
 }
 
+// ---- orders ----
+
+// fakeOrders: a team's card orders still in flight (by team from ctx).
+type fakeOrders struct {
+	mu    sync.Mutex
+	busy  map[int64]int
+	since []time.Time
+}
+
+func (f *fakeOrders) CountBusyCardOrders(ctx context.Context, paidSince time.Time) (int, error) {
+	t, ok := tenant.From(ctx)
+	if !ok {
+		return 0, errors.New("orders asked without the team")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.since = append(f.since, paidSince)
+	return f.busy[t.ID], nil
+}
+
+func (f *fakeOrders) set(team int64, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.busy[team] = n
+}
+
 // ---- Stripe ----
 
 type codeGrant struct {
@@ -326,6 +352,7 @@ type rig struct {
 	st     *fakeStore
 	teams  *fakeTeams
 	stripe *fakeStripeAPI
+	orders *fakeOrders
 	l      *ledger
 	mu     sync.Mutex
 	built  []*fakeProc
@@ -342,8 +369,9 @@ func newRig(t *testing.T) *rig {
 		}, behind: map[int64]bool{}, operators: map[int64]bool{}},
 		stripe: &fakeStripeAPI{codes: map[string]codeGrant{}, accounts: map[string]platformstore.StripeAccountState{},
 			own: map[string]platformstore.StripeAccountState{}},
-		l:   &ledger{orders: map[int64]map[string]bool{}},
-		now: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC),
+		orders: &fakeOrders{busy: map[int64]int{}},
+		l:      &ledger{orders: map[int64]map[string]bool{}},
+		now:    time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC),
 	}
 	r.st.roles[[2]int64{ownerA, teamA}] = "owner"
 	r.st.roles[[2]int64{ownerB, teamB}] = "owner"
@@ -354,6 +382,7 @@ func newRig(t *testing.T) *rig {
 		Store:      r.st,
 		Teams:      r.teams,
 		Stripe:     r.stripe,
+		Orders:     r.orders,
 		Factory: func(ctx context.Context, spec ProcessorSpec) (Processor, error) {
 			if tt, ok := tenant.From(ctx); !ok || tt.ID != spec.Team.ID {
 				return nil, errors.New("build ctx without the team")

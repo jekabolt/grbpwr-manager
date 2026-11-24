@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
-	"github.com/jekabolt/grbpwr-manager/internal/middleware"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"google.golang.org/grpc/codes"
@@ -55,6 +53,9 @@ type Deps struct {
 	// about the shop and redraw its profile (the storefront reads the Stripe account / key there).
 	// ctx always carries the team.
 	Changed func(ctx context.Context, teamID int64)
+	// Orders is the team's order store: a team with card orders still in flight keeps its Stripe
+	// (shop_payments_busy). nil = no such check (tests).
+	Orders Orders
 	// Now is nil = time.Now.
 	Now func() time.Time
 }
@@ -66,6 +67,8 @@ type Service struct {
 	keys   *keys
 	reg    *Registry
 	nonces nonces
+	// finished: finish tokens already used (single use on this instance).
+	finished nonces
 }
 
 // Paths the service answers on (mounted by the HTTP server).
@@ -151,7 +154,7 @@ func (s *Service) WebhookURL(teamID int64) string {
 
 // StartConnect is the address the owner goes to: Stripe's Connect authorization for a team without
 // a live Connect, the Stripe dashboard for a team already connected (finishing onboarding happens
-// there). The OAuth callback finishes the connect.
+// there). The OAuth callback hands the admin a finish token; FinishConnect connects.
 func (s *Service) StartConnect(ctx context.Context, t tenant.Team, userID int64, operator bool, returnPath string) (string, error) {
 	if !s.connectReady() || s.d.APIBase == "" || s.d.BaseDomain == "" {
 		return "", stripeNotReady()
@@ -221,6 +224,12 @@ func (s *Service) SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec stri
 		return status.Error(codes.InvalidArgument, "bad_secret_key")
 	}
 	acct.Mode = mode
+	if has && row.DisconnectedAt == nil && (row.AccountID == nil || *row.AccountID == "" || *row.AccountID != acct.AccountID) {
+		// Keys of another account (or one that cannot be told apart) replace the live ones.
+		if err := s.paymentsIdle(ctx, t); err != nil {
+			return err
+		}
+	}
 	skSealed, err := s.keys.seal(t.ID, sealSecretKey, sk)
 	if err != nil {
 		return err
@@ -252,6 +261,9 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 		s.reg.Drop(ctx, t.ID)
 		return nil
 	}
+	if err := s.paymentsIdle(ctx, t); err != nil {
+		return err
+	}
 	acct := ""
 	if row.AccountID != nil {
 		acct = *row.AccountID
@@ -263,7 +275,7 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 	if row.Kind == platformstore.StripeKindConnect && acct != "" && s.d.Config.ConnectReady() {
 		if err := s.d.Stripe.Deauthorize(ctx, acct); err != nil {
 			// The account stays authorized at Stripe; its events find no team here and are dropped.
-			slog.Default().WarnContext(ctx, "shoppay: deauthorize", slog.Int64("team", t.ID), slog.String("err", err.Error()))
+			slog.Default().WarnContext(ctx, "shoppay: deauthorize", slog.Int64("team", t.ID), slog.String("stripe", stripeErrCode(err)))
 		}
 	}
 	return nil
@@ -271,7 +283,7 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 
 // changed forgets the team's processor and its cached shop answers.
 func (s *Service) changed(ctx context.Context, t tenant.Team) {
-	ctx = tenant.With(ctx, t) // the Connect callback's request carries no team
+	ctx = tenant.With(ctx, t)
 	s.reg.Drop(ctx, t.ID)
 	if s.d.Changed != nil {
 		s.d.Changed(ctx, t.ID)
@@ -302,7 +314,7 @@ func (s *Service) syncRow(ctx context.Context, t tenant.Team, row platformstore.
 		return
 	}
 	if err != nil {
-		slog.Default().WarnContext(ctx, "shoppay: account sync", slog.Int64("team", t.ID), slog.String("err", err.Error()))
+		slog.Default().WarnContext(ctx, "shoppay: account sync", slog.Int64("team", t.ID), slog.String("stripe", stripeErrCode(err)))
 		return
 	}
 	rowAcct := ""
@@ -349,5 +361,3 @@ func (s *Service) adminURL(t tenant.Team, path string, q url.Values) string {
 	}
 	return u
 }
-
-func clientIP(r *http.Request) string { return middleware.ClientIPFromRequest(r) }

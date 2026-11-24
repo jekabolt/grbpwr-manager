@@ -4807,6 +4807,15 @@ service AdminService {
     };
   }
 
+  // FinishStripeConnect connects the Stripe account with the token Stripe's callback sent the
+  // owner back with; only the user who started the connect may finish it (lane X18-L3).
+  rpc FinishStripeConnect(FinishStripeConnectRequest) returns (FinishStripeConnectResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/stripe/finish"
+      body: "*"
+    };
+  }
+
   // SetStripeKeys stores the team's own Stripe keys, sealed at rest (lane X18-L3).
   rpc SetStripeKeys(SetStripeKeysRequest) returns (SetStripeKeysResponse) {
     option (google.api.http) = {
@@ -16180,6 +16189,16 @@ message StartStripeConnectResponse {
   // url is the Stripe onboarding (or dashboard) link; open it in the same tab.
   string url = 1;
   Shop shop = 2;
+}
+
+message FinishStripeConnectRequest {
+  // token is the #token=… fragment of the address Stripe's callback sent the owner back to
+  // (?stripe=finish); single use, valid for 5 minutes.
+  string token = 1;
+}
+
+message FinishStripeConnectResponse {
+  Shop shop = 1;
 }
 
 message SetStripeKeysRequest {

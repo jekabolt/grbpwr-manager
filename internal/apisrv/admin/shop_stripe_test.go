@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	authsrv "github.com/jekabolt/grbpwr-manager/internal/apisrv/auth"
@@ -26,6 +27,7 @@ type fakePayments struct {
 	asked   []int64
 	procs   map[int64]dependency.Invoicer
 	started []string
+	done    []string
 	keys    []string
 	gone    []int64
 	err     error
@@ -37,6 +39,14 @@ func (f *fakePayments) StartConnect(_ context.Context, t tenant.Team, _ int64, _
 	}
 	f.started = append(f.started, t.Slug+"|"+ret)
 	return "https://connect.stripe.com/oauth/authorize?x=1", nil
+}
+
+func (f *fakePayments) FinishConnect(_ context.Context, t tenant.Team, userID int64, operator bool, token string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.done = append(f.done, fmt.Sprintf("%s|%d|%t|%s", t.Slug, userID, operator, token))
+	return nil
 }
 
 func (f *fakePayments) SetKeys(_ context.Context, t tenant.Team, pk, sk, whsec string) error {

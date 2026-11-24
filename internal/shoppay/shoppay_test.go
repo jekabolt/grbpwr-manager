@@ -3,10 +3,12 @@ package shoppay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -204,15 +206,38 @@ func callback(r *rig, q url.Values) *httptest.ResponseRecorder {
 	return rec
 }
 
+// finishToken follows the callback: it must send the browser to wantPrefix?stripe=finish with the
+// token in the fragment, the OAuth code nowhere in the address, and write nothing.
+func finishTokenOf(t *testing.T, rec *httptest.ResponseRecorder, wantPrefix, code string) string {
+	t.Helper()
+	loc := rec.Header().Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil || rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, wantPrefix) || u.Query().Get("stripe") != resultFinish ||
+		u.Query().Get("token") != "" || !strings.HasPrefix(u.Fragment, "token=") {
+		t.Fatalf("callback: %d %q", rec.Code, loc)
+	}
+	if strings.Contains(loc, code) {
+		t.Fatal("the OAuth code travels in the address")
+	}
+	return strings.TrimPrefix(u.Fragment, "token=")
+}
+
+func refusal(err error) string {
+	return status.Code(err).String() + " " + status.Convert(err).Message()
+}
+
 func TestConnectFlow(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
+	a, b := r.team(teamA), r.team(teamB)
 	r.stripe.accounts["acct_A"] = platformstore.StripeAccountState{AccountID: "acct_A", Name: "alpha", DetailsSubmitted: true}
 
-	if _, err := r.svc.StartConnect(ctx, r.team(teamA), ownerA, false, "https://evil.example/x"); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("foreign return path: %v", err)
+	for _, bad := range []string{"https://evil.example/x", "/shop#x"} {
+		if _, err := r.svc.StartConnect(ctx, a, ownerA, false, bad); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("return path %q: %v", bad, err)
+		}
 	}
-	raw, err := r.svc.StartConnect(ctx, r.team(teamA), ownerA, false, "/shop")
+	raw, err := r.svc.StartConnect(ctx, a, ownerA, false, "/shop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,84 +248,208 @@ func TestConnectFlow(t *testing.T) {
 	}
 	state := q.Get("state")
 
+	// The callback writes nothing and never exchanges the code: whoever's browser approved the
+	// account only gets a token for the starter's admin.
 	r.stripe.codes["code-a"] = codeGrant{acct: "acct_A"}
-	rec := callback(r, url.Values{"state": {state}, "code": {"code-a"}})
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "https://alpha.example.com/shop?stripe=connected" {
-		t.Fatalf("callback: %d %q", rec.Code, rec.Header().Get("Location"))
+	tok := finishTokenOf(t, callback(r, url.Values{"state": {state}, "code": {"code-a"}}), "https://alpha.example.com/shop?stripe=finish#", "code-a")
+	if _, ok, _ := r.st.TeamStripe(ctx, teamA); ok {
+		t.Fatal("the callback connected an account")
+	}
+	if _, ok := r.stripe.codes["code-a"]; !ok {
+		t.Fatal("the callback exchanged the code")
+	}
+	// Replay of the same state.
+	if rec := callback(r, url.Values{"state": {state}, "code": {"code-a"}}); !strings.HasSuffix(rec.Header().Get("Location"), "stripe=error") {
+		t.Fatalf("replayed state: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// Login CSRF: team A's owner sent the link to B's owner, who approved their own account. B's
+	// owner holds the token but cannot finish it — not on A, not on B, not as an operator.
+	for _, c := range []struct {
+		team     tenant.Team
+		user     int64
+		operator bool
+		tok      string
+		want     string
+	}{
+		{a, ownerB, false, tok, "PermissionDenied stripe_connect_not_yours"},
+		{a, ownerA, true, tok, "PermissionDenied stripe_connect_not_yours"},
+		{b, ownerB, false, tok, "FailedPrecondition stripe_connect_expired"},
+		{a, ownerA, false, tok + "x", "FailedPrecondition stripe_connect_expired"},
+		{a, ownerA, false, tok[:len(tok)-4] + "AAAA", "FailedPrecondition stripe_connect_expired"},
+		{a, ownerA, false, "", "FailedPrecondition stripe_connect_expired"},
+	} {
+		if err := r.svc.FinishConnect(ctx, c.team, c.user, c.operator, c.tok); refusal(err) != c.want {
+			t.Fatalf("finish team %d user %d operator %v: %v, want %s", c.team.ID, c.user, c.operator, err, c.want)
+		}
+	}
+	if _, ok, _ := r.st.TeamStripe(ctx, teamA); ok {
+		t.Fatal("a refused finish connected an account")
+	}
+	if _, ok, _ := r.st.TeamStripe(ctx, teamB); ok {
+		t.Fatal("a refused finish connected an account to B")
+	}
+
+	// The starter finishes; once.
+	if err := r.svc.FinishConnect(ctx, a, ownerA, false, tok); err != nil {
+		t.Fatal(err)
 	}
 	row := r.st.row(teamA)
 	if row.Kind != platformstore.StripeKindConnect || row.AccountID == nil || *row.AccountID != "acct_A" || row.Mode != ModeTest ||
 		!row.DetailsSubmitted || row.AccountName != "alpha" {
 		t.Fatalf("connected row %+v", row)
 	}
-	// Replay of the same state.
-	r.stripe.codes["code-a2"] = codeGrant{acct: "acct_A"}
-	if rec := callback(r, url.Values{"state": {state}, "code": {"code-a2"}}); !strings.HasSuffix(rec.Header().Get("Location"), "stripe=error") {
-		t.Fatalf("replayed state: %d %q", rec.Code, rec.Header().Get("Location"))
+	if !slices.Contains(r.st.audits, "shop.stripe_connected") {
+		t.Fatalf("audits %v", r.st.audits)
+	}
+	if err := r.svc.FinishConnect(ctx, a, ownerA, false, tok); refusal(err) != "FailedPrecondition stripe_connect_expired" {
+		t.Fatalf("token reuse: %v", err)
 	}
 	// A connected team gets the dashboard.
-	if u, err := r.svc.StartConnect(ctx, r.team(teamA), ownerA, false, ""); err != nil || u != stripeDashboardURL {
+	if u, err := r.svc.StartConnect(ctx, a, ownerA, false, ""); err != nil || u != stripeDashboardURL {
 		t.Fatalf("connected start: %q %v", u, err)
 	}
 	// Tampered or expired state: 400, nothing written.
 	if rec := callback(r, url.Values{"state": {state + "x"}, "code": {"code-a2"}}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("tampered state: %d", rec.Code)
 	}
-	rawB, _ := r.svc.StartConnect(ctx, r.team(teamB), ownerB, false, "")
+	rawB, _ := r.svc.StartConnect(ctx, b, ownerB, false, "")
 	_, qb := stateOf(t, rawB)
 	r.now = r.now.Add(stateTTL + time.Minute)
 	if rec := callback(r, url.Values{"state": {qb.Get("state")}, "code": {"code-a2"}}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("expired state: %d", rec.Code)
 	}
 
-	// Team B's owner connecting A's account: taken, A keeps it.
-	rawB, _ = r.svc.StartConnect(ctx, r.team(teamB), ownerB, false, "")
-	_, qb = stateOf(t, rawB)
-	if rec := callback(r, url.Values{"state": {qb.Get("state")}, "code": {"code-a2"}}); rec.Header().Get("Location") != "https://bravo.example.com/shop?stripe=taken" {
-		t.Fatalf("taken: %q", rec.Header().Get("Location"))
+	// finishB runs a connect of team B by user up to the finish token.
+	finishB := func(user int64, operator bool, code string) string {
+		t.Helper()
+		raw, err := r.svc.StartConnect(ctx, b, user, operator, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, q := stateOf(t, raw)
+		return finishTokenOf(t, callback(r, url.Values{"state": {q.Get("state")}, "code": {code}}), "https://bravo.example.com/shop?stripe=finish#", code)
+	}
+	// An expired finish token.
+	r.stripe.codes["code-b"] = codeGrant{acct: "acct_B"}
+	tb := finishB(ownerB, false, "code-b")
+	r.now = r.now.Add(finishTTL + time.Second)
+	if err := r.svc.FinishConnect(ctx, b, ownerB, false, tb); refusal(err) != "FailedPrecondition stripe_connect_expired" {
+		t.Fatalf("expired finish: %v", err)
+	}
+	// A code Stripe refuses.
+	if err := r.svc.FinishConnect(ctx, b, ownerB, false, finishB(ownerB, false, "code-unknown")); refusal(err) != "FailedPrecondition stripe_connect_expired" {
+		t.Fatalf("refused code: %v", err)
+	}
+	// A live account on a test platform.
+	r.stripe.codes["code-live"] = codeGrant{acct: "acct_L", live: true}
+	if err := r.svc.FinishConnect(ctx, b, ownerB, false, finishB(ownerB, false, "code-live")); refusal(err) != "FailedPrecondition stripe_wrong_mode" {
+		t.Fatalf("wrong mode: %v", err)
+	}
+	// Team B's owner connecting A's account: taken, A keeps it, nothing is deauthorized.
+	r.stripe.codes["code-a2"] = codeGrant{acct: "acct_A"}
+	if err := r.svc.FinishConnect(ctx, b, ownerB, false, finishB(ownerB, false, "code-a2")); refusal(err) != "AlreadyExists stripe_account_taken" {
+		t.Fatalf("taken: %v", err)
 	}
 	if _, ok, _ := r.st.TeamStripe(ctx, teamB); ok {
 		t.Fatal("team B got a row for A's account")
 	}
 	if len(r.stripe.deauth) != 0 {
-		t.Fatal("the callback deauthorized an account")
+		t.Fatal("a connect deauthorized an account")
 	}
-
-	// The starter lost ownership before the callback: refused.
-	rawB, _ = r.svc.StartConnect(ctx, r.team(teamB), ownerB, false, "")
-	_, qb = stateOf(t, rawB)
+	// The starter lost ownership before the finish: refused.
+	tb = finishB(ownerB, false, "code-b")
 	r.st.roles[[2]int64{ownerB, teamB}] = "member"
-	r.stripe.codes["code-b"] = codeGrant{acct: "acct_B"}
-	if rec := callback(r, url.Values{"state": {qb.Get("state")}, "code": {"code-b"}}); !strings.HasSuffix(rec.Header().Get("Location"), "stripe=error") {
-		t.Fatalf("demoted owner: %q", rec.Header().Get("Location"))
+	if err := r.svc.FinishConnect(ctx, b, ownerB, false, tb); refusal(err) != "PermissionDenied stripe_connect_not_yours" {
+		t.Fatalf("demoted owner: %v", err)
 	}
 	if _, ok, _ := r.st.TeamStripe(ctx, teamB); ok {
 		t.Fatal("a demoted owner connected an account")
 	}
 	// The owner said no at Stripe.
 	r.st.roles[[2]int64{ownerB, teamB}] = "owner"
-	rawB, _ = r.svc.StartConnect(ctx, r.team(teamB), ownerB, false, "/shop?tab=pay")
+	rawB, _ = r.svc.StartConnect(ctx, b, ownerB, false, "/shop?tab=pay")
 	_, qb = stateOf(t, rawB)
 	if rec := callback(r, url.Values{"state": {qb.Get("state")}, "error": {"access_denied"}}); rec.Header().Get("Location") != "https://bravo.example.com/shop?tab=pay&stripe=cancelled" {
 		t.Fatalf("cancelled: %q", rec.Header().Get("Location"))
 	}
 	// An operator who entered the team may connect while still an operator.
 	r.teams.operators[999] = true
-	rawB, _ = r.svc.StartConnect(ctx, r.team(teamB), 999, true, "")
-	_, qb = stateOf(t, rawB)
-	if rec := callback(r, url.Values{"state": {qb.Get("state")}, "code": {"code-b"}}); !strings.HasSuffix(rec.Header().Get("Location"), "stripe=connected") {
-		t.Fatalf("operator connect: %q", rec.Header().Get("Location"))
+	if err := r.svc.FinishConnect(ctx, b, 999, true, finishB(999, true, "code-b")); err != nil {
+		t.Fatalf("operator connect: %v", err)
+	}
+	if row := r.st.row(teamB); row.AccountID == nil || *row.AccountID != "acct_B" {
+		t.Fatalf("operator connect row %+v", row)
 	}
 
-	// Disconnect: the row first, then the deauthorization; idempotent.
-	if err := r.svc.Disconnect(ctx, r.team(teamA)); err != nil {
+	// Disconnect waits for the team's card orders, then the row goes first, then the
+	// deauthorization; idempotent.
+	r.orders.set(teamA, 1)
+	if err := r.svc.Disconnect(ctx, a); refusal(err) != "FailedPrecondition shop_payments_busy" {
+		t.Fatalf("busy disconnect: %v", err)
+	}
+	if row := r.st.row(teamA); row.DisconnectedAt != nil || len(r.stripe.deauth) != 0 {
+		t.Fatalf("a busy shop was disconnected: %+v %v", row, r.stripe.deauth)
+	}
+	if got := r.orders.since[len(r.orders.since)-1]; !got.Equal(r.now.Add(-RefundWindow)) {
+		t.Fatalf("refund window from %v", got)
+	}
+	r.orders.set(teamA, 0)
+	if err := r.svc.Disconnect(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.svc.Disconnect(ctx, r.team(teamA)); err != nil {
+	r.orders.set(teamA, 1) // an already disconnected shop stays disconnected
+	if err := r.svc.Disconnect(ctx, a); err != nil {
 		t.Fatal(err)
 	}
 	if row := r.st.row(teamA); row.DisconnectedAt == nil || len(r.stripe.deauth) != 1 || r.stripe.deauth[0] != "acct_A" {
 		t.Fatalf("disconnect: %+v %v", row, r.stripe.deauth)
+	}
+}
+
+// A live Connect replaced by another account waits for the team's card orders; the same account
+// reconnects any time.
+func TestConnectSwitchWaitsForOrders(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	a := r.team(teamA)
+	start := func() string {
+		raw, err := r.svc.StartConnect(ctx, a, ownerA, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, q := stateOf(t, raw)
+		return q.Get("state")
+	}
+	finish := func(state, code, acct string) error {
+		r.stripe.codes[code] = codeGrant{acct: acct}
+		tok := finishTokenOf(t, callback(r, url.Values{"state": {state}, "code": {code}}), "https://alpha.example.com/shop?stripe=finish#", code)
+		return r.svc.FinishConnect(ctx, a, ownerA, false, tok)
+	}
+	s1, s2, s3, s4 := start(), start(), start(), start() // started before the first connect landed
+	if err := finish(s1, "code-switch-1", "acct_A"); err != nil {
+		t.Fatal(err)
+	}
+	r.orders.set(teamA, 2)
+	if err := finish(s2, "code-switch-2", "acct_A2"); refusal(err) != "FailedPrecondition shop_payments_busy" {
+		t.Fatalf("switch while busy: %v", err)
+	}
+	if row := r.st.row(teamA); *row.AccountID != "acct_A" {
+		t.Fatalf("switched while busy: %+v", row)
+	}
+	if err := finish(s3, "code-switch-3", "acct_A"); err != nil {
+		t.Fatalf("same account while busy: %v", err)
+	}
+	r.orders.set(teamA, 0)
+	if err := finish(s4, "code-switch-4", "acct_A2"); err != nil {
+		t.Fatalf("switch when idle: %v", err)
+	}
+	if row := r.st.row(teamA); *row.AccountID != "acct_A2" {
+		t.Fatalf("idle switch row %+v", row)
+	}
+	// A live Connect answers the dashboard, never a second authorization.
+	if u, err := r.svc.StartConnect(ctx, a, ownerA, false, ""); err != nil || u != stripeDashboardURL {
+		t.Fatalf("connected start: %q %v", u, err)
 	}
 }
 
@@ -360,6 +509,28 @@ func TestSetKeys(t *testing.T) {
 	}
 	if _, err := r.svc.StartConnect(ctx, a, ownerA, false, ""); status.Convert(err).Message() != "stripe_keys_set" {
 		t.Fatalf("connect over keys: %v", err)
+	}
+
+	// With card orders in flight: new keys of the same account are fine, another account waits.
+	r.orders.set(teamA, 1)
+	r.stripe.own["sk_test_alpha2"] = platformstore.StripeAccountState{AccountID: "acct_A", Name: "alpha", ChargesEnabled: true}
+	if err := r.svc.SetKeys(ctx, a, "pk_test_2", "sk_test_alpha2", "whsec_alpha2"); err != nil {
+		t.Fatalf("rotate keys while busy: %v", err)
+	}
+	r.stripe.own["sk_test_other"] = platformstore.StripeAccountState{AccountID: "acct_O", ChargesEnabled: true}
+	if err := r.svc.SetKeys(ctx, a, "pk_test_3", "sk_test_other", "whsec_o"); refusal(err) != "FailedPrecondition shop_payments_busy" {
+		t.Fatalf("switch keys while busy: %v", err)
+	}
+	r.stripe.own["rk_test_restricted"] = platformstore.StripeAccountState{ChargesEnabled: true} // cannot read its account
+	if err := r.svc.SetKeys(ctx, a, "pk_test_4", "rk_test_restricted", "whsec_r"); refusal(err) != "FailedPrecondition shop_payments_busy" {
+		t.Fatalf("restricted key while busy: %v", err)
+	}
+	if row := r.st.row(teamA); *row.AccountID != "acct_A" || row.PublishableKey != "pk_test_2" {
+		t.Fatalf("keys switched while busy: %+v", row)
+	}
+	r.orders.set(teamA, 0)
+	if err := r.svc.SetKeys(ctx, a, "pk_test_3", "sk_test_other", "whsec_o"); err != nil {
+		t.Fatalf("switch keys when idle: %v", err)
 	}
 }
 
@@ -528,5 +699,20 @@ func TestConnectPublishableKeyOnlyWhileConnectIsOn(t *testing.T) {
 	off := New(context.Background(), Deps{Config: Config{Master: testMaster, ConnectPublishableKey: "pk_test_platform"}, Store: r.st, Teams: r.teams, Factory: r.svc.d.Factory})
 	if off.ConnectPublishableKey() != "" {
 		t.Fatal("publishable key without Connect")
+	}
+}
+
+// Logs carry Stripe's error code, never its message (it may echo the request).
+func TestStripeErrCodeOnly(t *testing.T) {
+	for err, want := range map[error]string{
+		&stripe.Error{Msg: "No such code: ac_secret", OAuthError: "invalid_grant", HTTPStatusCode: 400}: "invalid_grant",
+		&stripe.Error{Msg: "No such account: acct_x", Code: stripe.ErrorCodeResourceMissing}:            "resource_missing",
+		errors.Join(ErrStripeUnavailable, &stripe.Error{HTTPStatusCode: 503}):                           "http_503",
+		ErrBadSecretKey:              "bad_secret_key",
+		errors.New("dial tcp: boom"): "no_answer",
+	} {
+		if got := stripeErrCode(err); got != want {
+			t.Fatalf("stripeErrCode(%v) = %q, want %q", err, got, want)
+		}
 	}
 }

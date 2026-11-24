@@ -28,7 +28,10 @@ func TestShopStripeRPCs(t *testing.T) {
 	require.Equal(t, "PermissionDenied owner_only", refusal(err))
 	_, err = w.s.DisconnectStripe(bob, &pb_admin.DisconnectStripeRequest{})
 	require.Equal(t, "PermissionDenied owner_only", refusal(err))
+	_, err = w.s.FinishStripeConnect(bob, &pb_admin.FinishStripeConnectRequest{Token: "tok"})
+	require.Equal(t, "PermissionDenied owner_only", refusal(err))
 	require.Empty(t, pay.started)
+	require.Empty(t, pay.done)
 	require.Empty(t, pay.keys)
 	require.Empty(t, pay.gone)
 
@@ -37,6 +40,19 @@ func TestShopStripeRPCs(t *testing.T) {
 	require.Equal(t, "https://connect.stripe.com/oauth/authorize?x=1", st.Url)
 	require.NotNil(t, st.Shop)
 	require.Equal(t, []string{"acme|/shop"}, pay.started)
+
+	// The finish goes to the service with the signed-in caller: it alone may finish its own connect.
+	fin, err := w.s.FinishStripeConnect(ann, &pb_admin.FinishStripeConnectRequest{Token: " tok "})
+	require.NoError(t, err)
+	require.NotNil(t, fin.Shop)
+	require.Equal(t, []string{"acme|101|false|tok"}, pay.done)
+	pay.err = status.Error(codes.PermissionDenied, "stripe_connect_not_yours")
+	_, err = w.s.FinishStripeConnect(ann, &pb_admin.FinishStripeConnectRequest{Token: "tok"})
+	require.Equal(t, "PermissionDenied stripe_connect_not_yours", refusal(err))
+	pay.err = status.Error(codes.FailedPrecondition, "shop_payments_busy")
+	_, err = w.s.DisconnectStripe(ann, &pb_admin.DisconnectStripeRequest{})
+	require.Equal(t, "FailedPrecondition shop_payments_busy", refusal(err))
+	pay.err, pay.gone = nil, nil
 
 	_, err = w.s.SetStripeKeys(ann, &pb_admin.SetStripeKeysRequest{PublishableKey: "pk_test_1", SecretKey: "sk_test_1", WebhookSecret: "whsec_1"})
 	require.NoError(t, err)

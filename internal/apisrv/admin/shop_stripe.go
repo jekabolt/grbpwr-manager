@@ -21,6 +21,8 @@ import (
 type ShopPayments interface {
 	// StartConnect answers the Stripe onboarding link (or the dashboard of a connected account).
 	StartConnect(ctx context.Context, t tenant.Team, userID int64, operator bool, returnPath string) (string, error)
+	// FinishConnect connects the account of the callback's finish token, for the user who started it.
+	FinishConnect(ctx context.Context, t tenant.Team, userID int64, operator bool, token string) error
 	// SetKeys checks the team's own keys with Stripe and stores them sealed.
 	SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec string) error
 	// Disconnect turns the team's Stripe off (idempotent).
@@ -68,6 +70,23 @@ func (s *Server) StartStripeConnect(ctx context.Context, req *pb_admin.StartStri
 		return nil, err
 	}
 	return &pb_admin.StartStripeConnectResponse{Url: url, Shop: out}, nil
+}
+
+// FinishStripeConnect connects the Stripe account the owner approved: the token comes from the admin
+// address Stripe's callback sent the owner back to. Only the user who started the connect finishes it.
+func (s *Server) FinishStripeConnect(ctx context.Context, req *pb_admin.FinishStripeConnectRequest) (*pb_admin.FinishStripeConnectResponse, error) {
+	p, pay, err := s.shopPayer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := pay.FinishConnect(ctx, p.w.Team, p.userID, p.w.Operator, strings.TrimSpace(req.GetToken())); err != nil {
+		return nil, shopErr(ctx, "stripe connect finish", err)
+	}
+	out, err := s.shopOf(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return &pb_admin.FinishStripeConnectResponse{Shop: out}, nil
 }
 
 // SetStripeKeys stores the team's own Stripe keys (checked with Stripe first). The secret key and the

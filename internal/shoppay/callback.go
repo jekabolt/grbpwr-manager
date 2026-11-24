@@ -2,30 +2,29 @@ package shoppay
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
-// Connect results on the owner's landing address (?stripe=…).
+// Callback results on the owner's landing address (?stripe=…): finish comes with #token=… (a
+// fragment: it stays out of server logs and Referer), which the signed-in owner hands to
+// FinishStripeConnect.
 const (
-	resultConnected = "connected"
+	resultFinish    = "finish"
 	resultCancelled = "cancelled"
-	resultTaken     = "taken"
 	resultError     = "error"
 )
 
 const maxOAuthCode = 256
 
-// Callback is Stripe's OAuth redirect (CallbackPath, GET): it checks the state, that its starter
-// still owns (or operates) the team, exchanges the code, stores the connected account and sends the
-// owner back to the team's admin. It never deauthorizes an account (an account another team holds
-// must stay connected there).
+// Callback is Stripe's OAuth redirect (CallbackPath, GET). It runs in whatever browser approved the
+// account, without a session, so it writes nothing: it checks the state and sends the browser back
+// to the team's admin with a sealed finish token (state + code, finishTTL). The connect happens only
+// in FinishConnect, for the signed-in user who started it.
 func (s *Service) Callback() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -49,69 +48,31 @@ func (s *Service) Callback() http.Handler {
 			http.Error(w, "bad state", http.StatusBadRequest)
 			return
 		}
-		back := func(result string) {
-			http.Redirect(w, r, s.adminURL(t, st.Return, url.Values{"stripe": {result}}), http.StatusSeeOther)
+		back := func(res, fragment string) {
+			http.Redirect(w, r, s.adminURL(t, st.Return, url.Values{"stripe": {res}})+fragment, http.StatusSeeOther)
 		}
+		result := func(res string) { back(res, "") }
 		if !s.nonces.use(st.Nonce, time.Unix(st.Exp, 0), now) {
-			back(resultError)
+			result(resultError)
 			return
 		}
 		if q.Get("error") != "" {
-			back(resultCancelled)
+			result(resultCancelled)
 			return
 		}
 		code := q.Get("code")
 		if code == "" || len(code) > maxOAuthCode {
-			back(resultError)
+			result(resultError)
 			return
 		}
-		if !s.mayConnect(ctx, st) {
-			slog.Default().WarnContext(ctx, "shoppay: connect by a non-owner refused", slog.Int64("team", t.ID))
-			back(resultError)
+		tok, err := s.keys.sealFinish(finishToken{State: st, Code: code, Exp: now.Add(finishTTL).Unix()})
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "shoppay: finish token", slog.Int64("team", t.ID), slog.String("err", err.Error()))
+			result(resultError)
 			return
 		}
-		back(s.finishConnect(ctx, t, st, code, clientIP(r)))
+		back(resultFinish, "#token="+tok)
 	})
-}
-
-func (s *Service) finishConnect(ctx context.Context, t tenant.Team, st connectState, code, ip string) string {
-	acct, livemode, err := s.d.Stripe.ExchangeCode(ctx, code)
-	if err != nil {
-		slog.Default().WarnContext(ctx, "shoppay: oauth exchange", slog.Int64("team", t.ID), slog.String("err", err.Error()))
-		return resultError
-	}
-	mode := modeOf(livemode)
-	if mode != s.d.Config.ConnectMode() {
-		return resultError
-	}
-	row, has, err := s.d.Store.TeamStripe(ctx, t.ID)
-	if err != nil {
-		slog.Default().ErrorContext(ctx, "shoppay: team stripe", slog.String("err", err.Error()))
-		return resultError
-	}
-	if has && row.DisconnectedAt == nil && row.Kind == platformstore.StripeKindKeys {
-		// Own keys were saved meanwhile: the owner disconnects them first.
-		return resultError
-	}
-	a, err := s.d.Stripe.ConnectedAccount(ctx, acct)
-	if err != nil {
-		// Connected all the same; account.updated brings the flags.
-		slog.Default().WarnContext(ctx, "shoppay: connected account read", slog.Int64("team", t.ID), slog.String("err", err.Error()))
-		a = platformstore.StripeAccountState{}
-	}
-	a.AccountID, a.Mode = acct, mode
-	if err := s.d.Store.ConnectTeamStripe(ctx, t.ID, a, s.d.Now()); err != nil {
-		if errors.Is(err, platformstore.ErrStripeAccountTaken) {
-			return resultTaken
-		}
-		slog.Default().ErrorContext(ctx, "shoppay: connect write", slog.Int64("team", t.ID), slog.String("err", err.Error()))
-		return resultError
-	}
-	if err := s.d.Store.AuditAuth(ctx, st.User, t.ID, "shop.stripe_connected", map[string]string{"mode": mode}, ip); err != nil {
-		slog.Default().WarnContext(ctx, "shoppay: audit", slog.String("err", err.Error()))
-	}
-	s.changed(ctx, t)
-	return resultConnected
 }
 
 // mayConnect: the state's starter is still the team's owner, or still a console operator.

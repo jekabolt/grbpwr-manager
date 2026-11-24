@@ -37,6 +37,7 @@ func (a *App) newShopPay(ctx context.Context, b *tenantbind.Binder, adminS *admi
 		Teams:      b,
 		Factory:    shoppay.NewStripeFactory(fd),
 		Changed:    adminS.ShopPaymentsChanged,
+		Orders:     a.db.Order(),
 	})
 	switch {
 	case a.c.ShopStripe.Master == "":
