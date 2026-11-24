@@ -846,3 +846,23 @@ VALUES (?, ?, 'legacy', 1, 0, 'live', ?, ?, ?)`, host, teamID, recs, now, now)
 		return err
 	})
 }
+
+// TeamMailName is one team's name and brand name as the team-shop mail lane sees them: no shop's
+// letters may read as another team.
+type TeamMailName struct {
+	TeamID    int64  `db:"team_id"`
+	Name      string `db:"name"`
+	BrandName string `db:"brand_name"`
+}
+
+// TeamMailNames lists every team that is not deleted, with its brand name ("" without a brand row).
+func (s *Store) TeamMailNames(ctx context.Context) ([]TeamMailName, error) {
+	var out []TeamMailName
+	if err := s.db.SelectContext(ctx, &out, `SELECT team.id AS team_id, team.name AS name,
+COALESCE(team_brand.brand_name, '') AS brand_name
+FROM team LEFT JOIN team_brand ON team_brand.team_id = team.id
+WHERE team.status <> 'deleted' ORDER BY team.id`); err != nil {
+		return nil, fmt.Errorf("platformstore: team mail names: %w", err)
+	}
+	return out, nil
+}
