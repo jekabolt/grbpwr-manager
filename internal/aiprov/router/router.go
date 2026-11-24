@@ -215,6 +215,9 @@ type Router struct {
 
 	warnMu sync.Mutex
 	warned map[string]uint64 // provider key → the HIGHEST config version its missing transport was warned at
+
+	// signURL signs the picture urls of private team files before a transport sends them (X13).
+	signURL func(ctx context.Context, rawURL string) string
 }
 
 // New builds the router over the registry's routes. ledger may be nil (nothing is recorded);
@@ -590,6 +593,7 @@ func (r *Router) Chat(ctx context.Context, purpose string, req aiprov.ChatReques
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	req = r.signImages(ctx, req)
 	cands, version := r.candidates(purpose)
 	if len(cands) == 0 {
 		if r.Paused(purpose) {
