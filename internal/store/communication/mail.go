@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/store/storeutil"
@@ -28,19 +29,26 @@ const sendEmailRequestUnsentColumns = `
 	send_email_request.error_msg,
 	send_email_request.created_at,
 	send_email_request.kind,
-	send_email_request.expires_at
+	send_email_request.expires_at,
+	send_email_request.idempotency_key,
+	send_email_request.first_dispatch_at
 `
 
-// AddMail queues a new email to be sent.
+// AddMail queues a new email to be sent. A row without an idempotency key gets a fresh one, written
+// back to ser, so every send of the row (inline or by a worker) uses the same key.
 func (s *Store) AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error) {
+	if !ser.IdempotencyKey.Valid || ser.IdempotencyKey.String == "" {
+		ser.IdempotencyKey = sql.NullString{String: "mail-" + uuid.NewString(), Valid: true}
+	}
 	query := `
 	INSERT INTO 
 	send_email_request 
-		(from_email, to_email, html, subject, reply_to, sent, sent_at, next_retry_at, kind, expires_at)
+		(from_email, to_email, html, subject, reply_to, sent, sent_at, next_retry_at, kind, expires_at, idempotency_key)
 	VALUES
-		(:fromEmail, :toEmail, :html, :subject, :replyTo, :sent, :sentAt, :nextRetryAt, :kind, :expiresAt)
+		(:fromEmail, :toEmail, :html, :subject, :replyTo, :sent, :sentAt, :nextRetryAt, :kind, :expiresAt, :idemKey)
 	`
 	params := map[string]any{
+		"idemKey":     ser.IdempotencyKey,
 		"fromEmail":   ser.From,
 		"toEmail":     ser.To,
 		"html":        ser.Html,
@@ -414,20 +422,98 @@ WHERE id IN (:ids) AND claim_token = :tok AND sent = false`, map[string]any{"ids
 	return nil
 }
 
-// QuarantineMail marks one unsent row as never to be sent, with reason as its error_msg.
-func (s *Store) QuarantineMail(ctx context.Context, id int, reason string) error {
-	err := storeutil.ExecNamed(ctx, s.DB, `
+// MarkMailDispatched records that the worker holding token is about to offer row id to the provider:
+// first_dispatch_at keeps the first such moment, dispatch_count counts them. It returns
+// entity.ErrMailClaimLost when the row is no longer leased to token (then nothing may be sent). The
+// count always changes, so the driver's changed-rows answer is exact.
+func (s *Store) MarkMailDispatched(ctx context.Context, id int, token string, now time.Time) error {
+	if token == "" {
+		return fmt.Errorf("%w: dispatch mark without a token", errBadMailClaim)
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 UPDATE send_email_request
-SET quarantined_at = :now, next_retry_at = NULL, claim_token = NULL, error_msg = :reason
-WHERE id = :id AND sent = false AND quarantined_at IS NULL`, map[string]any{
-		"id":     id,
-		"now":    time.Now().UTC(),
-		"reason": reason,
+SET first_dispatch_at = COALESCE(first_dispatch_at, :now), dispatch_count = dispatch_count + 1
+WHERE id = :id AND claim_token = :tok AND sent = false AND quarantined_at IS NULL`, map[string]any{
+		"id":  id,
+		"tok": token,
+		"now": now.UTC(),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to quarantine email %d: %w", id, err)
+		return fmt.Errorf("failed to mark email %d dispatched: %w", id, err)
+	}
+	if n != 1 {
+		return entity.ErrMailClaimLost
 	}
 	return nil
+}
+
+// SettleMail records the outcome of a claimed row (sent, retry, dead, quarantined) and ends its
+// lease. It applies only while the row is unsent and still leased to q.Token, and returns
+// entity.ErrMailClaimLost otherwise. Every outcome clears claim_token, so a matching row always
+// counts as changed.
+func (s *Store) SettleMail(ctx context.Context, q entity.MailSettle) error {
+	if q.Token == "" {
+		return fmt.Errorf("%w: settle without a token", errBadMailClaim)
+	}
+	now := q.Now.UTC()
+	if q.Now.IsZero() {
+		now = time.Now().UTC()
+	}
+	params := map[string]any{"id": q.ID, "tok": q.Token, "now": now, "err": q.ErrMsg}
+	var set string
+	switch q.Outcome {
+	case entity.MailSent:
+		set = `sent = true, sent_at = :now, provider_email_id = :pid`
+		params["pid"] = sql.NullString{String: q.ProviderID, Valid: q.ProviderID != ""}
+	case entity.MailRetry:
+		if q.NextRetryAt.IsZero() {
+			return fmt.Errorf("%w: retry without a time", errBadMailClaim)
+		}
+		set = `send_attempt_count = send_attempt_count + 1, error_msg = :err, next_retry_at = :next`
+		params["next"] = q.NextRetryAt.UTC()
+	case entity.MailDead:
+		if q.MaxAttempts <= 0 {
+			return fmt.Errorf("%w: dead letter without an attempt cap", errBadMailClaim)
+		}
+		set = `send_attempt_count = :max, error_msg = :err, next_retry_at = NULL`
+		params["max"] = q.MaxAttempts
+	case entity.MailQuarantined:
+		set = `quarantined_at = :now, error_msg = :err, next_retry_at = NULL`
+	default:
+		return fmt.Errorf("%w: unknown outcome %d", errBadMailClaim, q.Outcome)
+	}
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
+UPDATE send_email_request
+SET `+set+`, claim_token = NULL
+WHERE id = :id AND claim_token = :tok AND sent = false AND quarantined_at IS NULL`, params)
+	if err != nil {
+		return fmt.Errorf("failed to settle email %d: %w", q.ID, err)
+	}
+	if n != 1 {
+		return entity.ErrMailClaimLost
+	}
+	return nil
+}
+
+// ProviderMailRecipient returns the recipient of outbox row id when the provider accepted it under
+// providerID, else "" (no such row, another letter's id, never accepted).
+func (s *Store) ProviderMailRecipient(ctx context.Context, id int, providerID string) (string, error) {
+	if id <= 0 || providerID == "" {
+		return "", nil
+	}
+	tos, err := storeutil.QueryScalarListNamed[string](ctx, s.DB, `
+SELECT to_email FROM send_email_request WHERE id = :id AND provider_email_id = :pid`,
+		map[string]any{"id": id, "pid": providerID})
+	if err != nil {
+		return "", fmt.Errorf("failed to find email %d by provider id: %w", id, err)
+	}
+	if len(tos) == 0 {
+		return "", nil
+	}
+	return tos[0], nil
 }
 
 // QuarantineOutside applies the team-shop lane's never-send rule (entity.MailCutover) to every

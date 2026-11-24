@@ -27,12 +27,17 @@ type outboxRowState struct {
 	ErrMsg        sql.NullString `db:"error_msg"`
 	Kind          sql.NullString `db:"kind"`
 	ExpiresAt     sql.NullTime   `db:"expires_at"`
+	IdemKey       sql.NullString `db:"idempotency_key"`
+	FirstDispatch sql.NullTime   `db:"first_dispatch_at"`
+	Dispatches    int            `db:"dispatch_count"`
+	ProviderID    sql.NullString `db:"provider_email_id"`
 }
 
 func outboxRow(t *testing.T, ms *MYSQLStore, id int) outboxRowState {
 	t.Helper()
 	r, err := QueryNamedOne[outboxRowState](context.Background(), ms.DB(), `
-SELECT sent, send_attempt_count, next_retry_at, claim_token, quarantined_at, error_msg, kind, expires_at
+SELECT sent, send_attempt_count, next_retry_at, claim_token, quarantined_at, error_msg, kind, expires_at,
+	idempotency_key, first_dispatch_at, dispatch_count, provider_email_id
 FROM send_email_request WHERE id = :id`, map[string]any{"id": id})
 	require.NoError(t, err)
 	return r
@@ -160,7 +165,8 @@ func TestMailStoreShopLane(t *testing.T) {
 		capped := seedOutbox(t, ms, outboxSeed{kind: entity.MailKindShopOrder})
 		require.NoError(t, mailStore.MarkSendDead(ctx, capped, "dead", 5))
 		quarantined := seedOutbox(t, ms, outboxSeed{kind: entity.MailKindShopOrder})
-		require.NoError(t, mailStore.QuarantineMail(ctx, quarantined, "stale"))
+		require.NoError(t, ExecNamed(ctx, ms.DB(), `UPDATE send_email_request SET quarantined_at = :n WHERE id = :id`,
+			map[string]any{"n": now, "id": quarantined}))
 		sent := seedOutbox(t, ms, outboxSeed{kind: entity.MailKindShopOrder})
 		require.NoError(t, mailStore.UpdateSent(ctx, sent))
 
@@ -305,7 +311,137 @@ func TestMailStoreShopLane(t *testing.T) {
 		require.Equal(t, []int{id}, claimIDs(again), "a released row is claimable at once")
 	})
 
-	t.Run("bookkeeping clears the lease", func(t *testing.T) {
+	t.Run("AddMail writes an idempotency key once", func(t *testing.T) {
+		reset(t)
+		row := &entity.SendEmailRequest{From: "a@x.test", To: "c@example.com", Subject: "s", Html: "<p>x</p>"}
+		id, err := mailStore.AddMail(ctx, row)
+		require.NoError(t, err)
+		require.True(t, row.IdempotencyKey.Valid, "the key is written back for the inline send")
+		require.Regexp(t, `^mail-[0-9a-f-]{36}$`, row.IdempotencyKey.String)
+		require.Equal(t, row.IdempotencyKey.String, outboxRow(t, ms, id).IdemKey.String)
+		other := seedOutbox(t, ms, outboxSeed{})
+		require.NotEqual(t, row.IdempotencyKey.String, outboxRow(t, ms, other).IdemKey.String)
+		given := &entity.SendEmailRequest{From: "a@x.test", To: "c@example.com", Subject: "s", Html: "<p>x</p>",
+			IdempotencyKey: sql.NullString{String: "mail-given", Valid: true}}
+		gid, err := mailStore.AddMail(ctx, given)
+		require.NoError(t, err)
+		require.Equal(t, "mail-given", outboxRow(t, ms, gid).IdemKey.String)
+		got, err := mailStore.ClaimUnsent(ctx, claim("tok"))
+		require.NoError(t, err)
+		require.Len(t, got, 3)
+		require.Equal(t, row.IdempotencyKey.String, got[0].IdempotencyKey.String, "claimed rows carry their key")
+		require.False(t, got[0].FirstDispatchAt.Valid)
+	})
+
+	t.Run("dispatch mark needs the lease and keeps the first time", func(t *testing.T) {
+		reset(t)
+		id := seedOutbox(t, ms, outboxSeed{})
+		_, err := mailStore.ClaimUnsent(ctx, claim("tok"))
+		require.NoError(t, err)
+		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "someone-else", time.Now()), entity.ErrMailClaimLost)
+		require.Zero(t, outboxRow(t, ms, id).Dispatches)
+		first := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", first))
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", first), "the same second still counts as a change")
+		r := outboxRow(t, ms, id)
+		require.Equal(t, 2, r.Dispatches)
+		require.True(t, r.FirstDispatch.Time.Equal(first), "%s != %s", r.FirstDispatch.Time, first)
+		require.Equal(t, "tok", r.ClaimToken.String, "a dispatch mark keeps the lease")
+		got, err := mailStore.ClaimUnsent(ctx, claim("late", func(q *entity.MailClaim) { q.Now = time.Now().Add(3 * time.Minute) }))
+		require.NoError(t, err)
+		require.True(t, got[0].FirstDispatchAt.Valid, "a later claimer sees the first dispatch")
+		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "tok", time.Now()), entity.ErrMailClaimLost,
+			"the old holder cannot dispatch after the lease moved")
+		require.Error(t, mailStore.MarkMailDispatched(ctx, id, "", time.Now()))
+	})
+
+	t.Run("settle needs the lease token and checks one row", func(t *testing.T) {
+		reset(t)
+		sentID := seedOutbox(t, ms, outboxSeed{to: "sent@shoplane.test"})
+		retryID := seedOutbox(t, ms, outboxSeed{})
+		deadID := seedOutbox(t, ms, outboxSeed{})
+		quarID := seedOutbox(t, ms, outboxSeed{})
+		lostID := seedOutbox(t, ms, outboxSeed{})
+		now := time.Now().UTC().Truncate(time.Second)
+		_, err := mailStore.ClaimUnsent(ctx, claim("tok", func(q *entity.MailClaim) { q.Now = now }))
+		require.NoError(t, err)
+
+		sent := entity.MailSettle{ID: sentID, Token: "tok", Outcome: entity.MailSent, ProviderID: "re_123"}
+		wrong := sent
+		wrong.Token = "someone-else"
+		require.ErrorIs(t, mailStore.SettleMail(ctx, wrong), entity.ErrMailClaimLost)
+		require.False(t, outboxRow(t, ms, sentID).Sent, "a foreign token writes nothing")
+		require.NoError(t, mailStore.SettleMail(ctx, sent))
+		require.ErrorIs(t, mailStore.SettleMail(ctx, sent), entity.ErrMailClaimLost, "a row settles once")
+		next := now.Add(time.Minute)
+		require.NoError(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: retryID, Token: "tok", Outcome: entity.MailRetry, ErrMsg: "409", NextRetryAt: next}))
+		require.NoError(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: deadID, Token: "tok", Outcome: entity.MailDead, ErrMsg: "422", MaxAttempts: 5}))
+		require.NoError(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: quarID, Token: "tok", Outcome: entity.MailQuarantined, ErrMsg: "sender is not the shop sender"}))
+
+		r := outboxRow(t, ms, sentID)
+		require.True(t, r.Sent)
+		require.Equal(t, "re_123", r.ProviderID.String)
+		r = outboxRow(t, ms, retryID)
+		require.Equal(t, 1, r.Attempts)
+		require.Equal(t, "409", r.ErrMsg.String)
+		require.True(t, r.NextRetryAt.Time.Equal(next))
+		r = outboxRow(t, ms, deadID)
+		require.Equal(t, 5, r.Attempts)
+		require.False(t, r.NextRetryAt.Valid)
+		r = outboxRow(t, ms, quarID)
+		require.True(t, r.QuarantinedAt.Valid)
+		require.Equal(t, "sender is not the shop sender", r.ErrMsg.String)
+		require.False(t, r.NextRetryAt.Valid)
+		for _, id := range []int{sentID, retryID, deadID, quarID} {
+			require.False(t, outboxRow(t, ms, id).ClaimToken.Valid, "row %d keeps its token", id)
+		}
+
+		// The lease runs out and another worker takes the row: the old holder's late answer is lost,
+		// never written over the new owner.
+		_, err = mailStore.ClaimUnsent(ctx, claim("new-owner", func(q *entity.MailClaim) { q.Now = now.Add(3 * time.Minute) }))
+		require.NoError(t, err)
+		require.Equal(t, "new-owner", outboxRow(t, ms, lostID).ClaimToken.String)
+		require.ErrorIs(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: lostID, Token: "tok", Outcome: entity.MailDead, ErrMsg: "x", MaxAttempts: 5}), entity.ErrMailClaimLost)
+		r = outboxRow(t, ms, lostID)
+		require.Zero(t, r.Attempts)
+		require.Equal(t, "new-owner", r.ClaimToken.String)
+
+		// A quarantined row is never revived by a settle, and a late release of a sent row is a no-op.
+		require.NoError(t, mailStore.ReleaseClaims(ctx, []int{sentID}, "tok"))
+		require.True(t, outboxRow(t, ms, sentID).Sent)
+		got, err := mailStore.ClaimUnsent(ctx, claim("tok2", func(q *entity.MailClaim) { q.Now = now.Add(10 * time.Minute) }))
+		require.NoError(t, err)
+		require.NotContains(t, claimIDs(got), quarID)
+		unsent, err := mailStore.GetAllUnsent(ctx, false, 5, now.Add(time.Hour))
+		require.NoError(t, err)
+		require.NotContains(t, claimIDs(unsent), quarID, "the worker view never holds a quarantined row")
+
+		for _, bad := range []entity.MailSettle{
+			{ID: retryID, Outcome: entity.MailSent},                       // no token
+			{ID: retryID, Token: "tok2", Outcome: entity.MailRetry},       // retry without a time
+			{ID: retryID, Token: "tok2", Outcome: entity.MailDead},        // dead without a cap
+			{ID: retryID, Token: "tok2", Outcome: entity.MailOutcome(99)}, // unknown
+		} {
+			err := mailStore.SettleMail(ctx, bad)
+			require.Error(t, err)
+			require.NotErrorIs(t, err, entity.ErrMailClaimLost)
+		}
+
+		// The provider id finds the recipient of that row only.
+		to, err := mailStore.ProviderMailRecipient(ctx, sentID, "re_123")
+		require.NoError(t, err)
+		require.Equal(t, "sent@shoplane.test", to)
+		for _, q := range []struct {
+			id  int
+			pid string
+		}{{sentID, "re_other"}, {retryID, "re_123"}, {sentID, ""}, {0, "re_123"}} {
+			to, err := mailStore.ProviderMailRecipient(ctx, q.id, q.pid)
+			require.NoError(t, err)
+			require.Empty(t, to, "row %d / %q", q.id, q.pid)
+		}
+	})
+
+	t.Run("legacy bookkeeping still clears the lease", func(t *testing.T) {
 		reset(t)
 		sentID := seedOutbox(t, ms, outboxSeed{})
 		retryID := seedOutbox(t, ms, outboxSeed{})
@@ -318,35 +454,6 @@ func TestMailStoreShopLane(t *testing.T) {
 		for _, id := range []int{sentID, retryID, deadID} {
 			require.False(t, outboxRow(t, ms, id).ClaimToken.Valid, "row %d keeps its token", id)
 		}
-		require.Equal(t, 1, outboxRow(t, ms, retryID).Attempts)
-		require.True(t, outboxRow(t, ms, sentID).Sent)
-		// A late release of a sent row changes nothing.
-		require.NoError(t, mailStore.ReleaseClaims(ctx, []int{sentID}, "tok"))
-		require.True(t, outboxRow(t, ms, sentID).Sent)
-	})
-
-	t.Run("quarantine one row", func(t *testing.T) {
-		reset(t)
-		id := seedOutbox(t, ms, outboxSeed{kind: entity.MailKindShopOrder})
-		_, err := mailStore.ClaimUnsent(ctx, claim("tok"))
-		require.NoError(t, err)
-		require.NoError(t, mailStore.QuarantineMail(ctx, id, "sender is not the shop sender"))
-		r := outboxRow(t, ms, id)
-		require.True(t, r.QuarantinedAt.Valid)
-		require.False(t, r.ClaimToken.Valid)
-		require.False(t, r.NextRetryAt.Valid)
-		require.Equal(t, "sender is not the shop sender", r.ErrMsg.String)
-		got, err := mailStore.ClaimUnsent(ctx, claim("tok2"))
-		require.NoError(t, err)
-		require.Empty(t, got)
-		unsent, err := mailStore.GetAllUnsent(ctx, false, 5, time.Now().UTC())
-		require.NoError(t, err)
-		require.Empty(t, unsent, "the worker view never holds a quarantined row")
-
-		sent := seedOutbox(t, ms, outboxSeed{})
-		require.NoError(t, mailStore.UpdateSent(ctx, sent))
-		require.NoError(t, mailStore.QuarantineMail(ctx, sent, "late"))
-		require.False(t, outboxRow(t, ms, sent).QuarantinedAt.Valid, "a sent row is history, never quarantined")
 	})
 
 	t.Run("cutover quarantines what a shop must never send", func(t *testing.T) {
@@ -397,7 +504,7 @@ func TestMailStoreShopLane(t *testing.T) {
 }
 
 // TestMigrationSendEmailShopLaneUpDownUp runs the outbox-lane migration under ANSI_QUOTES: the
-// suite starts migrated, Down drops the four columns (twice is a no-op), Up adds them back with their
+// suite starts migrated, Down drops the eight columns (twice is a no-op), Up adds them back with their
 // shapes, and a second Up is a no-op. The file is found by name so a renumber does not break it.
 func TestMigrationSendEmailShopLaneUpDownUp(t *testing.T) {
 	requireGarmentLabelGeometryDB(t) // local container or CI only
@@ -439,7 +546,8 @@ func TestMigrationSendEmailShopLaneUpDownUp(t *testing.T) {
 			SELECT COLUMN_NAME, CONCAT(COLUMN_TYPE, ' ', IS_NULLABLE, ' ', COALESCE(CHARACTER_SET_NAME, '-'), ' ', COALESCE(COLUMN_DEFAULT, '-'))
 			FROM information_schema.COLUMNS
 			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_email_request'
-				AND COLUMN_NAME IN ('kind', 'expires_at', 'claim_token', 'quarantined_at')`)
+				AND COLUMN_NAME IN ('kind', 'expires_at', 'claim_token', 'quarantined_at',
+					'idempotency_key', 'first_dispatch_at', 'dispatch_count', 'provider_email_id')`)
 		require.NoError(t, err)
 		defer rows.Close()
 		out := map[string]string{}
@@ -456,6 +564,11 @@ func TestMigrationSendEmailShopLaneUpDownUp(t *testing.T) {
 		"expires_at":     "datetime YES - -",
 		"claim_token":    "char(36) YES ascii -",
 		"quarantined_at": "datetime YES - -",
+		// idempotency, dispatch mark and provider id (Codex review of PR 144, #4 / #5)
+		"idempotency_key":   "varchar(64) YES ascii -",
+		"first_dispatch_at": "datetime YES - -",
+		"dispatch_count":    "int NO - 0",
+		"provider_email_id": "varchar(64) YES ascii -",
 	}
 	require.Equal(t, want, columns(), "the suite starts migrated")
 	run("down", parsed.DownStatements)

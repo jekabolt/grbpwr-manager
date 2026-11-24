@@ -2,6 +2,7 @@ package entity
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -23,6 +24,41 @@ type SendEmailRequest struct {
 	Kind sql.NullString `db:"kind"`
 	// ExpiresAt is the UTC instant after which the letter is useless (a sign-in code past its TTL).
 	ExpiresAt sql.NullTime `db:"expires_at"`
+	// IdempotencyKey is the provider idempotency key, fixed when the row is written (AddMail fills
+	// it). NULL only on rows written by an older binary.
+	IdempotencyKey sql.NullString `db:"idempotency_key"`
+	// FirstDispatchAt is when a worker first offered the row to the provider (set just before the
+	// call, so a crash after it still leaves the mark).
+	FirstDispatchAt sql.NullTime `db:"first_dispatch_at"`
+}
+
+// ErrMailClaimLost: the row is no longer leased to the caller's token (its lease ran out and another
+// worker took it, or it was settled already). Nothing was written.
+var ErrMailClaimLost = errors.New("outbox row is no longer leased to this worker")
+
+// MailOutcome is how a claimed outbox row ends its turn.
+type MailOutcome int
+
+const (
+	MailSent        MailOutcome = iota + 1 // the provider accepted it (or bulk mail counted as sent)
+	MailRetry                              // a transient failure: one attempt counted, retried at NextRetryAt
+	MailDead                               // a permanent failure or the last attempt: never retried
+	MailQuarantined                        // never sent (stale, foreign kind, ambiguous dispatch)
+)
+
+// MailSettle records the outcome of a claimed row. It applies only while the row is still leased to
+// Token; otherwise the store returns ErrMailClaimLost.
+type MailSettle struct {
+	ID      int
+	Token   string
+	Outcome MailOutcome
+	// ErrMsg is the failure (retry, dead) or the quarantine reason.
+	ErrMsg      string
+	NextRetryAt time.Time // MailRetry
+	MaxAttempts int       // MailDead: the attempt count is set to it
+	// ProviderID is the provider's id of an accepted letter (MailSent; empty when none came back).
+	ProviderID string
+	Now        time.Time
 }
 
 // Outbox row kinds written by the team-shop mailer. Only these drain on a team-shop lane; anything
