@@ -35,6 +35,8 @@ type ShopDeps struct {
 	// Revalidator replaces the server's revalidator: a team shop's change redraws that shop, the
 	// storefront team's the storefront (shop.Revalidator). nil = keep the one New got.
 	Revalidator dependency.RevalidationService
+	// Payments is the team shops' Stripe (shop_pay.go); nil = team-shop checkout is refused.
+	Payments ShopPayments
 }
 
 type shopState struct {
@@ -55,21 +57,8 @@ func (s *Server) SetShops(d ShopDeps) {
 	}
 }
 
-// MsgShopPaymentsNotReady refuses a team shop's checkout until its own Stripe is wired (X18-L3).
+// MsgShopPaymentsNotReady refuses a team shop's checkout while it has no usable Stripe (X18-L3).
 const MsgShopPaymentsNotReady = "shop_payments_not_ready"
-
-// shopPaymentsGate refuses payments of a team shop: the storefront's processors are the storefront
-// team's Stripe account, and a team's money never lands there. The storefront team passes.
-func (s *Server) shopPaymentsGate(ctx context.Context) error {
-	sh := s.shops
-	if sh == nil {
-		return nil
-	}
-	if t, ok := tenant.From(ctx); ok && t.ID != 0 && t.ID != sh.d.StorefrontID {
-		return status.Error(codes.FailedPrecondition, MsgShopPaymentsNotReady)
-	}
-	return nil
-}
 
 // shopAudience is the access-token audience of a shop team.
 func shopAudience(teamID int64) string { return "shop:" + strconv.FormatInt(teamID, 10) }
@@ -183,6 +172,6 @@ func (s *Server) GetShopProfile(ctx context.Context, _ *pb_frontend.GetShopProfi
 	}
 	out.Name, out.LegalName, out.LogoUrl, out.Email = p.Name, p.LegalEntity, p.LogoURL, p.ContactEmail
 	out.Address, out.Website, out.PrimaryHost, out.Hosts, out.Open = p.LegalAddress, p.Website, p.PrimaryHost, p.Hosts, p.Open
-	out.StripeAccountId, out.StripePublishableKey, out.StripeMode = p.StripeAccountID, p.StripePublishableKey, p.StripeMode
+	out.StripeAccountId, out.StripePublishableKey, out.StripeMode = shopStripeOf(sh.d.Payments, p)
 	return &pb_frontend.GetShopProfileResponse{Profile: out}, nil
 }

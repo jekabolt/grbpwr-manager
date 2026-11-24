@@ -23,7 +23,7 @@ import (
 
 // The shop screen (X18): a team turns its shop on (it gets {slug}.<shop zone>), attaches its own
 // domains, picks the main address, sets the sender of its letters. Payments (Stripe Connect or own
-// keys) are lane X18-L3; their RPCs answer Unimplemented until it lands. Teams mode only; every
+// keys) are in shop_stripe.go (lane X18-L3). Teams mode only; every
 // change is an owner's (or an entered operator's).
 
 // ShopWiring is what the shop screen needs beside the control plane.
@@ -38,6 +38,9 @@ type ShopWiring struct {
 	// legacy hosts and their registrable domains (grbpwr.com, lekalo.studio, ...). The base domain,
 	// the shop zone and the API host are refused with their registrable domains anyway.
 	Reserved []string
+	// Payments is the team shops' Stripe (shoppay.Service, lane X18-L3); nil = Stripe RPCs answer
+	// stripe_not_ready and team-shop card payments are refused.
+	Payments ShopPayments
 }
 
 // SetShops wires the shop screen (teams mode; call before serving).
@@ -158,6 +161,7 @@ func (s *Server) shopView(ctx context.Context, t tenant.Team, eff []feature.Key)
 		out.Payments = shopPaymentsPb(stripe)
 		payable = out.Payments.Status == "active"
 	}
+	s.shopWebhookURL(t, out.Payments, stripe, ok)
 	switch {
 	case !ts.Enabled:
 		out.Status = shopOff
@@ -456,22 +460,4 @@ func (s *Server) SetShopMail(ctx context.Context, req *pb_admin.SetShopMailReque
 		return nil, err
 	}
 	return &pb_admin.SetShopMailResponse{Shop: out}, nil
-}
-
-// Payments are lane X18-L3.
-func errStripeLater() error { return status.Error(codes.Unimplemented, "stripe_not_ready") }
-
-// StartStripeConnect — lane X18-L3.
-func (s *Server) StartStripeConnect(context.Context, *pb_admin.StartStripeConnectRequest) (*pb_admin.StartStripeConnectResponse, error) {
-	return nil, errStripeLater()
-}
-
-// SetStripeKeys — lane X18-L3.
-func (s *Server) SetStripeKeys(context.Context, *pb_admin.SetStripeKeysRequest) (*pb_admin.SetStripeKeysResponse, error) {
-	return nil, errStripeLater()
-}
-
-// DisconnectStripe — lane X18-L3.
-func (s *Server) DisconnectStripe(context.Context, *pb_admin.DisconnectStripeRequest) (*pb_admin.DisconnectStripeResponse, error) {
-	return nil, errStripeLater()
 }

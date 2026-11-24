@@ -78,8 +78,10 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		}
 	}
 	domains := shop.DomainProvider(&shop.FakeDomains{})
+	pay := a.newShopPay(ctx, b, adminS, frontendS != nil && !cfg.NoShop()) // X18-L3, teams_shop_pay.go
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
-		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...)})
+		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
+		Payments: shopPayments(pay)})
 	go drainShopDomains(ctx, st, domains)
 	if frontendS != nil {
 		frontendS.SetShops(frontend.ShopDeps{
@@ -88,6 +90,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 			Service:      svc,
 			Open:         b.ShopOpen,
 			Revalidator:  re,
+			Payments:     frontendShopPayments(pay),
 		})
 	}
 	if a.c.StorefrontAuth.ShopMaster == "" {
