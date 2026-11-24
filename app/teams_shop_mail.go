@@ -26,7 +26,11 @@ const (
 	shopMailOpenTTL   = 30 * time.Second // an open shop's identity (name, host, opening)
 	shopMailClosedTTL = 5 * time.Second  // a shop that is not open: a fresh opening shows up fast
 	shopMailNamesTTL  = time.Minute      // every team's names, for the look-alike check
-	defaultLoginTTL   = 10 * time.Minute // storefront_auth.login_challenge_ttl's own default
+	// shopEventRetryWindow: a bounce or complaint whose letter is not known yet (its owner is
+	// recorded right after Resend accepts it, or by a later drain after a failure) is refused while
+	// younger than this, so Resend retries it; an older one is dropped with a log line.
+	shopEventRetryWindow = time.Hour
+	defaultLoginTTL      = 10 * time.Minute // storefront_auth.login_challenge_ttl's own default
 )
 
 // withShopMail wraps the tenant mailer in the team-shop router (teams mode only) and builds the
@@ -58,6 +62,10 @@ func (a *App) newShopMail(storefront dependency.Mailer) (*mail.ShopMailer, strin
 	}
 	if strings.TrimSpace(p.MailFrom) == "" {
 		return nil, "PLATFORM_MAIL_FROM is not set"
+	}
+	if !shopEventsRouted(p.ShopResendAPIKey, p.ShopMailWebhookSecret, p.MailWebhookSecret) {
+		return nil, "no signed route for the shop letters' bounces (PLATFORM_SHOP_MAIL_WEBHOOK_SECRET, " +
+			"or PLATFORM_MAIL_WEBHOOK_SECRET when the shop letters share the platform key)"
 	}
 	mc := a.c.Mailer
 	ids := newShopIdentities(a.platform)
@@ -110,6 +118,18 @@ func shopResendKey(shop, platform, mailer string) string {
 	return ""
 }
 
+// shopEventsRouted: the shop letters' bounces and complaints reach a signed route. Their own route
+// (/api/webhooks/shop-mail) when its secret is set; else, with no shop key, the letters go over the
+// platform letters' key (the same fallback chain), so their events arrive at platform-mail, which
+// routes them on when its own secret is set. Without either the lane would send letters whose
+// bounces nobody records, so it stays off.
+func shopEventsRouted(shopKey, shopSecret, platformSecret string) bool {
+	if strings.TrimSpace(shopSecret) != "" {
+		return true
+	}
+	return strings.TrimSpace(shopKey) == "" && strings.TrimSpace(platformSecret) != ""
+}
+
 // mountShopMailEvents routes the team shops' Resend events into each team's suppression list:
 // through the platform-mail route (a shared Resend account; ph may be nil when that route is off)
 // and, with PLATFORM_SHOP_MAIL_WEBHOOK_SECRET, through /api/webhooks/shop-mail (the shops' own
@@ -119,16 +139,14 @@ func (a *App) mountShopMailEvents(ctx context.Context, ph *platformmail.EventHan
 		owners: a.platform,
 		teams:  func() tenant.Directory { return a.workerTeams },
 		mail:   a.db.Mail,
+		now:    time.Now,
 	}
 	if ph != nil {
 		ph.SetForeignLetters(b.apply)
 	}
 	secret := strings.TrimSpace(a.c.Platform.ShopMailWebhookSecret)
 	if secret == "" {
-		if strings.TrimSpace(a.c.Platform.ShopResendAPIKey) != "" {
-			slog.Default().WarnContext(ctx, "teams: PLATFORM_SHOP_MAIL_WEBHOOK_SECRET is empty; team-shop bounces of the shop Resend account are not recorded")
-		}
-		return nil
+		return nil // the lane checked a route exists (shopEventsRouted) or stays off
 	}
 	h, err := platformmail.NewForeignEventHandler(secret, b.apply)
 	if err != nil {
@@ -151,6 +169,25 @@ type shopMailBounces struct {
 	owners shopMailOwners
 	teams  func() tenant.Directory // read per event: the directory is built after the routes
 	mail   func() dependency.Mail  // routed by the team in ctx
+	now    func() time.Time        // nil: time.Now
+}
+
+// errShopLetterNotKnownYet makes Resend retry an event whose letter is not on record yet.
+var errShopLetterNotKnownYet = errors.New("shop mail events: letter not on record yet")
+
+// notKnown answers an event whose letter is not on record: a retry while it is young (the owner may
+// still be recorded), else nothing.
+func (b *shopMailBounces) notKnown(ctx context.Context, ev platformmail.Event, what string) error {
+	now := time.Now
+	if b.now != nil {
+		now = b.now
+	}
+	if age := now().Sub(ev.At); age < shopEventRetryWindow {
+		return errShopLetterNotKnownYet
+	}
+	slog.Default().WarnContext(ctx, "shop mail: bounce of a letter not on record dropped",
+		slog.String("what", what), slog.String("type", ev.Type))
+	return nil
 }
 
 func (b *shopMailBounces) apply(ctx context.Context, ev platformmail.Event) error {
@@ -164,8 +201,11 @@ func (b *shopMailBounces) apply(ctx context.Context, ev platformmail.Event) erro
 		return nil
 	}
 	teamID, mailID, ok, err := b.owners.ShopMailOwner(ctx, ev.EmailID)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return b.notKnown(ctx, ev, "no owner")
 	}
 	dir := b.teams()
 	if dir == nil {
@@ -184,8 +224,12 @@ func (b *shopMailBounces) apply(ctx context.Context, ev platformmail.Event) erro
 	tctx := tenant.With(ctx, team)
 	m := b.mail()
 	to, err := m.ProviderMailRecipient(tctx, int(mailID), ev.EmailID)
-	if err != nil || to == "" {
+	if err != nil {
 		return err
+	}
+	if to == "" {
+		// The owner is recorded before the row is settled sent: the row may not carry the id yet.
+		return b.notKnown(ctx, ev, "row without the id")
 	}
 	if !recipientNamed(to, ev.To) {
 		return nil

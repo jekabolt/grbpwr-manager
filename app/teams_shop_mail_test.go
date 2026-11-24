@@ -147,8 +147,13 @@ func TestShopMailMissingConfigIsAProblemNotABootFailure(t *testing.T) {
 		"off":      {platformstore.Config{ShopMailEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{APIKey: "k"}, "PLATFORM_MAILER_ENABLED"},
 		"no key":   {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{}, "no Resend key"},
 		"no from":  {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ResendAPIKey: "k"}, mail.Config{}, "PLATFORM_MAIL_FROM"},
-		"bad from": {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ResendAPIKey: "k", MailFrom: "nonsense"},
+		"bad from": {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ResendAPIKey: "k", MailFrom: "nonsense", MailWebhookSecret: "w"},
 			mail.Config{}, "PLATFORM_MAIL_FROM"},
+		"no route": {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, MailFrom: "lekalo <a@b.test>"},
+			mail.Config{APIKey: "k"}, "PLATFORM_SHOP_MAIL_WEBHOOK_SECRET"},
+		// the shops' own account: its events never reach platform-mail
+		"own key, no own route": {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ShopResendAPIKey: "s", MailFrom: "lekalo <a@b.test>", MailWebhookSecret: "w"},
+			mail.Config{}, "no signed route"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := &App{c: &config.Config{Platform: tc.platform, Mailer: tc.mailer}, platform: &platformstore.Store{}, db: shopTestRepo(t)}
@@ -175,20 +180,46 @@ func TestShopMailMissingConfigIsAProblemNotABootFailure(t *testing.T) {
 }
 
 func TestShopMailBuildsTheLaneOnTheMailerKey(t *testing.T) {
-	a := &App{
-		c: &config.Config{
-			Platform: platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, MailFrom: "lekalo <no-reply@lekalo.test>", BaseDomain: "lekalo.test"},
-			Mailer:   mail.Config{APIKey: "k"},
-		},
-		platform: &platformstore.Store{},
-		db:       shopTestRepo(t),
+	for name, p := range map[string]platformstore.Config{
+		"shared key, platform-mail route": {MailWebhookSecret: "w"},
+		"own key, own route":              {ShopResendAPIKey: "s", ShopMailWebhookSecret: "sw"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p.ShopMailEnabled, p.MailerEnabled = true, true
+			p.MailFrom, p.BaseDomain = "lekalo <no-reply@lekalo.test>", "lekalo.test"
+			a := &App{
+				c:        &config.Config{Platform: p, Mailer: mail.Config{APIKey: "k"}},
+				platform: &platformstore.Store{},
+				db:       shopTestRepo(t),
+			}
+			got := a.withShopMail(context.Background(), noShopMailer{})
+			if _, ok := got.(*mail.ShopRouter); !ok {
+				t.Fatalf("want the router, got %T", got)
+			}
+			if a.shopMail == nil || len(a.problems) != 0 {
+				t.Fatalf("lane should be on without problems: %v", a.problems)
+			}
+		})
 	}
-	got := a.withShopMail(context.Background(), noShopMailer{})
-	if _, ok := got.(*mail.ShopRouter); !ok {
-		t.Fatalf("want the router, got %T", got)
-	}
-	if a.shopMail == nil || len(a.problems) != 0 {
-		t.Fatalf("lane should be on without problems: %v", a.problems)
+}
+
+// TestShopEventsRouted: the shop letters' events reach a signed route, their own or, while they go
+// over the platform letters' key, platform-mail (Codex re-review of PR 144, #5a).
+func TestShopEventsRouted(t *testing.T) {
+	for _, c := range []struct {
+		shopKey, shopSecret, platformSecret string
+		want                                bool
+	}{
+		{"", "", "", false},
+		{"", "", "w", true},
+		{"", " ", " ", false},
+		{"s", "", "w", false}, // own account: platform-mail never sees its events
+		{"s", "sw", "", true},
+		{"", "sw", "", true},
+	} {
+		if got := shopEventsRouted(c.shopKey, c.shopSecret, c.platformSecret); got != c.want {
+			t.Fatalf("%+v: %v", c, got)
+		}
 	}
 }
 
@@ -315,10 +346,13 @@ func TestShopMailBounces(t *testing.T) {
 		3: {ID: 3, Status: tenant.StatusActive},
 		4: {ID: 4, Status: tenant.StatusSuspended},
 	}}
-	b := &shopMailBounces{owners: owners, teams: func() tenant.Directory { return dir }, mail: func() dependency.Mail { return store }}
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	b := &shopMailBounces{owners: owners, teams: func() tenant.Directory { return dir }, mail: func() dependency.Mail { return store },
+		now: func() time.Time { return now }}
 	ctx := context.Background()
+	old := now.Add(-shopEventRetryWindow - time.Minute) // Resend gave up retrying an unknown letter
 	ev := func(typ, id, to, bounce string) platformmail.Event {
-		return platformmail.Event{Type: typ, EmailID: id, To: []string{to}, Bounce: bounce}
+		return platformmail.Event{Type: typ, EmailID: id, To: []string{to}, Bounce: bounce, At: old}
 	}
 	for _, e := range []platformmail.Event{
 		ev("email.bounced", "re_a", "buyer@x.test", "Transient"), // soft: nothing, not even a lookup
@@ -357,6 +391,26 @@ func TestShopMailBounces(t *testing.T) {
 	want := map[int64][]string{2: {"Buyer@x.test:bounce"}, 3: {"b@x.test:complaint", "b@x.test:bounce"}}
 	if fmt.Sprint(store.suppressed) != fmt.Sprint(want) {
 		t.Fatalf("suppressed %v, want %v", store.suppressed, want)
+	}
+
+	// A young event whose letter is not on record yet (the owner, or the row's id, may still be on
+	// the way) is answered with an error, so Resend retries it (Codex re-review of PR 144, #5c).
+	for _, e := range []platformmail.Event{
+		ev("email.complained", "re_unknown", "buyer@x.test", ""),
+		ev("email.complained", "re_other", "c@x.test", ""),
+	} {
+		e.At = now.Add(-shopEventRetryWindow + time.Minute)
+		if err := b.apply(ctx, e); !errors.Is(err, errShopLetterNotKnownYet) {
+			t.Fatalf("%s: young unknown letter must be retried, got %v", e.EmailID, err)
+		}
+	}
+	young := ev("email.complained", "re_susp", "s@x.test", "")
+	young.At = now
+	if err := b.apply(ctx, young); err != nil {
+		t.Fatalf("a known letter of a suspended team is answered at once: %v", err)
+	}
+	if len(store.suppressed[4]) != 0 {
+		t.Fatalf("suppressed %v", store.suppressed)
 	}
 
 	owners.err = errors.New("platform down")
