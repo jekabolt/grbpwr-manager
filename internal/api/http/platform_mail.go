@@ -14,3 +14,10 @@ func (s *Server) SetSignupChallengeHandler(h http.Handler) {
 func (s *Server) SetPlatformMailHandler(h http.Handler) {
 	s.platformMailHandler = h
 }
+
+// SetShopMailHandler mounts POST /api/webhooks/shop-mail (X18-L7): Resend's delivery events of the
+// team shops' letters when they go over their own Resend account (PLATFORM_SHOP_RESEND_API_KEY).
+// Independent of the storefront's webhooks (mounted under none too); Svix-signed like platform-mail.
+func (s *Server) SetShopMailHandler(h http.Handler) {
+	s.shopMailHandler = h
+}

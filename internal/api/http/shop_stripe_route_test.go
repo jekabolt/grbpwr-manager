@@ -112,3 +112,28 @@ func TestNoStorefrontTeamShops(t *testing.T) {
 		t.Fatal("team shops on: the unknown-service handler is installed")
 	}
 }
+
+// TestShopMailEventsRoute: the team shops' Resend events have their own route, mounted with or
+// without a storefront team (it is not one of the storefront's webhooks).
+func TestShopMailEventsRoute(t *testing.T) {
+	for _, noShop := range []bool{false, true} {
+		s := New(&Config{Address: "127.0.0.1", Port: "1"})
+		s.SetStripeWebhookHandler(nopWebhooks{})
+		s.SetHealthRegistry(&health.Registry{})
+		s.SetNoShop(noShop)
+		s.SetShopMailHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		ctx, cancel := context.WithCancel(context.Background())
+		h, err := s.setupHTTPAPI(ctx, newTestAuth(t))
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if rec := serve(h, http.MethodPost, "/api/webhooks/shop-mail", "{}"); rec.Code != http.StatusNoContent {
+			t.Errorf("no shop %v: %d %q", noShop, rec.Code, rec.Body.String())
+		}
+		if got := tenantbind.ClassifyPath("/api/webhooks/shop-mail"); got == tenantbind.ClassUnknown {
+			t.Errorf("shop-mail has no binding class")
+		}
+		cancel()
+	}
+}

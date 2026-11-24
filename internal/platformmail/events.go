@@ -59,9 +59,48 @@ const maxEventBody = 256 << 10
 // a letter this install sent (matched by Resend's email id) and only when its recipient is that
 // letter's address, so an event of another product on a shared Resend account changes nothing.
 type EventHandler struct {
-	db  *sqlx.DB
+	db  *sqlx.DB // nil: a shop-only endpoint (NewForeignEventHandler)
 	wh  *svix.Webhook
 	now func() time.Time
+	// foreign, optional, takes events for letters that are not platform letters (team shops' letters
+	// over the same Resend account).
+	foreign ForeignLetters
+}
+
+// Event is one signed Resend delivery event as the handlers read it.
+type Event struct {
+	Type    string
+	EmailID string
+	To      []string
+	Bounce  string // Permanent | Transient | Undetermined
+	At      time.Time
+}
+
+// SuppressionReason is the list reason the event asks for: ReasonBounce for a permanent bounce or
+// Resend's own suppression, ReasonComplaint for a complaint, "" for anything else.
+func (e Event) SuppressionReason() string {
+	_, reason, _ := classify(e.Type, e.Bounce)
+	return reason
+}
+
+// ForeignLetters takes a signed event of a letter this install sent outside platform_email (a team
+// shop's letter). It must check the letter and its recipient itself; an error makes Resend retry.
+type ForeignLetters func(ctx context.Context, ev Event) error
+
+// SetForeignLetters routes events of letters that are not platform letters to f.
+func (h *EventHandler) SetForeignLetters(f ForeignLetters) { h.foreign = f }
+
+// NewForeignEventHandler builds a handler for an endpoint that carries only foreign letters (the team
+// shops' own Resend account, POST /api/webhooks/shop-mail). Signed like the platform one.
+func NewForeignEventHandler(secret string, f ForeignLetters) (*EventHandler, error) {
+	if f == nil {
+		return nil, errors.New("platformmail: events: no letter route")
+	}
+	wh, err := webhookVerifier(secret)
+	if err != nil {
+		return nil, err
+	}
+	return &EventHandler{wh: wh, now: time.Now, foreign: f}, nil
 }
 
 // NewEventHandler builds the handler. An empty secret is an error: the route must not be mounted
@@ -70,6 +109,14 @@ func NewEventHandler(db *sqlx.DB, secret string) (*EventHandler, error) {
 	if db == nil {
 		return nil, errors.New("platformmail: events: db is required")
 	}
+	wh, err := webhookVerifier(secret)
+	if err != nil {
+		return nil, err
+	}
+	return &EventHandler{db: db, wh: wh, now: time.Now}, nil
+}
+
+func webhookVerifier(secret string) (*svix.Webhook, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return nil, errors.New("platformmail: events: no webhook secret")
@@ -78,7 +125,7 @@ func NewEventHandler(db *sqlx.DB, secret string) (*EventHandler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("platformmail: events: bad webhook secret: %w", err)
 	}
-	return &EventHandler{db: db, wh: wh, now: time.Now}, nil
+	return wh, nil
 }
 
 // event is the part of a Resend webhook body this handler reads.
@@ -143,34 +190,51 @@ func (h *EventHandler) eventTime(s string) time.Time {
 	return t.UTC().Truncate(time.Millisecond)
 }
 
-// Apply records one event. Unknown types and events for letters this install did not send are
-// ignored (nil). Repeating an event writes the same state.
-func (h *EventHandler) Apply(ctx context.Context, typ, emailID string, to []string, bounce string, at time.Time) error {
-	var delivery, reason string
+// classify maps an event to a delivery outcome and a suppression reason; ok=false for a type this
+// handler does not read.
+func classify(typ, bounce string) (delivery, reason string, ok bool) {
 	switch typ {
 	case "email.delivered":
-		delivery = DeliveryDelivered
+		return DeliveryDelivered, "", true
 	case "email.delivery_delayed":
-		delivery = DeliveryDelayed
+		return DeliveryDelayed, "", true
 	case "email.bounced":
-		delivery = DeliverySoftBounce
 		if strings.EqualFold(bounce, "Permanent") {
-			delivery, reason = DeliveryBounced, ReasonBounce
+			return DeliveryBounced, ReasonBounce, true
 		}
+		return DeliverySoftBounce, "", true
 	case "email.suppressed":
 		// Resend refused the send itself: the address is on its own list after an earlier bounce or
 		// complaint (possibly from another product of the account).
-		delivery, reason = DeliveryBounced, ReasonBounce
+		return DeliveryBounced, ReasonBounce, true
 	case "email.failed":
-		delivery = DeliveryFailed
+		return DeliveryFailed, "", true
 	case "email.complained":
-		delivery, reason = DeliveryComplained, ReasonComplaint
-	default:
+		return DeliveryComplained, ReasonComplaint, true
+	}
+	return "", "", false
+}
+
+// Apply records one event. Unknown types and events for letters this install did not send are
+// ignored (nil). Repeating an event writes the same state. An event of a letter that is not a
+// platform letter goes to the foreign route when one is set.
+func (h *EventHandler) Apply(ctx context.Context, typ, emailID string, to []string, bounce string, at time.Time) error {
+	delivery, reason, ok := classify(typ, bounce)
+	if !ok {
 		return nil
 	}
 	emailID = strings.TrimSpace(emailID)
 	if emailID == "" || len(emailID) > 64 {
 		return nil
+	}
+	foreign := func() error {
+		if h.foreign == nil {
+			return nil
+		}
+		return h.foreign(ctx, Event{Type: typ, EmailID: emailID, To: to, Bounce: bounce, At: at})
+	}
+	if h.db == nil {
+		return foreign()
 	}
 	var row struct {
 		ID       int64   `db:"id"`
@@ -180,7 +244,7 @@ func (h *EventHandler) Apply(ctx context.Context, typ, emailID string, to []stri
 	err := h.db.GetContext(ctx, &row, `SELECT id, to_email, delivery FROM platform_email WHERE provider_id = ? ORDER BY id LIMIT 1`, emailID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil // not our letter
+			return foreign() // not a platform letter
 		}
 		return fmt.Errorf("find letter: %w", err)
 	}

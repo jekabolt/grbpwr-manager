@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -141,6 +142,20 @@ func TestMailEventsAndSuppression(t *testing.T) {
 	if d := deliveryOf(t, st, bad, "verify"); d.Delivery.Valid || suppressionOf(t, st, bad) != "" || suppressionOf(t, st, good) != "" {
 		t.Fatalf("rejected events changed state: %+v", d)
 	}
+	// With a foreign route (the team shops' letters), a letter that is not a platform letter goes
+	// there; a platform letter never does.
+	var routed []Event
+	h.SetForeignLetters(func(_ context.Context, e Event) error { routed = append(routed, e); return nil })
+	if c := post(ev("email.complained", "re_foreign", good, ""), now, true); c != http.StatusNoContent {
+		t.Fatalf("routed foreign letter = %d", c)
+	}
+	if c := post(ev("email.bounced", badID, good, permanent), now, true); c != http.StatusNoContent {
+		t.Fatalf("other recipient = %d", c)
+	}
+	if len(routed) != 1 || routed[0].EmailID != "re_foreign" || routed[0].SuppressionReason() != ReasonComplaint {
+		t.Fatalf("routed %+v", routed)
+	}
+	h.SetForeignLetters(nil)
 	// A transient bounce is its own state (soft_bounce), suppresses nothing, and a later
 	// delivered replaces it; email.failed is its own state too.
 	if c := post(ev("email.bounced", goodID, good, `,"bounce":{"type":"Transient"}`), now, true); c != http.StatusNoContent {
@@ -224,4 +239,70 @@ func TestMailEventsAndSuppression(t *testing.T) {
 	verifyTo("complaint 181 days", 181*day, ReasonComplaint, true)
 	verifyTo("bounce 29 days", 29*day, ReasonBounce, false)
 	verifyTo("bounce 31 days", 31*day, ReasonBounce, true)
+}
+
+// TestForeignEventHandler: the shop-only endpoint reads only signed bodies and hands every known
+// event to its route (which decides); unknown types never reach it, and its failure makes Resend
+// retry (500).
+func TestForeignEventHandler(t *testing.T) {
+	if _, err := NewForeignEventHandler("", func(context.Context, Event) error { return nil }); err == nil {
+		t.Fatal("built without a secret")
+	}
+	secret := "whsec_" + base64.StdEncoding.EncodeToString([]byte("shop-test-secret-shop-test-secr32"))
+	if _, err := NewForeignEventHandler(secret, nil); err == nil {
+		t.Fatal("built without a route")
+	}
+	var routed []Event
+	var fail error
+	h, err := NewForeignEventHandler(secret, func(_ context.Context, e Event) error {
+		routed = append(routed, e)
+		return fail
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, _ := svix.NewWebhook(secret)
+	n := 0
+	post := func(body string, sign bool) int {
+		t.Helper()
+		n++
+		req := httptest.NewRequest(http.MethodPost, "/api/webhooks/shop-mail", bytes.NewBufferString(body))
+		id, at := "msg_"+strconv.Itoa(n), time.Now()
+		req.Header.Set("svix-id", id)
+		req.Header.Set("svix-timestamp", strconv.FormatInt(at.Unix(), 10))
+		sig, _ := signer.Sign(id, at, []byte(body))
+		if !sign {
+			sig = "v1,AAAA"
+		}
+		req.Header.Set("svix-signature", sig)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	body := func(typ, extra string) string {
+		return `{"type":"` + typ + `","data":{"email_id":"re_shop","to":["c@x.test"]` + extra + `}}`
+	}
+	if c := post(body("email.bounced", `,"bounce":{"type":"Permanent"}`), false); c != http.StatusUnauthorized || len(routed) != 0 {
+		t.Fatalf("unsigned = %d, routed %d", c, len(routed))
+	}
+	if c := post(body("email.opened", ""), true); c != http.StatusNoContent || len(routed) != 0 {
+		t.Fatalf("unknown type = %d, routed %d", c, len(routed))
+	}
+	if c := post(body("email.bounced", `,"bounce":{"type":"Permanent"}`), true); c != http.StatusNoContent {
+		t.Fatalf("permanent = %d", c)
+	}
+	if c := post(body("email.bounced", `,"bounce":{"type":"Transient"}`), true); c != http.StatusNoContent {
+		t.Fatalf("transient = %d", c)
+	}
+	if len(routed) != 2 || routed[0].SuppressionReason() != ReasonBounce || routed[1].SuppressionReason() != "" ||
+		routed[0].EmailID != "re_shop" || len(routed[0].To) != 1 || routed[0].To[0] != "c@x.test" {
+		t.Fatalf("routed %+v", routed)
+	}
+	fail = errors.New("team db down")
+	if c := post(body("email.complained", ""), true); c != http.StatusInternalServerError {
+		t.Fatalf("failing route = %d", c)
+	}
+	if (Event{Type: "email.suppressed"}).SuppressionReason() != ReasonBounce || (Event{Type: "email.delivered"}).SuppressionReason() != "" {
+		t.Fatal("suppression reasons")
+	}
 }

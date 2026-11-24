@@ -191,6 +191,7 @@ type Server struct {
 	oauthHandler            http.Handler
 	signupChallengeHandler  http.Handler // X6, platform_mail.go
 	platformMailHandler     http.Handler // X6, platform_mail.go
+	shopMailHandler         http.Handler // X18-L7, platform_mail.go
 	stripeWebhookHandler    StripeWebhookHandler
 	shopStripe              *ShopStripeHandlers // X18-L3, shop_stripe.go
 	aftershipWebhookHandler AftershipWebhookHandler
@@ -950,6 +951,10 @@ func (s *Server) setupHTTPAPI(ctx context.Context, auth *auth.Server) (http.Hand
 	// over the no-shop catch-all below; authenticated by its Svix signature only.
 	if s.platformMailHandler != nil {
 		r.Method(http.MethodPost, "/api/webhooks/platform-mail", s.platformMailHandler)
+	}
+	// The team shops' letters over their own Resend account (X18-L7): same rules as platform-mail.
+	if s.shopMailHandler != nil {
+		r.Method(http.MethodPost, "/api/webhooks/shop-mail", s.shopMailHandler)
 	}
 	// No shop: every webhook path answers the fixed 503 instead, but the team shops' Stripe webhooks
 	// (static routes chi prefers over the catch-all) when team shops are served.
