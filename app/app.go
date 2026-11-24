@@ -180,6 +180,7 @@ type App struct {
 	stopDay30         func() // D3: day-30 purge and wipe (teams_day30.go)
 	stopTaskBoardHeal func()
 	shopPay           *shoppay.Service // X18-L3: team shops' Stripe (teams_shop_pay.go); nil = off
+	shopMail          *mail.ShopMailer // X18-L7: team shops' customer mail (teams_shop_mail.go); nil = off
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
 }
@@ -339,6 +340,12 @@ func (a *App) Start(ctx context.Context) error {
 	} else {
 		a.ma = noShopMailer{}
 	}
+	// Team-shop customer mail (X18-L7, teams_shop_mail.go): in teams mode a team shop's sign-in and
+	// order letters go to the shop lane, never out as the storefront; missing platform mail config
+	// leaves the lane off with a /statusz problem.
+	if a.shopGate(ctx, "shopmail") {
+		a.ma = a.withShopMail(ctx, a.ma)
+	}
 
 	if a.shopGate(ctx, "campaigndispatch") {
 		a.cdw, err = campaigndispatch.New(&a.c.CampaignDispatch, a.db, a.ma)
@@ -392,6 +399,7 @@ func (a *App) Start(ctx context.Context) error {
 	if err := a.initWorkerTeams(); err != nil {
 		return err
 	}
+	a.startShopMail(ctx)
 	// The immediate legacy repair in store.New has already run for team #1. This second pass waits
 	// past rolling-deploy overlap and visits every active team without extending the boot path.
 	a.stopTaskBoardHeal = a.startDelayedTaskBoardHeal(ctx)
@@ -1153,14 +1161,20 @@ func (a *App) Start(ctx context.Context) error {
 			a.hs.SetSignupChallengeHandler(h)
 		}
 		// Resend's delivery events for the platform letters (X6): mounted only with a signing secret.
+		var platformEvents *platformmail.EventHandler
 		if secret := strings.TrimSpace(a.c.Platform.MailWebhookSecret); secret != "" {
 			h, err := platformmail.NewEventHandler(a.platform.DB(), secret)
 			if err != nil {
 				return err
 			}
+			platformEvents = h
 			a.hs.SetPlatformMailHandler(h)
 		} else {
 			slog.Default().WarnContext(ctx, "teams: PLATFORM_MAIL_WEBHOOK_SECRET is empty; bounces and complaints are not recorded")
+		}
+		// The team shops' letters' events (X18-L7): over platform-mail and/or their own route.
+		if err := a.mountShopMailEvents(ctx, platformEvents); err != nil {
+			return err
 		}
 	}
 
@@ -1410,6 +1424,9 @@ func (a *App) Stop(ctx context.Context) {
 	if a.cdw != nil {
 		_ = a.cdw.Stop()
 	}
+	if a.shopMail != nil {
+		_ = a.shopMail.Stop()
+	}
 	if a.ma != nil {
 		_ = a.ma.Stop()
 	}
@@ -1567,9 +1584,16 @@ func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
 		}
 	}
 	if a.ma != nil {
-		if r, ok := a.ma.(health.Reporter); ok {
+		ma := a.ma
+		if r, ok := ma.(*mail.ShopRouter); ok {
+			ma = r.Storefront()
+		}
+		if r, ok := ma.(health.Reporter); ok {
 			addWorker(r)
 		}
+	}
+	if a.shopMail != nil {
+		addWorker(a.shopMail)
 	}
 	if a.cdw != nil {
 		addWorker(a.cdw)

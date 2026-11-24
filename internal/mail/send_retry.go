@@ -25,6 +25,11 @@ func IsTransientSendFailure(err error) bool {
 		if he.StatusCode == 408 {
 			return true
 		}
+		// 409 on an idempotent send: the same key is still in flight (or was reused with another
+		// payload). The worker retries later under the same key; Resend answers the replay.
+		if he.StatusCode == 409 {
+			return true
+		}
 		if he.StatusCode >= 400 && he.StatusCode < 500 {
 			return false
 		}

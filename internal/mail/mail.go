@@ -20,7 +20,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -281,6 +280,9 @@ func templateFuncs() template.FuncMap {
 		// emphasis span. Every value fed to a tHTML message must go through emph or esc, so a
 		// tHTML message can never inject markup even if a field ever carries HTML metacharacters.
 		"esc": func(v any) template.HTML { return template.HTML(html.EscapeString(fmt.Sprint(v))) },
+		// shop is nil for a storefront letter; a team shop's render overrides it with the shop's
+		// name and links (shopBrand.funcMap), and the partials switch on {{ with shop }}.
+		"shop": func() *shopView { return nil },
 	}
 }
 
@@ -331,6 +333,14 @@ func (m *Mailer) parseTemplates() error {
 }
 
 func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface{}) (*resend.SendEmailRequest, error) {
+	return m.buildRequest(to, tn, data, nil)
+}
+
+// buildRequest renders one letter. brand nil is the storefront's own letter (GRBPWR, byte-for-byte
+// the pre-team-shop output); a brand renders a team shop's letter: the shop's name instead of
+// GRBPWR in every catalog string and the subject, the shop's own links, the neutral sender, no
+// reply-to and no List-Unsubscribe (transactional only, nothing to unsubscribe from).
+func (m *Mailer) buildRequest(to string, tn templateName, data interface{}, brand *shopBrand) (*resend.SendEmailRequest, error) {
 	normalizedTo, err := validateEmailAddress(to)
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient: %w", err)
@@ -351,6 +361,9 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	if err != nil {
 		return nil, err
 	}
+	if brand != nil {
+		subject = brand.rebrand(subject)
+	}
 
 	// Clone the shared template and attach the locale-bound i18n funcs for this render,
 	// so the parsed templates are never mutated across concurrent sends.
@@ -359,6 +372,9 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 		return nil, fmt.Errorf("clone template: %w", err)
 	}
 	tmpl = tmpl.Funcs(localeFuncMap(loc))
+	if brand != nil {
+		tmpl = tmpl.Funcs(brand.funcMap(loc))
+	}
 
 	body := &strings.Builder{}
 	// Execute the template by its filename
@@ -368,6 +384,16 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 
 	html := body.String()
 	text := htmlToText(html)
+
+	if brand != nil {
+		return &resend.SendEmailRequest{
+			From:    brand.From,
+			To:      []string{normalizedTo},
+			Html:    &html,
+			Text:    &text,
+			Subject: subject,
+		}, nil
+	}
 
 	replyTo := m.c.FromEmail
 	if m.c.ReplyTo != "" {
@@ -528,6 +554,9 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 type sendOptions struct {
 	exemptDisabledSuppression bool
 	campaignLane              bool
+	// idempotencyKey, when set, is the outbox row's own key: a worker resend of the same row is
+	// deduplicated by the provider.
+	idempotencyKey string
 }
 
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
@@ -546,7 +575,11 @@ func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailReque
 		return fmt.Errorf("wait for transactional Resend budget: %w", err)
 	}
 
-	resp, err := m.cli.PostEmails(ctx, *ser)
+	var editors []resend.RequestEditorFn
+	if opts.idempotencyKey != "" {
+		editors = append(editors, idempotencyKeyEditor(opts.idempotencyKey))
+	}
+	resp, err := m.cli.PostEmails(ctx, *ser, editors...)
 	if resp != nil {
 		// Drain and close the body so the underlying connection can be reused
 		// rather than leaked (one leak per inline-sent email otherwise).
@@ -598,53 +631,6 @@ func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailReque
 	return nil
 }
 
-func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
-	if m.suppressed(ser.Subject) {
-		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
-	}
-	normalizedTo, err := validateEmailAddress(ser.To)
-	if err != nil {
-		return fmt.Errorf("invalid recipient in stored email: %w", err)
-	}
-	ser.To = normalizedTo
-
-	req, err := dto.EntitySendEmailRequestToResend(ser)
-	if err != nil {
-		return fmt.Errorf("error converting email: %w", err)
-	}
-
-	// Attach List-Unsubscribe headers when sending queued emails from the worker.
-	req.Headers = m.listUnsubscribeHeaders(normalizedTo)
-	if err := m.budget.WaitTransactional(ctx); err != nil {
-		return fmt.Errorf("wait for transactional Resend budget: %w", err)
-	}
-
-	resp, err := m.cli.PostEmails(ctx, *req)
-	if err != nil {
-		return fmt.Errorf("error sending email: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		if retryAfter <= 0 {
-			retryAfter = time.Second
-		}
-		m.budget.CooldownGlobal(retryAfter)
-		return mailApiLimitReached
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "failed to read error response body", slog.String("err", err.Error()))
-			return &HTTPSendError{StatusCode: resp.StatusCode, Body: ""}
-		}
-		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
-	}
-
-	return nil
-}
-
 func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, ser *resend.SendEmailRequest) error {
 
 	eser, err := dto.ResendSendEmailRequestToEntity(ser)
@@ -652,15 +638,21 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 		return fmt.Errorf("error converting email: %w", err)
 	}
 
-	leaseUntil := time.Now().UTC().Add(m.c.InlineSendLease)
-	eser.NextRetryAt = sql.NullTime{Time: leaseUntil, Valid: true}
+	now := time.Now().UTC()
+	eser.NextRetryAt = sql.NullTime{Time: now.Add(m.c.InlineSendLease), Valid: true}
+	// The row is offered to the provider right after the insert: it carries its first dispatch time
+	// from the start, so when the inline answer is lost and the worker finds the row unsent past the
+	// provider's key window, it quarantines the row instead of sending it a second time.
+	eser.FirstDispatchAt = sql.NullTime{Time: now, Valid: true}
 
 	id, err := rep.Mail().AddMail(ctx, eser)
 	if err != nil {
 		return fmt.Errorf("error inserting email: %w", err)
 	}
 
-	err = m.send(ctx, ser)
+	// The row's own idempotency key (AddMail wrote it back): when the inline answer is lost and the
+	// worker sends the row again, the provider delivers it once.
+	err = m.sendWithOptions(ctx, ser, sendOptions{idempotencyKey: eser.IdempotencyKey.String})
 	if err != nil {
 		if clearErr := rep.Mail().ClearNextRetryAt(ctx, id); clearErr != nil {
 			return fmt.Errorf("error releasing mail inline-send hold: %w", clearErr)

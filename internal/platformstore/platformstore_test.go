@@ -104,12 +104,13 @@ func openFresh(t *testing.T) *platformstore.Store {
 	// + 0012 operator second step (operator_totp, operator_recovery_code, operator_second_step,
 	// platform_flag) + 0014 team_storage (X11, one table) + 0015 ai off by default (X7, rows only)
 	// + 0016 team join link (X6: team_join_link, team_join_request, platform_join_intent)
-	// + 0017 team wipe (D3: team_wipe + two keys) + 0018 shops (X18: shop_host, team_shop, team_stripe).
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 17 {
+	// + 0017 team wipe (D3: team_wipe + two keys) + 0018 shops (X18: shop_host, team_shop, team_stripe)
+	// + 0019 shop mail owner (X18-L7, one table).
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 18 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 34 {
-		t.Fatalf("tables = %d (want 33 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 35 {
+		t.Fatalf("tables = %d (want 34 + platform_migrations), %v", n, err)
 	}
 	return st
 }

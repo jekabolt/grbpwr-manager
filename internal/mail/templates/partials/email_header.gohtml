@@ -8,7 +8,7 @@
     <meta name="x-apple-disable-message-reformatting">
     <meta name="color-scheme" content="light only">
     <meta name="supported-color-schemes" content="light only">
-    <title>GRBPWR</title>
+    <title>{{ with shop }}{{ .Name }}{{ else }}GRBPWR{{ end }}</title>
     <style>
       html, body { margin:0 !important; padding:0 !important; width:100% !important; background-color:#FFFFFF; }
       * { -ms-text-size-adjust:100%; -webkit-text-size-adjust:100%; }
@@ -44,10 +44,10 @@
               <!-- Lab Report header: logo + generation stamp -->
               <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0"><tr>
                 <td valign="top" style="vertical-align:top;">
-                  <img src="https://files.grbpwr.com/grbpwr-com/mail/mail-logo.png" width="54" height="54" alt="GRBPWR" class="gp-logo" style="display:block; width:54px; height:54px; border:0;">
+                  {{ with shop }}<div style="font-size:15px; line-height:20px; letter-spacing:1px; color:#0E0E0C;">{{ upper .Name }}</div>{{ else }}<img src="https://files.grbpwr.com/grbpwr-com/mail/mail-logo.png" width="54" height="54" alt="GRBPWR" class="gp-logo" style="display:block; width:54px; height:54px; border:0;">{{ end }}
                 </td>
                 <td valign="top" align="right" style="vertical-align:top; font-size:11px; line-height:17px; color:#9a978c; letter-spacing:0.3px;">
-                  {{unixNow}} // {{.tag}}<br>{{season}} &middot; OPEN PROCESS
+                  {{unixNow}} // {{.tag}}{{ if not shop }}<br>{{season}} &middot; OPEN PROCESS{{ end }}
                 </td>
               </tr></table>
 

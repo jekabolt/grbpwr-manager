@@ -24,7 +24,7 @@ var (
 		"tiermanagement", "opexmaterialize", "acctposting", "stripe", "stripereconcile",
 		"ordercleanup", "deliverysync", "ga4", "bigquery", "ga4sync", "ga4mp", "webhooks",
 	}
-	wantKept = []string{"stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
+	wantKept = []string{"shopmail", "stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
 )
 
 func appWith(p platformstore.Config) *App {

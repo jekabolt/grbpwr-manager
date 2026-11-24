@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -102,7 +103,8 @@ func recordsJSON(rs []ShopRecord) ([]byte, error) {
 }
 
 // TeamShop is a team's shop switch, the operator's close and its mail sender. A team without a row
-// has the zero value (off).
+// has the zero value (off). EnabledAt is when the shop last opened: the team switching it on, or the
+// operator reopening a switched-on shop.
 type TeamShop struct {
 	TeamID           int64      `db:"team_id"`
 	Enabled          bool       `db:"enabled"`
@@ -537,11 +539,21 @@ WHERE team_id = ?`, fromName, replyTo, nullID(by), teamID); err != nil {
 	})
 }
 
-// SetShopClosed closes (or reopens) a team's shop by the operator; the team's own switch stays.
+// SetShopClosed closes (or reopens) a team's shop by the operator; the team's own switch stays. A
+// reopen of a switched-on shop is a fresh opening: enabled_at moves to now, so shop mail queued
+// before it (while the shop was closed) is never sent.
 func (s *Store) SetShopClosed(ctx context.Context, teamID int64, closed bool) error {
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
-		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+		ts, err := lockTeamShop(ctx, tx, teamID)
+		if err != nil {
 			return err
+		}
+		if !closed && ts.ClosedByOperator && ts.Enabled {
+			if _, err := tx.ExecContext(ctx, `UPDATE team_shop SET closed_by_operator = FALSE, enabled_at = UTC_TIMESTAMP(3),
+updated_at = UTC_TIMESTAMP(3) WHERE team_id = ?`, teamID); err != nil {
+				return fmt.Errorf("platformstore: reopen shop: %w", err)
+			}
+			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE team_shop SET closed_by_operator = ?, updated_at = UTC_TIMESTAMP(3) WHERE team_id = ?`,
 			closed, teamID); err != nil {
@@ -566,8 +578,45 @@ FROM team_stripe WHERE team_id = ?`, teamID)
 	return st, true, nil
 }
 
+// RecordShopMailOwner remembers which team sent the shop letter Resend accepted as providerID (its
+// outbox row mailID in the team database), for the bounce route. Recording an id again keeps the
+// first owner.
+func (s *Store) RecordShopMailOwner(ctx context.Context, providerID string, teamID, mailID int64) error {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || len(providerID) > 64 || teamID <= 0 || mailID <= 0 {
+		return errors.New("platformstore: shop mail owner: bad id")
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO shop_mail_owner (provider_id, team_id, mail_id) VALUES (?, ?, ?)
+ON DUPLICATE KEY UPDATE team_id = team_id`, providerID, teamID, mailID); err != nil {
+		return fmt.Errorf("platformstore: shop mail owner: %w", err)
+	}
+	return nil
+}
+
+// ShopMailOwner answers the team and outbox row of a shop letter by Resend's email id; ok=false when
+// no shop letter carries it.
+func (s *Store) ShopMailOwner(ctx context.Context, providerID string) (teamID, mailID int64, ok bool, err error) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" || len(providerID) > 64 {
+		return 0, 0, false, nil
+	}
+	var row struct {
+		TeamID int64 `db:"team_id"`
+		MailID int64 `db:"mail_id"`
+	}
+	if err := s.db.GetContext(ctx, &row, `SELECT team_id, mail_id FROM shop_mail_owner WHERE provider_id = ?`, providerID); err != nil {
+		if isNoRows(err) {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, fmt.Errorf("platformstore: shop mail owner: %w", err)
+	}
+	return row.TeamID, row.MailID, true, nil
+}
+
 // shopTables are a team's shop rows in the control plane.
-func shopTables() []string { return []string{"team_shop", "shop_host", "team_stripe"} }
+func shopTables() []string {
+	return []string{"team_shop", "shop_host", "team_stripe", "shop_mail_owner"}
+}
 
 // DeleteTeamShopTx removes every shop row of a team (the day-30 wipe's finish calls it beside the
 // team's other control-plane rows) and answers the rows deleted, by table. Its custom hosts are queued
@@ -845,4 +894,24 @@ func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host str
 VALUES (?, ?, 'legacy', 1, 0, 'live', ?, ?, ?)`, host, teamID, recs, now, now)
 		return err
 	})
+}
+
+// TeamMailName is one team's name and brand name as the team-shop mail lane sees them: no shop's
+// letters may read as another team.
+type TeamMailName struct {
+	TeamID    int64  `db:"team_id"`
+	Name      string `db:"name"`
+	BrandName string `db:"brand_name"`
+}
+
+// TeamMailNames lists every team that is not deleted, with its brand name ("" without a brand row).
+func (s *Store) TeamMailNames(ctx context.Context) ([]TeamMailName, error) {
+	var out []TeamMailName
+	if err := s.db.SelectContext(ctx, &out, `SELECT team.id AS team_id, team.name AS name,
+COALESCE(team_brand.brand_name, '') AS brand_name
+FROM team LEFT JOIN team_brand ON team_brand.team_id = team.id
+WHERE team.status <> 'deleted' ORDER BY team.id`); err != nil {
+		return nil, fmt.Errorf("platformstore: team mail names: %w", err)
+	}
+	return out, nil
 }

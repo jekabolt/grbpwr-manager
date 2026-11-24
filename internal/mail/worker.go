@@ -2,13 +2,15 @@ package mail
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"log/slog"
-
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 )
 
 // tickTimeout bounds the DB + provider work done in a single send tick, so one
@@ -123,86 +125,54 @@ func (m *Mailer) runOnce(ctx context.Context) bool {
 	return true
 }
 
+// storefrontClaimBatch is how many rows one claim round of the storefront's outbox leases.
+const storefrontClaimBatch = 50
+
 func (m *Mailer) handleUnsent(ctx context.Context) error {
-	now := time.Now().UTC()
-	unsentEmails, err := m.mailRepository.GetAllUnsent(ctx, false, m.c.MaxSendAttempts, now)
+	return m.storefrontLane(ctx).drain(ctx)
+}
+
+// storefrontLane drains the storefront team's own outbox: every kind, the storefront Resend budget
+// (transactional priority) and the List-Unsubscribe headers, as the worker always sent them.
+func (m *Mailer) storefrontLane(ctx context.Context) *outboxLane {
+	var teamID int64
+	if t, ok := tenant.From(ctx); ok {
+		teamID = t.ID
+	}
+	return &outboxLane{
+		name:        "mail",
+		repo:        m.mailRepository,
+		cli:         m.cli,
+		teamID:      teamID,
+		keySpace:    outboxKeySpace("storefront", m.c.FromEmail, m.c.UnsubscribeBaseURL),
+		batch:       storefrontClaimBatch,
+		rounds:      outboxMaxBatches,
+		maxAttempts: m.c.MaxSendAttempts,
+		retryBase:   m.c.RetryBaseInterval,
+		retryMax:    m.c.RetryMaxInterval,
+		acquire:     m.budget.WaitTransactional,
+		cooldown:    m.budget.CooldownGlobal,
+		prepare:     m.prepareStorefrontRow,
+	}
+}
+
+// prepareStorefrontRow is the worker send of a queued storefront row: bulk mail suppressed while the
+// mailer is disabled counts as sent; the stored recipient is re-validated; List-Unsubscribe headers
+// are attached.
+func (m *Mailer) prepareStorefrontRow(row *entity.SendEmailRequest) (resend.SendEmailRequest, rowVerdict, string, error) {
+	if m.suppressed(row.Subject) {
+		return resend.SendEmailRequest{}, rowMarkSent, "", nil
+	}
+	to, err := validateEmailAddress(row.To)
 	if err != nil {
-		return fmt.Errorf("can't get unsent mails: %w", err)
+		return resend.SendEmailRequest{}, rowSend, "", fmt.Errorf("invalid recipient in stored email: %w", err)
 	}
-
-	// batchErr records the first per-email bookkeeping/send error so the tick can
-	// still report failure (driving backoff and keeping last-success un-advanced)
-	// after attempting every queued email. A single transient row error must not
-	// abandon the rest of the batch — these ops are idempotent on the next tick,
-	// so we log with the offending email's id and continue.
-	var batchErr error
-
-	for _, email := range unsentEmails {
-		// Check for a stop signal before processing each email
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if err := m.sendRaw(ctx, &email); err != nil {
-			slog.Default().ErrorContext(ctx, "can't send mail",
-				slog.String("err", err.Error()),
-				slog.Int("mailId", email.Id),
-				slog.Int("sendAttemptCount", email.SendAttemptCount),
-			)
-
-			if errors.Is(err, mailApiLimitReached) {
-				return batchErr // Stop sending mails if API limit is reached
-			}
-			if errors.Is(err, context.Canceled) {
-				return err
-			}
-
-			errMsg := err.Error()
-			newAttemptCount := email.SendAttemptCount + 1
-			transient := IsTransientSendFailure(err)
-			exhausted := newAttemptCount >= m.c.MaxSendAttempts
-			if !transient || exhausted {
-				if err := m.mailRepository.MarkSendDead(ctx, email.Id, errMsg, m.c.MaxSendAttempts); err != nil {
-					wrapped := fmt.Errorf("can't mark send dead for email %v: %w", email.Id, err)
-					slog.Default().ErrorContext(ctx, "can't mark send dead",
-						slog.String("err", err.Error()),
-						slog.Int("mailId", email.Id),
-					)
-					if batchErr == nil {
-						batchErr = wrapped
-					}
-				}
-				continue
-			}
-
-			delay := RetryDelayAfterAttempt(m.c.RetryBaseInterval, m.c.RetryMaxInterval, newAttemptCount)
-			next := time.Now().UTC().Add(delay)
-			if err := m.mailRepository.ScheduleSendRetry(ctx, email.Id, errMsg, next); err != nil {
-				wrapped := fmt.Errorf("can't schedule retry for email %v: %w", email.Id, err)
-				slog.Default().ErrorContext(ctx, "can't schedule retry",
-					slog.String("err", err.Error()),
-					slog.Int("mailId", email.Id),
-				)
-				if batchErr == nil {
-					batchErr = wrapped
-				}
-				continue
-			}
-		} else {
-			// Update the database to mark the email as sent
-			if err := m.mailRepository.UpdateSent(ctx, email.Id); err != nil {
-				wrapped := fmt.Errorf("can't update sent status for email %v: %w", email.Id, err)
-				slog.Default().ErrorContext(ctx, "can't update sent status",
-					slog.String("err", err.Error()),
-					slog.Int("mailId", email.Id),
-				)
-				if batchErr == nil {
-					batchErr = wrapped
-				}
-				continue
-			}
-		}
+	ser := *row
+	ser.To = to
+	req, err := dto.EntitySendEmailRequestToResend(&ser)
+	if err != nil {
+		return resend.SendEmailRequest{}, rowSend, "", fmt.Errorf("error converting email: %w", err)
 	}
-
-	return batchErr
+	req.Headers = m.listUnsubscribeHeaders(to)
+	return *req, rowSend, "", nil
 }

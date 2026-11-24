@@ -14,6 +14,6 @@
               {{template "spacer_28"}}
               <div style="font-size:12px; line-height:20px; color:#5d5a51;">{{ t "order.delivered.review_body" }}</div>
               {{template "spacer_16"}}
-              {{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" (t "order.delivered.review_cta") "variant" "solid")}}
+              {{ with shop }}{{ if .URL }}{{template "cta_button" (dict "url" (printf "%s/order/%s/%s" .URL $.OrderUUID $.EmailB64) "label" (t "order.delivered.review_cta") "variant" "solid")}}{{ end }}{{ else }}{{template "cta_button" (dict "url" (printf "https://grbpwr.com/order/%s/%s" .OrderUUID .EmailB64) "label" (t "order.delivered.review_cta") "variant" "solid")}}{{ end }}
 
 {{template "email_footer" .}}

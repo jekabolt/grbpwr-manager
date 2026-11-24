@@ -444,7 +444,7 @@ func initSubStores(ms *MYSQLStore) {
 	base := storeutil.Base{DB: ms.db, Now: ms.Now}
 	ms.langStore = language.New(base)
 	ms.promoStore = promo.New(base)
-	ms.comm = communication.New(base)
+	ms.comm = communication.New(base, ms.Tx)
 	ms.supportStore = support.New(base)
 	ms.adminStore = admin.New(base, ms.Tx)
 	ms.settingsStore = settings.New(base, ms.Tx, func() dependency.Repository { return ms })
@@ -486,7 +486,7 @@ func initSubStoresForTx(txStore *MYSQLStore, outerTx func(context.Context, func(
 	base := storeutil.Base{DB: txStore.db, Now: txStore.Now}
 	txStore.langStore = language.New(base)
 	txStore.promoStore = promo.New(base)
-	txStore.comm = communication.New(base)
+	txStore.comm = communication.New(base, outerTx)
 	txStore.supportStore = support.New(base)
 	txStore.adminStore = admin.New(base, outerTx)
 	txStore.settingsStore = settings.New(base, outerTx, func() dependency.Repository { return txStore })

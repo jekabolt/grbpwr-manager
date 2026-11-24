@@ -30,6 +30,7 @@ func bootComponents() []bootComponent {
 	return []bootComponent{
 		{name: "marketingaggregate", shop: true},
 		{name: "mail", shop: true}, // tenant mail outbox: order, customer and campaign letters
+		{name: "shopmail"},         // team shops' sign-in and order letters (X18-L7)
 		{name: "campaigndispatch", shop: true},
 		{name: "stockreserve"}, // checkout holds: team shops' checkouts hold stock too
 		{name: "storefrontcleanup", shop: true},
