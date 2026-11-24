@@ -25,6 +25,8 @@ type fakeStore struct {
 	roles    map[[2]int64]string // (user, team) → role
 	audits   []string
 	inactive map[int64]bool // teams the store refuses (not active)
+	// failConnect: ConnectTeamStripe fails with it (nil = works).
+	failConnect error
 }
 
 func newFakeStore() *fakeStore {
@@ -82,6 +84,9 @@ func (f *fakeStore) claim(teamID int64, acct string) error {
 func (f *fakeStore) ConnectTeamStripe(_ context.Context, teamID int64, a platformstore.StripeAccountState, now time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failConnect != nil {
+		return f.failConnect
+	}
 	if err := f.claim(teamID, a.AccountID); err != nil {
 		return err
 	}
@@ -192,6 +197,7 @@ type fakeOrders struct {
 	mu    sync.Mutex
 	busy  map[int64]int
 	since []time.Time
+	err   error
 }
 
 func (f *fakeOrders) CountBusyCardOrders(ctx context.Context, paidSince time.Time) (int, error) {
@@ -202,6 +208,9 @@ func (f *fakeOrders) CountBusyCardOrders(ctx context.Context, paidSince time.Tim
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.since = append(f.since, paidSince)
+	if f.err != nil {
+		return 0, f.err
+	}
 	return f.busy[t.ID], nil
 }
 

@@ -203,8 +203,9 @@ const storefrontNone = "none"
 //
 // Teams mode off: unset or 0 = team #1 and any other integer is kept, as before; "none" refuses
 // boot (an installation without teams mode is grbpwr, which has a shop). Teams mode on: a positive
-// id, or "none" (any case) = no shop, which also refuses boot while any shop switch or shop secret
-// is set (noShopConflicts).
+// id, or "none" (any case) = no storefront team (no legacy grbpwr shop, no env Stripe), which also
+// refuses boot while any of the storefront team's switches or secrets is set (noShopConflicts).
+// Team shops (by their host, with their own Stripe) still run under none.
 func (c *Config) resolveStorefront() error {
 	p := &c.Platform
 	raw := strings.TrimSpace(p.StorefrontTeam)

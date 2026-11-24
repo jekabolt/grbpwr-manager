@@ -224,10 +224,16 @@ func (s *Service) SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec stri
 		return status.Error(codes.InvalidArgument, "bad_secret_key")
 	}
 	acct.Mode = mode
-	if has && row.DisconnectedAt == nil && (row.AccountID == nil || *row.AccountID == "" || *row.AccountID != acct.AccountID) {
-		// Keys of another account (or one that cannot be told apart) replace the live ones.
-		if err := s.paymentsIdle(ctx, t); err != nil {
-			return err
+	if has && row.DisconnectedAt == nil {
+		same, stored := sameOwnAccount(row, acct.AccountID, pk)
+		if !same {
+			// Keys of another account (or one that cannot be told apart) replace the live ones.
+			if err := s.paymentsIdle(ctx, t); err != nil {
+				return err
+			}
+		} else if acct.AccountID == "" {
+			// A rotation to a restricted key that may not read its account keeps the account known.
+			acct.AccountID = stored
 		}
 	}
 	skSealed, err := s.keys.seal(t.ID, sealSecretKey, sk)
@@ -247,9 +253,28 @@ func (s *Service) SetKeys(ctx context.Context, t tenant.Team, pk, sk, whsec stri
 	return nil
 }
 
+// sameOwnAccount reports whether new own keys (the account their secret key opens, "" for a
+// restricted key that may not read it, and their publishable key) belong to the account of the live
+// row: the same account id, or the same publishable key — a key rotation keeps the publishable key,
+// and a publishable key names one account and mode. stored is the row's account id ("" unknown).
+func sameOwnAccount(row platformstore.TeamStripe, account, pk string) (same bool, stored string) {
+	if row.AccountID != nil {
+		stored = *row.AccountID
+	}
+	if row.Kind != platformstore.StripeKindKeys {
+		return false, stored
+	}
+	if stored != "" && account != "" {
+		return stored == account, stored
+	}
+	return row.PublishableKey != "" && row.PublishableKey == pk, stored
+}
+
 // Disconnect ends a team's Stripe: the row is disconnected first (no more charges here), then a
-// connected account is deauthorized at Stripe on a best-effort basis. Idempotent.
-func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
+// connected account is deauthorized at Stripe on a best-effort basis. Idempotent. An owner waits for
+// the team's card orders (shop_payments_busy); operator = a console operator who entered the team
+// cuts the Stripe off all the same (fraud), and that is logged at WARN.
+func (s *Service) Disconnect(ctx context.Context, t tenant.Team, operator bool) error {
 	if s.d.Factory == nil {
 		return stripeNotReady()
 	}
@@ -262,7 +287,10 @@ func (s *Service) Disconnect(ctx context.Context, t tenant.Team) error {
 		return nil
 	}
 	if err := s.paymentsIdle(ctx, t); err != nil {
-		return err
+		if !operator || status.Code(err) != codes.FailedPrecondition {
+			return err
+		}
+		slog.Default().WarnContext(ctx, "shoppay: operator disconnects a busy shop's stripe", slog.Int64("team", t.ID))
 	}
 	acct := ""
 	if row.AccountID != nil {

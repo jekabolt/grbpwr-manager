@@ -108,11 +108,27 @@ func (s *Service) FinishConnect(ctx context.Context, t tenant.Team, userID int64
 
 func (s *Service) finishConnect(ctx context.Context, t tenant.Team, st connectState, code string) error {
 	ctx = tenant.With(ctx, t)
+	// Own keys saved meanwhile refuse before anything is authorized at Stripe.
+	if row, has, err := s.d.Store.TeamStripe(ctx, t.ID); err != nil {
+		return err
+	} else if has && row.DisconnectedAt == nil && row.Kind == platformstore.StripeKindKeys {
+		return status.Error(codes.FailedPrecondition, "stripe_keys_set")
+	}
 	acct, livemode, err := s.d.Stripe.ExchangeCode(ctx, code)
 	if err != nil {
 		slog.Default().WarnContext(ctx, "shoppay: oauth exchange", slog.Int64("team", t.ID), slog.String("stripe", stripeErrCode(err)))
 		return errConnectExpired()
 	}
+	// The account is now authorized for the platform: every refusal below lets it go again.
+	if err := s.connectExchanged(ctx, t, st, acct, livemode); err != nil {
+		s.releaseAuthorized(ctx, t, acct)
+		return err
+	}
+	return nil
+}
+
+// connectExchanged connects account acct (just authorized by the OAuth exchange) to team t.
+func (s *Service) connectExchanged(ctx context.Context, t tenant.Team, st connectState, acct string, livemode bool) error {
 	mode := modeOf(livemode)
 	if mode != s.d.Config.ConnectMode() {
 		return status.Error(codes.FailedPrecondition, "stripe_wrong_mode")
@@ -152,6 +168,24 @@ func (s *Service) finishConnect(ctx context.Context, t tenant.Team, st connectSt
 	}
 	s.changed(ctx, t)
 	return nil
+}
+
+// releaseAuthorized deauthorizes an account a refused finish had just authorized (best effort; only
+// Stripe's error code is logged). An account live on any team (this one reconnecting it, or another
+// one: stripe_account_taken) keeps its authorization: one platform authorization serves them all,
+// and taking it back would cut that shop off. When that cannot be told, it is kept too.
+func (s *Service) releaseAuthorized(ctx context.Context, t tenant.Team, acct string) {
+	live, has, err := s.d.Store.TeamStripeByAccount(ctx, acct)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "shoppay: refused connect left authorized (account lookup failed)", slog.Int64("team", t.ID))
+		return
+	}
+	if has && live.DisconnectedAt == nil {
+		return
+	}
+	if err := s.d.Stripe.Deauthorize(ctx, acct); err != nil {
+		slog.Default().WarnContext(ctx, "shoppay: refused connect deauthorize", slog.Int64("team", t.ID), slog.String("stripe", stripeErrCode(err)))
+	}
 }
 
 // stripeErrCode names a Stripe failure for the log without Stripe's message.

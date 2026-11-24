@@ -78,7 +78,9 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		}
 	}
 	domains := a.shopDomainProvider(ctx)
-	pay := a.newShopPay(ctx, b, adminS, frontendS != nil && !cfg.NoShop()) // X18-L3, teams_shop_pay.go
+	// Team payments run with or without a storefront team: only the storefront team's own (env) Stripe
+	// is gone on a no-shop installation.
+	pay := a.newShopPay(ctx, b, adminS, frontendS != nil) // X18-L3, teams_shop_pay.go
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
 		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
 		Payments: shopPayments(pay)})

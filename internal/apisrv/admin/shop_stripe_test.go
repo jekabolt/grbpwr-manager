@@ -30,6 +30,7 @@ type fakePayments struct {
 	done    []string
 	keys    []string
 	gone    []int64
+	goneOp  []bool
 	err     error
 }
 
@@ -57,8 +58,9 @@ func (f *fakePayments) SetKeys(_ context.Context, t tenant.Team, pk, sk, whsec s
 	return nil
 }
 
-func (f *fakePayments) Disconnect(_ context.Context, t tenant.Team) error {
+func (f *fakePayments) Disconnect(_ context.Context, t tenant.Team, operator bool) error {
 	f.gone = append(f.gone, t.ID)
+	f.goneOp = append(f.goneOp, operator)
 	return f.err
 }
 

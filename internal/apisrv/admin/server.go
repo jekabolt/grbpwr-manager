@@ -325,9 +325,7 @@ func clampPagination(limit, offset int) (int, int) {
 // so only a change made by that team re-renders it (teams mode off: one team, always). The detached
 // work carries that team, never the request's ctx.
 func (s *Server) revalidateAsync(ctx context.Context, data *dto.RevalidationData) {
-	if s.noShop {
-		return
-	}
+	// No storefront team (noShop): storefrontTeamOf is false for every team, so only team shops redraw.
 	re := s.re
 	team, ok := s.storefrontTeamOf(ctx)
 	if !ok {
@@ -337,6 +335,9 @@ func (s *Server) revalidateAsync(ctx context.Context, data *dto.RevalidationData
 			return
 		}
 		team, re = t, s.shopW.Revalidator
+	}
+	if re == nil {
+		return
 	}
 	rctx := s.revalCtx
 	if team.ID > 0 {

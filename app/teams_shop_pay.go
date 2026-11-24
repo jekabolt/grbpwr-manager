@@ -16,9 +16,10 @@ import (
 const shopPayStopTimeout = 15 * time.Second
 
 // newShopPay builds the team shops' Stripe (X18-L3): Stripe Connect and a team's own keys, its
-// callback, webhooks and per-team processors. nil without a storefront API (no-shop installation):
-// no team can take a payment there, so the owner sees stripe_not_ready. The storefront team keeps
-// the env processors (StripePayment / StripePaymentTest) and never goes through this.
+// callback, webhooks and per-team processors. nil without a storefront API: no team can take a
+// payment there, so the owner sees stripe_not_ready. A no-shop installation (no storefront team) has
+// one: team shops pay there. The storefront team keeps the env processors (StripePayment /
+// StripePaymentTest) and never goes through this.
 func (a *App) newShopPay(ctx context.Context, b *tenantbind.Binder, adminS *admin.Server, storefrontServed bool) *shoppay.Service {
 	if a.platform == nil || !storefrontServed {
 		return nil

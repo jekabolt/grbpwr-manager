@@ -15,15 +15,15 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 )
 
-// The components a no-shop installation does not start, and the ones it keeps.
+// The components a no-shop installation does not start, and the ones it keeps (team shops: the
+// storefront API, checkout holds and per-shop revalidation run without a storefront team).
 var (
 	wantSkipped = []string{
-		"marketingaggregate", "mail", "campaigndispatch", "stockreserve", "storefrontcleanup",
+		"marketingaggregate", "mail", "campaigndispatch", "storefrontcleanup",
 		"tiermanagement", "opexmaterialize", "acctposting", "stripe", "stripereconcile",
-		"ordercleanup", "deliverysync", "revalidation", "ga4", "bigquery", "ga4sync", "ga4mp",
-		"storefront", "webhooks",
+		"ordercleanup", "deliverysync", "ga4", "bigquery", "ga4sync", "ga4mp", "webhooks",
 	}
-	wantKept = []string{"taskarchive", "fxsync", "aireconcile", "archivecleanup"}
+	wantKept = []string{"stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
 )
 
 func appWith(p platformstore.Config) *App {

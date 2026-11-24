@@ -353,7 +353,7 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	// Storefront checkout holds. nil on a no-shop installation: admin and order cleanup nil-check it.
+	// Storefront checkout holds (the storefront team's and the team shops' checkouts).
 	var reservationMgr *stockreserve.Manager
 	// reservations is the same manager as the interface admin and order cleanup take. Assigned only
 	// when non-nil: a nil *Manager inside the interface would pass their nil checks and panic.
@@ -1091,12 +1091,20 @@ func (a *App) Start(ctx context.Context) error {
 	})
 	a.adminS = adminS
 
-	// No shop: FrontendService is neither built nor registered (the HTTP server answers its routes
-	// with Unavailable / 503, see httpapi.SetNoShop).
+	// FrontendService is built on every installation: without a storefront team (no shop) it serves
+	// team shops only (teams mode; the edge refuses a call that names no shop) and has no env Stripe.
 	var frontendS *frontend.Server
 	if a.shopGate(ctx, "storefront") {
 		frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
-		if err != nil {
+		switch {
+		case err != nil && a.c.Platform.NoShop():
+			// No storefront team: the storefront API serves team shops only, and an installation that
+			// never configured STOREFRONT_AUTH_* still boots; its team shops stay off (503).
+			slog.Default().ErrorContext(ctx, "team shops: storefront API not built; team shops are off",
+				slog.String("err", err.Error()),
+			)
+			frontendS, err = nil, nil
+		case err != nil:
 			slog.Default().ErrorContext(ctx, "failed create frontend server",
 				slog.String("err", err.Error()),
 			)
@@ -1110,6 +1118,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.c.HTTP.CommitHash = getCommitHash()
 	a.hs = httpapi.New(&a.c.HTTP)
 	a.hs.SetNoShop(a.c.Platform.NoShop())
+	// Team shops are served whenever a storefront API exists in teams mode, with or without a
+	// storefront team.
+	a.hs.SetTeamShops(frontendS != nil && a.platform != nil)
 	a.hs.SetBudgetZone(a.aireg.BudgetTimezone)
 	binder, err := tenantbind.NewCompat(a.teamOne)
 	if err != nil {

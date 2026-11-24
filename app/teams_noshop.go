@@ -12,9 +12,12 @@ import (
 	"github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 )
 
-// bootComponent is one background component App.Start may start. shop marks the ones that touch
-// orders, customers, payments, shipments, marketing or the storefront: an installation without a
-// shop (config.Platform.NoShop, TENANT_STOREFRONT_TEAM_ID=none) does not start them.
+// bootComponent is one background component App.Start may start. shop marks the ones that belong to
+// the storefront team (grbpwr: its orders, customers, env Stripe, shipments, marketing, its webhooks):
+// an installation without a storefront team (config.Platform.NoShop, TENANT_STOREFRONT_TEAM_ID=none)
+// does not start them. Team shops run there all the same (X18): the storefront API and the checkout
+// holds start, the edge binds each storefront call to the shop its host names and refuses one that
+// names none (shop_not_found), and the team shops' Stripe (shoppay) is wired by wireShops.
 type bootComponent struct {
 	name string
 	shop bool
@@ -28,7 +31,7 @@ func bootComponents() []bootComponent {
 		{name: "marketingaggregate", shop: true},
 		{name: "mail", shop: true}, // tenant mail outbox: order, customer and campaign letters
 		{name: "campaigndispatch", shop: true},
-		{name: "stockreserve", shop: true},
+		{name: "stockreserve"}, // checkout holds: team shops' checkouts hold stock too
 		{name: "storefrontcleanup", shop: true},
 		{name: "tiermanagement", shop: true},
 		{name: "taskarchive"},
@@ -41,13 +44,13 @@ func bootComponents() []bootComponent {
 		{name: "stripereconcile", shop: true},
 		{name: "ordercleanup", shop: true},
 		{name: "deliverysync", shop: true},
-		{name: "revalidation", shop: true},
+		{name: "revalidation"}, // team shops redraw at their own hosts; grbpwr's domains only for the storefront team
 		{name: "ga4", shop: true},
 		{name: "bigquery", shop: true},
 		{name: "ga4sync", shop: true},
 		{name: "ga4mp", shop: true},
-		{name: "storefront", shop: true}, // FrontendService (gRPC + gateway)
-		{name: "webhooks", shop: true},   // Resend, Stripe and AfterShip webhooks
+		{name: "storefront"},           // FrontendService (gRPC + gateway): team shops, and grbpwr when it is the storefront team
+		{name: "webhooks", shop: true}, // the storefront team's Resend, Stripe and AfterShip webhooks
 	}
 }
 
