@@ -1,20 +1,20 @@
 -- +migrate Up
 -- Shops of teams (X18): the hosts a storefront answers on, a team's shop switch and mail sender, and
--- the shape of a team's Stripe setup (filled by X18-L3). Idempotent and ANSI_QUOTES-safe: tables use
--- IF NOT EXISTS and string literals use single quotes. Online: three new tables, nothing on a live
+-- the shape of a team's Stripe setup (filled by X18-L3), and custom domains still to drop at the provider. Idempotent and ANSI_QUOTES-safe: tables use
+-- IF NOT EXISTS and string literals use single quotes. Online: four new tables, nothing on a live
 -- table. No FK, as every control-plane table: deletes are explicit.
 
 -- One row per host (lowercase, no scheme / port / trailing dot). A host belongs to one team.
 -- kind: subdomain = {slug}.<shop zone> (platform DNS), custom = the team's own, legacy = grbpwr's.
 -- primary_team makes «one main address per team» a unique key.
 CREATE TABLE IF NOT EXISTS shop_host (
-  host VARCHAR(253) NOT NULL,
+  host VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   team_id BIGINT NOT NULL,
   kind ENUM('subdomain','custom','legacy') NOT NULL,
   managed TINYINT(1) NOT NULL DEFAULT 0,
   is_primary TINYINT(1) NOT NULL DEFAULT 0,
   status ENUM('records_needed','verifying','live','failed') NOT NULL DEFAULT 'records_needed',
-  redirect_to VARCHAR(253) NOT NULL DEFAULT '',
+  redirect_to VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
   records JSON NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   verified_at DATETIME(3) NULL,
@@ -23,6 +23,19 @@ CREATE TABLE IF NOT EXISTS shop_host (
   PRIMARY KEY (host),
   UNIQUE KEY uq_shop_host_primary (primary_team),
   KEY idx_shop_host_team (team_id, kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- A custom host a team let go of (removed, or its team wiped) that the storefront's domain provider
+-- must still drop. Removal from the provider is retried from here until it succeeds, so a domain never
+-- stays attached to the shared deployment with nobody owning it (no takeover by the next team).
+CREATE TABLE IF NOT EXISTS shop_domain_drop (
+  host VARCHAR(253) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  attempts INT NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  last_error VARCHAR(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (host),
+  KEY idx_shop_domain_drop_next (next_attempt_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- A team's shop: its own on/off, the operator's close, and the sender of its letters.

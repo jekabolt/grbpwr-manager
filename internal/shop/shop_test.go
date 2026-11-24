@@ -1,6 +1,7 @@
 package shop
 
 import (
+	"net"
 	"context"
 	"errors"
 	"testing"
@@ -91,22 +92,25 @@ func TestRevalidatorRoutes(t *testing.T) {
 	}}
 	ctx := context.Background()
 	_ = r.RevalidateAll(ctx, &dto.RevalidationData{Hero: true})
+	if base.n != 0 || sh.host != "" {
+		t.Fatal("a ctx with no team revalidated something (fail closed)")
+	}
 	_ = r.RevalidateAll(tenant.With(ctx, tenant.Team{ID: 1}), &dto.RevalidationData{})
-	if base.n != 2 || sh.host != "" {
+	if base.n != 1 || sh.host != "" {
 		t.Fatalf("storefront: base %d, shop %q", base.n, sh.host)
 	}
 	_ = r.RevalidateAll(tenant.With(ctx, tenant.Team{ID: 7}), &dto.RevalidationData{})
-	if base.n != 2 || sh.host != "acme.com" || sh.key != "t7" {
+	if base.n != 1 || sh.host != "acme.com" || sh.key != "t7" {
 		t.Fatalf("shop: base %d, shop %q %q", base.n, sh.host, sh.key)
 	}
 	sh.host = ""
 	_ = r.RevalidateAll(tenant.With(ctx, tenant.Team{ID: 8}), &dto.RevalidationData{})
-	if base.n != 2 || sh.host != "" {
+	if base.n != 1 || sh.host != "" {
 		t.Fatal("a team without an open shop revalidated something")
 	}
 	r.Shop = nil
 	_ = r.RevalidateAll(tenant.With(ctx, tenant.Team{ID: 7}), &dto.RevalidationData{})
-	if base.n != 2 {
+	if base.n != 1 {
 		t.Fatal("a team shop without the shop path went to the storefront")
 	}
 }
@@ -137,5 +141,72 @@ func TestOrigins(t *testing.T) {
 	o.Allowed("https://acme.com")
 	if calls != 2 {
 		t.Fatalf("list calls after invalidate = %d", calls)
+	}
+}
+
+func TestValidHostAndReserved(t *testing.T) {
+	for _, h := range []string{"acme.com", "a-b.shop.lekalo.studio", "localhost", "x1.io"} {
+		if !ValidHost(h) {
+			t.Fatalf("%q refused", h)
+		}
+	}
+	for _, h := range []string{"", "a_b.com", "acme.com/x", "-a.com", "a..com", "1.2.3.4", "[::1]", "acme.123", "ACME.com", "ac me.com", "\u00e9.com"} {
+		if ValidHost(h) {
+			t.Fatalf("%q accepted", h)
+		}
+	}
+	got := RegistrableDomains("api.lekalo.studio", "shop.beta.lekalo.studio", "www.grbpwr.com", "localhost", "grbpwr.com", "x.co.uk")
+	want := []string{"lekalo.studio", "grbpwr.com", "x.co.uk"}
+	if len(got) != len(want) {
+		t.Fatalf("registrable %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("registrable %v, want %v", got, want)
+		}
+	}
+	if !Under("www.grbpwr.com", "grbpwr.com") || Under("notgrbpwr.com", "grbpwr.com") || Under("x.com", "") {
+		t.Fatal("under")
+	}
+}
+
+func TestTXTProof(t *testing.T) {
+	if _, err := NewTXTProof(" "); err == nil {
+		t.Fatal("a proof without a secret")
+	}
+	p, err := NewTXTProof("pepper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, _ := NewTXTProof("other pepper")
+	if p.Value(2, "acme.com") == p.Value(3, "acme.com") || p.Value(2, "acme.com") == p.Value(2, "acme.io") || p.Value(2, "acme.com") == q.Value(2, "acme.com") {
+		t.Fatal("proof values collide")
+	}
+	rec := p.Record(2, "acme.com")
+	if rec.Type != "TXT" || rec.Name != "_lekalo.acme.com" || rec.Value != p.Value(2, "acme.com") || rec.Found {
+		t.Fatalf("record %+v", rec)
+	}
+	txt := map[string][]string{}
+	var lookErr error
+	p.LookupTXT = func(_ context.Context, name string) ([]string, error) { return txt[name], lookErr }
+	ctx := context.Background()
+	if ok, err := p.Proven(ctx, 2, "acme.com"); ok || err != nil {
+		t.Fatalf("no record: %v %v", ok, err)
+	}
+	txt["_lekalo.acme.com"] = []string{"v=spf1 -all", p.Value(3, "acme.com")}
+	if ok, _ := p.Proven(ctx, 2, "acme.com"); ok {
+		t.Fatal("another team's record proves")
+	}
+	txt["_lekalo.acme.com"] = append(txt["_lekalo.acme.com"], " "+p.Value(2, "acme.com")+" ")
+	if ok, err := p.Proven(ctx, 2, "acme.com"); !ok || err != nil {
+		t.Fatalf("own record: %v %v", ok, err)
+	}
+	lookErr = &net.DNSError{Err: "no such host", IsNotFound: true}
+	if ok, err := p.Proven(ctx, 2, "acme.com"); ok || err != nil {
+		t.Fatalf("nxdomain: %v %v", ok, err)
+	}
+	lookErr = errors.New("resolver down")
+	if ok, err := p.Proven(ctx, 2, "acme.com"); ok || err == nil {
+		t.Fatalf("resolver failure: %v %v", ok, err)
 	}
 }

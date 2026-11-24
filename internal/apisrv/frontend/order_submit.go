@@ -386,8 +386,9 @@ func (s *Server) SubmitOrder(ctx context.Context, req *pb_frontend.SubmitOrderRe
 	}
 
 	// Revalidate cache asynchronously - no need to block the response
+	// The tenant rides along (the shop revalidator routes by it); the request's cancel does not.
+	revalidateCtx := context.WithoutCancel(ctx)
 	go func() {
-		revalidateCtx := context.Background()
 		// Best-effort background side effect: a panic in the revalidation path must
 		// be logged with a stack and swallowed, never crash the whole process.
 		defer saferun.Recover(revalidateCtx, "order-revalidate")

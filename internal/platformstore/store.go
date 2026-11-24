@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -271,6 +272,8 @@ type Store struct {
 	db    *sqlx.DB
 	dir   *directory
 	touch *sessionTouches
+	// proof decides whether a team's custom shop host may go live (X18, SetShopHostProof).
+	proof atomic.Pointer[shopProofHolder]
 }
 
 // ErrUserNotFound: no platform user with that handle.

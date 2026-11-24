@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"net"
 	"net/http"
@@ -119,6 +120,9 @@ type Binder struct {
 	// shopHosts / shopStates cache the shop lookups (shop.go; cacheTTL, InvalidateShop drops them).
 	shopHosts  map[string]shopHostEntry
 	shopStates map[int64]shopStateEntry
+	// shopFlight folds concurrent control-plane lookups of one host into one query (a burst of
+	// requests for an uncached host, or a flood of made-up hosts, costs one query each at most).
+	shopFlight singleflight.Group
 }
 
 // New returns the binder for team #1 with teams mode off. UsePlatform switches teams mode on.

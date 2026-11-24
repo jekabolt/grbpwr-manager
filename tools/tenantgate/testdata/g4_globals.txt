@@ -65,6 +65,7 @@ internal/aiprov/runblob/images.go	klingO1Aspect
 internal/aiprov/runblob/images.go	klingO3Aspect
 internal/aiprov/runblob/runblob.go	knownPaths
 internal/analytics/ga4sync/worker.go	ga4APISyncTypes
+internal/api/http/file_urls.go	signSkip
 internal/api/http/http.go	adminGatewayServiceConfig
 internal/api/http/http.go	corsDevOrigins
 internal/api/http/http.go	pages
