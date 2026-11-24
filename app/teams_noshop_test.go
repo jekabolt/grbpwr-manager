@@ -17,15 +17,14 @@ import (
 )
 
 // The components a no-shop installation does not start, and the ones it keeps (team shops: the
-// storefront API, checkout holds, team-shop mail and per-shop revalidation run without a storefront
-// team).
+// storefront API, checkout holds and per-shop revalidation run without a storefront team).
 var (
 	wantSkipped = []string{
-		"marketingaggregate", "campaigndispatch", "storefrontcleanup",
+		"marketingaggregate", "mail", "campaigndispatch", "storefrontcleanup",
 		"tiermanagement", "opexmaterialize", "acctposting", "stripe", "stripereconcile",
 		"ordercleanup", "deliverysync", "ga4", "bigquery", "ga4sync", "ga4mp", "webhooks",
 	}
-	wantKept = []string{"mail", "stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
+	wantKept = []string{"stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
 )
 
 func appWith(p platformstore.Config) *App {

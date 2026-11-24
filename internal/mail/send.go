@@ -88,7 +88,7 @@ func (m *Mailer) SendNewSubscriber(ctx context.Context, rep dependency.Repositor
 		Preheader: "WELCOME TO GRBPWR",
 		EmailB64:  " ", // Non-empty marker to prevent injection - template will check and not show unsubscribe
 	}
-	ser, err := m.buildFor(ctx, to, NewSubscriber, data)
+	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for new subscriber: %w", err)
 	}
@@ -104,7 +104,7 @@ func (m *Mailer) QueueNewSubscriber(ctx context.Context, rep dependency.Reposito
 		Preheader: "WELCOME TO GRBPWR",
 		EmailB64:  " ", // Non-empty marker to prevent injection - template will check and not show unsubscribe
 	}
-	ser, err := m.buildFor(ctx, to, NewSubscriber, data)
+	ser, err := m.buildSendMailRequest(to, NewSubscriber, data)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for new subscriber: %w", err)
 	}
@@ -124,7 +124,7 @@ func (m *Mailer) QueueAccountLogin(ctx context.Context, rep dependency.Repositor
 		OTPCode:      otpCode,
 		MagicLinkURL: magicLinkURL,
 	}
-	ser, err := m.buildFor(ctx, to, AccountLogin, data)
+	ser, err := m.buildSendMailRequest(to, AccountLogin, data)
 	if err != nil {
 		return fmt.Errorf("can't build account login email: %w", err)
 	}
@@ -137,7 +137,7 @@ func (m *Mailer) SendOrderConfirmation(ctx context.Context, rep dependency.Repos
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderConfirmed, orderDetails)
+	ser, err := m.buildSendMailRequest(to, OrderConfirmed, orderDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order confirmation : %w", err)
 	}
@@ -153,7 +153,7 @@ func (m *Mailer) QueueOrderConfirmation(ctx context.Context, rep dependency.Repo
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderConfirmed, orderDetails)
+	ser, err := m.buildSendMailRequest(to, OrderConfirmed, orderDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order confirmation: %w", err)
 	}
@@ -166,7 +166,7 @@ func (m *Mailer) SendOrderCancellation(ctx context.Context, rep dependency.Repos
 	if orderDetails.OrderUUID == "" {
 		return fmt.Errorf("incomplete order details: %+v", orderDetails)
 	}
-	ser, err := m.buildFor(ctx, to, OrderCancelled, orderDetails)
+	ser, err := m.buildSendMailRequest(to, OrderCancelled, orderDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order cancellation: %w", err)
 	}
@@ -180,7 +180,7 @@ func (m *Mailer) SendOrderShipped(ctx context.Context, rep dependency.Repository
 		return fmt.Errorf("incomplete shipment details: %+v", shipmentDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderShipped, shipmentDetails)
+	ser, err := m.buildSendMailRequest(to, OrderShipped, shipmentDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order shipped: %w", err)
 	}
@@ -196,7 +196,7 @@ func (m *Mailer) SendOrderDelivered(ctx context.Context, rep dependency.Reposito
 		return fmt.Errorf("incomplete delivery details: %+v", deliveryDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderDelivered, deliveryDetails)
+	ser, err := m.buildSendMailRequest(to, OrderDelivered, deliveryDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for order delivered: %w", err)
 	}
@@ -225,7 +225,7 @@ func (m *Mailer) SendRefundInitiated(ctx context.Context, rep dependency.Reposit
 		return fmt.Errorf("incomplete refund details: %+v", refundDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderRefundInitiated, refundDetails)
+	ser, err := m.buildSendMailRequest(to, OrderRefundInitiated, refundDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for refund initiated: %w", err)
 	}
@@ -239,7 +239,7 @@ func (m *Mailer) SendPendingReturn(ctx context.Context, rep dependency.Repositor
 		return fmt.Errorf("incomplete pending return details: %+v", details)
 	}
 
-	ser, err := m.buildFor(ctx, to, OrderPendingReturn, details)
+	ser, err := m.buildSendMailRequest(to, OrderPendingReturn, details)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for pending return: %w", err)
 	}
@@ -253,7 +253,7 @@ func (m *Mailer) SendPromoCode(ctx context.Context, rep dependency.Repository, t
 		return fmt.Errorf("incomplete promo code details: %+v", promoDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, PromoCode, promoDetails)
+	ser, err := m.buildSendMailRequest(to, PromoCode, promoDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for promo: %w", err)
 	}
@@ -268,7 +268,7 @@ func (m *Mailer) SendBackInStock(ctx context.Context, rep dependency.Repository,
 		return fmt.Errorf("incomplete product details: %+v", productDetails)
 	}
 
-	ser, err := m.buildFor(ctx, to, BackInStock, productDetails)
+	ser, err := m.buildSendMailRequest(to, BackInStock, productDetails)
 	if err != nil {
 		return fmt.Errorf("can't build send mail request for back in stock: %w", err)
 	}

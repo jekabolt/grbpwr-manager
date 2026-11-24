@@ -319,11 +319,21 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	// The tenant mail outbox, drained team by team (teams_shop_mail.go). Without a storefront team
-	// only team shops' transactional letters run, under each shop's name; marketing and campaign
-	// letters stay off. Admin sign-in letters are platform mail either way.
+	// No shop: the tenant outbox is never written and never drained (noShopMailer). Admin sign-in
+	// letters are platform mail and go on.
 	if a.shopGate(ctx, "mail") {
-		if err = a.startMailer(ctx); err != nil {
+		a.ma, err = mail.New(&a.c.Mailer, a.db.Mail(), a.db.StorefrontAccount())
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
+				slog.String("err", err.Error()),
+			)
+			return err
+		}
+		err = a.ma.Start(ctx)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
+				slog.String("err", err.Error()),
+			)
 			return err
 		}
 	} else {
