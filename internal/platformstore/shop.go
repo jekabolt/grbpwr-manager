@@ -149,13 +149,16 @@ func (s *Store) ShopHostTeam(ctx context.Context, host string) (int64, bool, err
 // after it the next team may attach the host (a pending attach cannot squat a domain).
 const ShopHostPendingTTL = 7 * 24 * time.Hour
 
-// stalePending: a custom host that never went live within ShopHostPendingTTL.
-func stalePending(kind, status string, createdAt, now time.Time) bool {
-	return kind == ShopHostCustom && status != ShopHostLive && now.Sub(createdAt) >= ShopHostPendingTTL
+// stalePending: a custom host that never went live (never verified) within ShopHostPendingTTL. A
+// host that went live once is its team's until the team removes it or is wiped, whatever its status
+// now: a lapsed check never frees it for another team.
+func stalePending(cur shopHostRow, now time.Time) bool {
+	return cur.Kind == ShopHostCustom && cur.VerifiedAt == nil && cur.Status != ShopHostLive &&
+		now.Sub(cur.CreatedAt) >= ShopHostPendingTTL
 }
 
 // ShopHostFree reports whether team teamID may attach host: no row, the team's own custom row, or
-// another team's custom row that never went live within ShopHostPendingTTL. Else ErrShopHostTaken
+// another team's custom row that never went live (never verified) within ShopHostPendingTTL. Else ErrShopHostTaken
 // (ErrShopHostManaged for the team's own platform or legacy host).
 func (s *Store) ShopHostFree(ctx context.Context, teamID int64, host string, now time.Time) error {
 	var cur shopHostRow
@@ -167,7 +170,7 @@ func (s *Store) ShopHostFree(ctx context.Context, teamID int64, host string, now
 		return fmt.Errorf("platformstore: shop host owner: %w", err)
 	case cur.TeamID == teamID && cur.Kind != ShopHostCustom:
 		return ErrShopHostManaged
-	case cur.TeamID == teamID, stalePending(cur.Kind, cur.Status, cur.CreatedAt, now.UTC()):
+	case cur.TeamID == teamID, stalePending(cur, now.UTC()):
 		return nil
 	}
 	return ErrShopHostTaken
@@ -341,7 +344,7 @@ VALUES (?, ?, 'subdomain', 1, 0, 'live', ?, ?, ?)`, subdomain, teamID, recs, now
 // gated by the ownership proof (gateShopHost): live only when the team proved the domain.
 func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
 	now = now.UTC()
-	status, records = s.gateShopHost(ctx, teamID, host, status, records)
+	status, records, unproven := s.gateShopHost(ctx, teamID, host, status, records)
 	recs, err := recordsJSON(records)
 	if err != nil {
 		return err
@@ -353,7 +356,7 @@ func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status s
 		var cur shopHostRow
 		err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host)
 		switch {
-		case err == nil && cur.TeamID != teamID && stalePending(cur.Kind, cur.Status, cur.CreatedAt, now):
+		case err == nil && cur.TeamID != teamID && stalePending(cur, now):
 			// Never live (so never a main address): the name goes to the team that attaches it now.
 			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ? AND team_id = ?`, host, cur.TeamID); err != nil {
 				return fmt.Errorf("platformstore: stale shop host: %w", err)
@@ -363,6 +366,7 @@ func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status s
 		case err == nil && cur.Kind != ShopHostCustom:
 			return ErrShopHostManaged
 		case err == nil:
+			status = keepVerified(cur, status, unproven)
 			verified := cur.VerifiedAt
 			if status == ShopHostLive && cur.Status != ShopHostLive {
 				verified = &now
@@ -410,7 +414,7 @@ VALUES (?, ?, 'custom', 0, 0, ?, ?, ?, ?, ?)`, host, teamID, status, recs, now, 
 // that stops being live loses the main address to the platform address.
 func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
 	now = now.UTC()
-	status, records = s.gateShopHost(ctx, teamID, host, status, records)
+	status, records, unproven := s.gateShopHost(ctx, teamID, host, status, records)
 	recs, err := recordsJSON(records)
 	if err != nil {
 		return err
@@ -429,6 +433,7 @@ func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, statu
 		if cur.Kind != ShopHostCustom {
 			return ErrShopHostManaged
 		}
+		status = keepVerified(cur, status, unproven)
 		verified := cur.VerifiedAt
 		if status == ShopHostLive && cur.Status != ShopHostLive {
 			verified = &now
@@ -635,14 +640,15 @@ func (s *Store) SetShopHostProof(p ShopHostProof) { s.proof.Store(&shopProofHold
 // gateShopHost is the one «may this custom host go live» decision (every path that stores a custom
 // host's status calls it: the shop screen and the domains worker). It puts the proof record first in
 // the records (found or not) and turns a provider «live» into «verifying» until the team's proof is
-// in its DNS. No proof installed: never live.
-func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord) (string, []ShopRecord) {
+// in its DNS; unproven reports that demotion (keepVerified undoes it for a host verified before). No
+// proof installed: never live.
+func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord) (string, []ShopRecord, bool) {
 	h := s.proof.Load()
 	if h == nil || h.p == nil {
 		if status == ShopHostLive {
-			status = ShopHostVerifying
+			return ShopHostVerifying, records, true
 		}
-		return status, records
+		return status, records, false
 	}
 	rec := h.p.Record(teamID, host)
 	ok, err := h.p.Proven(ctx, teamID, host)
@@ -659,9 +665,19 @@ func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, status str
 		out = append(out, r)
 	}
 	if status == ShopHostLive && !ok {
-		status = ShopHostVerifying
+		return ShopHostVerifying, out, true
 	}
-	return status, out
+	return status, out, false
+}
+
+// keepVerified: a host its team proved once (verified_at set) keeps its current status when the
+// provider says live but the proof is not seen now (TXT removed, resolver failure): the proof
+// decides ownership once; the provider alone demotes a verified host.
+func keepVerified(cur shopHostRow, status string, unproven bool) string {
+	if unproven && cur.VerifiedAt != nil {
+		return cur.Status
+	}
+	return status
 }
 
 // ShopDomainDropMax bounds one drain pass.
@@ -687,8 +703,8 @@ func dropBackoff(n int) time.Duration {
 }
 
 // DrainShopDomainDrops removes due queued hosts at the domain provider (remove), one row lock each,
-// held across the provider call: an attach of the same host waits for it (CancelShopDomainDrop) and
-// so re-attaches after the removal, never before. A host attached again meanwhile is not removed. A
+// held across the provider call: an attach of the same host waits for it (AttachShopHost deletes the
+// queued row) and so commits after the removal, never before. A host attached again meanwhile is not removed. A
 // failure backs off (1 m doubling, at most 6 h). It answers how many hosts were removed.
 func (s *Store) DrainShopDomainDrops(ctx context.Context, now time.Time, remove func(ctx context.Context, host string) error) (int, error) {
 	now = now.UTC()
@@ -762,15 +778,6 @@ func (s *Store) dropShopDomain(ctx context.Context, host string, now time.Time, 
 	return removed, nil
 }
 
-// CancelShopDomainDrop drops a queued removal of host before it is attached again; it waits for a
-// drain that holds the row (the provider removal finishes first).
-func (s *Store) CancelShopDomainDrop(ctx context.Context, host string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM shop_domain_drop WHERE host = ?`, host); err != nil {
-		return fmt.Errorf("platformstore: cancel shop domain drop: %w", err)
-	}
-	return nil
-}
-
 // EnsureLegacyShopHosts makes hosts the storefront team's (teamID) legacy hosts: live, managed, never
 // a main address. Idempotent (boot). A host another team holds is taken back: legacy hosts are the
 // storefront's own, and its customers must never reach another team. It answers the hosts taken back.
@@ -806,6 +813,9 @@ func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host str
 			return err
 		case cur.TeamID == teamID && cur.Kind == ShopHostLegacy && cur.Status == ShopHostLive:
 			return nil
+		case cur.Kind == ShopHostSubdomain:
+			// A team's platform address is never a legacy host: the configuration is wrong (boot fails).
+			return fmt.Errorf("%w: %s is a platform address of a team", ErrShopHostManaged, host)
 		default:
 			// Lock order: the holder's team_shop row, then the host.
 			if _, err := lockTeamShop(ctx, tx, cur.TeamID); err != nil {

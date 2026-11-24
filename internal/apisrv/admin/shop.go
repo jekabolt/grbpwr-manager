@@ -316,12 +316,9 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 		return nil, shopErr(ctx, "attach", err)
 	}
 	// The host must be free (in any status: a pending attach holds its name for a while) before the
-	// provider hears of it, and a queued removal of it is dropped first (it waits for a removal in
-	// flight, so the provider never removes the domain after this attach).
+	// provider hears of it. A queued provider removal of it stays queued until the store attach
+	// commits (AttachShopHost drops it), so a failed attach never loses it.
 	if err := s.platform.store.ShopHostFree(ctx, p.w.Team.ID, host, time.Now()); err != nil {
-		return nil, shopErr(ctx, "attach", err)
-	}
-	if err := s.platform.store.CancelShopDomainDrop(ctx, host); err != nil {
 		return nil, shopErr(ctx, "attach", err)
 	}
 	state, err := s.shopW.Domains.Attach(ctx, host)
