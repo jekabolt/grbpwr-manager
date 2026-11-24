@@ -34,6 +34,8 @@ type shopFixture struct {
 	// stateAt, when set, answers the n-th fresh state read (1-based) instead of ids
 	stateAt func(teamID int64, n int) (ShopState, error)
 	owners  []shopOwnerCall
+	// ownerErr, when set, fails every owner record (the call is still counted)
+	ownerErr error
 }
 
 type shopOwnerCall struct {
@@ -101,7 +103,7 @@ func (f *shopFixture) owner(_ context.Context, teamID int64, mailID int, provide
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.owners = append(f.owners, shopOwnerCall{team: teamID, mail: mailID, providerID: providerID})
-	return nil
+	return f.ownerErr
 }
 
 func (f *shopFixture) stateCount(teamID int64) int {
@@ -530,4 +532,42 @@ func TestShopCooldownIsPerTeam(t *testing.T) {
 	require.NoError(t, f.s.teamTick(teamCtx(6), time.Now()))
 	require.Len(t, f.repo.claims, claims+1, "the other shop drains")
 	require.False(t, f.s.cooling(5, now.Add(31*time.Second)), "the cooldown ends with its Retry-After")
+}
+
+// TestShopOwnerIsKeptUntilRecorded: an owner the control plane could not take stays on the sent row
+// and is recorded by a later drain of that team, even while its shop is closed; the letter itself is
+// sent once (Codex re-review of PR 144, #5b).
+func TestShopOwnerIsKeptUntilRecorded(t *testing.T) {
+	f := newShopFixture(t, 0)
+	opened := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	f.open(5, "Acme", "", opened)
+	id := shopOrderRow(f, opened.Add(time.Minute))
+	f.ownerErr = errors.New("platform down")
+	require.NoError(t, f.s.drainTeam(teamCtx(5), 5))
+	r := f.repo.row(id)
+	require.True(t, r.Sent)
+	require.True(t, r.ownerDue)
+
+	require.NoError(t, f.s.drainTeam(teamCtx(5), 5), "a failed owner never fails the tick")
+	require.True(t, f.repo.row(id).ownerDue)
+	require.Len(t, f.owners, 2, "retried at the next drain")
+
+	f.ownerErr = nil
+	f.stateAt = func(int64, int) (ShopState, error) { return ShopState{}, nil } // closed meanwhile
+	require.NoError(t, f.s.drainTeam(teamCtx(5), 5))
+	require.False(t, f.repo.row(id).ownerDue, "recorded once the control plane answers")
+	require.Equal(t, shopOwnerCall{team: 5, mail: id, providerID: "x"}, f.owners[2])
+	require.Len(t, f.cli.sent(), 1, "the letter went out once")
+
+	// Another instance's failure: found by the periodic sweep, not before it is due.
+	other := shopOrderRow(f, opened.Add(2*time.Minute))
+	f.repo.mu.Lock()
+	f.repo.rows[other].Sent, f.repo.rows[other].providerID, f.repo.rows[other].ownerDue = true, "re_other", true
+	f.repo.mu.Unlock()
+	now := time.Now()
+	f.s.sweepOwners(teamCtx(5), 5, now)
+	require.True(t, f.repo.row(other).ownerDue, "not due yet: this instance saw no failure")
+	f.s.sweepOwners(teamCtx(5), 5, now.Add(shopOwnerSweepEvery+time.Second))
+	require.False(t, f.repo.row(other).ownerDue)
+	require.Equal(t, shopOwnerCall{team: 5, mail: other, providerID: "re_other"}, f.owners[len(f.owners)-1])
 }

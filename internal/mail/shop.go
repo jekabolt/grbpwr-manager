@@ -33,10 +33,13 @@ var (
 )
 
 const (
-	shopClaimBatch       = 10               // rows one team leases per tick: no team floods a tick
-	shopTeamTimeout      = 15 * time.Second // one team's tick, its own deadline
-	shopSharedPoll       = 50 * time.Millisecond
-	shopOwnerTimeout     = 5 * time.Second // recording an accepted letter's team, past the tick's deadline
+	shopClaimBatch   = 10               // rows one team leases per tick: no team floods a tick
+	shopTeamTimeout  = 15 * time.Second // one team's tick, its own deadline
+	shopSharedPoll   = 50 * time.Millisecond
+	shopOwnerTimeout = 5 * time.Second // recording an accepted letter's team, past the tick's deadline
+	// shopOwnerSweepEvery is how often a team's outbox is searched for owners still owed when this
+	// instance saw no failure (another instance's, or a crash between send and record).
+	shopOwnerSweepEvery  = 10 * time.Minute
 	defaultShopSignInTTL = 10 * time.Minute
 	// defaultShopWorkerInterval stands in for an unset mailer worker interval (a ticker needs > 0).
 	defaultShopWorkerInterval = 5 * time.Second
@@ -121,6 +124,9 @@ type ShopMailer struct {
 	// cools: a team whose send got a 429 waits out the Retry-After on its own; the other shops and
 	// the storefront's letters go on.
 	cools map[int64]time.Time
+	// owed: a team with letter owners not recorded yet (sweepOwners); swept: its last sweep.
+	owed  map[int64]bool
+	swept map[int64]time.Time
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -175,6 +181,8 @@ func NewShop(c ShopConfig, repo dependency.Mail, resolve ShopResolver, loop Shop
 		loop:    loop,
 		holds:   map[int64]shopHold{},
 		cools:   map[int64]time.Time{},
+		owed:    map[int64]bool{},
+		swept:   map[int64]time.Time{},
 	}
 	s.c.WorkerInterval = inner.c.WorkerInterval
 	if s.c.WorkerInterval <= 0 {
@@ -387,6 +395,7 @@ func (s *ShopMailer) teamTick(ctx context.Context, now time.Time) error {
 // drainTeam quarantines what the cutover forbids, then sends what is due, under the team's own
 // deadline. The shop state is read fresh, not from the identity cache.
 func (s *ShopMailer) drainTeam(ctx context.Context, teamID int64) error {
+	s.sweepOwners(ctx, teamID, time.Now())
 	st, err := s.c.State(ctx, teamID)
 	if err != nil {
 		return fmt.Errorf("shop state: %w", err)
@@ -451,20 +460,77 @@ func (s *ShopMailer) dispatchGate(teamID int64) rowGate {
 	}
 }
 
-// recordOwner remembers the team of an accepted letter; a failure only costs that letter's bounce
-// routing, so it is logged, never retried as a send.
-func (s *ShopMailer) recordOwner(teamID int64) func(context.Context, *entity.SendEmailRequest, string) {
+// recordOwner remembers the team of an accepted letter before the row is settled sent. A failure
+// is returned (the row is then settled sent with its owner pending) and marks the team, so its next
+// drain records the owner (sweepOwners); the letter itself is never sent again for it.
+func (s *ShopMailer) recordOwner(teamID int64) func(context.Context, *entity.SendEmailRequest, string) error {
 	if s.c.Owner == nil {
 		return nil
 	}
-	return func(ctx context.Context, row *entity.SendEmailRequest, providerID string) {
-		octx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shopOwnerTimeout)
-		defer cancel()
-		if err := s.c.Owner(octx, teamID, row.Id, providerID); err != nil {
-			slog.Default().WarnContext(ctx, "shop mail: letter owner not recorded; its bounces are not routed",
+	return func(ctx context.Context, row *entity.SendEmailRequest, providerID string) error {
+		if err := s.ownerWrite(ctx, teamID, row.Id, providerID); err != nil {
+			s.mu.Lock()
+			s.owed[teamID] = true
+			s.mu.Unlock()
+			slog.Default().WarnContext(ctx, "shop mail: letter owner not recorded; kept for the next drain",
 				slog.Int64("tid", teamID), slog.Int("mailId", row.Id), slog.String("err", err.Error()))
+			return err
+		}
+		return nil
+	}
+}
+
+// ownerWrite records one owner under its own deadline, past the tick's.
+func (s *ShopMailer) ownerWrite(ctx context.Context, teamID int64, mailID int, providerID string) error {
+	octx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shopOwnerTimeout)
+	defer cancel()
+	return s.c.Owner(octx, teamID, mailID, providerID)
+}
+
+// sweepOwners records the owners a team still owes (rows settled sent with owner_pending_at): at
+// once after a failure in this process, and every shopOwnerSweepEvery anyway (another instance's
+// failure, a crash). A failure leaves the rows marked and never fails the team's tick: sending goes
+// on, and the bounce route asks Resend to retry an event whose owner is not known yet.
+func (s *ShopMailer) sweepOwners(ctx context.Context, teamID int64, now time.Time) {
+	if s.c.Owner == nil {
+		return
+	}
+	s.mu.Lock()
+	due := s.owed[teamID] || !now.Before(s.swept[teamID].Add(shopOwnerSweepEvery))
+	if due {
+		s.swept[teamID] = now
+	}
+	s.mu.Unlock()
+	if !due {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, shopTeamTimeout)
+	defer cancel()
+	fail := func(err error) {
+		s.mu.Lock()
+		s.owed[teamID] = true
+		s.mu.Unlock()
+		slog.Default().WarnContext(ctx, "shop mail: owed letter owners not recorded yet",
+			slog.Int64("tid", teamID), slog.String("err", err.Error()))
+	}
+	rows, err := s.repo.MailOwnersDue(ctx, shopClaimBatch)
+	if err != nil {
+		fail(err)
+		return
+	}
+	for _, r := range rows {
+		if err := s.ownerWrite(ctx, teamID, r.ID, r.ProviderID); err != nil {
+			fail(err)
+			return
+		}
+		if err := s.repo.ClearMailOwnerDue(ctx, r.ID); err != nil {
+			fail(err)
+			return
 		}
 	}
+	s.mu.Lock()
+	s.owed[teamID] = len(rows) >= shopClaimBatch // a full page: more may wait
+	s.mu.Unlock()
 }
 
 // prepareRow checks a claimed row again before it reaches the provider: a shop kind, not expired, not

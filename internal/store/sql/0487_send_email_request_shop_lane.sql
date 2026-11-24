@@ -21,6 +21,9 @@
 --                    driver's changed-rows count proves the lease was still held).
 -- provider_email_id  the provider's id of the accepted letter: delivery events (bounce, complaint) find
 --                    their row and recipient by it.
+-- owner_pending_at   a team-shop letter was accepted but its owner (platform shop_mail_owner) could not
+--                    be recorded; set in the same write that marks the row sent, cleared once a later
+--                    drain records the owner. The letter is never sent again for it.
 --
 -- Every column but dispatch_count is nullable with no default; dispatch_count is NOT NULL DEFAULT 0. An
 -- older binary keeps inserting and its worker keeps draining (it never reads these columns).
@@ -102,7 +105,25 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_email_request' AND COLUMN_NAME = 'owner_pending_at');
+SET @ddl := IF(@col = 0,
+    'ALTER TABLE send_email_request ADD COLUMN owner_pending_at DATETIME NULL, ALGORITHM=INSTANT',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 -- +migrate Down
+
+SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_email_request' AND COLUMN_NAME = 'owner_pending_at');
+SET @ddl := IF(@col = 1,
+    'ALTER TABLE send_email_request DROP COLUMN owner_pending_at, ALGORITHM=INSTANT',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_email_request' AND COLUMN_NAME = 'provider_email_id');

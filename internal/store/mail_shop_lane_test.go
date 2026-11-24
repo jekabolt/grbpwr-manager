@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,13 +32,14 @@ type outboxRowState struct {
 	FirstDispatch sql.NullTime   `db:"first_dispatch_at"`
 	Dispatches    int            `db:"dispatch_count"`
 	ProviderID    sql.NullString `db:"provider_email_id"`
+	OwnerPending  sql.NullTime   `db:"owner_pending_at"`
 }
 
 func outboxRow(t *testing.T, ms *MYSQLStore, id int) outboxRowState {
 	t.Helper()
 	r, err := QueryNamedOne[outboxRowState](context.Background(), ms.DB(), `
 SELECT sent, send_attempt_count, next_retry_at, claim_token, quarantined_at, error_msg, kind, expires_at,
-	idempotency_key, first_dispatch_at, dispatch_count, provider_email_id
+	idempotency_key, first_dispatch_at, dispatch_count, provider_email_id, owner_pending_at
 FROM send_email_request WHERE id = :id`, map[string]any{"id": id})
 	require.NoError(t, err)
 	return r
@@ -331,6 +333,18 @@ func TestMailStoreShopLane(t *testing.T) {
 		require.Len(t, got, 3)
 		require.Equal(t, row.IdempotencyKey.String, got[0].IdempotencyKey.String, "claimed rows carry their key")
 		require.False(t, got[0].FirstDispatchAt.Valid)
+		require.Zero(t, outboxRow(t, ms, id).Dispatches)
+
+		// An inline send carries its first dispatch from the insert (Codex re-review of PR 144, #4a).
+		at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+		inline := &entity.SendEmailRequest{From: "a@x.test", To: "c@example.com", Subject: "s", Html: "<p>x</p>",
+			FirstDispatchAt: sql.NullTime{Time: at, Valid: true}}
+		iid, err := mailStore.AddMail(ctx, inline)
+		require.NoError(t, err)
+		r := outboxRow(t, ms, iid)
+		require.True(t, r.FirstDispatch.Valid)
+		require.True(t, r.FirstDispatch.Time.Equal(at), "%s != %s", r.FirstDispatch.Time, at)
+		require.Equal(t, 1, r.Dispatches)
 	})
 
 	t.Run("dispatch mark needs the lease and keeps the first time", func(t *testing.T) {
@@ -338,21 +352,80 @@ func TestMailStoreShopLane(t *testing.T) {
 		id := seedOutbox(t, ms, outboxSeed{})
 		_, err := mailStore.ClaimUnsent(ctx, claim("tok"))
 		require.NoError(t, err)
-		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "someone-else", time.Now()), entity.ErrMailClaimLost)
+		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "someone-else", "k", time.Now()), entity.ErrMailClaimLost)
 		require.Zero(t, outboxRow(t, ms, id).Dispatches)
 		first := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", first))
-		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", first), "the same second still counts as a change")
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", outboxRow(t, ms, id).IdemKey.String, first))
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", "mail-another", first), "the same second still counts as a change")
 		r := outboxRow(t, ms, id)
 		require.Equal(t, 2, r.Dispatches)
+		require.Regexp(t, `^mail-[0-9a-f-]{36}$`, r.IdemKey.String, "a stored key is never replaced")
 		require.True(t, r.FirstDispatch.Time.Equal(first), "%s != %s", r.FirstDispatch.Time, first)
 		require.Equal(t, "tok", r.ClaimToken.String, "a dispatch mark keeps the lease")
 		got, err := mailStore.ClaimUnsent(ctx, claim("late", func(q *entity.MailClaim) { q.Now = time.Now().Add(3 * time.Minute) }))
 		require.NoError(t, err)
 		require.True(t, got[0].FirstDispatchAt.Valid, "a later claimer sees the first dispatch")
-		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "tok", time.Now()), entity.ErrMailClaimLost,
+		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "tok", "k", time.Now()), entity.ErrMailClaimLost,
 			"the old holder cannot dispatch after the lease moved")
-		require.Error(t, mailStore.MarkMailDispatched(ctx, id, "", time.Now()))
+		require.Error(t, mailStore.MarkMailDispatched(ctx, id, "", "k", time.Now()))
+		require.Error(t, mailStore.MarkMailDispatched(ctx, id, "late", "", time.Now()))
+		require.Error(t, mailStore.MarkMailDispatched(ctx, id, "late", strings.Repeat("k", 65), time.Now()))
+	})
+
+	t.Run("a row of an older binary gets its derived key stored once", func(t *testing.T) {
+		reset(t)
+		// An older binary inserts without a key (Codex re-review of PR 144, #4b).
+		res, err := ms.DB().ExecContext(ctx, `INSERT INTO send_email_request (from_email, to_email, html, subject, reply_to, sent)
+VALUES ('a@x.test', 'c@example.com', '<p>x</p>', 's', '', false)`)
+		require.NoError(t, err)
+		lastID, err := res.LastInsertId()
+		require.NoError(t, err)
+		id := int(lastID)
+		require.False(t, outboxRow(t, ms, id).IdemKey.Valid)
+		_, err = mailStore.ClaimUnsent(ctx, claim("tok"))
+		require.NoError(t, err)
+		require.ErrorIs(t, mailStore.MarkMailDispatched(ctx, id, "other", "mail-0000-t1-m1-a", time.Now()), entity.ErrMailClaimLost)
+		require.False(t, outboxRow(t, ms, id).IdemKey.Valid, "only the lease holder stores a key")
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", "mail-0000-t1-m1-a", time.Now()))
+		require.Equal(t, "mail-0000-t1-m1-a", outboxRow(t, ms, id).IdemKey.String)
+		// The config changed meanwhile; the next attempt reads the stored key, and a different one
+		// offered by mistake never replaces it.
+		require.NoError(t, mailStore.MarkMailDispatched(ctx, id, "tok", "mail-ffff-t1-m1-a", time.Now()))
+		require.Equal(t, "mail-0000-t1-m1-a", outboxRow(t, ms, id).IdemKey.String)
+		got, err := mailStore.ClaimUnsent(ctx, claim("late", func(q *entity.MailClaim) { q.Now = time.Now().Add(3 * time.Minute) }))
+		require.NoError(t, err)
+		require.Equal(t, "mail-0000-t1-m1-a", got[0].IdempotencyKey.String, "a later claimer gets the stored key")
+	})
+
+	t.Run("an owner not recorded is kept with the sent mark", func(t *testing.T) {
+		reset(t)
+		owed := seedOutbox(t, ms, outboxSeed{})
+		fine := seedOutbox(t, ms, outboxSeed{})
+		noID := seedOutbox(t, ms, outboxSeed{})
+		_, err := mailStore.ClaimUnsent(ctx, claim("tok"))
+		require.NoError(t, err)
+		require.Error(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: noID, Token: "tok", Outcome: entity.MailSent, OwnerPending: true}),
+			"an owner needs a provider id")
+		require.NoError(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: owed, Token: "tok", Outcome: entity.MailSent, ProviderID: "re_owed", OwnerPending: true}))
+		require.NoError(t, mailStore.SettleMail(ctx, entity.MailSettle{ID: fine, Token: "tok", Outcome: entity.MailSent, ProviderID: "re_fine"}))
+		r := outboxRow(t, ms, owed)
+		require.True(t, r.Sent, "the letter is sent: never offered again")
+		require.True(t, r.OwnerPending.Valid, "set in the same write as sent")
+		require.False(t, outboxRow(t, ms, fine).OwnerPending.Valid)
+
+		due, err := mailStore.MailOwnersDue(ctx, 10)
+		require.NoError(t, err)
+		require.Equal(t, []entity.MailOwnerDue{{ID: owed, ProviderID: "re_owed"}}, due)
+		_, err = mailStore.MailOwnersDue(ctx, 0)
+		require.Error(t, err)
+		require.NoError(t, mailStore.ClearMailOwnerDue(ctx, owed))
+		require.NoError(t, mailStore.ClearMailOwnerDue(ctx, owed), "repeating is a no-op")
+		due, err = mailStore.MailOwnersDue(ctx, 10)
+		require.NoError(t, err)
+		require.Empty(t, due)
+		r = outboxRow(t, ms, owed)
+		require.True(t, r.Sent)
+		require.Equal(t, "re_owed", r.ProviderID.String)
 	})
 
 	t.Run("settle needs the lease token and checks one row", func(t *testing.T) {
@@ -547,7 +620,7 @@ func TestMigrationSendEmailShopLaneUpDownUp(t *testing.T) {
 			FROM information_schema.COLUMNS
 			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'send_email_request'
 				AND COLUMN_NAME IN ('kind', 'expires_at', 'claim_token', 'quarantined_at',
-					'idempotency_key', 'first_dispatch_at', 'dispatch_count', 'provider_email_id')`)
+					'idempotency_key', 'first_dispatch_at', 'dispatch_count', 'provider_email_id', 'owner_pending_at')`)
 		require.NoError(t, err)
 		defer rows.Close()
 		out := map[string]string{}
@@ -569,6 +642,7 @@ func TestMigrationSendEmailShopLaneUpDownUp(t *testing.T) {
 		"first_dispatch_at": "datetime YES - -",
 		"dispatch_count":    "int NO - 0",
 		"provider_email_id": "varchar(64) YES ascii -",
+		"owner_pending_at":  "datetime YES - -", // re-review #5b
 	}
 	require.Equal(t, want, columns(), "the suite starts migrated")
 	run("down", parsed.DownStatements)

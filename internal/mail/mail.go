@@ -638,8 +638,12 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 		return fmt.Errorf("error converting email: %w", err)
 	}
 
-	leaseUntil := time.Now().UTC().Add(m.c.InlineSendLease)
-	eser.NextRetryAt = sql.NullTime{Time: leaseUntil, Valid: true}
+	now := time.Now().UTC()
+	eser.NextRetryAt = sql.NullTime{Time: now.Add(m.c.InlineSendLease), Valid: true}
+	// The row is offered to the provider right after the insert: it carries its first dispatch time
+	// from the start, so when the inline answer is lost and the worker finds the row unsent past the
+	// provider's key window, it quarantines the row instead of sending it a second time.
+	eser.FirstDispatchAt = sql.NullTime{Time: now, Valid: true}
 
 	id, err := rep.Mail().AddMail(ctx, eser)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
 	"github.com/stretchr/testify/require"
@@ -264,7 +265,10 @@ func TestOutboxLaneUsesTheRowsOwnKeyAndKeepsTheProviderID(t *testing.T) {
 	require.NoError(t, err)
 	l := testLane(repo, cli, p)
 	var accepted []string
-	l.accepted = func(_ context.Context, r *entity.SendEmailRequest, pid string) { accepted = append(accepted, pid) }
+	l.accepted = func(_ context.Context, r *entity.SendEmailRequest, pid string) error {
+		accepted = append(accepted, pid)
+		return nil
+	}
 	l.keySpace = outboxKeySpace("changed config") // a config change cannot move a written key
 	require.NoError(t, l.drain(context.Background()))
 	sent := cli.sent()
@@ -378,4 +382,87 @@ func TestOutboxLaneGateRunsRightBeforeTheCall(t *testing.T) {
 	require.Empty(t, cli.sent())
 	requireReleased(t, repo, ids[0])
 	requireReleased(t, repo, ids[1])
+}
+
+// TestOutboxLaneStoresTheDerivedKeyBeforeItsFirstUse: a row of an older binary has no key; the
+// dispatch mark stores the derived one, and a later attempt under another config sends with the
+// stored key (Codex re-review of PR 144, #4b).
+func TestOutboxLaneStoresTheDerivedKeyBeforeItsFirstUse(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	id := queueRows(repo, 1)[0] // put: no key, as an older binary wrote it
+	require.False(t, repo.row(id).IdempotencyKey.Valid)
+	var keyAtPost string
+	cli.onPost = func(context.Context) { keyAtPost = repo.row(id).IdempotencyKey.String }
+	cli.script = []fakeAnswer{{status: http.StatusConflict}} // transient: retried later
+	require.NoError(t, testLane(repo, cli, p).drain(context.Background()))
+	first := cli.sent()[0].key
+	require.Regexp(t, `^mail-[0-9a-f]{8}-t7-m\d+-[0-9a-f]{8}$`, first)
+	require.Equal(t, first, keyAtPost, "the key is stored before the provider call")
+	require.Equal(t, first, repo.row(id).IdempotencyKey.String)
+	require.LessOrEqual(t, len(first), 64, "fits send_email_request.idempotency_key")
+
+	repo.age(id, time.Hour) // the retry delay is over
+	l := testLane(repo, cli, p)
+	l.keySpace = outboxKeySpace("another config") // would derive another key
+	require.NoError(t, l.drain(context.Background()))
+	sent := cli.sent()
+	require.Len(t, sent, 2)
+	require.Equal(t, first, sent[1].key, "the next attempt sends under the stored key")
+	require.True(t, repo.row(id).Sent)
+}
+
+// TestOutboxLaneRecordsTheOwnerBeforeTheSentMark: the accepted letter's owner is recorded before
+// the row is settled sent; a failure settles it sent with the owner pending, never sends it again
+// (Codex re-review of PR 144, #5b).
+func TestOutboxLaneRecordsTheOwnerBeforeTheSentMark(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	ids := queueRows(repo, 2)
+	l := testLane(repo, cli, p)
+	var sentAtRecord []bool
+	fail := map[int]bool{ids[1]: true}
+	l.accepted = func(_ context.Context, r *entity.SendEmailRequest, pid string) error {
+		sentAtRecord = append(sentAtRecord, repo.row(r.Id).Sent)
+		if fail[r.Id] {
+			return errors.New("platform down")
+		}
+		return nil
+	}
+	require.NoError(t, l.drain(context.Background()))
+	require.Equal(t, []bool{false, false}, sentAtRecord, "recorded before the sent mark")
+	ok, owed := repo.row(ids[0]), repo.row(ids[1])
+	require.True(t, ok.Sent)
+	require.False(t, ok.ownerDue)
+	require.True(t, owed.Sent, "accepted: never offered again")
+	require.True(t, owed.ownerDue, "the owner is kept for a later drain")
+	require.Equal(t, "x", owed.providerID)
+	require.NoError(t, l.drain(context.Background()))
+	require.Len(t, cli.sent(), 2, "nothing is sent twice")
+}
+
+// TestInlineSendCarriesItsFirstDispatch: an inline send writes its row with first_dispatch_at, so a
+// lost sent mark found past the provider's key window is quarantined, not sent again (Codex
+// re-review of PR 144, #4a).
+func TestInlineSendCarriesItsFirstDispatch(t *testing.T) {
+	repo := newFakeOutbox()
+	m, err := new(&Config{APIKey: "k", FromEmail: "info@shop.test", FromName: "GRBPWR", UnsubscribeBaseURL: "https://backend.test", UnsubscribePepper: "pepper"}, repo, nil)
+	require.NoError(t, err)
+	cli := &fakeSender{}
+	m.cli = cli
+	var row fakeRow
+	cli.onPost = func(context.Context) { row = repo.row(1) }
+	repo.fail["UpdateSent"] = errors.New("db gone after the provider accepted")
+	err = m.SendOrderConfirmation(context.Background(), fakeRepo{mail: repo}, "c@example.com", sampleData(t, OrderConfirmed).(*dto.OrderConfirmed))
+	require.Error(t, err)
+	require.Len(t, cli.sent(), 1)
+	require.True(t, row.FirstDispatchAt.Valid, "first_dispatch_at is on the row before the provider call")
+	require.Equal(t, row.IdempotencyKey.String, cli.sent()[0].key)
+	require.False(t, repo.row(1).Sent, "the sent mark was lost")
+
+	// A day later the worker finds the row unsent: Resend has forgotten the key, so it is
+	// quarantined instead of delivered a second time.
+	repo.fail["UpdateSent"] = nil
+	repo.age(1, 24*time.Hour)
+	require.NoError(t, m.storefrontLane(context.Background()).drain(context.Background()))
+	require.Len(t, cli.sent(), 1, "never sent again")
+	require.NotEmpty(t, repo.row(1).quarantined)
 }

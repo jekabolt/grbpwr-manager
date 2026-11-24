@@ -40,6 +40,7 @@ type fakeRow struct {
 	dead        bool
 	dispatches  int    // dispatch marks
 	providerID  string // the provider's id of the accepted letter
+	ownerDue    bool   // owner_pending_at is set
 }
 
 func newFakeOutbox() *fakeOutbox {
@@ -149,7 +150,7 @@ func (f *fakeOutbox) ReleaseClaims(_ context.Context, ids []int, token string) e
 	return nil
 }
 
-func (f *fakeOutbox) MarkMailDispatched(_ context.Context, id int, token string, now time.Time) error {
+func (f *fakeOutbox) MarkMailDispatched(_ context.Context, id int, token, key string, now time.Time) error {
 	if err := f.failure("MarkMailDispatched"); err != nil {
 		return err
 	}
@@ -162,7 +163,81 @@ func (f *fakeOutbox) MarkMailDispatched(_ context.Context, id int, token string,
 	if !r.FirstDispatchAt.Valid {
 		r.FirstDispatchAt = sql.NullTime{Time: now.UTC(), Valid: true}
 	}
+	if !r.IdempotencyKey.Valid {
+		r.IdempotencyKey = sql.NullString{String: key, Valid: true}
+	}
 	r.dispatches++
+	return nil
+}
+
+// UpdateSent is the inline send's sent mark (no lease).
+func (f *fakeOutbox) UpdateSent(_ context.Context, id int) error {
+	if err := f.failure("UpdateSent"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r := f.rows[id]; r != nil {
+		r.Sent, r.token = true, ""
+	}
+	return nil
+}
+
+// ClearNextRetryAt hands an inline row whose send failed to the worker.
+func (f *fakeOutbox) ClearNextRetryAt(_ context.Context, id int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r := f.rows[id]; r != nil && !r.Sent {
+		r.NextRetryAt.Valid = false
+	}
+	return nil
+}
+
+// age moves row id's clock: its creation and first dispatch happened d earlier, and its inline hold
+// is over.
+func (f *fakeOutbox) age(id int, d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r := f.rows[id]
+	r.CreatedAt = r.CreatedAt.Add(-d)
+	if r.FirstDispatchAt.Valid {
+		r.FirstDispatchAt.Time = r.FirstDispatchAt.Time.Add(-d)
+	}
+	r.NextRetryAt.Valid = false
+}
+
+func (f *fakeOutbox) MailOwnersDue(_ context.Context, limit int) ([]entity.MailOwnerDue, error) {
+	if err := f.failure("MailOwnersDue"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := make([]int, 0, len(f.rows))
+	for id, r := range f.rows {
+		if r.ownerDue && r.Sent && r.providerID != "" {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	var out []entity.MailOwnerDue
+	for _, id := range ids {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, entity.MailOwnerDue{ID: id, ProviderID: f.rows[id].providerID})
+	}
+	return out, nil
+}
+
+func (f *fakeOutbox) ClearMailOwnerDue(_ context.Context, id int) error {
+	if err := f.failure("ClearMailOwnerDue"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r := f.rows[id]; r != nil {
+		r.ownerDue = false
+	}
 	return nil
 }
 
@@ -179,7 +254,7 @@ func (f *fakeOutbox) SettleMail(_ context.Context, q entity.MailSettle) error {
 	}
 	switch q.Outcome {
 	case entity.MailSent:
-		r.Sent, r.providerID = true, q.ProviderID
+		r.Sent, r.providerID, r.ownerDue = true, q.ProviderID, q.OwnerPending
 	case entity.MailRetry:
 		r.SendAttemptCount++
 		r.NextRetryAt = sql.NullTime{Time: q.NextRetryAt, Valid: true}

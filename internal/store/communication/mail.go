@@ -35,7 +35,8 @@ const sendEmailRequestUnsentColumns = `
 `
 
 // AddMail queues a new email to be sent. A row without an idempotency key gets a fresh one, written
-// back to ser, so every send of the row (inline or by a worker) uses the same key.
+// back to ser, so every send of the row (inline or by a worker) uses the same key. A row sent inline
+// right after the insert carries FirstDispatchAt, so the worker's key-window check covers it too.
 func (s *Store) AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int, error) {
 	if !ser.IdempotencyKey.Valid || ser.IdempotencyKey.String == "" {
 		ser.IdempotencyKey = sql.NullString{String: "mail-" + uuid.NewString(), Valid: true}
@@ -43,21 +44,30 @@ func (s *Store) AddMail(ctx context.Context, ser *entity.SendEmailRequest) (int,
 	query := `
 	INSERT INTO 
 	send_email_request 
-		(from_email, to_email, html, subject, reply_to, sent, sent_at, next_retry_at, kind, expires_at, idempotency_key)
+		(from_email, to_email, html, subject, reply_to, sent, sent_at, next_retry_at, kind, expires_at, idempotency_key,
+		first_dispatch_at, dispatch_count)
 	VALUES
-		(:fromEmail, :toEmail, :html, :subject, :replyTo, :sent, :sentAt, :nextRetryAt, :kind, :expiresAt, :idemKey)
+		(:fromEmail, :toEmail, :html, :subject, :replyTo, :sent, :sentAt, :nextRetryAt, :kind, :expiresAt, :idemKey,
+		:firstDispatch, :dispatches)
 	`
+	dispatches := 0
+	if ser.FirstDispatchAt.Valid {
+		ser.FirstDispatchAt.Time = ser.FirstDispatchAt.Time.UTC()
+		dispatches = 1
+	}
 	params := map[string]any{
-		"idemKey":     ser.IdempotencyKey,
-		"fromEmail":   ser.From,
-		"toEmail":     ser.To,
-		"html":        ser.Html,
-		"subject":     ser.Subject,
-		"replyTo":     ser.ReplyTo,
-		"sent":        ser.Sent,
-		"nextRetryAt": ser.NextRetryAt,
-		"kind":        ser.Kind,
-		"expiresAt":   ser.ExpiresAt,
+		"idemKey":       ser.IdempotencyKey,
+		"firstDispatch": ser.FirstDispatchAt,
+		"dispatches":    dispatches,
+		"fromEmail":     ser.From,
+		"toEmail":       ser.To,
+		"html":          ser.Html,
+		"subject":       ser.Subject,
+		"replyTo":       ser.ReplyTo,
+		"sent":          ser.Sent,
+		"nextRetryAt":   ser.NextRetryAt,
+		"kind":          ser.Kind,
+		"expiresAt":     ser.ExpiresAt,
 	}
 	if ser.Sent {
 		params["sentAt"] = sql.NullTime{Time: time.Now().UTC(), Valid: true}
@@ -422,23 +432,33 @@ WHERE id IN (:ids) AND claim_token = :tok AND sent = false`, map[string]any{"ids
 	return nil
 }
 
+// maxIdempotencyKeyLen is send_email_request.idempotency_key's width.
+const maxIdempotencyKeyLen = 64
+
 // MarkMailDispatched records that the worker holding token is about to offer row id to the provider:
-// first_dispatch_at keeps the first such moment, dispatch_count counts them. It returns
+// first_dispatch_at keeps the first such moment, dispatch_count counts them, and key becomes the
+// row's idempotency key when it has none (a row of an older binary: the key a worker derived is
+// stored before its first use, so a config change cannot change it for a later attempt). It returns
 // entity.ErrMailClaimLost when the row is no longer leased to token (then nothing may be sent). The
 // count always changes, so the driver's changed-rows answer is exact.
-func (s *Store) MarkMailDispatched(ctx context.Context, id int, token string, now time.Time) error {
+func (s *Store) MarkMailDispatched(ctx context.Context, id int, token, key string, now time.Time) error {
 	if token == "" {
 		return fmt.Errorf("%w: dispatch mark without a token", errBadMailClaim)
+	}
+	if key == "" || len(key) > maxIdempotencyKeyLen {
+		return fmt.Errorf("%w: dispatch mark with an idempotency key of %d chars", errBadMailClaim, len(key))
 	}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	n, err := storeutil.ExecNamedRows(ctx, s.DB, `
 UPDATE send_email_request
-SET first_dispatch_at = COALESCE(first_dispatch_at, :now), dispatch_count = dispatch_count + 1
+SET first_dispatch_at = COALESCE(first_dispatch_at, :now), dispatch_count = dispatch_count + 1,
+	idempotency_key = COALESCE(idempotency_key, :key)
 WHERE id = :id AND claim_token = :tok AND sent = false AND quarantined_at IS NULL`, map[string]any{
 		"id":  id,
 		"tok": token,
+		"key": key,
 		"now": now.UTC(),
 	})
 	if err != nil {
@@ -466,8 +486,12 @@ func (s *Store) SettleMail(ctx context.Context, q entity.MailSettle) error {
 	var set string
 	switch q.Outcome {
 	case entity.MailSent:
-		set = `sent = true, sent_at = :now, provider_email_id = :pid`
+		if q.OwnerPending && q.ProviderID == "" {
+			return fmt.Errorf("%w: owner pending without a provider id", errBadMailClaim)
+		}
+		set = `sent = true, sent_at = :now, provider_email_id = :pid, owner_pending_at = :owed`
 		params["pid"] = sql.NullString{String: q.ProviderID, Valid: q.ProviderID != ""}
+		params["owed"] = sql.NullTime{Time: now, Valid: q.OwnerPending}
 	case entity.MailRetry:
 		if q.NextRetryAt.IsZero() {
 			return fmt.Errorf("%w: retry without a time", errBadMailClaim)
@@ -514,6 +538,35 @@ SELECT to_email FROM send_email_request WHERE id = :id AND provider_email_id = :
 		return "", nil
 	}
 	return tos[0], nil
+}
+
+// MailOwnersDue lists up to limit sent rows whose owner still waits to be recorded (a team-shop
+// letter accepted while the control plane could not take its owner), oldest first.
+func (s *Store) MailOwnersDue(ctx context.Context, limit int) ([]entity.MailOwnerDue, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: owners due without a limit", errBadMailClaim)
+	}
+	due, err := storeutil.QueryListNamed[entity.MailOwnerDue](ctx, s.DB, `
+SELECT id, provider_email_id FROM send_email_request
+WHERE owner_pending_at IS NOT NULL AND sent = true AND provider_email_id IS NOT NULL
+ORDER BY id
+LIMIT :n`, map[string]any{"n": limit})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list email owners due: %w", err)
+	}
+	return due, nil
+}
+
+// ClearMailOwnerDue drops row id's owner-pending mark once its owner is recorded. Repeating it is a
+// no-op.
+func (s *Store) ClearMailOwnerDue(ctx context.Context, id int) error {
+	err := storeutil.ExecNamed(ctx, s.DB, `
+UPDATE send_email_request SET owner_pending_at = NULL WHERE id = :id AND owner_pending_at IS NOT NULL`,
+		map[string]any{"id": id})
+	if err != nil {
+		return fmt.Errorf("failed to clear email %d owner due: %w", id, err)
+	}
+	return nil
 }
 
 // QuarantineOutside applies the team-shop lane's never-send rule (entity.MailCutover) to every

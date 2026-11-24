@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -78,8 +79,10 @@ type outboxLane struct {
 	cooldown    func(time.Duration)         // a 429's Retry-After
 	prepare     rowPrepare
 	gate        rowGate // optional
-	// accepted, optional, learns the provider's id of every letter it accepted (after bookkeeping).
-	accepted func(ctx context.Context, row *entity.SendEmailRequest, providerID string)
+	// accepted, optional, records the provider's id of every letter it accepted, before the row is
+	// settled sent. An error does not undo the send: the row is settled sent with its owner pending
+	// (owner_pending_at, in the same write), for a later drain to record.
+	accepted func(ctx context.Context, row *entity.SendEmailRequest, providerID string) error
 }
 
 // outboxKeySpace is the idempotency namespace of one installation's lane: 8 hex chars of a hash of
@@ -91,10 +94,11 @@ func outboxKeySpace(parts ...string) string {
 }
 
 // idempotencyKey is the row's own key, written with the row (AddMail), so no config change between
-// two attempts can change it. A row of an older binary has none and gets one derived from what never
-// changes on it: namespace, team, row id and a fingerprint of its creation time, recipient and
-// subject. The fingerprint keeps a reused id (a database restored or reseeded within Resend's 24h key
-// window) from replaying an old letter's answer instead of sending the new one.
+// two attempts can change it. A row of an older binary has none and gets one derived from namespace,
+// team, row id and a fingerprint of its creation time, recipient and subject; the dispatch mark
+// stores it on the row before its first use, and every later attempt reads the stored one. The
+// fingerprint keeps a reused id (a database restored or reseeded within Resend's 24h key window)
+// from replaying an old letter's answer instead of sending the new one.
 func (l *outboxLane) idempotencyKey(row *entity.SendEmailRequest) string {
 	if row.IdempotencyKey.Valid && row.IdempotencyKey.String != "" {
 		return row.IdempotencyKey.String
@@ -202,10 +206,12 @@ func (l *outboxLane) sendRow(ctx context.Context, row *entity.SendEmailRequest, 
 			return true, nil
 		}
 	}
-	// The dispatch mark goes first: it proves the lease is still ours, and a crash after the call
-	// leaves first_dispatch_at behind for the window check above.
+	// The dispatch mark goes first: it proves the lease is still ours, a crash after the call leaves
+	// first_dispatch_at behind for the window check above, and a row without a key gets the derived
+	// one stored, so a later attempt can never send under another key.
+	key := l.idempotencyKey(row)
 	if err := l.book(ctx, func(c context.Context) error {
-		return l.repo.MarkMailDispatched(c, row.Id, token, time.Now())
+		return l.repo.MarkMailDispatched(c, row.Id, token, key, time.Now())
 	}); err != nil {
 		if errors.Is(err, entity.ErrMailClaimLost) {
 			slog.Default().WarnContext(ctx, "mail: outbox lease lost before dispatch; row skipped",
@@ -214,7 +220,8 @@ func (l *outboxLane) sendRow(ctx context.Context, row *entity.SendEmailRequest, 
 		}
 		return true, err
 	}
-	resp, err := l.cli.PostEmails(ctx, req, idempotencyKeyEditor(l.idempotencyKey(row)))
+	row.IdempotencyKey = sql.NullString{String: key, Valid: true} // what the row now stores
+	resp, err := l.cli.PostEmails(ctx, req, idempotencyKeyEditor(key))
 	if resp != nil {
 		defer func() {
 			_, _ = io.Copy(io.Discard, resp.Body)
@@ -246,12 +253,14 @@ func (l *outboxLane) sendRow(ctx context.Context, row *entity.SendEmailRequest, 
 		return false, l.recordFailure(ctx, row, token, herr)
 	}
 	// resp == nil: dependency.Sender test doubles answer (nil, nil); the generated client never does.
+	// The owner is recorded before the row is settled sent; when that fails the sent mark carries
+	// owner_pending_at, so the obligation is never lost and the letter is never sent again for it.
 	pid := providerEmailID(resp)
-	err = l.settle(ctx, row, entity.MailSettle{Token: token, Outcome: entity.MailSent, ProviderID: pid})
+	owed := false
 	if pid != "" && l.accepted != nil {
-		l.accepted(ctx, row, pid)
+		owed = l.accepted(ctx, row, pid) != nil
 	}
-	return false, err
+	return false, l.settle(ctx, row, entity.MailSettle{Token: token, Outcome: entity.MailSent, ProviderID: pid, OwnerPending: owed})
 }
 
 // providerEmailID reads the provider's id of an accepted letter ({"id": "..."}); "" when the body

@@ -271,15 +271,20 @@ type (
 		// ReleaseClaims returns rows still leased to token to the queue without counting an attempt.
 		ReleaseClaims(ctx context.Context, ids []int, token string) error
 		// MarkMailDispatched records, just before the provider call, that the worker holding token
-		// offers the row (first_dispatch_at, dispatch_count); entity.ErrMailClaimLost when the lease
-		// is gone.
-		MarkMailDispatched(ctx context.Context, id int, token string, now time.Time) error
+		// offers the row (first_dispatch_at, dispatch_count) under idempotency key key, which is stored
+		// when the row has none yet (a row of an older binary) and never changed once stored;
+		// entity.ErrMailClaimLost when the lease is gone.
+		MarkMailDispatched(ctx context.Context, id int, token, key string, now time.Time) error
 		// SettleMail records a claimed row's outcome (sent, retry, dead, quarantined) while the row is
 		// still leased to q.Token; entity.ErrMailClaimLost otherwise.
 		SettleMail(ctx context.Context, q entity.MailSettle) error
 		// ProviderMailRecipient is the recipient of row id when the provider accepted it under
 		// providerID, else "".
 		ProviderMailRecipient(ctx context.Context, id int, providerID string) (string, error)
+		// MailOwnersDue lists up to limit sent rows whose owner still waits to be recorded
+		// (owner_pending_at); ClearMailOwnerDue drops that mark once it is recorded.
+		MailOwnersDue(ctx context.Context, limit int) ([]entity.MailOwnerDue, error)
+		ClearMailOwnerDue(ctx context.Context, id int) error
 		// QuarantineOutside quarantines every unsent row the team-shop lane must never send
 		// (entity.MailCutover) and returns how many it caught.
 		QuarantineOutside(ctx context.Context, rule entity.MailCutover) (int64, error)

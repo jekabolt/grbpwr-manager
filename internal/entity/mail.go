@@ -58,7 +58,16 @@ type MailSettle struct {
 	MaxAttempts int       // MailDead: the attempt count is set to it
 	// ProviderID is the provider's id of an accepted letter (MailSent; empty when none came back).
 	ProviderID string
-	Now        time.Time
+	// OwnerPending (MailSent): the letter's owner could not be recorded; the row is marked sent and
+	// owner_pending_at in the same write, so a later drain records the owner (MailOwnerDue).
+	OwnerPending bool
+	Now          time.Time
+}
+
+// MailOwnerDue is a sent row whose provider id still waits to be recorded with its team.
+type MailOwnerDue struct {
+	ID         int    `db:"id"`
+	ProviderID string `db:"provider_email_id"`
 }
 
 // Outbox row kinds written by the team-shop mailer. Only these drain on a team-shop lane; anything
