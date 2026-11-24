@@ -67,7 +67,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	} else {
 		st.SetShopHostProof(proof)
 	}
-	own := shopOwnHosts(a.c.HTTP.AllowedOrigins, cfg.LegacyOrigins())
+	own := shopOwnHosts([]string{cfg.BaseDomain, cfg.ShopZoneHost()}, a.c.HTTP.AllowedOrigins, cfg.LegacyOrigins())
 	if sf > 0 {
 		taken, err := st.EnsureLegacyShopHosts(ctx, sf, own, time.Now())
 		if err != nil {
@@ -129,14 +129,15 @@ func drainShopDomains(ctx context.Context, st *platformstore.Store, dp shop.Doma
 
 // shopOwnHosts are the storefront team's own hosts (HTTP_ALLOWED_ORIGINS and the legacy admin
 // origins): legacy shop hosts of the storefront team, never a team's custom host. Dev and preview
-// hosts (localhost, IPs, vercel) are left out.
-func shopOwnHosts(origins ...[]string) []string {
+// hosts (localhost, IPs, vercel) and hosts under the platform's domains (base, shop zone: the console
+// and team platform addresses, reserved anyway) are left out.
+func shopOwnHosts(platform []string, origins ...[]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, list := range origins {
 		for _, o := range list {
 			h := shop.OriginHost(o)
-			if h == "" || seen[h] || shop.ValidCustomHost(h) != nil {
+			if h == "" || seen[h] || shop.ValidCustomHost(h, platform...) != nil {
 				continue
 			}
 			seen[h] = true

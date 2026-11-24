@@ -11,8 +11,8 @@ import (
 // The storefront's own hosts (legacy shop hosts, reserved for every team) come from its origins:
 // no dev, preview or IP host, no duplicate.
 func TestShopOwnHosts(t *testing.T) {
-	got := shopOwnHosts(
-		[]string{"https://www.grbpwr.com", "https://grbpwr.com/", "http://localhost:3000", "https://x.vercel.app", "http://127.0.0.1:8080", "https://WWW.grbpwr.com"},
+	got := shopOwnHosts([]string{"beta.lekalo.studio", "shop.beta.lekalo.studio"},
+		[]string{"https://beta.lekalo.studio", "https://acme.shop.beta.lekalo.studio", "https://www.grbpwr.com", "https://grbpwr.com/", "http://localhost:3000", "https://x.vercel.app", "http://127.0.0.1:8080", "https://WWW.grbpwr.com"},
 		[]string{"https://beta.grbpwr.com", "nonsense"},
 	)
 	want := []string{"www.grbpwr.com", "grbpwr.com", "beta.grbpwr.com"}

@@ -3,6 +3,7 @@ package platformstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -224,5 +225,105 @@ func TestLegacyShopHosts(t *testing.T) {
 	}
 	if err := st.AttachShopHost(ctx, 2, "grbpwr.com", platformstore.ShopHostLive, nil, now); !errors.Is(err, platformstore.ErrShopHostTaken) {
 		t.Fatalf("attach a legacy host: %v", err)
+	}
+}
+
+// TestShopHostOnceLiveStaysTheTeams (X18 re-review): a host its team verified once is never free for
+// another team, however old and whatever its status now; a lapsed proof keeps its status, only the
+// provider demotes it.
+func TestShopHostOnceLiveStaysTheTeams(t *testing.T) {
+	st := openFresh(t)
+	ctx := context.Background()
+	ann, _, _ := seedConsole(t, st)
+	now := time.Now().UTC()
+	if err := st.SetShopEnabled(ctx, 2, true, "acme.shop.beta.lekalo.studio", ann, now); err != nil {
+		t.Fatal(err)
+	}
+	proofs := proofFake{proofKey(2, "victim.com"): true}
+	st.SetShopHostProof(proofs)
+	if err := st.AttachShopHost(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetShopPrimary(ctx, 2, "victim.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `UPDATE shop_host SET created_at = ? WHERE host = 'victim.com'`, now.Add(-30*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	stays := func(what string) {
+		t.Helper()
+		if err := st.ShopHostFree(ctx, 3, "victim.com", now); !errors.Is(err, platformstore.ErrShopHostTaken) {
+			t.Fatalf("%s: free for another team: %v", what, err)
+		}
+		if err := st.AttachShopHost(ctx, 3, "victim.com", platformstore.ShopHostRecordsNeeded, nil, now); !errors.Is(err, platformstore.ErrShopHostTaken) {
+			t.Fatalf("%s: another team attached it: %v", what, err)
+		}
+		if _, err := st.ShopHost(ctx, 2, "victim.com"); err != nil {
+			t.Fatalf("%s: the team lost its host: %v", what, err)
+		}
+	}
+
+	// The TXT is gone (or the resolver failed) and the provider still says live: nothing changes.
+	proofs[proofKey(2, "victim.com")] = false
+	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostLive || !h.Primary || h.VerifiedAt == nil {
+		t.Fatalf("a lapsed proof demoted a verified host: %+v", h)
+	}
+	stays("lapsed proof")
+
+	// The provider says it is not live: demoted, the platform address is main, still the team's.
+	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostFailed, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostFailed || h.Primary {
+		t.Fatalf("provider failure: %+v", h)
+	}
+	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary {
+		t.Fatal("the platform address did not take the main address")
+	}
+	stays("failed")
+
+	// Live again at the provider without the proof: keeps its status; with the proof: live.
+	if err := st.AttachShopHost(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostFailed {
+		t.Fatalf("live without the proof: %+v", h)
+	}
+	proofs[proofKey(2, "victim.com")] = true
+	if err := st.SetShopHostStatus(ctx, 2, "victim.com", platformstore.ShopHostLive, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := hostStatus(t, st, 2, "victim.com"); h.Status != platformstore.ShopHostLive {
+		t.Fatalf("proven again: %+v", h)
+	}
+
+	// A refused attach keeps a queued provider removal.
+	if err := st.AttachShopHost(ctx, 3, "gone.com", platformstore.ShopHostRecordsNeeded, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RemoveShopHost(ctx, 3, "gone.com"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range platformstore.ShopHostMax {
+		if err := st.AttachShopHost(ctx, 2, fmt.Sprintf("fill%d.com", i), platformstore.ShopHostRecordsNeeded, nil, now); err != nil && !errors.Is(err, platformstore.ErrShopHostLimit) {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AttachShopHost(ctx, 2, "gone.com", platformstore.ShopHostRecordsNeeded, nil, now); !errors.Is(err, platformstore.ErrShopHostLimit) {
+		t.Fatalf("attach over the limit: %v", err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_domain_drop WHERE host = 'gone.com'`); n != 1 {
+		t.Fatalf("a refused attach dropped the queued removal: %d", n)
+	}
+
+	// A team's platform address is never seeded as a legacy host: the boot fails.
+	if _, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"acme.shop.beta.lekalo.studio"}, now); !errors.Is(err, platformstore.ErrShopHostManaged) {
+		t.Fatalf("legacy seed over a platform address: %v", err)
+	}
+	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); h.Kind != platformstore.ShopHostSubdomain {
+		t.Fatalf("platform address changed: %+v", h)
 	}
 }
