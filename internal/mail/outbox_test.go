@@ -191,7 +191,7 @@ func TestOutboxLaneVerdictsNeverReachTheProvider(t *testing.T) {
 func TestOutboxLaneBookkeepingErrorIsReturned(t *testing.T) {
 	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
 	ids := queueRows(repo, 2)
-	repo.fail["UpdateSent"] = errors.New("db down")
+	repo.fail["SettleMail"] = errors.New("db down")
 	err := testLane(repo, cli, p).drain(context.Background())
 	require.ErrorContains(t, err, "outbox bookkeeping")
 	require.Len(t, cli.sent(), 2, "a bookkeeping failure does not abandon the batch")
@@ -255,4 +255,127 @@ func TestStorefrontLaneKeepsItsShape(t *testing.T) {
 	require.Len(t, sent, 2)
 	require.NotNil(t, sent[0].req.Headers, "List-Unsubscribe headers stay on storefront letters")
 	require.Empty(t, repo.claims[0].Kinds)
+}
+
+func TestOutboxLaneUsesTheRowsOwnKeyAndKeepsTheProviderID(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	row := &entity.SendEmailRequest{From: "a@x.test", To: "c@example.com", Subject: "s", Html: "<p>h</p>"}
+	id, err := repo.AddMail(context.Background(), row)
+	require.NoError(t, err)
+	l := testLane(repo, cli, p)
+	var accepted []string
+	l.accepted = func(_ context.Context, r *entity.SendEmailRequest, pid string) { accepted = append(accepted, pid) }
+	l.keySpace = outboxKeySpace("changed config") // a config change cannot move a written key
+	require.NoError(t, l.drain(context.Background()))
+	sent := cli.sent()
+	require.Len(t, sent, 1)
+	require.Equal(t, row.IdempotencyKey.String, sent[0].key)
+	r := repo.row(id)
+	require.True(t, r.Sent)
+	require.Equal(t, "x", r.providerID)
+	require.Equal(t, []string{"x"}, accepted)
+	require.Equal(t, 1, r.dispatches)
+	require.True(t, r.FirstDispatchAt.Valid)
+}
+
+func TestOutboxLaneMarksTheDispatchBeforeTheCall(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	id := queueRows(repo, 1)[0]
+	var marked bool
+	cli.onPost = func(context.Context) { marked = repo.row(id).FirstDispatchAt.Valid }
+	require.NoError(t, testLane(repo, cli, p).drain(context.Background()))
+	require.True(t, marked, "first_dispatch_at is written before the provider call")
+
+	// A failed dispatch mark sends nothing and releases the row.
+	repo2, cli2 := newFakeOutbox(), &fakeSender{}
+	ids := queueRows(repo2, 2)
+	repo2.fail["MarkMailDispatched"] = errors.New("db down")
+	require.ErrorContains(t, testLane(repo2, cli2, p).drain(context.Background()), "outbox bookkeeping")
+	require.Empty(t, cli2.sent())
+	repo2.fail["MarkMailDispatched"] = nil
+	for _, id := range ids {
+		requireReleased(t, repo2, id)
+	}
+}
+
+func TestOutboxLaneLostLeaseIsNeverOverwritten(t *testing.T) {
+	// Lost before the dispatch mark: the row is skipped, the provider never sees it.
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	ids := queueRows(repo, 2)
+	l := testLane(repo, cli, p)
+	l.prepare = func(row *entity.SendEmailRequest) (resend.SendEmailRequest, rowVerdict, string, error) {
+		if row.Id == ids[0] {
+			repo.steal(row.Id)
+		}
+		return plainPrepare(row)
+	}
+	require.NoError(t, l.drain(context.Background()), "a lost lease is not a bookkeeping error")
+	sent := cli.sent()
+	require.Len(t, sent, 1, "only the row still leased is offered")
+	require.Equal(t, "other-worker", repo.row(ids[0]).token, "the new owner's lease is untouched")
+	require.Zero(t, repo.row(ids[0]).dispatches)
+	require.True(t, repo.row(ids[1]).Sent)
+
+	// Lost during the call: the outcome is not recorded over the new owner (it resends under the
+	// same key; the provider answers it from the first call).
+	repo, cli = newFakeOutbox(), &fakeSender{}
+	id := queueRows(repo, 1)[0]
+	cli.onPost = func(context.Context) { repo.steal(id) }
+	require.NoError(t, testLane(repo, cli, p).drain(context.Background()))
+	r := repo.row(id)
+	require.False(t, r.Sent)
+	require.Equal(t, "other-worker", r.token)
+
+	// A failure answer after the lease was lost counts no attempt either.
+	repo, cli = newFakeOutbox(), &fakeSender{script: []fakeAnswer{{status: http.StatusInternalServerError}}}
+	id = queueRows(repo, 1)[0]
+	cli.onPost = func(context.Context) { repo.steal(id) }
+	require.NoError(t, testLane(repo, cli, p).drain(context.Background()))
+	require.Zero(t, repo.row(id).SendAttemptCount)
+}
+
+func TestOutboxLaneQuarantinesRowsPastTheProviderKeyWindow(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	old := repo.put(entity.SendEmailRequest{From: "a@x.test", To: "c@example.com", Subject: "s", Html: "<p>h</p>",
+		FirstDispatchAt: sql.NullTime{Time: time.Now().Add(-providerKeyWindow - time.Minute), Valid: true}})
+	recent := repo.put(entity.SendEmailRequest{From: "a@x.test", To: "d@example.com", Subject: "s", Html: "<p>h</p>",
+		FirstDispatchAt: sql.NullTime{Time: time.Now().Add(-time.Hour), Valid: true}})
+	require.NoError(t, testLane(repo, cli, p).drain(context.Background()))
+	sent := cli.sent()
+	require.Len(t, sent, 1)
+	require.Equal(t, []string{"d@example.com"}, sent[0].req.To, "inside the window the key still protects a resend")
+	require.Contains(t, repo.row(old).quarantined, "idempotency window")
+	require.False(t, repo.row(old).Sent)
+	require.True(t, repo.row(recent).Sent)
+}
+
+func TestOutboxLaneGateRunsRightBeforeTheCall(t *testing.T) {
+	repo, cli, p := newFakeOutbox(), &fakeSender{}, &laneProbe{}
+	ids := queueRows(repo, 3)
+	l := testLane(repo, cli, p)
+	l.gate = func(_ context.Context, row *entity.SendEmailRequest) (rowVerdict, string, error) {
+		switch row.Id {
+		case ids[0]:
+			return rowSend, "", nil
+		case ids[1]:
+			return rowQuarantine, "queued before the shop opened", nil
+		}
+		return rowHold, "", nil
+	}
+	require.NoError(t, l.drain(context.Background()))
+	require.Len(t, cli.sent(), 1)
+	require.True(t, repo.row(ids[0]).Sent)
+	require.Equal(t, "queued before the shop opened", repo.row(ids[1]).quarantined)
+	requireReleased(t, repo, ids[2])
+
+	repo, cli = newFakeOutbox(), &fakeSender{}
+	ids = queueRows(repo, 2)
+	l = testLane(repo, cli, p)
+	l.gate = func(context.Context, *entity.SendEmailRequest) (rowVerdict, string, error) {
+		return rowSend, "", errors.New("platform db down")
+	}
+	require.ErrorContains(t, l.drain(context.Background()), "dispatch check")
+	require.Empty(t, cli.sent())
+	requireReleased(t, repo, ids[0])
+	requireReleased(t, repo, ids[1])
 }

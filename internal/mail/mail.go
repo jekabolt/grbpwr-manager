@@ -554,6 +554,9 @@ func (m *Mailer) listUnsubscribeHeaders(to string) *map[string]interface{} {
 type sendOptions struct {
 	exemptDisabledSuppression bool
 	campaignLane              bool
+	// idempotencyKey, when set, is the outbox row's own key: a worker resend of the same row is
+	// deduplicated by the provider.
+	idempotencyKey string
 }
 
 func (m *Mailer) send(ctx context.Context, ser *resend.SendEmailRequest) error {
@@ -572,7 +575,11 @@ func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailReque
 		return fmt.Errorf("wait for transactional Resend budget: %w", err)
 	}
 
-	resp, err := m.cli.PostEmails(ctx, *ser)
+	var editors []resend.RequestEditorFn
+	if opts.idempotencyKey != "" {
+		editors = append(editors, idempotencyKeyEditor(opts.idempotencyKey))
+	}
+	resp, err := m.cli.PostEmails(ctx, *ser, editors...)
 	if resp != nil {
 		// Drain and close the body so the underlying connection can be reused
 		// rather than leaked (one leak per inline-sent email otherwise).
@@ -639,7 +646,9 @@ func (m *Mailer) sendWithInsert(ctx context.Context, rep dependency.Repository, 
 		return fmt.Errorf("error inserting email: %w", err)
 	}
 
-	err = m.send(ctx, ser)
+	// The row's own idempotency key (AddMail wrote it back): when the inline answer is lost and the
+	// worker sends the row again, the provider delivers it once.
+	err = m.sendWithOptions(ctx, ser, sendOptions{idempotencyKey: eser.IdempotencyKey.String})
 	if err != nil {
 		if clearErr := rep.Mail().ClearNextRetryAt(ctx, id); clearErr != nil {
 			return fmt.Errorf("error releasing mail inline-send hold: %w", clearErr)

@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"net/http"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -16,7 +18,8 @@ import (
 
 // fakeOutbox is an in-memory send_email_request with the claim semantics of the store: a claim
 // leases eligible rows (next_retry_at = lease end, claim token set), release hands them back without
-// an attempt, a retry counts one, quarantine takes a row out for good.
+// an attempt, a retry counts one, quarantine takes a row out for good, and every write to a claimed
+// row needs its lease token.
 type fakeOutbox struct {
 	dependency.Mail // unimplemented methods panic
 
@@ -35,6 +38,8 @@ type fakeRow struct {
 	token       string
 	quarantined string // reason; "" while not quarantined
 	dead        bool
+	dispatches  int    // dispatch marks
+	providerID  string // the provider's id of the accepted letter
 }
 
 func newFakeOutbox() *fakeOutbox {
@@ -59,11 +64,23 @@ func (f *fakeOutbox) row(id int) fakeRow {
 	return *f.rows[id]
 }
 
+// AddMail is the store's insert: a row without an idempotency key gets one (written back to ser).
+// put is a raw insert, as an older binary wrote rows: no key.
 func (f *fakeOutbox) AddMail(_ context.Context, ser *entity.SendEmailRequest) (int, error) {
 	if err := f.failure("AddMail"); err != nil {
 		return 0, err
 	}
+	if !ser.IdempotencyKey.Valid || ser.IdempotencyKey.String == "" {
+		ser.IdempotencyKey = sql.NullString{String: "mail-" + uuid.NewString(), Valid: true}
+	}
 	return f.put(*ser), nil
+}
+
+// steal hands row id's lease to another worker (its lease ran out and someone claimed it).
+func (f *fakeOutbox) steal(id int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rows[id].token = "other-worker"
 }
 
 func (f *fakeOutbox) failure(name string) error {
@@ -132,52 +149,51 @@ func (f *fakeOutbox) ReleaseClaims(_ context.Context, ids []int, token string) e
 	return nil
 }
 
-func (f *fakeOutbox) UpdateSent(_ context.Context, id int) error {
-	if err := f.failure("UpdateSent"); err != nil {
+func (f *fakeOutbox) MarkMailDispatched(_ context.Context, id int, token string, now time.Time) error {
+	if err := f.failure("MarkMailDispatched"); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r := f.rows[id]
-	r.Sent, r.token = true, ""
+	if r == nil || r.token != token || r.Sent || r.quarantined != "" {
+		return entity.ErrMailClaimLost
+	}
+	if !r.FirstDispatchAt.Valid {
+		r.FirstDispatchAt = sql.NullTime{Time: now.UTC(), Valid: true}
+	}
+	r.dispatches++
 	return nil
 }
 
-func (f *fakeOutbox) ScheduleSendRetry(_ context.Context, id int, errMsg string, next time.Time) error {
-	if err := f.failure("ScheduleSendRetry"); err != nil {
+// SettleMail has the store's token gate: a row no longer leased to q.Token is not touched.
+func (f *fakeOutbox) SettleMail(_ context.Context, q entity.MailSettle) error {
+	if err := f.failure("SettleMail"); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r := f.rows[id]
-	r.SendAttemptCount++
-	r.ErrMsg.String, r.ErrMsg.Valid = errMsg, true
-	r.NextRetryAt.Time, r.NextRetryAt.Valid = next, true
+	r := f.rows[q.ID]
+	if r == nil || r.token != q.Token || r.Sent || r.quarantined != "" {
+		return entity.ErrMailClaimLost
+	}
+	switch q.Outcome {
+	case entity.MailSent:
+		r.Sent, r.providerID = true, q.ProviderID
+	case entity.MailRetry:
+		r.SendAttemptCount++
+		r.NextRetryAt = sql.NullTime{Time: q.NextRetryAt, Valid: true}
+	case entity.MailDead:
+		r.dead, r.SendAttemptCount = true, q.MaxAttempts
+		r.NextRetryAt.Valid = false
+	case entity.MailQuarantined:
+		r.quarantined = q.ErrMsg
+		r.NextRetryAt.Valid = false
+	}
+	if q.ErrMsg != "" {
+		r.ErrMsg = sql.NullString{String: q.ErrMsg, Valid: true}
+	}
 	r.token = ""
-	return nil
-}
-
-func (f *fakeOutbox) MarkSendDead(_ context.Context, id int, errMsg string, maxAttempts int) error {
-	if err := f.failure("MarkSendDead"); err != nil {
-		return err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	r := f.rows[id]
-	r.dead, r.token = true, ""
-	r.SendAttemptCount = maxAttempts
-	r.ErrMsg.String, r.ErrMsg.Valid = errMsg, true
-	return nil
-}
-
-func (f *fakeOutbox) QuarantineMail(_ context.Context, id int, reason string) error {
-	if err := f.failure("QuarantineMail"); err != nil {
-		return err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	r := f.rows[id]
-	r.quarantined, r.token = reason, ""
 	return nil
 }
 

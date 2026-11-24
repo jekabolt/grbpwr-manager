@@ -163,8 +163,8 @@ func TestShopLettersCarryTheShopNotGRBPWR(t *testing.T) {
 			}
 			require.Equal(t, []string{"customer@example.com"}, req.To)
 			require.NotNil(t, req.Tags)
-			require.True(t, strings.HasPrefix(sent[0].key, "mail-"), "idempotency key set")
-			require.Contains(t, sent[0].key, "-t5-")
+			require.True(t, row.IdempotencyKey.Valid)
+			require.Equal(t, row.IdempotencyKey.String, sent[0].key, "the row's own idempotency key")
 			require.True(t, f.repo.row(1).Sent)
 		})
 	}
