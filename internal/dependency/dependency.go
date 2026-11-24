@@ -265,6 +265,16 @@ type (
 		ClearNextRetryAt(ctx context.Context, id int) error
 		ScheduleSendRetry(ctx context.Context, id int, errMsg string, nextRetryAt time.Time) error
 		MarkSendDead(ctx context.Context, id int, errMsg string, maxSendAttempts int) error
+		// ClaimUnsent leases up to q.Limit worker-eligible rows to q.Token (SELECT … FOR UPDATE SKIP
+		// LOCKED; next_retry_at becomes the lease end), so two instances never send the same row.
+		ClaimUnsent(ctx context.Context, q entity.MailClaim) ([]entity.SendEmailRequest, error)
+		// ReleaseClaims returns rows still leased to token to the queue without counting an attempt.
+		ReleaseClaims(ctx context.Context, ids []int, token string) error
+		// QuarantineMail marks one unsent row as never to be sent.
+		QuarantineMail(ctx context.Context, id int, reason string) error
+		// QuarantineOutside quarantines every unsent row the team-shop lane must never send
+		// (entity.MailCutover) and returns how many it caught.
+		QuarantineOutside(ctx context.Context, rule entity.MailCutover) (int64, error)
 		// AddSuppression adds an email address to the suppression list. Idempotent.
 		AddSuppression(ctx context.Context, email string, reason entity.SuppressionReason) error
 		// IsSuppressed returns true if the address is on the suppression list.
