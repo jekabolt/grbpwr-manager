@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jekabolt/grbpwr-manager/internal/shop"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,6 +37,10 @@ type Config struct {
 	// beta). Replaces the previously hardcoded prod domains so each environment
 	// targets its own site.
 	Domains string `mapstructure:"domains"`
+	// ShopMaster (SHOP_REVALIDATE_MASTER, X18) is the master the revalidate secret of each team
+	// shop on the multi-shop deployment is derived from (shop.RevalidateSecret); empty = team shops
+	// are not revalidated.
+	ShopMaster string `mapstructure:"shop_master"`
 }
 
 // targetDomains returns the explicit, environment-specific hosts to revalidate.
@@ -63,8 +68,13 @@ func New(ctx context.Context, c *Config) (*Revalidator, error) {
 		timeout = 10 * time.Second
 	}
 	v := &Revalidator{
-		c:      c,
-		client: &http.Client{Timeout: timeout},
+		c: c,
+		client: &http.Client{
+			Timeout: timeout,
+			// A revalidation post carries a secret: never follow a redirect (a shop's host could send
+			// it anywhere).
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 	return v, nil
 }
@@ -121,13 +131,46 @@ func (v *Revalidator) getDeployments(ctx context.Context) ([]*dto.Deployment, er
 }
 
 func (v *Revalidator) revalidate(ctx context.Context, deploymentURL string, revalidationData *dto.RevalidationData) error {
+	return v.revalidateWith(ctx, deploymentURL, v.c.RevalidateSecret, revalidationData)
+}
+
+// RevalidateShop revalidates a team's shop (X18) at host, its main address on the multi-shop
+// deployment, with the secret derived from SHOP_REVALIDATE_MASTER and shopKey. Up to three tries.
+// No master = a no-op.
+func (v *Revalidator) RevalidateShop(ctx context.Context, host, shopKey string, data *dto.RevalidationData) error {
+	if strings.TrimSpace(v.c.ShopMaster) == "" || strings.TrimSpace(host) == "" {
+		return nil
+	}
+	secret, err := shop.RevalidateSecret(v.c.ShopMaster, shopKey)
+	if err != nil {
+		return err
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err = v.revalidateWith(ctx, host, secret, data); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
+	}
+	return fmt.Errorf("shop %s: %w", host, err)
+}
+
+// RevalidateShop of the disabled revalidator does nothing.
+func (*disabledRevalidator) RevalidateShop(context.Context, string, string, *dto.RevalidationData) error {
+	return nil
+}
+
+func (v *Revalidator) revalidateWith(ctx context.Context, deploymentURL, secret string, revalidationData *dto.RevalidationData) error {
 	u := &url.URL{
 		Scheme: "https",
 		Host:   deploymentURL,
 		Path:   "/api/revalidate",
 	}
 	q := u.Query()
-	q.Set("secret", v.c.RevalidateSecret)
+	q.Set("secret", secret)
 	u.RawQuery = q.Encode()
 	apiUrl := u.String()
 

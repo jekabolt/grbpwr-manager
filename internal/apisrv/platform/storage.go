@@ -29,7 +29,8 @@ func (s *Server) withStorage(ctx context.Context, ids []int64, rows ...*pb_admin
 		row.StorageCapBytes = ts.EffectiveCap(def)
 		row.StorageCapDefault = !ts.Cap.Valid
 	}
-	return nil
+	// Every row that carries storage carries its shop too (X18).
+	return s.withShop(ctx, ids, rows...)
 }
 
 // SetTeamStorageCap sets a team's storage cap: cap_bytes > 0, no_cap, or default_cap (back to
