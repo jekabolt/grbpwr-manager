@@ -614,7 +614,9 @@ func (s *Store) ShopMailOwner(ctx context.Context, providerID string) (teamID, m
 }
 
 // shopTables are a team's shop rows in the control plane.
-func shopTables() []string { return []string{"team_shop", "shop_host", "team_stripe", "shop_mail_owner"} }
+func shopTables() []string {
+	return []string{"team_shop", "shop_host", "team_stripe", "shop_mail_owner"}
+}
 
 // DeleteTeamShopTx removes every shop row of a team (the day-30 wipe's finish calls it beside the
 // team's other control-plane rows) and answers the rows deleted, by table. Its custom hosts are queued
