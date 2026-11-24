@@ -36,6 +36,7 @@ const (
 	shopClaimBatch       = 10               // rows one team leases per tick: no team floods a tick
 	shopTeamTimeout      = 15 * time.Second // one team's tick, its own deadline
 	shopSharedPoll       = 50 * time.Millisecond
+	shopOwnerTimeout     = 5 * time.Second // recording an accepted letter's team, past the tick's deadline
 	defaultShopSignInTTL = 10 * time.Minute
 	// defaultShopWorkerInterval stands in for an unset mailer worker interval (a ticker needs > 0).
 	defaultShopWorkerInterval = 5 * time.Second
@@ -60,6 +61,21 @@ type ShopIdentity struct {
 // ShopResolver answers a team's identity; the app reads the platform store and caches it.
 type ShopResolver func(ctx context.Context, teamID int64) (ShopIdentity, error)
 
+// ShopState is a team shop's switch as stored right now: open (on, not closed by the operator) and
+// when it last opened.
+type ShopState struct {
+	Open     bool
+	OpenedAt time.Time
+}
+
+// ShopStateReader reads a team shop's state from the platform store, never from a cache: the worker
+// asks it before every drain and again right before each provider call.
+type ShopStateReader func(ctx context.Context, teamID int64) (ShopState, error)
+
+// ShopOwnerRecorder remembers which team sent a letter Resend accepted (by Resend's email id), so a
+// bounce or complaint event can reach that team's suppression list.
+type ShopOwnerRecorder func(ctx context.Context, teamID int64, mailID int, providerID string) error
+
 // ShopTeamLoop runs tick once per active team, each with its team's context, and returns whether
 // the tick ran (the app's background team loop).
 type ShopTeamLoop func(ctx context.Context, tick func(context.Context) bool) bool
@@ -83,22 +99,28 @@ type ShopConfig struct {
 	ResendRequestsPerSecond    float64
 	ResendBurst                int
 	TransactionalReserveTokens int
+	// State is the authoritative shop state (required); the cached identity is only for rendering.
+	State ShopStateReader
+	// Owner, optional, records each accepted letter's team for the bounce route.
+	Owner ShopOwnerRecorder
 }
 
 // ShopMailer queues and sends team shops' customer letters.
 type ShopMailer struct {
-	inner    *Mailer // templates, catalog and the Resend client; its own worker never runs
-	repo     dependency.Mail
-	c        ShopConfig
-	addr     string
-	resolve  ShopResolver
-	loop     ShopTeamLoop
-	acquire  func(context.Context) error
-	cooldown func(time.Duration)
-	tracker  health.Tracker
+	inner   *Mailer // templates, catalog and the Resend client; its own worker never runs
+	repo    dependency.Mail
+	c       ShopConfig
+	addr    string
+	resolve ShopResolver
+	loop    ShopTeamLoop
+	acquire func(context.Context) error
+	tracker health.Tracker
 
 	mu    sync.Mutex
 	holds map[int64]shopHold
+	// cools: a team whose send got a 429 waits out the Retry-After on its own; the other shops and
+	// the storefront's letters go on.
+	cools map[int64]time.Time
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -121,7 +143,7 @@ func NewShop(c ShopConfig, repo dependency.Mail, resolve ShopResolver, loop Shop
 	if err != nil || from.Address == "" {
 		return nil, fmt.Errorf("shop mail: PLATFORM_MAIL_FROM is not an address")
 	}
-	if repo == nil || resolve == nil || loop == nil {
+	if repo == nil || resolve == nil || loop == nil || c.State == nil {
 		return nil, fmt.Errorf("shop mail: incomplete wiring")
 	}
 	if c.SignInTTL <= 0 {
@@ -152,6 +174,7 @@ func NewShop(c ShopConfig, repo dependency.Mail, resolve ShopResolver, loop Shop
 		resolve: resolve,
 		loop:    loop,
 		holds:   map[int64]shopHold{},
+		cools:   map[int64]time.Time{},
 	}
 	s.c.WorkerInterval = inner.c.WorkerInterval
 	if s.c.WorkerInterval <= 0 {
@@ -160,12 +183,12 @@ func NewShop(c ShopConfig, repo dependency.Mail, resolve ShopResolver, loop Shop
 	s.c.MaxSendAttempts = inner.c.MaxSendAttempts
 	s.c.RetryBaseInterval = inner.c.RetryBaseInterval
 	s.c.RetryMaxInterval = inner.c.RetryMaxInterval
+	// A shop's 429 cools that shop only (coolTeam); the storefront's own cooldowns still stop the
+	// shared lane (TryShared refuses during them).
 	if sf, ok := storefront.(*Mailer); ok && sf != nil && sf.c.APIKey == c.APIKey {
 		s.acquire = sharedAcquire(sf.budget)
-		s.cooldown = sf.budget.CooldownGlobal
 	} else {
 		s.acquire = inner.budget.WaitTransactional
-		s.cooldown = inner.budget.CooldownGlobal
 	}
 	return s, nil
 }
@@ -339,13 +362,14 @@ func (s *ShopMailer) runOnce(ctx context.Context) bool {
 	return false
 }
 
-// teamTick drains one team's outbox unless the team is the storefront, held, or has no open shop.
+// teamTick drains one team's outbox unless the team is the storefront, held, cooling after a 429,
+// or has no open shop.
 func (s *ShopMailer) teamTick(ctx context.Context, now time.Time) error {
 	team, ok := tenant.From(ctx)
 	if !ok || team.ID <= 0 || team.ID == s.c.StorefrontTeamID {
 		return nil
 	}
-	if s.held(team.ID, now) {
+	if s.held(team.ID, now) || s.cooling(team.ID, now) {
 		return nil
 	}
 	err := s.drainTeam(ctx, team.ID)
@@ -361,20 +385,20 @@ func (s *ShopMailer) teamTick(ctx context.Context, now time.Time) error {
 }
 
 // drainTeam quarantines what the cutover forbids, then sends what is due, under the team's own
-// deadline.
+// deadline. The shop state is read fresh, not from the identity cache.
 func (s *ShopMailer) drainTeam(ctx context.Context, teamID int64) error {
-	id, err := s.resolve(ctx, teamID)
+	st, err := s.c.State(ctx, teamID)
 	if err != nil {
-		return fmt.Errorf("team identity: %w", err)
+		return fmt.Errorf("shop state: %w", err)
 	}
-	if !id.Open || id.OpenedAt.IsZero() {
+	if !st.Open || st.OpenedAt.IsZero() {
 		return nil // no open shop: its outbox waits, and the next opening quarantines it
 	}
 	tctx, cancel := context.WithTimeout(ctx, shopTeamTimeout)
 	defer cancel()
 	n, err := s.repo.QuarantineOutside(tctx, entity.MailCutover{
 		Kinds:    shopKinds(),
-		OpenedAt: id.OpenedAt,
+		OpenedAt: st.OpenedAt,
 		Now:      time.Now().UTC(),
 		Reason:   "shop cutover: not a shop letter, expired, or queued before the shop opened",
 	})
@@ -385,10 +409,10 @@ func (s *ShopMailer) drainTeam(ctx context.Context, teamID int64) error {
 		slog.Default().WarnContext(ctx, "shop mail: outbox rows quarantined",
 			slog.Int64("tid", teamID), slog.Int64("rows", n))
 	}
-	return s.lane(teamID, id).drain(tctx)
+	return s.lane(teamID, st.OpenedAt).drain(tctx)
 }
 
-func (s *ShopMailer) lane(teamID int64, id ShopIdentity) *outboxLane {
+func (s *ShopMailer) lane(teamID int64, openedAt time.Time) *outboxLane {
 	return &outboxLane{
 		name:        "shopmail",
 		repo:        s.repo,
@@ -396,15 +420,50 @@ func (s *ShopMailer) lane(teamID int64, id ShopIdentity) *outboxLane {
 		teamID:      teamID,
 		keySpace:    outboxKeySpace("shop", s.c.KeySpace, s.addr),
 		kinds:       shopKinds(),
-		notBefore:   id.OpenedAt,
+		notBefore:   openedAt,
 		batch:       shopClaimBatch,
 		rounds:      1,
 		maxAttempts: s.c.MaxSendAttempts,
 		retryBase:   s.c.RetryBaseInterval,
 		retryMax:    s.c.RetryMaxInterval,
 		acquire:     s.acquire,
-		cooldown:    s.cooldown,
-		prepare:     s.prepareRow(teamID, id.OpenedAt),
+		cooldown:    func(d time.Duration) { s.coolTeam(teamID, d, time.Now()) },
+		prepare:     s.prepareRow(teamID, openedAt),
+		gate:        s.dispatchGate(teamID),
+		accepted:    s.recordOwner(teamID),
+	}
+}
+
+// dispatchGate reads the shop's state again right before the provider call: a shop closed meanwhile
+// holds the row (back to the queue), and a row older than a reopening is quarantined.
+func (s *ShopMailer) dispatchGate(teamID int64) rowGate {
+	return func(ctx context.Context, row *entity.SendEmailRequest) (rowVerdict, string, error) {
+		st, err := s.c.State(ctx, teamID)
+		switch {
+		case err != nil:
+			return rowHold, "", err
+		case !st.Open || st.OpenedAt.IsZero():
+			return rowHold, "", nil
+		case row.CreatedAt.Unix() < st.OpenedAt.Unix():
+			return rowQuarantine, "queued before the shop opened", nil
+		}
+		return rowSend, "", nil
+	}
+}
+
+// recordOwner remembers the team of an accepted letter; a failure only costs that letter's bounce
+// routing, so it is logged, never retried as a send.
+func (s *ShopMailer) recordOwner(teamID int64) func(context.Context, *entity.SendEmailRequest, string) {
+	if s.c.Owner == nil {
+		return nil
+	}
+	return func(ctx context.Context, row *entity.SendEmailRequest, providerID string) {
+		octx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shopOwnerTimeout)
+		defer cancel()
+		if err := s.c.Owner(octx, teamID, row.Id, providerID); err != nil {
+			slog.Default().WarnContext(ctx, "shop mail: letter owner not recorded; its bounces are not routed",
+				slog.Int64("tid", teamID), slog.Int("mailId", row.Id), slog.String("err", err.Error()))
+		}
 	}
 }
 
@@ -467,6 +526,27 @@ func (s *ShopMailer) held(teamID int64, now time.Time) bool {
 	defer s.mu.Unlock()
 	h, ok := s.holds[teamID]
 	return ok && now.Before(h.until)
+}
+
+// cooling reports whether a team waits out a 429's Retry-After.
+func (s *ShopMailer) cooling(teamID int64, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.cools[teamID]
+	if ok && !now.Before(until) {
+		delete(s.cools, teamID)
+		return false
+	}
+	return ok
+}
+
+// coolTeam holds one team for a 429's Retry-After (the longest wins).
+func (s *ShopMailer) coolTeam(teamID int64, d time.Duration, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if until := now.Add(d); until.After(s.cools[teamID]) {
+		s.cools[teamID] = until
+	}
 }
 
 // settle records a team's tick: a success clears its hold, a failure extends it (30s doubling to 5m).

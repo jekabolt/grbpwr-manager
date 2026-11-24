@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	netmail "net/mail"
 	"strings"
 	"sync"
@@ -29,6 +30,16 @@ type shopFixture struct {
 	ids      map[int64]ShopIdentity
 	idErr    map[int64]error
 	resolves map[int64]int
+	states   map[int64]int
+	// stateAt, when set, answers the n-th fresh state read (1-based) instead of ids
+	stateAt func(teamID int64, n int) (ShopState, error)
+	owners  []shopOwnerCall
+}
+
+type shopOwnerCall struct {
+	team       int64
+	mail       int
+	providerID string
 }
 
 func newShopFixture(t *testing.T, storefrontTeamID int64) *shopFixture {
@@ -39,6 +50,7 @@ func newShopFixture(t *testing.T, storefrontTeamID int64) *shopFixture {
 		ids:      map[int64]ShopIdentity{},
 		idErr:    map[int64]error{},
 		resolves: map[int64]int{},
+		states:   map[int64]int{},
 	}
 	s, err := NewShop(ShopConfig{
 		APIKey:           "platform-key",
@@ -46,6 +58,8 @@ func newShopFixture(t *testing.T, storefrontTeamID int64) *shopFixture {
 		KeySpace:         "lekalo.test",
 		StorefrontTeamID: storefrontTeamID,
 		SignInTTL:        10 * time.Minute,
+		State:            f.state,
+		Owner:            f.owner,
 	}, f.repo, f.resolve, func(context.Context, func(context.Context) bool) bool { return true }, nil)
 	require.NoError(t, err)
 	s.inner.cli = f.cli
@@ -66,6 +80,34 @@ func (f *shopFixture) resolve(_ context.Context, teamID int64) (ShopIdentity, er
 		return ShopIdentity{TeamID: teamID}, nil
 	}
 	return id, nil
+}
+
+// state is the fresh (uncached) shop state: ids, unless stateAt scripts the answer.
+func (f *shopFixture) state(_ context.Context, teamID int64) (ShopState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states[teamID]++
+	if f.stateAt != nil {
+		return f.stateAt(teamID, f.states[teamID])
+	}
+	if err := f.idErr[teamID]; err != nil {
+		return ShopState{}, err
+	}
+	id := f.ids[teamID]
+	return ShopState{Open: id.Open, OpenedAt: id.OpenedAt}, nil
+}
+
+func (f *shopFixture) owner(_ context.Context, teamID int64, mailID int, providerID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.owners = append(f.owners, shopOwnerCall{team: teamID, mail: mailID, providerID: providerID})
+	return nil
+}
+
+func (f *shopFixture) stateCount(teamID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.states[teamID]
 }
 
 func (f *shopFixture) open(teamID int64, name, host string, openedAt time.Time, taken ...string) {
@@ -277,7 +319,7 @@ func TestShopTeamTickSkipsTheStorefrontTeam(t *testing.T) {
 	f := newShopFixture(t, 1)
 	require.NoError(t, f.s.teamTick(teamCtx(1), time.Now()))
 	require.NoError(t, f.s.teamTick(context.Background(), time.Now()))
-	require.Zero(t, f.resolveCount(1))
+	require.Zero(t, f.stateCount(1))
 }
 
 // TestShopTeamBackoffIsPerTeam: a failing team is held on its own; the other team keeps draining,
@@ -292,14 +334,14 @@ func TestShopTeamBackoffIsPerTeam(t *testing.T) {
 		return true
 	}
 	require.False(t, f.s.runOnce(context.Background()), "a failing team marks the tick")
-	require.Equal(t, 1, f.resolveCount(5))
-	require.Equal(t, 1, f.resolveCount(6))
+	require.Equal(t, 1, f.stateCount(5))
+	require.Equal(t, 1, f.stateCount(6))
 	require.True(t, f.s.held(5, time.Now()))
 	require.False(t, f.s.held(6, time.Now()))
 
 	f.s.runOnce(context.Background())
-	require.Equal(t, 1, f.resolveCount(5), "a held team is not visited")
-	require.Equal(t, 2, f.resolveCount(6), "the other team goes on")
+	require.Equal(t, 1, f.stateCount(5), "a held team is not visited")
+	require.Equal(t, 2, f.stateCount(6), "the other team goes on")
 
 	f.s.settle(5, nil, time.Now())
 	require.False(t, f.s.held(5, time.Now()))
@@ -324,14 +366,16 @@ func TestNewShopConfig(t *testing.T) {
 	loop := func(context.Context, func(context.Context) bool) bool { return true }
 	resolve := func(context.Context, int64) (ShopIdentity, error) { return ShopIdentity{}, nil }
 	repo := newFakeOutbox()
-	_, err := NewShop(ShopConfig{From: "a@b.test"}, repo, resolve, loop, nil)
+	_, err := NewShop(ShopConfig{From: "a@b.test", State: noShopState}, repo, resolve, loop, nil)
 	require.ErrorContains(t, err, "no Resend key")
-	_, err = NewShop(ShopConfig{APIKey: "k", From: "not an address"}, repo, resolve, loop, nil)
+	_, err = NewShop(ShopConfig{APIKey: "k", From: "not an address", State: noShopState}, repo, resolve, loop, nil)
 	require.ErrorContains(t, err, "PLATFORM_MAIL_FROM")
-	_, err = NewShop(ShopConfig{APIKey: "k", From: "a@b.test"}, repo, nil, loop, nil)
+	_, err = NewShop(ShopConfig{APIKey: "k", From: "a@b.test", State: noShopState}, repo, nil, loop, nil)
 	require.ErrorContains(t, err, "wiring")
+	_, err = NewShop(ShopConfig{APIKey: "k", From: "a@b.test"}, repo, resolve, loop, nil)
+	require.ErrorContains(t, err, "wiring", "the fresh state reader is required")
 
-	s, err := NewShop(ShopConfig{APIKey: "k", From: "lekalo <a@b.test>"}, repo, resolve, loop, nil)
+	s, err := NewShop(ShopConfig{APIKey: "k", From: "lekalo <a@b.test>", State: noShopState}, repo, resolve, loop, nil)
 	require.NoError(t, err)
 	require.Equal(t, defaultShopWorkerInterval, s.c.WorkerInterval)
 	require.Equal(t, defaultShopSignInTTL, s.c.SignInTTL)
@@ -350,7 +394,7 @@ func TestShopLaneSharesTheStorefrontBudgetSecond(t *testing.T) {
 	require.NoError(t, err)
 	loop := func(context.Context, func(context.Context) bool) bool { return true }
 	resolve := func(context.Context, int64) (ShopIdentity, error) { return ShopIdentity{}, nil }
-	s, err := NewShop(ShopConfig{APIKey: "same", From: "a@b.test"}, newFakeOutbox(), resolve, loop, sf)
+	s, err := NewShop(ShopConfig{APIKey: "same", From: "a@b.test", State: noShopState}, newFakeOutbox(), resolve, loop, sf)
 	require.NoError(t, err)
 
 	require.NoError(t, s.acquire(context.Background()), "a token above the reserve")
@@ -361,7 +405,7 @@ func TestShopLaneSharesTheStorefrontBudgetSecond(t *testing.T) {
 	defer cancel2()
 	require.NoError(t, sf.budget.WaitTransactional(quick), "the storefront still gets its reserved token")
 
-	other, err := NewShop(ShopConfig{APIKey: "platform", From: "a@b.test"}, newFakeOutbox(), resolve, loop, sf)
+	other, err := NewShop(ShopConfig{APIKey: "platform", From: "a@b.test", State: noShopState}, newFakeOutbox(), resolve, loop, sf)
 	require.NoError(t, err)
 	require.NoError(t, other.acquire(context.Background()), "another key has its own budget")
 }
@@ -391,4 +435,99 @@ func TestShopSenderOK(t *testing.T) {
 	require.False(t, f.s.shopSenderOK(shopSender("lekalo", testPlatformAddr)))
 	require.False(t, f.s.shopSenderOK(shopSender("Grbpwr!", testPlatformAddr)))
 	require.False(t, f.s.shopSenderOK("garbage"))
+}
+
+func noShopState(context.Context, int64) (ShopState, error) { return ShopState{}, nil }
+
+// shopOrderRow queues one valid order letter of team 5's shop created at created.
+func shopOrderRow(f *shopFixture, created time.Time) int {
+	return f.repo.put(entity.SendEmailRequest{From: shopSender("Acme", testPlatformAddr), To: "c@example.com", Subject: "order",
+		Html: "<p>x</p>", CreatedAt: created, Kind: sql.NullString{String: entity.MailKindShopOrder, Valid: true}})
+}
+
+// TestShopDispatchGateReadsTheStateAgain: the shop's state is read fresh before the drain and again
+// right before the provider call. A reopening between the two quarantines an older row; a close
+// between the two holds it (no attempt, lease released); a failing read holds the batch and fails
+// the team's tick.
+func TestShopDispatchGateReadsTheStateAgain(t *testing.T) {
+	opened := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	t.Run("reopened meanwhile", func(t *testing.T) {
+		f := newShopFixture(t, 0)
+		f.open(5, "Acme", "", opened)
+		id := shopOrderRow(f, opened.Add(time.Minute))
+		reopened := opened.Add(30 * time.Minute)
+		f.stateAt = func(_ int64, n int) (ShopState, error) {
+			if n == 1 {
+				return ShopState{Open: true, OpenedAt: opened}, nil
+			}
+			return ShopState{Open: true, OpenedAt: reopened}, nil
+		}
+		require.NoError(t, f.s.drainTeam(teamCtx(5), 5))
+		require.Empty(t, f.cli.sent())
+		require.Equal(t, "queued before the shop opened", f.repo.row(id).quarantined)
+		require.Equal(t, 2, f.stateCount(5))
+	})
+	t.Run("closed meanwhile", func(t *testing.T) {
+		f := newShopFixture(t, 0)
+		f.open(5, "Acme", "", opened)
+		id := shopOrderRow(f, opened.Add(time.Minute))
+		f.stateAt = func(_ int64, n int) (ShopState, error) {
+			return ShopState{Open: n == 1, OpenedAt: opened}, nil
+		}
+		require.NoError(t, f.s.drainTeam(teamCtx(5), 5))
+		require.Empty(t, f.cli.sent())
+		r := f.repo.row(id)
+		require.Empty(t, r.quarantined)
+		require.Zero(t, r.SendAttemptCount)
+		require.Empty(t, r.token, "the lease is handed back")
+		require.Zero(t, r.dispatches)
+	})
+	t.Run("read fails", func(t *testing.T) {
+		f := newShopFixture(t, 0)
+		f.open(5, "Acme", "", opened)
+		id := shopOrderRow(f, opened.Add(time.Minute))
+		f.stateAt = func(_ int64, n int) (ShopState, error) {
+			if n == 1 {
+				return ShopState{Open: true, OpenedAt: opened}, nil
+			}
+			return ShopState{}, errors.New("platform down")
+		}
+		require.ErrorContains(t, f.s.drainTeam(teamCtx(5), 5), "dispatch check")
+		require.Empty(t, f.cli.sent())
+		require.Empty(t, f.repo.row(id).token)
+		require.Zero(t, f.repo.row(id).SendAttemptCount)
+	})
+	t.Run("still open", func(t *testing.T) {
+		f := newShopFixture(t, 0)
+		f.open(5, "Acme", "", opened)
+		id := shopOrderRow(f, opened.Add(time.Minute))
+		require.NoError(t, f.s.drainTeam(teamCtx(5), 5))
+		require.Len(t, f.cli.sent(), 1)
+		require.True(t, f.repo.row(id).Sent)
+		require.Equal(t, 2, f.stateCount(5), "one read for the drain, one before the call")
+		require.Equal(t, []shopOwnerCall{{team: 5, mail: id, providerID: "x"}}, f.owners, "the accepted letter's team is recorded")
+	})
+}
+
+// TestShopCooldownIsPerTeam: a 429 cools the team that got it; another shop keeps sending, and the
+// cooled team is skipped until its Retry-After ends.
+func TestShopCooldownIsPerTeam(t *testing.T) {
+	f := newShopFixture(t, 0)
+	opened := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	f.open(5, "Acme", "", opened)
+	f.open(6, "Other", "", opened)
+	shopOrderRow(f, opened.Add(time.Minute))
+	f.cli.script = []fakeAnswer{{status: http.StatusTooManyRequests, retryAfter: "30"}}
+	now := time.Now()
+	require.NoError(t, f.s.teamTick(teamCtx(5), now))
+	require.True(t, f.s.cooling(5, time.Now()))
+	require.False(t, f.s.cooling(6, time.Now()), "another shop is not cooled")
+	require.False(t, f.s.held(5, time.Now()), "a 429 is not a failed tick")
+
+	claims := len(f.repo.claims)
+	require.NoError(t, f.s.teamTick(teamCtx(5), time.Now()))
+	require.Len(t, f.repo.claims, claims, "a cooling team is skipped")
+	require.NoError(t, f.s.teamTick(teamCtx(6), time.Now()))
+	require.Len(t, f.repo.claims, claims+1, "the other shop drains")
+	require.False(t, f.s.cooling(5, now.Add(31*time.Second)), "the cooldown ends with its Retry-After")
 }

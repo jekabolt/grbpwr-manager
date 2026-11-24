@@ -3,14 +3,19 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/config"
+	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	mocks "github.com/jekabolt/grbpwr-manager/internal/dependency/mocks"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 type fakeShopPlatform struct {
@@ -190,4 +195,176 @@ func shopTestRepo(t *testing.T) *mocks.MockRepository {
 	repo := mocks.NewMockRepository(t)
 	repo.EXPECT().Mail().Return(mocks.NewMockMail(t)).Maybe()
 	return repo
+}
+
+func TestShopResendKey(t *testing.T) {
+	for _, c := range []struct{ shop, platform, mailer, want string }{
+		{"s", "p", "m", "s"}, {" ", "p", "m", "p"}, {"", "", " m ", "m"}, {"", "", "", ""},
+	} {
+		if got := shopResendKey(c.shop, c.platform, c.mailer); got != c.want {
+			t.Fatalf("%+v: %q", c, got)
+		}
+	}
+}
+
+// TestShopIdentitiesStateIsFresh: the worker's state read goes to the control plane every time (no
+// cache), and a shop found closed drops its cached open identity so queueing stops at once.
+func TestShopIdentitiesStateIsFresh(t *testing.T) {
+	opened := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	p := &fakeShopPlatform{shops: map[int64]platformstore.TeamShop{2: {TeamID: 2, Enabled: true, EnabledAt: &opened}}}
+	s := newShopIdentities(p)
+	ctx := context.Background()
+	if id, err := s.resolve(ctx, 2); err != nil || !id.Open {
+		t.Fatalf("resolve %+v %v", id, err)
+	}
+	calls := p.shopCalls
+	for range 2 {
+		st, err := s.state(ctx, 2)
+		if err != nil || !st.Open || !st.OpenedAt.Equal(opened) {
+			t.Fatalf("state %+v %v", st, err)
+		}
+	}
+	if p.shopCalls != calls+2 {
+		t.Fatalf("state reads %d, want 2 fresh reads", p.shopCalls-calls)
+	}
+	p.shops[2] = platformstore.TeamShop{TeamID: 2, Enabled: true, EnabledAt: &opened, ClosedByOperator: true}
+	if st, err := s.state(ctx, 2); err != nil || st.Open {
+		t.Fatalf("closed shop state %+v %v", st, err)
+	}
+	if id, err := s.resolve(ctx, 2); err != nil || id.Open {
+		t.Fatalf("the cached open identity outlived the close: %+v %v", id, err)
+	}
+	p.err = errors.New("platform down")
+	if _, err := s.state(ctx, 2); err == nil {
+		t.Fatal("state hid a read error")
+	}
+}
+
+type fakeShopOwners struct {
+	owners map[string][2]int64
+	err    error
+	calls  int
+}
+
+func (f *fakeShopOwners) ShopMailOwner(_ context.Context, pid string) (int64, int64, bool, error) {
+	f.calls++
+	if f.err != nil {
+		return 0, 0, false, f.err
+	}
+	o, ok := f.owners[pid]
+	return o[0], o[1], ok, nil
+}
+
+type fakeShopTeams struct {
+	tenant.Directory
+	teams map[int64]tenant.Team
+}
+
+func (d fakeShopTeams) ByID(_ context.Context, id int64) (tenant.Team, error) {
+	t, ok := d.teams[id]
+	if !ok {
+		return tenant.Team{}, tenant.ErrNotFound
+	}
+	return t, nil
+}
+
+// fakeTeamMail is one tenant mail store per team, picked by the team in ctx.
+type fakeTeamMail struct {
+	dependency.Mail
+	rows       map[int64]map[int][2]string // team -> row -> {provider id, recipient}
+	suppressed map[int64][]string
+}
+
+func (f *fakeTeamMail) ProviderMailRecipient(ctx context.Context, id int, pid string) (string, error) {
+	team, ok := tenant.From(ctx)
+	if !ok {
+		return "", tenant.ErrNoTenant
+	}
+	r := f.rows[team.ID][id]
+	if r[0] != pid {
+		return "", nil
+	}
+	return r[1], nil
+}
+
+func (f *fakeTeamMail) AddSuppression(ctx context.Context, email string, reason entity.SuppressionReason) error {
+	team, ok := tenant.From(ctx)
+	if !ok {
+		return tenant.ErrNoTenant
+	}
+	f.suppressed[team.ID] = append(f.suppressed[team.ID], email+":"+string(reason))
+	return nil
+}
+
+// TestShopMailBounces: a hard bounce or complaint of a shop letter lands on the sending team's own
+// list, only for a letter the lane sent to that recipient, only for a live team; anything else
+// changes nothing.
+func TestShopMailBounces(t *testing.T) {
+	owners := &fakeShopOwners{owners: map[string][2]int64{"re_a": {2, 7}, "re_b": {3, 1}, "re_gone": {9, 1}, "re_susp": {4, 1}, "re_other": {2, 8}}}
+	store := &fakeTeamMail{
+		rows: map[int64]map[int][2]string{
+			2: {7: {"re_a", "Buyer@x.test"}, 8: {"re_elsewhere", "c@x.test"}},
+			3: {1: {"re_b", "b@x.test"}},
+			4: {1: {"re_susp", "s@x.test"}},
+		},
+		suppressed: map[int64][]string{},
+	}
+	dir := fakeShopTeams{teams: map[int64]tenant.Team{
+		2: {ID: 2, Status: tenant.StatusActive},
+		3: {ID: 3, Status: tenant.StatusActive},
+		4: {ID: 4, Status: tenant.StatusSuspended},
+	}}
+	b := &shopMailBounces{owners: owners, teams: func() tenant.Directory { return dir }, mail: func() dependency.Mail { return store }}
+	ctx := context.Background()
+	ev := func(typ, id, to, bounce string) platformmail.Event {
+		return platformmail.Event{Type: typ, EmailID: id, To: []string{to}, Bounce: bounce}
+	}
+	for _, e := range []platformmail.Event{
+		ev("email.bounced", "re_a", "buyer@x.test", "Transient"), // soft: nothing, not even a lookup
+		ev("email.delivered", "re_a", "buyer@x.test", ""),
+	} {
+		if err := b.apply(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if owners.calls != 0 {
+		t.Fatalf("soft events looked up %d owners", owners.calls)
+	}
+	for _, e := range []platformmail.Event{
+		ev("email.complained", "re_unknown", "buyer@x.test", ""), // not a shop letter
+		ev("email.complained", "re_gone", "buyer@x.test", ""),    // wiped team
+		ev("email.complained", "re_susp", "s@x.test", ""),        // suspended team
+		ev("email.complained", "re_a", "someone@x.test", ""),     // another recipient
+		ev("email.complained", "re_other", "c@x.test", ""),       // the row was sent under another id
+	} {
+		if err := b.apply(ctx, e); err != nil {
+			t.Fatalf("%+v: %v", e, err)
+		}
+	}
+	if len(store.suppressed) != 0 {
+		t.Fatalf("suppressed %v", store.suppressed)
+	}
+	if err := b.apply(ctx, ev("email.bounced", "re_a", "BUYER@x.test", "Permanent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.apply(ctx, ev("email.complained", "re_b", "b@x.test", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.apply(ctx, ev("email.suppressed", "re_b", "b@x.test", "")); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64][]string{2: {"Buyer@x.test:bounce"}, 3: {"b@x.test:complaint", "b@x.test:bounce"}}
+	if fmt.Sprint(store.suppressed) != fmt.Sprint(want) {
+		t.Fatalf("suppressed %v, want %v", store.suppressed, want)
+	}
+
+	owners.err = errors.New("platform down")
+	if err := b.apply(ctx, ev("email.complained", "re_a", "buyer@x.test", "")); err == nil {
+		t.Fatal("an owner read error must make Resend retry")
+	}
+	owners.err = nil
+	b.teams = func() tenant.Directory { return nil }
+	if err := b.apply(ctx, ev("email.complained", "re_a", "buyer@x.test", "")); err == nil {
+		t.Fatal("no directory yet must make Resend retry")
+	}
 }

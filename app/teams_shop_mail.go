@@ -2,14 +2,18 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
+	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/mail"
+	"github.com/jekabolt/grbpwr-manager/internal/platformmail"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 )
 
 // Team-shop customer mail (X18-L7): in teams mode the tenant mailer is wrapped in mail.ShopRouter,
@@ -45,17 +49,15 @@ func (a *App) newShopMail(storefront dependency.Mailer) (*mail.ShopMailer, strin
 	if !p.MailerEnabled {
 		return nil, "PLATFORM_MAILER_ENABLED is off"
 	}
-	key := strings.TrimSpace(p.ResendAPIKey)
+	key := shopResendKey(p.ShopResendAPIKey, p.ResendAPIKey, a.c.Mailer.APIKey)
 	if key == "" {
-		key = strings.TrimSpace(a.c.Mailer.APIKey)
-	}
-	if key == "" {
-		return nil, "no Resend key (PLATFORM_RESEND_API_KEY or the mailer key)"
+		return nil, "no Resend key (PLATFORM_SHOP_RESEND_API_KEY, PLATFORM_RESEND_API_KEY or the mailer key)"
 	}
 	if strings.TrimSpace(p.MailFrom) == "" {
 		return nil, "PLATFORM_MAIL_FROM is not set"
 	}
 	mc := a.c.Mailer
+	ids := newShopIdentities(a.platform)
 	sm, err := mail.NewShop(mail.ShopConfig{
 		APIKey:                     key,
 		From:                       p.MailFrom,
@@ -69,7 +71,11 @@ func (a *App) newShopMail(storefront dependency.Mailer) (*mail.ShopMailer, strin
 		ResendRequestsPerSecond:    mc.ResendRequestsPerSecond,
 		ResendBurst:                mc.ResendBurst,
 		TransactionalReserveTokens: mc.TransactionalReserveTokens,
-	}, a.db.Mail(), newShopIdentities(a.platform).resolve,
+		State:                      ids.state,
+		Owner: func(ctx context.Context, teamID int64, mailID int, providerID string) error {
+			return a.platform.RecordShopMailOwner(ctx, providerID, teamID, int64(mailID))
+		},
+	}, a.db.Mail(), ids.resolve,
 		mail.ShopTeamLoop(a.workerTeamLoop("shopmail", activeTeams)), storefront)
 	if err != nil {
 		return nil, err.Error()
@@ -90,12 +96,139 @@ func (a *App) startShopMail(ctx context.Context) {
 	slog.Default().InfoContext(ctx, "team-shop mail lane started")
 }
 
+// shopResendKey: the shop letters' own key, else the platform letters' key, else the mailer key.
+// Only a key of a separate Resend account has its own rate limit and quota.
+func shopResendKey(shop, platform, mailer string) string {
+	for _, k := range []string{shop, platform, mailer} {
+		if k = strings.TrimSpace(k); k != "" {
+			return k
+		}
+	}
+	return ""
+}
+
+// mountShopMailEvents routes the team shops' Resend events into each team's suppression list:
+// through the platform-mail route (a shared Resend account; ph may be nil when that route is off)
+// and, with PLATFORM_SHOP_MAIL_WEBHOOK_SECRET, through /api/webhooks/shop-mail (the shops' own
+// account). Neither depends on the storefront's webhooks, so both work under none.
+func (a *App) mountShopMailEvents(ctx context.Context, ph *platformmail.EventHandler) error {
+	b := &shopMailBounces{
+		owners: a.platform,
+		teams:  func() tenant.Directory { return a.workerTeams },
+		mail:   a.db.Mail,
+	}
+	if ph != nil {
+		ph.SetForeignLetters(b.apply)
+	}
+	secret := strings.TrimSpace(a.c.Platform.ShopMailWebhookSecret)
+	if secret == "" {
+		if strings.TrimSpace(a.c.Platform.ShopResendAPIKey) != "" {
+			slog.Default().WarnContext(ctx, "teams: PLATFORM_SHOP_MAIL_WEBHOOK_SECRET is empty; team-shop bounces of the shop Resend account are not recorded")
+		}
+		return nil
+	}
+	h, err := platformmail.NewForeignEventHandler(secret, b.apply)
+	if err != nil {
+		return err
+	}
+	a.hs.SetShopMailHandler(h)
+	return nil
+}
+
+// shopMailOwners is what the bounce route reads from the control plane.
+type shopMailOwners interface {
+	ShopMailOwner(ctx context.Context, providerID string) (teamID, mailID int64, ok bool, err error)
+}
+
+// shopMailBounces puts the recipient of a team shop's letter on that team's own suppression list on
+// a permanent bounce, Resend's own suppression or a complaint. Only a letter the shop lane sent
+// (shop_mail_owner) of a live team counts, and only when the event names that letter's recipient;
+// everything else is ignored. The list is honoured by the outbox claim before every send.
+type shopMailBounces struct {
+	owners shopMailOwners
+	teams  func() tenant.Directory // read per event: the directory is built after the routes
+	mail   func() dependency.Mail  // routed by the team in ctx
+}
+
+func (b *shopMailBounces) apply(ctx context.Context, ev platformmail.Event) error {
+	var reason entity.SuppressionReason
+	switch ev.SuppressionReason() {
+	case platformmail.ReasonBounce:
+		reason = entity.SuppressionReasonBounce
+	case platformmail.ReasonComplaint:
+		reason = entity.SuppressionReasonComplaint
+	default:
+		return nil
+	}
+	teamID, mailID, ok, err := b.owners.ShopMailOwner(ctx, ev.EmailID)
+	if err != nil || !ok {
+		return err
+	}
+	dir := b.teams()
+	if dir == nil {
+		return errors.New("shop mail events: team directory not ready")
+	}
+	team, err := dir.ByID(ctx, teamID)
+	if errors.Is(err, tenant.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if team.Status != tenant.StatusActive {
+		return nil // a suspended team's database is read-only; a deleted one is gone
+	}
+	tctx := tenant.With(ctx, team)
+	m := b.mail()
+	to, err := m.ProviderMailRecipient(tctx, int(mailID), ev.EmailID)
+	if err != nil || to == "" {
+		return err
+	}
+	if !recipientNamed(to, ev.To) {
+		return nil
+	}
+	if err := m.AddSuppression(tctx, to, reason); err != nil {
+		return err
+	}
+	slog.Default().InfoContext(ctx, "shop mail: address suppressed",
+		slog.Int64("tid", teamID), slog.Int64("mailId", mailID), slog.String("reason", string(reason)))
+	return nil
+}
+
+// recipientNamed: the event names the letter's own address (case-insensitively).
+func recipientNamed(letterTo string, to []string) bool {
+	for _, t := range to {
+		if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(letterTo)) {
+			return true
+		}
+	}
+	return false
+}
+
 // loginChallengeTTL is how long a sign-in letter may wait: the storefront login challenge's TTL.
 func loginChallengeTTL(v string) time.Duration {
 	if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil && d > 0 {
 		return d
 	}
 	return defaultLoginTTL
+}
+
+// state is a mail.ShopStateReader: the shop's switch read from the control plane now, never from
+// the cache. A shop found not open also drops its cached identity, so queueing sees it at once.
+func (s *shopIdentities) state(ctx context.Context, teamID int64) (mail.ShopState, error) {
+	ts, err := s.p.TeamShop(ctx, teamID)
+	if err != nil {
+		return mail.ShopState{}, err
+	}
+	if !ts.Enabled || ts.ClosedByOperator || ts.EnabledAt == nil {
+		s.mu.Lock()
+		if e, ok := s.teams[teamID]; ok && e.id.Open {
+			delete(s.teams, teamID)
+		}
+		s.mu.Unlock()
+		return mail.ShopState{}, nil
+	}
+	return mail.ShopState{Open: true, OpenedAt: ts.EnabledAt.UTC()}, nil
 }
 
 // shopMailPlatform is what the identity lookup reads from the control plane.

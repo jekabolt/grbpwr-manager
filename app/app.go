@@ -1161,14 +1161,20 @@ func (a *App) Start(ctx context.Context) error {
 			a.hs.SetSignupChallengeHandler(h)
 		}
 		// Resend's delivery events for the platform letters (X6): mounted only with a signing secret.
+		var platformEvents *platformmail.EventHandler
 		if secret := strings.TrimSpace(a.c.Platform.MailWebhookSecret); secret != "" {
 			h, err := platformmail.NewEventHandler(a.platform.DB(), secret)
 			if err != nil {
 				return err
 			}
+			platformEvents = h
 			a.hs.SetPlatformMailHandler(h)
 		} else {
 			slog.Default().WarnContext(ctx, "teams: PLATFORM_MAIL_WEBHOOK_SECRET is empty; bounces and complaints are not recorded")
+		}
+		// The team shops' letters' events (X18-L7): over platform-mail and/or their own route.
+		if err := a.mountShopMailEvents(ctx, platformEvents); err != nil {
+			return err
 		}
 	}
 

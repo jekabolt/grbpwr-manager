@@ -589,6 +589,9 @@ func bindEnvVars() {
 	// X6: platform mail key and delivery events, sign-up abuse limits (all optional).
 	viper.BindEnv("platform.resend_api_key", "PLATFORM_RESEND_API_KEY")
 	viper.BindEnv("platform.mail_webhook_secret", "PLATFORM_MAIL_WEBHOOK_SECRET")
+	// X18-L7: the team shops' letters over their own Resend account (both optional).
+	viper.BindEnv("platform.shop_resend_api_key", "PLATFORM_SHOP_RESEND_API_KEY")
+	viper.BindEnv("platform.shop_mail_webhook_secret", "PLATFORM_SHOP_MAIL_WEBHOOK_SECRET")
 	viper.BindEnv("platform.signup_bot_check", "PLATFORM_SIGNUP_BOT_CHECK")
 	viper.BindEnv("platform.signup_pow_max", "PLATFORM_SIGNUP_POW_MAX")
 	viper.BindEnv("platform.signup_min_submit", "PLATFORM_SIGNUP_MIN_SUBMIT")

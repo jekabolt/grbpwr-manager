@@ -104,6 +104,14 @@ type Config struct {
 	// delivery events route; empty = the route is not mounted.
 	ResendAPIKey      string `mapstructure:"resend_api_key"`
 	MailWebhookSecret string `mapstructure:"mail_webhook_secret"`
+	// ShopResendAPIKey (PLATFORM_SHOP_RESEND_API_KEY, X18-L7): the team shops' letters' own Resend
+	// key; empty = the platform key, then the MAILER key. Only a key of a separate Resend account
+	// isolates its rate limit and quota (Resend counts per account). ShopMailWebhookSecret
+	// (PLATFORM_SHOP_MAIL_WEBHOOK_SECRET): the Svix secret of that account's events route
+	// (/api/webhooks/shop-mail); empty = not mounted. Over a shared account the shop letters' events
+	// arrive at platform-mail and are routed from there.
+	ShopResendAPIKey      string `mapstructure:"shop_resend_api_key"`
+	ShopMailWebhookSecret string `mapstructure:"shop_mail_webhook_secret"`
 	// SignupBotCheck (off | log | enforce), SignupPowMax, SignupMinSubmit (a duration),
 	// SignupMXCheck (bool), SignupBlockedDomains (comma-separated), SignupLettersPerHour,
 	// SignupMaxBouncePct: PLATFORM_SIGNUP_*.
