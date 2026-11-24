@@ -3,6 +3,5 @@
 # Shrink: go test ./tools/tenantgate/ -run TestG4BackgroundContext -update (growth: -grow)
 app/app.go	(*App).Start	2
 internal/apisrv/admin/server.go	New	1
-internal/apisrv/frontend/order_submit.go	(*Server).SubmitOrder	1
 internal/store/migrate.go	runMigrations	1
 internal/store/migreplay/seed.go	SeedBoundaryData	1

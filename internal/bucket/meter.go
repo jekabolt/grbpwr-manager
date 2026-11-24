@@ -116,6 +116,11 @@ func (b *Bucket) put(ctx context.Context, key string, r io.Reader, size int64, o
 			reserved = n
 		}
 	}
+	// A team's work file (teams mode, {base}/t/…) is private: no public-read, read through a signed url
+	// (teamsign.go, lane X13). Team #1 and teams mode off keep the acl their caller set.
+	if b.Config.isPrivateTeamKey(key) {
+		opts.UserMetadata = withoutPublicACL(opts.UserMetadata)
+	}
 	info, err := b.Client.PutObject(ctx, b.S3BucketName, key, r, size, opts)
 	if err != nil {
 		if metered {

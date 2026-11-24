@@ -170,6 +170,7 @@ type App struct {
 	stopProvisioner   func()
 	stopAIRollup      func()
 	stopStorage       func() // X11: storage recount (teams_storage.go)
+	stopDay30         func() // D3: day-30 purge and wipe (teams_day30.go)
 	stopTaskBoardHeal func()
 	// noShopSkipped names, in start order, the components shopGate skipped (no-shop installation).
 	noShopSkipped []string
@@ -821,6 +822,9 @@ func (a *App) Start(ctx context.Context) error {
 	aiRouter := router.New(a.aireg, aiLedger,
 		chatTransports,
 		admin.AIRouterDefaults(aiOpsClient), aiOpsClient.CompletionBase())
+	if bk, ok := a.b.(*bucket.Bucket); ok {
+		aiRouter.SetURLSigner(bk.SignFileURL) // X13: a team's private pictures reach the provider signed
+	}
 	// ⚠ ДВА ЧИСЛА, КОТОРЫЕ ОДНАЖДЫ РАЗОШЛИСЬ МОЛЧА, ТЕПЕРЬ ГОВОРЯТСЯ ВСЛУХ ОДИН РАЗ ЗА ЗАГРУЗКУ.
 	//
 	// Лиза строки черновика идеи обязана переживать платную цепочку, а длину цепочки задают БАЗЫ
@@ -983,6 +987,7 @@ func (a *App) Start(ctx context.Context) error {
 		a.wireDesignTeams() // teams mode on: one tick per active team with `ai` on (teams_ai.go)
 		if bk, ok := a.b.(*bucket.Bucket); ok {
 			a.dgw.SetStorageGate(bk.StorageRoom) // X11: a full team never pays (no-op until the meter is on)
+			a.dgw.SetURLSigner(bk.SignFileURL)   // X13: References of a team's private files go out signed
 		}
 		if err = a.dgw.Start(ctx); err != nil {
 			slog.Default().ErrorContext(ctx, "couldn't start design generation worker",
@@ -1114,7 +1119,9 @@ func (a *App) Start(ctx context.Context) error {
 		binder.UseTokenTeams(linkTokens.TokenTeam)
 	}
 	a.useSchemaGate(binder)
-	a.wireShops(ctx, binder, adminS, frontendS)
+	if err := a.wireShops(ctx, binder, adminS, frontendS); err != nil {
+		return err
+	}
 	if a.platform != nil {
 		authS.SetPlatform(a.platform, a.c.Platform)
 		adminS.SetPlatform(a.platform, a.c.Platform)
@@ -1239,6 +1246,9 @@ func (a *App) Start(ctx context.Context) error {
 	// not a *bucket.Bucket.
 	if bk, ok := a.b.(*bucket.Bucket); ok {
 		a.hs.SetFileProxyHandler(authS.WithAdminAuthz(admin.FileProxyHandler(bk.OpenProxyObject)))
+		if a.c.Bucket.TeamsMode {
+			a.hs.SetFileURLRewriter(bk) // X13: signed urls of private team files out, signatures cut off in
+		}
 	}
 
 	// Stripe webhook: OPTIONAL real-time server-to-server payment confirmation.
@@ -1468,6 +1478,9 @@ func (a *App) Stop(ctx context.Context) {
 	}
 	// Nil-guarded: Stop is also the boot-error cleanup path, where Start may have
 	// failed before store.New assigned a.db.
+	if a.stopDay30 != nil {
+		a.stopDay30()
+	}
 	if a.stopStorage != nil {
 		a.stopStorage()
 	}
@@ -1744,7 +1757,10 @@ func (a *App) startTeamsWorkers(ctx context.Context) error {
 		return fmt.Errorf("ai spend rollup: %w", err)
 	}
 	a.stopAIRollup = stop
-	a.stopStorage = a.startStorageMeter(ctx) // X11: storage cap + daily recount (teams_storage.go)
+	a.stopStorage = a.startStorageMeter(ctx)              // X11: storage cap + daily recount (teams_storage.go)
+	if a.stopDay30, err = a.startDay30(ctx); err != nil { // D3: day-30 purge and wipe (teams_day30.go)
+		return fmt.Errorf("day-30 loop: %w", err)
+	}
 	return nil
 }
 

@@ -19,6 +19,7 @@ func TestShopHosts(t *testing.T) {
 	ann, _, _ := seedConsole(t, st)
 	now := time.Now().UTC()
 	const sub = "acme.shop.beta.lekalo.studio"
+	st.SetShopHostProof(proofFake{"2:shop.acme.com": true})
 
 	if ts, err := st.TeamShop(ctx, 2); err != nil || ts.Enabled {
 		t.Fatalf("no row: %+v %v", ts, err)
@@ -52,7 +53,7 @@ func TestShopHosts(t *testing.T) {
 		t.Fatalf("main before live: %v", err)
 	}
 	h, err := st.ShopHost(ctx, 2, "shop.acme.com")
-	if err != nil || len(h.Records) != 1 || h.Records[0].Value != "cname.vercel-dns.com" || h.VerifiedAt != nil {
+	if err != nil || len(h.Records) != 2 || h.Records[0].Type != "TXT" || h.Records[1].Value != "cname.vercel-dns.com" || h.VerifiedAt != nil {
 		t.Fatalf("custom host %+v %v", h, err)
 	}
 	recs[0].Found = true
@@ -117,13 +118,13 @@ func TestShopHosts(t *testing.T) {
 		t.Fatal("stripe row from nowhere")
 	}
 
-	// The hard delete of a team takes every shop row.
+	// The wipe's finish takes every shop row.
 	tx, err := st.DB().Beginx()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := platformstore.DeleteTeamShopTx(ctx, tx, 2); err != nil {
-		t.Fatal(err)
+	if rows, err := platformstore.DeleteTeamShopTx(ctx, tx, 2); err != nil || rows["team_shop"] != 1 {
+		t.Fatalf("delete shop rows %v %v", rows, err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)

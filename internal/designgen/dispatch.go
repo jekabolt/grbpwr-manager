@@ -316,7 +316,7 @@ func (w *Worker) execute(ctx context.Context, run entity.DesignRun, token string
 		// books its own row under (run, this attempt, call_no). Set on the local copy the route is
 		// handed; nil without a ledger, which records nothing.
 		job.Recorder = w.recorderFor(run, att.AttemptNo)
-		out, callErr := prov.Execute(ctx, job)
+		out, callErr := prov.Execute(ctx, w.signedJob(ctx, job))
 
 		if async && callErr == nil && out != nil && out.Pending {
 			// Submitted, not delivered. Close the attempt with the task id so a worker that dies

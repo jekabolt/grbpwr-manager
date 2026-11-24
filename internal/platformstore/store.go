@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -88,6 +89,9 @@ type Config struct {
 	// StorageCapGB (TEAM_STORAGE_CAP_GB, X11): the storage cap of a team with no cap of its own, in GB;
 	// "0" / "off" = no cap. Kept as text, read through StorageCapDefault (default 20).
 	StorageCapGB string `mapstructure:"storage_cap_gb"`
+	// PurgeMode (PLATFORM_PURGE_MODE, D3): the day-30 loop — "off", "dry" (the default: log what is due,
+	// write nothing) or "on" (purge deleted accounts, wipe deleted teams). Unknown reads as dry.
+	PurgeMode string `mapstructure:"purge_mode"`
 	// TermsVersion (PLATFORM_TERMS_VERSION): stored on every account sign-up or invite creates;
 	// read through Terms. Optional, read only in teams mode.
 	TermsVersion string `mapstructure:"terms_version"`
@@ -268,6 +272,8 @@ type Store struct {
 	db    *sqlx.DB
 	dir   *directory
 	touch *sessionTouches
+	// proof decides whether a team's custom shop host may go live (X18, SetShopHostProof).
+	proof atomic.Pointer[shopProofHolder]
 }
 
 // ErrUserNotFound: no platform user with that handle.
