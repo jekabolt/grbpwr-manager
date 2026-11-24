@@ -20,7 +20,6 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/dependency"
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
-	"github.com/jekabolt/grbpwr-manager/internal/entity"
 	"github.com/jekabolt/grbpwr-manager/internal/health"
 	"github.com/jekabolt/grbpwr-manager/internal/storefront/tokenhash"
 	resend "github.com/jekabolt/grbpwr-manager/openapi/gen/resend"
@@ -281,6 +280,9 @@ func templateFuncs() template.FuncMap {
 		// emphasis span. Every value fed to a tHTML message must go through emph or esc, so a
 		// tHTML message can never inject markup even if a field ever carries HTML metacharacters.
 		"esc": func(v any) template.HTML { return template.HTML(html.EscapeString(fmt.Sprint(v))) },
+		// shop is nil for a storefront letter; a team shop's render overrides it with the shop's
+		// name and links (shopBrand.funcMap), and the partials switch on {{ with shop }}.
+		"shop": func() *shopView { return nil },
 	}
 }
 
@@ -331,6 +333,14 @@ func (m *Mailer) parseTemplates() error {
 }
 
 func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface{}) (*resend.SendEmailRequest, error) {
+	return m.buildRequest(to, tn, data, nil)
+}
+
+// buildRequest renders one letter. brand nil is the storefront's own letter (GRBPWR, byte-for-byte
+// the pre-team-shop output); a brand renders a team shop's letter: the shop's name instead of
+// GRBPWR in every catalog string and the subject, the shop's own links, the neutral sender, no
+// reply-to and no List-Unsubscribe (transactional only, nothing to unsubscribe from).
+func (m *Mailer) buildRequest(to string, tn templateName, data interface{}, brand *shopBrand) (*resend.SendEmailRequest, error) {
 	normalizedTo, err := validateEmailAddress(to)
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient: %w", err)
@@ -351,6 +361,9 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 	if err != nil {
 		return nil, err
 	}
+	if brand != nil {
+		subject = brand.rebrand(subject)
+	}
 
 	// Clone the shared template and attach the locale-bound i18n funcs for this render,
 	// so the parsed templates are never mutated across concurrent sends.
@@ -359,6 +372,9 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 		return nil, fmt.Errorf("clone template: %w", err)
 	}
 	tmpl = tmpl.Funcs(localeFuncMap(loc))
+	if brand != nil {
+		tmpl = tmpl.Funcs(brand.funcMap(loc))
+	}
 
 	body := &strings.Builder{}
 	// Execute the template by its filename
@@ -368,6 +384,16 @@ func (m *Mailer) buildSendMailRequest(to string, tn templateName, data interface
 
 	html := body.String()
 	text := htmlToText(html)
+
+	if brand != nil {
+		return &resend.SendEmailRequest{
+			From:    brand.From,
+			To:      []string{normalizedTo},
+			Html:    &html,
+			Text:    &text,
+			Subject: subject,
+		}, nil
+	}
 
 	replyTo := m.c.FromEmail
 	if m.c.ReplyTo != "" {
@@ -591,53 +617,6 @@ func (m *Mailer) sendWithOptions(ctx context.Context, ser *resend.SendEmailReque
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		if readErr != nil {
 			return &HTTPSendError{StatusCode: resp.StatusCode}
-		}
-		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
-	}
-
-	return nil
-}
-
-func (m *Mailer) sendRaw(ctx context.Context, ser *entity.SendEmailRequest) error {
-	if m.suppressed(ser.Subject) {
-		return nil // bulk mail suppressed (e.g. beta seeding) — treat as sent, dispatch nothing
-	}
-	normalizedTo, err := validateEmailAddress(ser.To)
-	if err != nil {
-		return fmt.Errorf("invalid recipient in stored email: %w", err)
-	}
-	ser.To = normalizedTo
-
-	req, err := dto.EntitySendEmailRequestToResend(ser)
-	if err != nil {
-		return fmt.Errorf("error converting email: %w", err)
-	}
-
-	// Attach List-Unsubscribe headers when sending queued emails from the worker.
-	req.Headers = m.listUnsubscribeHeaders(normalizedTo)
-	if err := m.budget.WaitTransactional(ctx); err != nil {
-		return fmt.Errorf("wait for transactional Resend budget: %w", err)
-	}
-
-	resp, err := m.cli.PostEmails(ctx, *req)
-	if err != nil {
-		return fmt.Errorf("error sending email: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		if retryAfter <= 0 {
-			retryAfter = time.Second
-		}
-		m.budget.CooldownGlobal(retryAfter)
-		return mailApiLimitReached
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "failed to read error response body", slog.String("err", err.Error()))
-			return &HTTPSendError{StatusCode: resp.StatusCode, Body: ""}
 		}
 		return &HTTPSendError{StatusCode: resp.StatusCode, Body: string(body)}
 	}

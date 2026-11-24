@@ -100,6 +100,24 @@ func (b *ResendBudget) TryCampaign() bool {
 	return b.limiter.AllowN(now, 1)
 }
 
+// TryShared takes one token for the team-shop lane when it shares this budget (the same Resend key)
+// with the storefront's own letters. Like TryCampaign it refuses while a storefront transactional
+// send waits or a global cooldown runs, and never takes the transactional reserve, so the storefront
+// keeps priority and is never starved. A campaign cooldown does not stop it: a 429 on the campaign
+// batch endpoint is the campaign lane's own.
+func (b *ResendBudget) TryShared() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	if b.transactionalWaiters > 0 || now.Before(b.globalCooldownUntil) {
+		return false
+	}
+	if b.limiter.TokensAt(now) < float64(b.transactionalReserve+1) {
+		return false
+	}
+	return b.limiter.AllowN(now, 1)
+}
+
 func (b *ResendBudget) CooldownCampaign(delay time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
