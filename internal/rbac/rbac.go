@@ -955,6 +955,17 @@ var methodRequirements = map[string]Requirement{
 	// workspace screen: the team's brand data and a member's section rights (owner-only writes)
 	"SetTeamBrand":        wr(SectionAccounts),
 	"SetTeamMemberAccess": wr(SectionAccounts),
+	// shop screen (lane X18): the calling team's shop, domains, payments and mail. Owner-only writes
+	// (wr(SectionAccounts) + the handler's owner rule), as the workspace screen.
+	"SetShopEnabled":     wr(SectionAccounts),
+	"AttachShopDomain":   wr(SectionAccounts),
+	"CheckShopDomain":    wr(SectionAccounts),
+	"RemoveShopDomain":   wr(SectionAccounts),
+	"SetShopPrimaryHost": wr(SectionAccounts),
+	"SetShopMail":        wr(SectionAccounts),
+	"StartStripeConnect": wr(SectionAccounts),
+	"SetStripeKeys":      wr(SectionAccounts),
+	"DisconnectStripe":   wr(SectionAccounts),
 	// УДАЛЕНИЕ ПОЗИЦИИ СЛОВАРЯ СПЕЦИАЛЬНОСТЕЙ — ЗДЕСЬ, А НЕ В allowlist РЯДОМ С ЗАПИСЬЮ.
 	// SetAccountSpecialties внизу разрешён всем аутентифицированным, потому что человек правит СВОЁ
 	// самоописание, и новое имя только добавляется: ни у кого на экране ничего не пропадает.
@@ -1087,6 +1098,9 @@ var allowlist = map[string]entity.AccessLevel{
 	// GetTeamStorage (lane X11) — the settings row «used / cap» of the calling team: every member reads
 	// it (the edge resolves the team; nothing to act on). The cap changes only in the console.
 	"GetTeamStorage": entity.AccessRead,
+	// GetShop (lane X18) — the shop screen of the calling team: every member reads it; no keys or
+	// Stripe account id are in it. Every change is owner-only (see the shop block above).
+	"GetShop": entity.AccessRead,
 	// LIBRARY (media-files). The unified list spans two sections that do not contain one another
 	// (media = content, files = files) and methodRequirements allows one section per method, so the
 	// edge lets any account in and the handler gates each branch: a branch the caller has neither the

@@ -4742,6 +4742,87 @@ service AdminService {
     option (google.api.http) = {get: "/api/admin/team/storage"};
   }
 
+  // SHOP (lane X18). The calling team's own shop: on/off, address, domains, payments, mail. The team
+  // always comes from the session, never from a field. Reads: any member; writes: owner or operator.
+
+  // GetShop answers the calling team's shop as the admin «shop» screen shows it.
+  rpc GetShop(GetShopRequest) returns (GetShopResponse) {
+    option (google.api.http) = {get: "/api/admin/team/shop"};
+  }
+
+  // SetShopEnabled turns the shop on or off. Turning it on gives it the address
+  // {slug}.shop.lekalo.studio (and makes it the main address when the team has none).
+  rpc SetShopEnabled(SetShopEnabledRequest) returns (SetShopEnabledResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/enabled"
+      body: "*"
+    };
+  }
+
+  // AttachShopDomain stores a domain of the team's own and answers the DNS records to add.
+  rpc AttachShopDomain(AttachShopDomainRequest) returns (AttachShopDomainResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/domains"
+      body: "*"
+    };
+  }
+
+  // CheckShopDomain asks the domain provider again and answers the domain's fresh status.
+  rpc CheckShopDomain(CheckShopDomainRequest) returns (CheckShopDomainResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/domains/{host}/check"
+      body: "*"
+    };
+  }
+
+  // RemoveShopDomain removes a domain of the team's own (the shop.lekalo.studio address stays).
+  rpc RemoveShopDomain(RemoveShopDomainRequest) returns (RemoveShopDomainResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/domains/{host}/remove"
+      body: "*"
+    };
+  }
+
+  // SetShopPrimaryHost picks the main address: mail links, revalidation and redirects use it.
+  rpc SetShopPrimaryHost(SetShopPrimaryHostRequest) returns (SetShopPrimaryHostResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/primary"
+      body: "*"
+    };
+  }
+
+  // SetShopMail sets the sender name and reply-to address of the shop's letters.
+  rpc SetShopMail(SetShopMailRequest) returns (SetShopMailResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/mail"
+      body: "*"
+    };
+  }
+
+  // StartStripeConnect answers the Stripe onboarding link for Stripe Connect (lane X18-L3).
+  rpc StartStripeConnect(StartStripeConnectRequest) returns (StartStripeConnectResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/stripe/connect"
+      body: "*"
+    };
+  }
+
+  // SetStripeKeys stores the team's own Stripe keys, sealed at rest (lane X18-L3).
+  rpc SetStripeKeys(SetStripeKeysRequest) returns (SetStripeKeysResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/stripe/keys"
+      body: "*"
+    };
+  }
+
+  // DisconnectStripe stops payments through the team's Stripe account or keys (lane X18-L3).
+  rpc DisconnectStripe(DisconnectStripeRequest) returns (DisconnectStripeResponse) {
+    option (google.api.http) = {
+      post: "/api/admin/team/shop/stripe/disconnect"
+      body: "*"
+    };
+  }
+
   // LIBRARY (media + files as one list). One contiguous block; every route is under
   // /api/admin/library/… so it never collides with /api/admin/files/{id}.
 
@@ -15946,6 +16027,178 @@ message GetTeamStorageResponse {
   int64 cap_bytes = 2;
   // full: uploads are refused until files are removed or the cap is raised.
   bool full = 3;
+}
+
+// Shop is the calling team's shop (lane X18).
+message Shop {
+  // enabled: the team turned its shop on.
+  bool enabled = 1;
+  // status: "off" (turned off), "open" (taking orders), "closed" (the operator closed it, or the
+  // team's products / orders features are off), "checkout_off" (open, no payments set up).
+  string status = 2;
+  // address is the shop's own address on the platform: "{slug}.shop.lekalo.studio"; empty while off.
+  string address = 3;
+  // primary_host is the main address (no scheme): a live custom domain or the address above.
+  string primary_host = 4;
+  // domains are every host of the shop, the platform address first.
+  repeated ShopDomain domains = 5;
+  ShopPayments payments = 6;
+  ShopMail mail = 7;
+  // closed_by_operator: the platform operator closed the shop; the team cannot reopen it.
+  bool closed_by_operator = 8;
+  // missing_features are feature keys the shop needs and the team does not have ("products", "orders").
+  repeated string missing_features = 9;
+}
+
+// ShopDomain is one host the shop answers on.
+message ShopDomain {
+  // host is the bare host name, lowercase, no scheme or port.
+  string host = 1;
+  // kind: "subdomain" ({slug}.shop.lekalo.studio, managed by the platform), "custom" (the team's own),
+  // "legacy" (grbpwr's existing domains).
+  string kind = 2;
+  // status: "records_needed" (add the records), "verifying", "live", "failed".
+  string status = 3;
+  // primary: this host is the main address.
+  bool primary = 4;
+  // managed: the platform owns the DNS (the shop.lekalo.studio address); it cannot be removed.
+  bool managed = 5;
+  // redirect_to is set when this host only redirects (e.g. "www." to the bare domain).
+  string redirect_to = 6;
+  // records are the DNS records to add at the team's DNS provider; empty for managed hosts.
+  repeated ShopDnsRecord records = 7;
+  google.protobuf.Timestamp verified_at = 8;
+  google.protobuf.Timestamp checked_at = 9;
+}
+
+// ShopDnsRecord is one DNS record the team adds.
+message ShopDnsRecord {
+  // type: "A", "CNAME" or "TXT".
+  string type = 1;
+  // name is the record name as DNS providers take it ("@", "www", "_vercel").
+  string name = 2;
+  string value = 3;
+  // found: the last check saw this record in DNS.
+  bool found = 4;
+}
+
+// ShopPayments is how the shop takes payments. No Stripe account id or key reaches the admin.
+message ShopPayments {
+  // method: "none", "connect" (Stripe Connect), "keys" (the team's own keys), "platform" (grbpwr's keys).
+  string method = 1;
+  // status: "none", "onboarding" (Connect started, not finished), "active", "restricted", "disconnected".
+  string status = 2;
+  // account_name is the Stripe account's display name.
+  string account_name = 3;
+  bool charges_enabled = 4;
+  bool payouts_enabled = 5;
+  bool details_submitted = 6;
+  // mode: "live" or "test".
+  string mode = 7;
+  // key_last4 is the last four characters of the team's secret key (method keys only).
+  string key_last4 = 8;
+  // webhook_url is where the team points its Stripe webhook (method keys only).
+  string webhook_url = 9;
+}
+
+// ShopMail is the sender of the shop's letters.
+message ShopMail {
+  // from_name is the sender's name; empty = the team's brand name.
+  string from_name = 1;
+  // from_address is the sending address (set by the platform, read-only).
+  string from_address = 2;
+  // reply_to is where customers' replies go; empty = no reply-to.
+  string reply_to = 3;
+}
+
+message GetShopRequest {}
+
+message GetShopResponse {
+  Shop shop = 1;
+}
+
+message SetShopEnabledRequest {
+  bool enabled = 1;
+}
+
+message SetShopEnabledResponse {
+  Shop shop = 1;
+}
+
+message AttachShopDomainRequest {
+  // host is the team's domain ("brand.com" or "shop.brand.com"); a scheme, path or port is refused.
+  string host = 1;
+}
+
+message AttachShopDomainResponse {
+  Shop shop = 1;
+  // domain is the attached host with the records to add.
+  ShopDomain domain = 2;
+}
+
+message CheckShopDomainRequest {
+  string host = 1;
+}
+
+message CheckShopDomainResponse {
+  Shop shop = 1;
+  ShopDomain domain = 2;
+}
+
+message RemoveShopDomainRequest {
+  string host = 1;
+}
+
+message RemoveShopDomainResponse {
+  Shop shop = 1;
+}
+
+message SetShopPrimaryHostRequest {
+  // host must be one of the shop's live hosts.
+  string host = 1;
+}
+
+message SetShopPrimaryHostResponse {
+  Shop shop = 1;
+}
+
+message SetShopMailRequest {
+  string from_name = 1;
+  string reply_to = 2;
+}
+
+message SetShopMailResponse {
+  Shop shop = 1;
+}
+
+message StartStripeConnectRequest {
+  // return_path is the admin page Stripe sends the owner back to; empty = the shop screen.
+  string return_path = 1;
+}
+
+message StartStripeConnectResponse {
+  // url is the Stripe onboarding (or dashboard) link; open it in the same tab.
+  string url = 1;
+  Shop shop = 2;
+}
+
+message SetStripeKeysRequest {
+  // publishable_key: pk_live_… or pk_test_….
+  string publishable_key = 1;
+  // secret_key: sk_… or rk_…; never answered back.
+  string secret_key = 2;
+  // webhook_secret: whsec_… of the endpoint the team made at ShopPayments.webhook_url.
+  string webhook_secret = 3;
+}
+
+message SetStripeKeysResponse {
+  Shop shop = 1;
+}
+
+message DisconnectStripeRequest {}
+
+message DisconnectStripeResponse {
+  Shop shop = 1;
 }
 
 // TranslateFieldsRequest — the admin client's /api/translate body

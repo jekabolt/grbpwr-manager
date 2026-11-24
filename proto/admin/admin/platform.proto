@@ -115,6 +115,15 @@ service PlatformService {
       body: "*"
     };
   }
+
+  // SetTeamShop closes or reopens a team's shop (lane X18). A closed shop answers "shop closed" to
+  // every storefront call; the team cannot reopen it itself.
+  rpc SetTeamShop(SetTeamShopRequest) returns (SetTeamShopResponse) {
+    option (google.api.http) = {
+      post: "/api/platform/teams/{team_slug}/shop"
+      body: "*"
+    };
+  }
 }
 
 // PlatformTeam is one team as the console sees it.
@@ -140,6 +149,10 @@ message PlatformTeam {
   int64 storage_cap_bytes = 12;
   // storage_cap_default is true when the team follows the installation's default cap (no own cap).
   bool storage_cap_default = 13;
+  // shop is the team's shop: "off", "open", "closed" (by the operator) or "checkout_off".
+  string shop = 14;
+  // shop_host is the shop's main address (no scheme); empty while off.
+  string shop_host = 15;
 }
 
 // PlatformMember is one member of a team as the console sees it.
@@ -216,6 +229,16 @@ message SetTeamStorageCapRequest {
 }
 
 message SetTeamStorageCapResponse {
+  PlatformTeam team = 1;
+}
+
+message SetTeamShopRequest {
+  string team_slug = 1;
+  // closed: true closes the shop, false lifts the operator's close (the team's own on/off stays).
+  bool closed = 2;
+}
+
+message SetTeamShopResponse {
   PlatformTeam team = 1;
 }
 

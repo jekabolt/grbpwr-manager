@@ -234,6 +234,17 @@ var methodOverrides = map[string][]Key{
 	// workspace screen (W0): brand data and per-member section rights.
 	"SetTeamBrand":        {Core},
 	"SetTeamMemberAccess": {Core},
+	// shop screen (X18): open even with products / orders off, so it can say what is missing.
+	"GetShop":            {Core},
+	"SetShopEnabled":     {Core},
+	"AttachShopDomain":   {Core},
+	"CheckShopDomain":    {Core},
+	"RemoveShopDomain":   {Core},
+	"SetShopPrimaryHost": {Core},
+	"SetShopMail":        {Core},
+	"StartStripeConnect": {Core},
+	"SetStripeKeys":      {Core},
+	"DisconnectStripe":   {Core},
 
 	// A style's facts, size chart and economics belong to its tech card: the card page reads and
 	// saves them, so they follow tech_cards, not the products / analytics sections rbac files them
