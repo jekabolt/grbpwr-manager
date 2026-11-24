@@ -77,7 +77,7 @@ func (s *Server) shopCaller(ctx context.Context, owner bool) (peopleCtx, error) 
 
 func shopErr(ctx context.Context, op string, err error) error {
 	switch {
-	case errors.Is(err, platformstore.ErrShopHostTaken):
+	case errors.Is(err, platformstore.ErrShopHostTaken), errors.Is(err, shop.ErrDomainTaken):
 		return status.Error(codes.AlreadyExists, "host_taken")
 	case errors.Is(err, platformstore.ErrShopHostNotFound):
 		return status.Error(codes.NotFound, "host_not_found")
@@ -326,6 +326,9 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 		return nil, shopErr(ctx, "attach", err)
 	}
 	state, err := s.shopW.Domains.Attach(ctx, host)
+	if errors.Is(err, shop.ErrDomainTaken) || errors.Is(err, shop.ErrBadHost) {
+		return nil, shopErr(ctx, "attach", err)
+	}
 	if err != nil {
 		slog.Default().ErrorContext(ctx, "shop: domain provider attach", slog.String("err", err.Error()))
 		return nil, status.Error(codes.Unavailable, "domain_provider")
@@ -363,7 +366,7 @@ func (s *Server) CheckShopDomain(ctx context.Context, req *pb_admin.CheckShopDom
 			slog.Default().ErrorContext(ctx, "shop: domain provider check", slog.String("err", err.Error()))
 			return nil, status.Error(codes.Unavailable, "domain_provider")
 		}
-		if err := s.platform.store.SetShopHostStatus(ctx, p.w.Team.ID, host, validShopStatus(state.Status), shopRecords(state.Records), time.Now()); err != nil {
+		if _, err := s.platform.store.SetShopHostStatus(ctx, p.w.Team.ID, host, validShopStatus(state.Status), shopRecords(state.Records), time.Now()); err != nil {
 			return nil, shopErr(ctx, "check", err)
 		}
 		if state.Status != cur.Status {

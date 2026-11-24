@@ -36,6 +36,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/revalidation"
 	"github.com/jekabolt/grbpwr-manager/internal/shippinglabel"
+	"github.com/jekabolt/grbpwr-manager/internal/shop"
 	"github.com/jekabolt/grbpwr-manager/internal/shoppay"
 	"github.com/jekabolt/grbpwr-manager/internal/store"
 	"github.com/jekabolt/grbpwr-manager/internal/store/tenantdb"
@@ -146,6 +147,9 @@ type Config struct {
 	// Platform is teams mode (lekalo.studio): PLATFORM_MYSQL_DSN empty = off, the binary behaves as
 	// the single-tenant one. See Platform.
 	Platform Platform `mapstructure:"platform"`
+	// ShopDomains is the Vercel project of the multi-shop storefront (X18-L5): teams' own domains are
+	// attached there. VERCEL_TOKEN or VERCEL_PROJECT_ID empty = a fake provider that talks to nobody.
+	ShopDomains shop.VercelConfig `mapstructure:"shop_domains"`
 }
 
 // Platform is the teams section (02-DESIGN §14). It is platformstore.Config itself: the API
@@ -799,6 +803,11 @@ func bindEnvVars() {
 	viper.BindEnv("revalidation.http_timeout", "REVALIDATION_HTTP_TIMEOUT")
 	viper.BindEnv("revalidation.domains", "REVALIDATION_DOMAINS")
 	viper.BindEnv("revalidation.shop_master", "SHOP_REVALIDATE_MASTER")
+
+	// Team shops' own domains on the multi-shop Vercel project (X18-L5).
+	viper.BindEnv("shop_domains.token", "VERCEL_TOKEN")
+	viper.BindEnv("shop_domains.project_id", "VERCEL_PROJECT_ID")
+	viper.BindEnv("shop_domains.team_id", "VERCEL_TEAM_ID")
 
 	// GA4 Analytics
 	viper.BindEnv("ga4.enabled", "GA4_ENABLED")

@@ -411,15 +411,16 @@ VALUES (?, ?, 'custom', 0, 0, ?, ?, ?, ?, ?)`, host, teamID, status, recs, now, 
 
 // SetShopHostStatus stores a check's answer for a custom host of the team, gated by the ownership
 // proof (gateShopHost): the provider's «live» counts only once the team proved the domain. A host
-// that stops being live loses the main address to the platform address.
-func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
+// that stops being live loses the main address to the platform address. It returns the status it
+// stored, which may differ from the one asked for.
+func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) (string, error) {
 	now = now.UTC()
 	status, records, unproven := s.gateShopHost(ctx, teamID, host, status, records)
 	recs, err := recordsJSON(records)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+	err = s.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
 			return err
 		}
@@ -447,6 +448,10 @@ func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, statu
 		}
 		return nil
 	})
+	if err != nil {
+		return "", err
+	}
+	return status, nil
 }
 
 // RemoveShopHost deletes a custom host of the team and queues its removal at the domain provider
