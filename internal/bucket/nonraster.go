@@ -346,6 +346,7 @@ func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, fo
 			slog.String("err", err.Error()))
 		h = ""
 	}
+	pp := PixelPreview(thumbImg)
 
 	mediaID, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   model.MediaUrl,
@@ -358,6 +359,7 @@ func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, fo
 		ThumbnailWidth:     int(thumbnail.Width),
 		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: h != ""},
+		PixelPreview:       sql.NullString{String: pp, Valid: pp != ""},
 		// The hash describes the MODEL — the full-size object, the one the archive downloads.
 		ContentHash: sql.NullString{String: sha, Valid: sha != ""},
 	})
@@ -371,10 +373,11 @@ func (b *Bucket) UploadContentModel(ctx context.Context, raw, preview []byte, fo
 	return &pb_common.MediaFull{
 		Id: int32(mediaID),
 		Media: &pb_common.MediaItem{
-			FullSize:   model,
-			Compressed: compressed,
-			Thumbnail:  thumbnail,
-			Blurhash:   h,
+			FullSize:     model,
+			Compressed:   compressed,
+			Thumbnail:    thumbnail,
+			Blurhash:     h,
+			PixelPreview: pp,
 		},
 		ContentHash: sha,
 	}, nil

@@ -300,14 +300,14 @@ func (s *Store) GetProductsByIds(ctx context.Context, ids []int) ([]entity.Color
 		COALESCE(sty.collection, '') AS collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, sty.lock_version,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview,
 		sm.created_at AS secondary_thumbnail_created_at,
 		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
 		sm.full_size_height AS secondary_full_size_height,
 		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
-		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash, sm.pixel_preview AS secondary_pixel_preview,
 		` + soldOutSelect + `
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
@@ -372,14 +372,14 @@ func (s *Store) GetLowStockProducts(ctx context.Context, threshold int, limit in
 		COALESCE(sty.collection, '') AS collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, sty.lock_version,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview,
 		sm.created_at AS secondary_thumbnail_created_at,
 		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
 		sm.full_size_height AS secondary_full_size_height,
 		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
-		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash, sm.pixel_preview AS secondary_pixel_preview,
 		` + soldOutSelect + `
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
@@ -443,14 +443,14 @@ func (s *Store) GetProductsByTag(ctx context.Context, tag string) ([]entity.Colo
 		COALESCE(sty.collection, '') AS collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, sty.lock_version,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview,
 		sm.created_at AS secondary_thumbnail_created_at,
 		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
 		sm.full_size_height AS secondary_full_size_height,
 		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
-		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash, sm.pixel_preview AS secondary_pixel_preview,
 		` + soldOutSelect + `
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
@@ -515,14 +515,14 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 		m.created_at AS thumbnail_created_at,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview,
 		sm.created_at AS secondary_thumbnail_created_at,
 		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
 		sm.full_size_height AS secondary_full_size_height,
 		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
-		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash, sm.pixel_preview AS secondary_pixel_preview
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id
 	LEFT JOIN media m ON p.thumbnail_id = m.id
@@ -561,7 +561,7 @@ func (s *Store) getProductDetails(ctx context.Context, filters map[string]any, s
 	mediaQuery := `
 		SELECT m.id, m.created_at, m.full_size, m.full_size_width, m.full_size_height,
 			m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-			m.compressed, m.compressed_width, m.compressed_height, m.blur_hash
+			m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview
 		FROM media m
 		INNER JOIN product_media pm ON m.id = pm.media_id
 		WHERE pm.product_id = :id
@@ -706,14 +706,14 @@ func buildQuery(sortFactors []entity.SortFactor, orderFactor entity.OrderFactor,
 		p.secondary_thumbnail_id, COALESCE(sty.collection, '') AS collection, sty.fit, p.min_tier, p.hidden_for_non_qualified, p.lifecycle_status, p.style_id, sty.lock_version,
 		m.full_size, m.full_size_width, m.full_size_height,
 		m.thumbnail, m.thumbnail_width, m.thumbnail_height,
-		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash,
+		m.compressed, m.compressed_width, m.compressed_height, m.blur_hash, m.pixel_preview,
 		sm.created_at AS secondary_thumbnail_created_at,
 		sm.full_size AS secondary_full_size, sm.full_size_width AS secondary_full_size_width,
 		sm.full_size_height AS secondary_full_size_height,
 		sm.thumbnail AS secondary_thumbnail, sm.thumbnail_width AS secondary_thumbnail_width,
 		sm.thumbnail_height AS secondary_thumbnail_height,
 		sm.compressed AS secondary_compressed, sm.compressed_width AS secondary_compressed_width,
-		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash,
+		sm.compressed_height AS secondary_compressed_height, sm.blur_hash AS secondary_blur_hash, sm.pixel_preview AS secondary_pixel_preview,
 		` + soldOutSelect + `
 	FROM product p
 	JOIN tech_card sty ON sty.id = p.style_id

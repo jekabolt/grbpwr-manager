@@ -2061,6 +2061,12 @@ type (
 		// uploader, source sha). COALESCE on every column: it never overwrites, so a dedup hit
 		// keeps the first uploader's values. Kind and folder are not written here.
 		SetMediaLibraryMeta(ctx context.Context, id int, m entity.MediaLibraryMeta) error
+		// ListMediaMissingPixelPreview pages (by id, after afterID) through raster rows that have
+		// no pixel_preview yet — the backfill's work list. Video, SVG and GLB thumbnails are skipped.
+		ListMediaMissingPixelPreview(ctx context.Context, afterID, limit int) ([]entity.MediaPixelPreviewCandidate, error)
+		// SetMediaPixelPreview fills pixel_preview only while it is still NULL (idempotent, never
+		// overwrites an upload-time value). Reports whether the row was written.
+		SetMediaPixelPreview(ctx context.Context, id int, preview string) (bool, error)
 	}
 
 	// Library is the unified library: media rows and library files as one list keyed by

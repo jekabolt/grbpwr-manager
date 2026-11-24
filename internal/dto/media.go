@@ -39,7 +39,8 @@ func ConvertEntityToCommonMedia(eMedia *entity.MediaFull) *pb_common.MediaFull {
 			Width:    int32(eMedia.CompressedWidth),
 			Height:   int32(eMedia.CompressedHeight),
 		},
-		Blurhash: eMedia.BlurHash.String,
+		Blurhash:     eMedia.BlurHash.String,
+		PixelPreview: eMedia.PixelPreview.String,
 	}
 
 	return &pb_common.MediaFull{
@@ -72,7 +73,8 @@ func ConvertPbMediaFullToEntity(m *pb_common.MediaFull) entity.MediaFull {
 // Convert a protobuf MediaItem to an entity MediaItem
 func convertPbMediaItemToEntity(m *pb_common.MediaItem) entity.MediaItem {
 	mediaItem := entity.MediaItem{
-		BlurHash: sql.NullString{String: m.Blurhash, Valid: m.Blurhash != ""},
+		BlurHash:     sql.NullString{String: m.Blurhash, Valid: m.Blurhash != ""},
+		PixelPreview: sql.NullString{String: m.PixelPreview, Valid: m.PixelPreview != ""},
 	}
 
 	if m.FullSize != nil {

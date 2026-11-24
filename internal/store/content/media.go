@@ -39,12 +39,12 @@ const addMediaQuery = `INSERT INTO media (
 		full_size, full_size_width, full_size_height,
 		compressed, compressed_width, compressed_height,
 		thumbnail, thumbnail_width, thumbnail_height, blur_hash,
-		content_hash
+		content_hash, pixel_preview
 	) VALUES (
 		:fullSize, :fullSizeWidth, :fullSizeHeight,
 		:compressed, :compressedWidth, :compressedHeight,
 		:thumbnail, :thumbnailWidth, :thumbnailHeight, :blurHash,
-		:contentHash
+		:contentHash, :pixelPreview
 	);`
 
 // setMediaLibraryMetaQuery fills the library metadata of a media row (0483) without ever
@@ -82,6 +82,53 @@ func nullIfBlank(v sql.NullString) sql.NullString {
 	return v
 }
 
+// listMediaMissingPixelPreviewQuery is the pixel-preview backfill's work list (0488). Keyset paging by
+// id, so a row whose preview cannot be computed (dead URL, undecodable) stays NULL and is passed over
+// instead of being returned forever. The thumbnail extension decides raster-ness exactly like lib_kind
+// does (video.go writes the video URL into thumbnail; a model's thumbnail is a raster preview and IS
+// a candidate; an SVG thumbnail cannot be decoded here).
+const listMediaMissingPixelPreviewQuery = `SELECT id, thumbnail FROM media
+	WHERE pixel_preview IS NULL
+		AND id > :afterId
+		AND thumbnail <> ''
+		AND LOWER(SUBSTRING_INDEX(thumbnail, '.', -1)) NOT IN ('mp4', 'webm', 'svg', 'glb')
+	ORDER BY id
+	LIMIT :limit`
+
+// setMediaPixelPreviewQuery never overwrites: an upload that already wrote its preview wins, and a
+// second backfill run is a no-op.
+const setMediaPixelPreviewQuery = `UPDATE media SET pixel_preview = :preview
+	WHERE id = :id AND pixel_preview IS NULL`
+
+// ListMediaMissingPixelPreview returns up to limit raster media rows with id > afterID and no
+// pixel_preview, by id.
+func (s *Store) ListMediaMissingPixelPreview(ctx context.Context, afterID, limit int) ([]entity.MediaPixelPreviewCandidate, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := storeutil.QueryListNamed[entity.MediaPixelPreviewCandidate](ctx, s.DB,
+		listMediaMissingPixelPreviewQuery, map[string]any{"afterId": afterID, "limit": limit})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list media missing pixel preview: %w", err)
+	}
+	return rows, nil
+}
+
+// SetMediaPixelPreview fills pixel_preview of one row while it is still NULL.
+func (s *Store) SetMediaPixelPreview(ctx context.Context, id int, preview string) (bool, error) {
+	if strings.TrimSpace(preview) == "" {
+		return false, nil
+	}
+	n, err := storeutil.ExecNamedRows(ctx, s.DB, setMediaPixelPreviewQuery, map[string]any{
+		"id":      id,
+		"preview": preview,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to set media pixel preview: %w", err)
+	}
+	return n > 0, nil
+}
+
 const findMediaByContentHashQuery = `SELECT * FROM media WHERE content_hash = :hash LIMIT 1`
 
 // AddMedia adds a new media item to the database.
@@ -102,6 +149,8 @@ func (s *Store) AddMedia(ctx context.Context, media *entity.MediaItem) (int, err
 		// value that every other empty-string hash matches, and de-duplication would then
 		// happily fuse unrelated files.
 		"contentHash": normalizedContentHash(media.ContentHash),
+		// Empty binds NULL: the backfill selects rows WHERE pixel_preview IS NULL.
+		"pixelPreview": nullIfBlank(media.PixelPreview),
 	})
 	if err != nil {
 		return id, fmt.Errorf("failed to add media: %w", err)

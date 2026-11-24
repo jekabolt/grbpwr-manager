@@ -122,6 +122,7 @@ func getOrdersItems(ctx context.Context, db dependency.DB, orderIds ...int) (map
 			oi.product_price * (1 - COALESCE(oi.product_sale_percentage, 0) / 100) AS product_price_with_sale,
 			m.thumbnail,
 			COALESCE(m.blur_hash, '') AS blur_hash,
+			COALESCE(m.pixel_preview, '') AS pixel_preview,
 			sty.brand AS product_brand,
 			oi.variant_sku_snapshot AS variant_sku_snapshot,
 			COALESCE(oi.base_sku_snapshot, '') AS base_sku_snapshot,

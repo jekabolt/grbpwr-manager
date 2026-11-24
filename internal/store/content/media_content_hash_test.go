@@ -27,12 +27,24 @@ func TestMediaContentHashQueriesBind(t *testing.T) {
 			"fullSize": "u", "fullSizeWidth": 1, "fullSizeHeight": 2,
 			"compressed": "u", "compressedWidth": 1, "compressedHeight": 2,
 			"thumbnail": "u", "thumbnailWidth": 1, "thumbnailHeight": 2,
-			"blurHash": sql.NullString{}, "contentHash": "abc",
+			"blurHash": sql.NullString{}, "contentHash": "abc", "pixelPreview": "pp",
 		})
 		require.NoError(t, err)
 		assert.NotContains(t, q, ":", "no bind name may survive into the final SQL")
-		assert.Len(t, args, 11, "eleven columns, eleven positional args")
-		assert.Equal(t, "abc", args[10], "content_hash is the last bound column")
+		assert.Len(t, args, 12, "twelve columns, twelve positional args")
+		assert.Equal(t, "abc", args[10], "content_hash is bound before pixel_preview")
+		assert.Equal(t, "pp", args[11], "pixel_preview (0488) is the last bound column")
+	})
+
+	t.Run("the pixel-preview backfill queries bind", func(t *testing.T) {
+		q, args, err := storeutil.MakeQuery(listMediaMissingPixelPreviewQuery, map[string]any{"afterId": 3, "limit": 50})
+		require.NoError(t, err)
+		assert.NotContains(t, q, ":")
+		assert.Equal(t, []any{3, 50}, args)
+		q, args, err = storeutil.MakeQuery(setMediaPixelPreviewQuery, map[string]any{"id": 7, "preview": "pp"})
+		require.NoError(t, err)
+		assert.NotContains(t, q, ":")
+		assert.Equal(t, []any{"pp", 7}, args)
 	})
 
 	t.Run("FindMediaByContentHash binds the hash", func(t *testing.T) {
@@ -62,10 +74,12 @@ func TestMediaContentHashQueriesBind(t *testing.T) {
 
 	// No query here may carry SQL comments: '--' and '#' both survive into the scanner.
 	for name, q := range map[string]string{
-		"addMediaQuery":               addMediaQuery,
-		"findMediaByContentHashQuery": findMediaByContentHashQuery,
-		"lockMediaRowQuery":           lockMediaRowQuery,
-		"deleteMediaByIdQuery":        deleteMediaByIdQuery,
+		"addMediaQuery":                addMediaQuery,
+		"findMediaByContentHashQuery":  findMediaByContentHashQuery,
+		"lockMediaRowQuery":            lockMediaRowQuery,
+		"deleteMediaByIdQuery":         deleteMediaByIdQuery,
+		"listMediaMissingPixelPreview": listMediaMissingPixelPreviewQuery,
+		"setMediaPixelPreviewQuery":    setMediaPixelPreviewQuery,
 	} {
 		assert.NotContainsf(t, q, "--", "%s: SQL comments do not belong in a named query", name)
 		assert.NotContainsf(t, q, "#", "%s: '#' opens a MySQL comment", name)
@@ -80,8 +94,8 @@ func TestAddMediaWritesContentHashColumn(t *testing.T) {
 		"the column must be in the INSERT column list")
 	assert.Contains(t, addMediaQuery, ":contentHash",
 		"the column must actually be bound, not defaulted")
-	assert.Equal(t, strings.Count(addMediaQuery, ","), 2*10,
-		"column list and value list must stay the same length (10 separators each)")
+	assert.Equal(t, strings.Count(addMediaQuery, ","), 2*11,
+		"column list and value list must stay the same length (11 separators each)")
 }
 
 // TestMediaFullScansContentHash proves the column can be READ BACK, which nothing else here
@@ -102,6 +116,10 @@ func TestMediaFullScansContentHash(t *testing.T) {
 	fi, ok := names["content_hash"]
 	require.True(t, ok, "entity.MediaFull must map the content_hash column, or reads silently drop it")
 	require.Equal(t, "ContentHash", fi.Field.Name)
+
+	fi, ok = names["pixel_preview"]
+	require.True(t, ok, "entity.MediaFull must map the pixel_preview column (0488)")
+	require.Equal(t, "PixelPreview", fi.Field.Name)
 
 	// CONTROL: a column that does not exist must not map, otherwise the assertion above
 	// would pass for any spelling and prove nothing.

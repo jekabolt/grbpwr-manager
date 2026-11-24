@@ -141,7 +141,7 @@ func (b *Bucket) uploadSingleImage(ctx context.Context, img image.Image, quality
 }
 
 // uploadImageObj composes 3 image variants (full-size, compressed, thumbnail) in parallel via errgroup,
-// then computes blurhash from the thumbnail and records the result in the media DB table.
+// then computes blurhash and the colour pixel preview from the thumbnail and records the result in the media DB table.
 func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, imageName string) (*pb_common.MediaFull, error) {
 	fullSizeName := fmt.Sprintf("%s-%s", imageName, "og")
 	compressedName := fmt.Sprintf("%s-%s", imageName, "compressed")
@@ -206,6 +206,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		b.cleanupUploadedVariants(ctx, fullSize, compressed, thumbnail)
 		return nil, fmt.Errorf("failed to get blurhash: %v", err)
 	}
+	pp := PixelPreview(thumbImg)
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   fullSize.MediaUrl,
@@ -218,6 +219,7 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 		ThumbnailWidth:     int(thumbnail.Width),
 		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: true},
+		PixelPreview:       sql.NullString{String: pp, Valid: pp != ""},
 		ContentHash:        sql.NullString{String: fullSizeSHA, Valid: fullSizeSHA != ""},
 	})
 	if err != nil {
@@ -229,10 +231,11 @@ func (b *Bucket) uploadImageObj(ctx context.Context, img image.Image, folder, im
 	return &pb_common.MediaFull{
 		Id: int32(mediaId),
 		Media: &pb_common.MediaItem{
-			FullSize:   fullSize,
-			Compressed: compressed,
-			Thumbnail:  thumbnail,
-			Blurhash:   h,
+			FullSize:     fullSize,
+			Compressed:   compressed,
+			Thumbnail:    thumbnail,
+			Blurhash:     h,
+			PixelPreview: pp,
 		},
 		// The row we just inserted carries this hash; the response must too. A consumer reads an
 		// empty ContentHash as "older than 0336" and WITHHOLDS the staleness comparison — so
@@ -407,6 +410,7 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 			slog.String("err", err.Error()))
 		h = ""
 	}
+	pp := PixelPreview(thumbImg)
 
 	mediaId, err := b.ms.AddMedia(ctx, &entity.MediaItem{
 		FullSizeMediaURL:   full.MediaUrl,
@@ -419,6 +423,7 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 		ThumbnailWidth:     int(thumbnail.Width),
 		ThumbnailHeight:    int(thumbnail.Height),
 		BlurHash:           sql.NullString{String: h, Valid: h != ""},
+		PixelPreview:       sql.NullString{String: pp, Valid: pp != ""},
 		// The hash describes the FULL-SIZE object — the one the archive export downloads.
 		ContentHash: sql.NullString{String: rawSHA, Valid: rawSHA != ""},
 	})
@@ -431,10 +436,11 @@ func (b *Bucket) uploadVerbatimImageObj(ctx context.Context, v verbatimImage, fo
 	return &pb_common.MediaFull{
 		Id: int32(mediaId),
 		Media: &pb_common.MediaItem{
-			FullSize:   full,
-			Compressed: compressed,
-			Thumbnail:  thumbnail,
-			Blurhash:   h,
+			FullSize:     full,
+			Compressed:   compressed,
+			Thumbnail:    thumbnail,
+			Blurhash:     h,
+			PixelPreview: pp,
 		},
 		// Same obligation as the standard path, and it matters more here: verbatim is what a flat
 		// is uploaded through, so these are the bytes a person drew on.

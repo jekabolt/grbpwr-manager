@@ -1266,6 +1266,7 @@ type productQueryResult struct {
 	ThumbnailCompressedW        sql.NullInt32         `db:"compressed_width"`
 	ThumbnailCompressedH        sql.NullInt32         `db:"compressed_height"`
 	ThumbnailBlurHash           sql.NullString        `db:"blur_hash"`
+	ThumbnailPixelPreview       sql.NullString        `db:"pixel_preview"`
 	SecondaryFullSize           sql.NullString        `db:"secondary_full_size"`
 	SecondaryFullSizeW          sql.NullInt32         `db:"secondary_full_size_width"`
 	SecondaryFullSizeH          sql.NullInt32         `db:"secondary_full_size_height"`
@@ -1276,6 +1277,7 @@ type productQueryResult struct {
 	SecondaryCompressedW        sql.NullInt32         `db:"secondary_compressed_width"`
 	SecondaryCompressedH        sql.NullInt32         `db:"secondary_compressed_height"`
 	SecondaryBlurHash           sql.NullString        `db:"secondary_blur_hash"`
+	SecondaryPixelPreview       sql.NullString        `db:"secondary_pixel_preview"`
 	SoldOut                     bool                  `db:"sold_out"`
 	LifecycleStatus             entity.ColorwayStatus `db:"lifecycle_status"`
 	StyleId                     int                   `db:"style_id"`
@@ -1318,6 +1320,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 				CompressedWidth:    int(pqr.SecondaryCompressedW.Int32),
 				CompressedHeight:   int(pqr.SecondaryCompressedH.Int32),
 				BlurHash:           pqr.SecondaryBlurHash,
+				PixelPreview:       pqr.SecondaryPixelPreview,
 			},
 		}
 	}
@@ -1381,6 +1384,7 @@ func (pqr *productQueryResult) toProduct(translations []entity.ColorwayTranslati
 					CompressedWidth:    int(pqr.ThumbnailCompressedW.Int32),
 					CompressedHeight:   int(pqr.ThumbnailCompressedH.Int32),
 					BlurHash:           pqr.ThumbnailBlurHash,
+					PixelPreview:       pqr.ThumbnailPixelPreview,
 				},
 			},
 			SecondaryThumbnail: secondaryThumbnail,
