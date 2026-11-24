@@ -45,7 +45,7 @@ func teamRows(t *testing.T, st *platformstore.Store, teamID int64) map[string]in
 	t.Helper()
 	out := map[string]int{}
 	for _, table := range []string{"team_member", "user_session", "team_invite", "team_feature", "email_token", "team_logo", "team_brand",
-		"team_shop", "shop_host", "team_stripe"} {
+		"team_shop", "shop_host", "team_stripe", "shop_mail_owner"} {
 		var n int
 		if err := st.DB().Get(&n, `SELECT COUNT(*) FROM `+table+` WHERE team_id = ?`, teamID); err != nil {
 			t.Fatal(err)
@@ -112,6 +112,11 @@ func TestTeamWipeClaimAndFinish(t *testing.T) {
 	}
 	if _, err := st.DB().Exec(`INSERT INTO team_stripe (team_id, kind) VALUES (8, 'connect')`); err != nil {
 		t.Fatal(err)
+	}
+	for id, pid := range map[int64]string{8: "re_gone", 2: "re_acme"} {
+		if err := st.RecordShopMailOwner(ctx, pid, id, 1); err != nil {
+			t.Fatal(err)
+		}
 	}
 	acmeBefore := teamRows(t, st, 2)
 
@@ -214,7 +219,7 @@ func TestTeamWipeClaimAndFinish(t *testing.T) {
 	if err != nil || !res.Finished || res.Slug != "xgone" {
 		t.Fatalf("finish %+v %v", res, err)
 	}
-	if res.Rows["shop_host"] != 2 || res.Rows["team_shop"] != 1 || res.Rows["team_stripe"] != 1 {
+	if res.Rows["shop_host"] != 2 || res.Rows["team_shop"] != 1 || res.Rows["team_stripe"] != 1 || res.Rows["shop_mail_owner"] != 1 {
 		t.Fatalf("shop rows wiped %v", res.Rows)
 	}
 	if _, taken, _ := st.ShopHostTeam(ctx, "xgone.com"); taken {
