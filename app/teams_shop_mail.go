@@ -46,6 +46,9 @@ func (a *App) withShopMail(ctx context.Context, storefront dependency.Mailer) de
 // newShopMail builds the shop lane, or says which config is missing.
 func (a *App) newShopMail(storefront dependency.Mailer) (*mail.ShopMailer, string) {
 	p := a.c.Platform
+	if !p.ShopMailEnabled {
+		return nil, "PLATFORM_SHOP_MAIL_ENABLED is off"
+	}
 	if !p.MailerEnabled {
 		return nil, "PLATFORM_MAILER_ENABLED is off"
 	}

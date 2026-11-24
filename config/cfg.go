@@ -592,6 +592,7 @@ func bindEnvVars() {
 	// X18-L7: the team shops' letters over their own Resend account (both optional).
 	viper.BindEnv("platform.shop_resend_api_key", "PLATFORM_SHOP_RESEND_API_KEY")
 	viper.BindEnv("platform.shop_mail_webhook_secret", "PLATFORM_SHOP_MAIL_WEBHOOK_SECRET")
+	viper.BindEnv("platform.shop_mail_enabled", "PLATFORM_SHOP_MAIL_ENABLED")
 	viper.BindEnv("platform.signup_bot_check", "PLATFORM_SIGNUP_BOT_CHECK")
 	viper.BindEnv("platform.signup_pow_max", "PLATFORM_SIGNUP_POW_MAX")
 	viper.BindEnv("platform.signup_min_submit", "PLATFORM_SIGNUP_MIN_SUBMIT")

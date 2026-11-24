@@ -112,6 +112,10 @@ type Config struct {
 	// arrive at platform-mail and are routed from there.
 	ShopResendAPIKey      string `mapstructure:"shop_resend_api_key"`
 	ShopMailWebhookSecret string `mapstructure:"shop_mail_webhook_secret"`
+	// ShopMailEnabled (PLATFORM_SHOP_MAIL_ENABLED, X18-L7): the team shops' mail lane. Off by default
+	// so a deploy can land with the lane off and switch it on once no older instance runs (the
+	// rollout is two-stage). Off: team-shop letters are refused, never sent as the storefront.
+	ShopMailEnabled bool `mapstructure:"shop_mail_enabled"`
 	// SignupBotCheck (off | log | enforce), SignupPowMax, SignupMinSubmit (a duration),
 	// SignupMXCheck (bool), SignupBlockedDomains (comma-separated), SignupLettersPerHour,
 	// SignupMaxBouncePct: PLATFORM_SIGNUP_*.

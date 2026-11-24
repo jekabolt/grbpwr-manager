@@ -143,10 +143,11 @@ func TestShopMailMissingConfigIsAProblemNotABootFailure(t *testing.T) {
 		mailer   mail.Config
 		want     string
 	}{
-		"off":     {platformstore.Config{MailFrom: "lekalo <a@b.test>"}, mail.Config{APIKey: "k"}, "PLATFORM_MAILER_ENABLED"},
-		"no key":  {platformstore.Config{MailerEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{}, "no Resend key"},
-		"no from": {platformstore.Config{MailerEnabled: true, ResendAPIKey: "k"}, mail.Config{}, "PLATFORM_MAIL_FROM"},
-		"bad from": {platformstore.Config{MailerEnabled: true, ResendAPIKey: "k", MailFrom: "nonsense"},
+		"lane off": {platformstore.Config{MailerEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{APIKey: "k"}, "PLATFORM_SHOP_MAIL_ENABLED"},
+		"off":      {platformstore.Config{ShopMailEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{APIKey: "k"}, "PLATFORM_MAILER_ENABLED"},
+		"no key":   {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, MailFrom: "lekalo <a@b.test>"}, mail.Config{}, "no Resend key"},
+		"no from":  {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ResendAPIKey: "k"}, mail.Config{}, "PLATFORM_MAIL_FROM"},
+		"bad from": {platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, ResendAPIKey: "k", MailFrom: "nonsense"},
 			mail.Config{}, "PLATFORM_MAIL_FROM"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -176,7 +177,7 @@ func TestShopMailMissingConfigIsAProblemNotABootFailure(t *testing.T) {
 func TestShopMailBuildsTheLaneOnTheMailerKey(t *testing.T) {
 	a := &App{
 		c: &config.Config{
-			Platform: platformstore.Config{MailerEnabled: true, MailFrom: "lekalo <no-reply@lekalo.test>", BaseDomain: "lekalo.test"},
+			Platform: platformstore.Config{ShopMailEnabled: true, MailerEnabled: true, MailFrom: "lekalo <no-reply@lekalo.test>", BaseDomain: "lekalo.test"},
 			Mailer:   mail.Config{APIKey: "k"},
 		},
 		platform: &platformstore.Store{},
