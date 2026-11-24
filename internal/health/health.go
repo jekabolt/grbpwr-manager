@@ -107,4 +107,7 @@ type Registry struct {
 	Workers  []Reporter
 	DB       DBStatsProvider
 	Breakers []BreakerReporter
+	// Problems are configuration faults found at boot that left a feature off without stopping the
+	// server (e.g. team shops without STOREFRONT_AUTH_SHOP_MASTER). Plain words, no secrets.
+	Problems []string
 }

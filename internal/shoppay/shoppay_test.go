@@ -354,8 +354,8 @@ func TestConnectFlow(t *testing.T) {
 	if _, ok, _ := r.st.TeamStripe(ctx, teamB); ok {
 		t.Fatal("team B got a row for A's account")
 	}
-	if !slices.Equal(r.stripe.deauth, []string{"acct_L"}) {
-		t.Fatalf("deauthorized %v: only the wrong-mode account goes, A's stays", r.stripe.deauth)
+	if len(r.stripe.deauth) != 0 {
+		t.Fatal("a connect deauthorized an account")
 	}
 	// The starter lost ownership before the finish: refused.
 	tb = finishB(ownerB, false, "code-b")
@@ -388,7 +388,7 @@ func TestConnectFlow(t *testing.T) {
 	if err := r.svc.Disconnect(ctx, a, false); refusal(err) != "FailedPrecondition shop_payments_busy" {
 		t.Fatalf("busy disconnect: %v", err)
 	}
-	if row := r.st.row(teamA); row.DisconnectedAt != nil || len(r.stripe.deauth) != 1 {
+	if row := r.st.row(teamA); row.DisconnectedAt != nil || len(r.stripe.deauth) != 0 {
 		t.Fatalf("a busy shop was disconnected: %+v %v", row, r.stripe.deauth)
 	}
 	if got := r.orders.since[len(r.orders.since)-1]; !got.Equal(r.now.Add(-RefundWindow)) {
@@ -402,7 +402,7 @@ func TestConnectFlow(t *testing.T) {
 	if err := r.svc.Disconnect(ctx, a, false); err != nil {
 		t.Fatal(err)
 	}
-	if row := r.st.row(teamA); row.DisconnectedAt == nil || len(r.stripe.deauth) != 2 || r.stripe.deauth[1] != "acct_A" {
+	if row := r.st.row(teamA); row.DisconnectedAt == nil || len(r.stripe.deauth) != 1 || r.stripe.deauth[0] != "acct_A" {
 		t.Fatalf("disconnect: %+v %v", row, r.stripe.deauth)
 	}
 }

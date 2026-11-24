@@ -29,7 +29,7 @@ type bootComponent struct {
 func bootComponents() []bootComponent {
 	return []bootComponent{
 		{name: "marketingaggregate", shop: true},
-		{name: "mail", shop: true}, // tenant mail outbox: order, customer and campaign letters
+		{name: "mail"}, // tenant mail outbox; without a storefront team only team shops' transactional letters (teamShopMailer)
 		{name: "campaigndispatch", shop: true},
 		{name: "stockreserve"}, // checkout holds: team shops' checkouts hold stock too
 		{name: "storefrontcleanup", shop: true},

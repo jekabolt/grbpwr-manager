@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/config"
@@ -16,14 +17,15 @@ import (
 )
 
 // The components a no-shop installation does not start, and the ones it keeps (team shops: the
-// storefront API, checkout holds and per-shop revalidation run without a storefront team).
+// storefront API, checkout holds, team-shop mail and per-shop revalidation run without a storefront
+// team).
 var (
 	wantSkipped = []string{
-		"marketingaggregate", "mail", "campaigndispatch", "storefrontcleanup",
+		"marketingaggregate", "campaigndispatch", "storefrontcleanup",
 		"tiermanagement", "opexmaterialize", "acctposting", "stripe", "stripereconcile",
 		"ordercleanup", "deliverysync", "ga4", "bigquery", "ga4sync", "ga4mp", "webhooks",
 	}
-	wantKept = []string{"stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
+	wantKept = []string{"mail", "stockreserve", "taskarchive", "fxsync", "aireconcile", "archivecleanup", "revalidation", "storefront"}
 )
 
 func appWith(p platformstore.Config) *App {
@@ -148,4 +150,15 @@ func TestHealthRegistryAnalyticsOff(t *testing.T) {
 		_ = b.StateFunc() // panicked before the getter was nil-safe
 	}
 	_ = nilGA4.CircuitBreakerState()
+}
+
+// A boot fault that leaves a feature off (here team shops without their customer master) is logged
+// and listed in GET /statusz, never a silently healthy server.
+func TestBootProblemsReachStatusz(t *testing.T) {
+	a := appWith(platformstore.Config{})
+	a.noteProblem(context.Background(), "shops: STOREFRONT_AUTH_SHOP_MASTER is empty; team shop customers cannot sign in")
+	reg := a.buildHealthRegistry(nil)
+	if len(reg.Problems) != 1 || !strings.Contains(reg.Problems[0], "STOREFRONT_AUTH_SHOP_MASTER") {
+		t.Fatalf("problems = %v", reg.Problems)
+	}
 }

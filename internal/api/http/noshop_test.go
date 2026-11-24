@@ -188,7 +188,7 @@ func TestStatuszAnalyticsOff(t *testing.T) {
 	reg := &health.Registry{Breakers: []health.BreakerReporter{
 		{BreakerName: "ga4", StateFunc: func() circuitbreaker.State { return nilGA4.CircuitBreakerState() }},
 		{BreakerName: "bigquery", StateFunc: func() circuitbreaker.State { return nilBQ.CircuitBreakerState() }},
-	}}
+	}, Problems: []string{"shops: STOREFRONT_AUTH_SHOP_MASTER is empty"}}
 	h := noShopRouter(t, true, as, reg)
 	tok, err := authjwt.NewAdminToken(as.JwtAuth, time.Hour, "u", true, nil, nil)
 	if err != nil {
@@ -198,6 +198,9 @@ func TestStatuszAnalyticsOff(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if rec.Code != http.StatusOK || !strings.Contains(string(body), `"workers"`) {
 		t.Fatalf("/statusz for an admin with analytics off: %d %s", rec.Code, body)
+	}
+	if !strings.Contains(string(body), `"problems":["shops: STOREFRONT_AUTH_SHOP_MASTER is empty"]`) {
+		t.Fatalf("/statusz must list boot problems: %s", body)
 	}
 	if rec := serve(h, http.MethodGet, "/statusz", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("/statusz without a token: %d", rec.Code)

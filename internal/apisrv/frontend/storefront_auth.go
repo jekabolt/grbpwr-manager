@@ -51,6 +51,36 @@ func newStorefrontAuthRuntime(p *storefront.Config) (*storefrontAuthRuntime, err
 		return nil, fmt.Errorf("storefront_auth.magic_link_base_url is required")
 	}
 
+	rt := authTimings(p)
+	rt.accessJwtAuth = jwtauth.New("HS256", []byte(p.AccessJWTSecret), nil)
+	rt.loginPepper = p.LoginPepper
+	rt.refreshPepper = p.RefreshPepper
+	rt.magicLinkBaseURL = strings.TrimRight(strings.TrimSpace(p.MagicLinkBaseURL), "/")
+	return rt, nil
+}
+
+// defaultShopMagicLinkPath is the storefront's magic-link page; a team shop's letter links to it on
+// the shop's own address when no STOREFRONT_AUTH_MAGIC_LINK_BASE_URL is set.
+const defaultShopMagicLinkPath = "/login"
+
+// newShopBaseRuntime is the template team shops derive their customer keys over when there is no
+// storefront team (TENANT_STOREFRONT_TEAM_ID=none): TTLs, issuer and jti from STOREFRONT_AUTH_*, no
+// legacy keys, which deriveShopAuth always replaces. It never fails: a team shop needs only
+// STOREFRONT_AUTH_SHOP_MASTER.
+func newShopBaseRuntime(p *storefront.Config) *storefrontAuthRuntime {
+	if p == nil {
+		p = &storefront.Config{}
+	}
+	rt := authTimings(p)
+	rt.magicLinkBaseURL = strings.TrimRight(strings.TrimSpace(p.MagicLinkBaseURL), "/")
+	if rt.magicLinkBaseURL == "" {
+		rt.magicLinkBaseURL = defaultShopMagicLinkPath
+	}
+	return rt
+}
+
+// authTimings is the key-free part of a customer-auth runtime: TTLs, issuer/audience and jti.
+func authTimings(p *storefront.Config) *storefrontAuthRuntime {
 	at := 15 * time.Minute
 	if p.AccessJWTTTL != "" {
 		parsed, err := time.ParseDuration(p.AccessJWTTTL)
@@ -95,15 +125,11 @@ func newStorefrontAuthRuntime(p *storefront.Config) (*storefrontAuthRuntime, err
 	}
 
 	return &storefrontAuthRuntime{
-		accessJwtAuth:              jwtauth.New("HS256", []byte(p.AccessJWTSecret), nil),
 		accessTTL:                  at,
 		accessExpectations:         accessExp,
 		accessIssueOpts:            accessOpts,
 		accessJtiRevocationEnabled: p.AccessJtiRevocationEnabled,
 		refreshTTL:                 rt,
 		loginChallengeTTL:          lt,
-		loginPepper:                p.LoginPepper,
-		refreshPepper:              p.RefreshPepper,
-		magicLinkBaseURL:           strings.TrimRight(strings.TrimSpace(p.MagicLinkBaseURL), "/"),
-	}, nil
+	}
 }

@@ -84,7 +84,7 @@ func TestReserveIfAvailable_AbuseLimitStillReportsAvailability(t *testing.T) {
 		t.Fatalf("available = %s, want 10 despite rejected hold", avail)
 	}
 	// Nothing was actually held.
-	if held := rm.GetReservedQuantity(1, 2, ""); !held.IsZero() {
+	if held := rm.GetReservedQuantity(context.Background(), 1, 2, ""); !held.IsZero() {
 		t.Fatalf("reserved = %s, want 0 (hold was rejected)", held)
 	}
 }

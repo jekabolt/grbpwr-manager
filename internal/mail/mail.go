@@ -135,6 +135,40 @@ type Mailer struct {
 	wg             sync.WaitGroup
 	tracker        health.Tracker
 	budget         *ResendBudget
+	// sender names a letter's sender for the team in ctx (a team shop's name and reply-to); nil or
+	// "" = the configured FromName / ReplyTo. Set before Start (SetSender).
+	sender func(ctx context.Context) (name, replyTo string)
+	// teams makes one worker tick drain every team's outbox, each in its own team context; nil = one
+	// drain in the worker's context. Set before Start (SetTeamLoop).
+	teams func(context.Context, func(context.Context) bool) bool
+}
+
+// SetSender makes transactional letters of a team carry that team's sender name and reply-to
+// (team shops, X18). Campaign mail keeps the configured sender. Call before Start.
+func (m *Mailer) SetSender(f func(ctx context.Context) (name, replyTo string)) { m.sender = f }
+
+// SetTeamLoop makes one worker tick drain every team's outbox (each team's letters live in its own
+// database). Nil keeps the single drain. Call before Start.
+func (m *Mailer) SetTeamLoop(loop func(context.Context, func(context.Context) bool) bool) {
+	m.teams = loop
+}
+
+// buildFor is buildSendMailRequest with the sender of the team in ctx.
+func (m *Mailer) buildFor(ctx context.Context, to string, tn templateName, data interface{}) (*resend.SendEmailRequest, error) {
+	ser, err := m.buildSendMailRequest(to, tn, data)
+	if err != nil || m.sender == nil {
+		return ser, err
+	}
+	name, replyTo := m.sender(ctx)
+	if name = strings.TrimSpace(name); name != "" {
+		// net/mail quotes or encodes the name, so a shop name cannot break the From header.
+		ser.From = (&netmail.Address{Name: name, Address: m.c.FromEmail}).String()
+	}
+	if a, err := netmail.ParseAddress(strings.TrimSpace(replyTo)); err == nil && replyTo != "" {
+		r := a.Address
+		ser.ReplyTo = &r
+	}
+	return ser, nil
 }
 
 // Name implements health.Reporter.

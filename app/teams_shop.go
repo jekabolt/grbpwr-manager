@@ -10,6 +10,7 @@ import (
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
+	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/teamlogo"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
@@ -96,8 +97,11 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 			Payments:     frontendShopPayments(pay),
 		})
 	}
-	if a.c.StorefrontAuth.ShopMaster == "" {
-		slog.Default().WarnContext(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is empty; team shop customers cannot sign in")
+	switch m := a.c.StorefrontAuth.ShopMaster; {
+	case m == "":
+		a.noteProblem(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is empty; team shop customers cannot sign in")
+	case len(m) < jwt.MinSymmetricSecretBytes:
+		a.noteProblem(ctx, "shops: STOREFRONT_AUTH_SHOP_MASTER is shorter than 32 bytes; team shop customers cannot sign in")
 	}
 	if cfg.ShopZoneHost() == "" {
 		slog.Default().WarnContext(ctx, "shops: no shop zone (PLATFORM_SHOP_ZONE / base domain); shops cannot be turned on")

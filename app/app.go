@@ -108,6 +108,9 @@ type App struct {
 	fxw *fxsync.Worker
 	// sdw re-checks team shops' pending custom domains (X18-L5); nil without the Vercel provider.
 	sdw *shopdomains.Worker
+	// problems are boot faults that left a feature off without stopping the server; GET /statusz
+	// lists them (noteProblem).
+	problems []string
 	// aiRecon fetches each provider's own daily cost report. Nil only when the explicit
 	// AI_RECONCILE_ENABLED kill switch is off; it must stop before both the registry and DB.
 	aiRecon *reconcile.Worker
@@ -316,21 +319,11 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
-	// No shop: the tenant outbox is never written and never drained (noShopMailer). Admin sign-in
-	// letters are platform mail and go on.
+	// The tenant mail outbox, drained team by team (teams_shop_mail.go). Without a storefront team
+	// only team shops' transactional letters run, under each shop's name; marketing and campaign
+	// letters stay off. Admin sign-in letters are platform mail either way.
 	if a.shopGate(ctx, "mail") {
-		a.ma, err = mail.New(&a.c.Mailer, a.db.Mail(), a.db.StorefrontAccount())
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "couldn't connect to mailer",
-				slog.String("err", err.Error()),
-			)
-			return err
-		}
-		err = a.ma.Start(ctx)
-		if err != nil {
-			slog.Default().ErrorContext(ctx, "couldn't start mailer worker",
-				slog.String("err", err.Error()),
-			)
+		if err = a.startMailer(ctx); err != nil {
 			return err
 		}
 	} else {
@@ -1092,19 +1085,14 @@ func (a *App) Start(ctx context.Context) error {
 	a.adminS = adminS
 
 	// FrontendService is built on every installation: without a storefront team (no shop) it serves
-	// team shops only (teams mode; the edge refuses a call that names no shop) and has no env Stripe.
+	// team shops only (teams mode; the edge refuses a call that names no shop), has no env Stripe and
+	// needs no legacy STOREFRONT_AUTH_* keys (team-shop customers sign in with keys from
+	// STOREFRONT_AUTH_SHOP_MASTER). With a storefront team a bad STOREFRONT_AUTH_* still stops boot.
 	var frontendS *frontend.Server
 	if a.shopGate(ctx, "storefront") {
-		frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
-		switch {
-		case err != nil && a.c.Platform.NoShop():
-			// No storefront team: the storefront API serves team shops only, and an installation that
-			// never configured STOREFRONT_AUTH_* still boots; its team shops stay off (503).
-			slog.Default().ErrorContext(ctx, "team shops: storefront API not built; team shops are off",
-				slog.String("err", err.Error()),
-			)
-			frontendS, err = nil, nil
-		case err != nil:
+		if a.c.Platform.NoShop() {
+			frontendS = frontend.NewTeamShops(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth)
+		} else if frontendS, err = frontend.New(a.db, a.ma, stripeMain, stripeTest, a.re, reservationMgr, &a.c.StorefrontAuth); err != nil {
 			slog.Default().ErrorContext(ctx, "failed create frontend server",
 				slog.String("err", err.Error()),
 			)
@@ -1558,7 +1546,7 @@ func newStripeProcessor(
 // started (nil) are skipped. ga4Client is passed explicitly because it is a
 // local in Start, not a field on App.
 func (a *App) buildHealthRegistry(ga4Client *ga4.Client) *health.Registry {
-	reg := &health.Registry{}
+	reg := &health.Registry{Problems: append([]string(nil), a.problems...)}
 
 	// Workers. Each appended only if non-nil and actually implements Reporter.
 	// a.ma is a dependency.Mailer interface; the concrete *mail.Mailer is a
@@ -1796,4 +1784,11 @@ func (a *App) bucketOpenURL() func(ctx context.Context, rawURL string) (io.ReadC
 		return bk.OpenManagedURL
 	}
 	return nil
+}
+
+// noteProblem records a boot fault that leaves a feature off without stopping the server: an ERROR
+// log now and a line in GET /statusz "problems".
+func (a *App) noteProblem(ctx context.Context, msg string) {
+	slog.Default().ErrorContext(ctx, msg)
+	a.problems = append(a.problems, msg)
 }

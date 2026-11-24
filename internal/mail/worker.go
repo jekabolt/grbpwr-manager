@@ -107,14 +107,28 @@ func backoffDelay(consecutiveFailures int) time.Duration {
 func (m *Mailer) runOnce(ctx context.Context) bool {
 	defer saferun.Recover(ctx, "mail")
 
-	ctx, cancel := context.WithTimeout(ctx, tickTimeout)
-	defer cancel()
-
-	if err := m.handleUnsent(ctx); err != nil {
+	drain := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, tickTimeout)
+		defer cancel()
+		err := m.handleUnsent(ctx)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "can't handle unsent mails",
+				slog.String("err", err.Error()),
+			)
+		}
+		return err
+	}
+	if m.teams != nil {
+		// Every team's outbox, each in its own context and under its own tick timeout.
+		if !m.teams(ctx, func(teamCtx context.Context) bool { return drain(teamCtx) == nil }) {
+			m.tracker.MarkError(errors.New("mail: a team's outbox did not drain"))
+			return false
+		}
+		m.tracker.MarkSuccess()
+		return true
+	}
+	if err := drain(ctx); err != nil {
 		m.tracker.MarkError(err)
-		slog.Default().ErrorContext(ctx, "can't handle unsent mails",
-			slog.String("err", err.Error()),
-		)
 		return false
 	}
 

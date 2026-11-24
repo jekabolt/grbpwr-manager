@@ -1170,7 +1170,9 @@ type statuszResponse struct {
 	// staleThreshold (or that have never run); a convenience summary.
 	Stale    []string         `json:"stale,omitempty"`
 	Breakers []statuszBreaker `json:"breakers,omitempty"`
-	Runtime  statuszRuntime   `json:"runtime"`
+	// Problems are boot-time configuration faults that left a feature off (health.Registry.Problems).
+	Problems []string       `json:"problems,omitempty"`
+	Runtime  statuszRuntime `json:"runtime"`
 }
 
 type statuszDB struct {
@@ -1250,6 +1252,8 @@ func (s *Server) handleStatusz(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Workers = append(resp.Workers, ws)
 	}
+
+	resp.Problems = append(resp.Problems, reg.Problems...)
 
 	for _, b := range reg.Breakers {
 		if b.StateFunc == nil {
