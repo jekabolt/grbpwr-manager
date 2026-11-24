@@ -34,6 +34,10 @@ type ShopWiring struct {
 	Invalidate func(teamID int64)
 	// Revalidator redraws a team's own shop (shop.Revalidator); nil = team shops are not revalidated.
 	Revalidator dependency.RevalidationService
+	// Reserved are domains no team may attach, nor any host under them: the storefront's own and
+	// legacy hosts and their registrable domains (grbpwr.com, lekalo.studio, ...). The base domain,
+	// the shop zone and the API host are refused with their registrable domains anyway.
+	Reserved []string
 }
 
 // SetShops wires the shop screen (teams mode; call before serving).
@@ -257,9 +261,18 @@ func (s *Server) SetShopEnabled(ctx context.Context, req *pb_admin.SetShopEnable
 	return &pb_admin.SetShopEnabledResponse{Shop: out}, nil
 }
 
+// customHost normalizes a domain a team attaches and refuses one that is the platform's or the
+// storefront's: the base domain, the shop zone, the API host, every reserved domain, and every host
+// under the registrable domain of any of them (www.grbpwr.com, api.lekalo.studio, ...).
 func (s *Server) customHost(raw string) (string, error) {
 	h := shop.NormHost(raw)
-	if err := shop.ValidCustomHost(h, s.platform.cfg.BaseDomain, s.shopZone()); err != nil {
+	cfg := s.platform.cfg
+	own := []string{cfg.BaseDomain, s.shopZone(), shop.OriginHost(cfg.APIBase())}
+	if s.shopW != nil {
+		own = append(own, s.shopW.Reserved...)
+	}
+	refused := append(append([]string{}, own...), shop.RegistrableDomains(own...)...)
+	if err := shop.ValidCustomHost(h, refused...); err != nil {
 		return "", err
 	}
 	return h, nil
@@ -302,11 +315,14 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 	if err != nil {
 		return nil, shopErr(ctx, "attach", err)
 	}
-	// The host must be free before the provider hears of it.
-	if owner, ok, err := s.platform.store.ShopHostTeam(ctx, host); err != nil {
+	// The host must be free (in any status: a pending attach holds its name for a while) before the
+	// provider hears of it, and a queued removal of it is dropped first (it waits for a removal in
+	// flight, so the provider never removes the domain after this attach).
+	if err := s.platform.store.ShopHostFree(ctx, p.w.Team.ID, host, time.Now()); err != nil {
 		return nil, shopErr(ctx, "attach", err)
-	} else if ok && owner != p.w.Team.ID {
-		return nil, shopErr(ctx, "attach", platformstore.ErrShopHostTaken)
+	}
+	if err := s.platform.store.CancelShopDomainDrop(ctx, host); err != nil {
+		return nil, shopErr(ctx, "attach", err)
 	}
 	state, err := s.shopW.Domains.Attach(ctx, host)
 	if err != nil {
@@ -374,9 +390,9 @@ func (s *Server) RemoveShopDomain(ctx context.Context, req *pb_admin.RemoveShopD
 	if err := s.platform.store.RemoveShopHost(ctx, p.w.Team.ID, host); err != nil {
 		return nil, shopErr(ctx, "remove", err)
 	}
-	if err := s.shopW.Domains.Remove(ctx, host); err != nil {
-		// The row is gone, so the host no longer answers; the provider keeps a stale entry to retry.
-		slog.Default().WarnContext(ctx, "shop: domain provider remove", slog.String("err", err.Error()))
+	// The removal is queued (shop_domain_drop) with the row; try it now, the drain retries a failure.
+	if _, err := s.platform.store.DropShopDomainNow(ctx, host, time.Now(), s.shopW.Domains.Remove); err != nil {
+		slog.Default().WarnContext(ctx, "shop: domain provider remove; queued for retry", slog.String("err", err.Error()))
 	}
 	s.peopleAudit(ctx, p, "shop.domain_removed", map[string]string{"host": host})
 	s.shopChanged(ctx, p.w.Team.ID)

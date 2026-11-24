@@ -108,8 +108,8 @@ func openFresh(t *testing.T) *platformstore.Store {
 	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM platform_migrations`); err != nil || n != 17 {
 		t.Fatalf("platform_migrations rows = %d, %v", n, err)
 	}
-	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 33 {
-		t.Fatalf("tables = %d (want 32 + platform_migrations), %v", n, err)
+	if err := st.DB().Get(&n, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()`); err != nil || n != 34 {
+		t.Fatalf("tables = %d (want 33 + platform_migrations), %v", n, err)
 	}
 	return st
 }

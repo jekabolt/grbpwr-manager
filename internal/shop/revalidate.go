@@ -2,6 +2,7 @@ package shop
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -20,9 +21,10 @@ type HostRevalidator interface {
 // Target answers a team's shop main address when its shop is open (ok=false: nothing to revalidate).
 type Target func(ctx context.Context, teamID int64) (host string, ok bool, err error)
 
-// Revalidator routes a revalidation by the team in ctx: the storefront team (and a ctx with no team)
-// goes to the grbpwr storefront exactly as before; any other team's open shop is revalidated at its
-// main address under its shop key; a team with no open shop is a no-op.
+// Revalidator routes a revalidation by the team in ctx: the storefront team goes to the grbpwr
+// storefront exactly as before; any other team's open shop is revalidated at its main address under
+// its shop key; a team with no open shop is a no-op. It fails closed: a ctx with no team revalidates
+// nothing (never the grbpwr storefront on a guess) and logs it.
 type Revalidator struct {
 	Base         AllRevalidator
 	Shop         HostRevalidator
@@ -37,11 +39,14 @@ func (r *Revalidator) RevalidateAll(ctx context.Context, data *dto.RevalidationD
 	if sf <= 0 {
 		sf = tenant.TeamOneID
 	}
-	if !ok || t.ID == sf || r.Shop == nil || r.Target == nil {
-		if ok && t.ID != sf {
-			return nil // a team shop without the shop path wired: never the grbpwr storefront
-		}
+	switch {
+	case !ok:
+		slog.Default().WarnContext(ctx, "shop revalidate: no team in ctx; skipped")
+		return nil
+	case t.ID == sf:
 		return r.Base.RevalidateAll(ctx, data)
+	case r.Shop == nil || r.Target == nil:
+		return nil // a team shop without the shop path wired: never the grbpwr storefront
 	}
 	host, open, err := r.Target(ctx, t.ID)
 	if err != nil || !open {

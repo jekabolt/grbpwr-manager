@@ -4,7 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -70,6 +74,9 @@ func TestShopTeamResolution(t *testing.T) {
 		{"header names the storefront's own host", "grbpwr.com", "", 1, true, codes.OK},
 		{"unknown header", "nope.shop.lekalo.studio", "", 0, false, codes.NotFound},
 		{"header and origin disagree", "acme.com", "https://bolt.shop.lekalo.studio", 0, false, codes.PermissionDenied},
+		{"malformed header", "acme_com", "", 0, false, codes.NotFound},
+		{"malformed header with a path", "acme.com/x", "", 0, false, codes.NotFound},
+		{"malformed origin names no shop", "", "https://acme_com", 1, true, codes.OK},
 	}
 	for _, c := range cases {
 		got, legacy, err := b.ShopTeam(ctx, c.host, c.origin)
@@ -208,4 +215,50 @@ func TestMiddlewareStorefrontRefusals(t *testing.T) {
 	if c := do("/api/webhooks/stripe", "acme.com", ""); c != http.StatusOK || got.ID != tenant.TeamOneID {
 		t.Fatalf("webhook: %d team %d", c, got.ID)
 	}
+}
+
+// Malformed hosts never reach the control plane; concurrent lookups of one host fold into one.
+func TestShopHostLookupGuards(t *testing.T) {
+	b, p := shopBinder(t)
+	ctx := context.Background()
+	for _, h := range []string{"a_b.com", "x..com", "1.2.3.4", strings.Repeat("a", 254)} {
+		_, _, _ = b.ShopTeam(ctx, h, "")
+	}
+	if p.looks != 0 {
+		t.Fatalf("malformed hosts looked up %d times", p.looks)
+	}
+	slow := &slowShopPlane{shopFakePlane: p, release: make(chan struct{})}
+	b.usePlane(slow, platformstore.Config{BaseDomain: "lekalo.studio"})
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got, _, err := b.ShopTeam(ctx, "acme.com", ""); err != nil || got.ID != 7 {
+				t.Errorf("team %d %v", got.ID, err)
+			}
+		}()
+	}
+	for slow.n.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(slow.release)
+	wg.Wait()
+	if n := slow.n.Load(); n != 1 {
+		t.Fatalf("concurrent lookups = %d, want 1", n)
+	}
+}
+
+type slowShopPlane struct {
+	*shopFakePlane
+	n       atomic.Int32
+	release chan struct{}
+}
+
+func (p *slowShopPlane) ShopHostTeam(_ context.Context, host string) (int64, bool, error) {
+	p.n.Add(1)
+	<-p.release
+	id, ok := p.hosts[host]
+	return id, ok, nil
 }

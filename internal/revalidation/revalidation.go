@@ -68,8 +68,13 @@ func New(ctx context.Context, c *Config) (*Revalidator, error) {
 		timeout = 10 * time.Second
 	}
 	v := &Revalidator{
-		c:      c,
-		client: &http.Client{Timeout: timeout},
+		c: c,
+		client: &http.Client{
+			Timeout: timeout,
+			// A revalidation post carries a secret: never follow a redirect (a shop's host could send
+			// it anywhere).
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 	return v, nil
 }

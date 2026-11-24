@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	"golang.org/x/net/publicsuffix"
 )
 
 // ErrBadHost: not a host name a shop can answer on.
@@ -49,34 +50,66 @@ func OriginHost(o string) string {
 // digits and hyphens, no IP, not under the platform's own domains (base and shop zone) nor a dev
 // or preview domain (localhost, vercel.app).
 func ValidCustomHost(h string, platformDomains ...string) error {
-	if h == "" || len(h) > 253 || net.ParseIP(h) != nil {
-		return ErrBadHost
-	}
-	labels := strings.Split(h, ".")
-	if len(labels) < 2 {
-		return ErrBadHost
-	}
-	for _, l := range labels {
-		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
-			return ErrBadHost
-		}
-		for _, c := range l {
-			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-				return ErrBadHost
-			}
-		}
-	}
-	if tld := labels[len(labels)-1]; tld[0] >= '0' && tld[0] <= '9' {
+	if !ValidHost(h) || strings.Count(h, ".") < 1 {
 		return ErrBadHost
 	}
 	// Dev and preview hosts stay outside shop_host: a storefront preview's Origin must never name a shop.
 	for _, d := range append([]string{"localhost", "vercel.app", "vercel.sh"}, platformDomains...) {
-		d = NormHost(d)
-		if d != "" && (h == d || strings.HasSuffix(h, "."+d)) {
+		if Under(h, d) {
 			return ErrBadHost
 		}
 	}
 	return nil
+}
+
+// ValidHost reports whether h is a normalized DNS host name a shop could answer on: lower-case
+// labels of letters, digits and hyphens (no leading or trailing hyphen), at most 253 bytes, no IP,
+// the last label not numeric. Checked before any host reaches the control plane.
+func ValidHost(h string) bool {
+	if h == "" || len(h) > 253 || net.ParseIP(h) != nil {
+		return false
+	}
+	labels := strings.Split(h, ".")
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, c := range l {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	tld := labels[len(labels)-1]
+	return tld[0] < '0' || tld[0] > '9'
+}
+
+// Under reports whether host h is domain d or under it ("" d: false).
+func Under(h, d string) bool {
+	d = NormHost(d)
+	return d != "" && (h == d || strings.HasSuffix(h, "."+d))
+}
+
+// RegistrableDomains answers the registrable domains (eTLD+1, the public suffix list) of hosts:
+// "api.lekalo.studio" and "shop.beta.lekalo.studio" → "lekalo.studio". Every host under one is the
+// platform's or the storefront's and is never a team's custom host. Hosts that are not DNS names
+// (localhost, IPs) and duplicates are left out.
+func RegistrableDomains(hosts ...string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range hosts {
+		h = NormHost(h)
+		if !ValidHost(h) || !strings.Contains(h, ".") {
+			continue
+		}
+		d, err := publicsuffix.EffectiveTLDPlusOne(h)
+		if err != nil || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
 }
 
 // Zone is the shop zone: zone when set, else "shop." + base ("" when both are empty).

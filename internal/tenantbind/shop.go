@@ -99,17 +99,25 @@ func (b *Binder) hostTeam(ctx context.Context, sp shopPlane, host string) (int64
 	if hit && now.Before(e.expires) {
 		return e.teamID, e.ok, nil
 	}
-	id, ok, err := sp.ShopHostTeam(ctx, host)
+	v, err, _ := b.shopFlight.Do(host, func() (any, error) {
+		id, ok, err := sp.ShopHostTeam(context.WithoutCancel(ctx), host)
+		if err != nil {
+			return nil, err
+		}
+		e := shopHostEntry{teamID: id, ok: ok, expires: now.Add(cacheTTL)}
+		b.cacheMu.Lock()
+		if b.shopHosts == nil || len(b.shopHosts) >= shopCacheMax {
+			b.shopHosts = map[string]shopHostEntry{}
+		}
+		b.shopHosts[host] = e
+		b.cacheMu.Unlock()
+		return e, nil
+	})
 	if err != nil {
 		return 0, false, err
 	}
-	b.cacheMu.Lock()
-	if b.shopHosts == nil || len(b.shopHosts) >= shopCacheMax {
-		b.shopHosts = map[string]shopHostEntry{}
-	}
-	b.shopHosts[host] = shopHostEntry{teamID: id, ok: ok, expires: now.Add(cacheTTL)}
-	b.cacheMu.Unlock()
-	return id, ok, nil
+	e = v.(shopHostEntry)
+	return e.teamID, e.ok, nil
 }
 
 func (b *Binder) teamShop(ctx context.Context, sp shopPlane, teamID int64) (platformstore.TeamShop, error) {
@@ -156,6 +164,14 @@ func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenan
 
 	hh := shop.NormHost(shopHost)
 	oh := shop.OriginHost(origin)
+	// Only a well-formed host name reaches the control plane: a malformed x-shop-host names no shop,
+	// a malformed Origin names none either.
+	if hh != "" && !shop.ValidHost(hh) {
+		return tenant.Team{}, false, status.Error(codes.NotFound, MsgShopNotFound)
+	}
+	if oh != "" && !shop.ValidHost(oh) {
+		oh = ""
+	}
 	var fromHeader, fromOrigin int64
 	if hh != "" && !own[hh] {
 		id, ok, err := b.hostTeam(ctx, sp, hh)
