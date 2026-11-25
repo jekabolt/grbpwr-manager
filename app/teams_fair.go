@@ -27,7 +27,7 @@ const (
 	envTeamBurst         = "TEAM_BURST"
 	envBackgroundSlots   = "BACKGROUND_PARALLEL"
 
-	// The shop lane (storefront calls): TEAM_FAIR_SHOP=off leaves them ungated.
+	// The shop and checkout lanes (storefront calls): TEAM_FAIR_SHOP=off leaves both ungated.
 	envTeamFairShop        = "TEAM_FAIR_SHOP"
 	envTeamShopParallel    = "TEAM_SHOP_PARALLEL"
 	envTeamShopRate        = "TEAM_SHOP_RATE"
@@ -36,6 +36,14 @@ const (
 	envStorefrontShopPar   = "TEAM_STOREFRONT_SHOP_PARALLEL"
 	envStorefrontShopRate  = "TEAM_STOREFRONT_SHOP_RATE"
 	envStorefrontShopBurst = "TEAM_STOREFRONT_SHOP_BURST"
+
+	envTeamCheckoutParallel    = "TEAM_CHECKOUT_PARALLEL"
+	envTeamCheckoutRate        = "TEAM_CHECKOUT_RATE"
+	envTeamCheckoutBurst       = "TEAM_CHECKOUT_BURST"
+	envCheckoutParallel        = "CHECKOUT_PARALLEL"
+	envStorefrontCheckoutPar   = "TEAM_STOREFRONT_CHECKOUT_PARALLEL"
+	envStorefrontCheckoutRate  = "TEAM_STOREFRONT_CHECKOUT_RATE"
+	envStorefrontCheckoutBurst = "TEAM_STOREFRONT_CHECKOUT_BURST"
 )
 
 func envPositiveInt(name string) int {
@@ -99,6 +107,27 @@ func teamFairConfig(pool int, storefront int64, getenv func(string) string) team
 	if n := num(envStorefrontShopBurst); n > 0 {
 		cfg.StorefrontShop.Burst = n
 	}
+	if n := num(envTeamCheckoutParallel); n > 0 {
+		cfg.Checkout.Light = n
+	}
+	if n := num(envTeamCheckoutRate); n > 0 {
+		cfg.Checkout.Rate = float64(n)
+	}
+	if n := num(envTeamCheckoutBurst); n > 0 {
+		cfg.Checkout.Burst = n
+	}
+	if n := num(envCheckoutParallel); n > 0 {
+		cfg.GlobalCheckout = n
+	}
+	if n := num(envStorefrontCheckoutPar); n > 0 {
+		cfg.StorefrontCheckout.Light = n
+	}
+	if n := num(envStorefrontCheckoutRate); n > 0 {
+		cfg.StorefrontCheckout.Rate = float64(n)
+	}
+	if n := num(envStorefrontCheckoutBurst); n > 0 {
+		cfg.StorefrontCheckout.Burst = n
+	}
 	return cfg
 }
 
@@ -144,9 +173,10 @@ func (a *App) storefrontTeamID() int64 {
 	return sf
 }
 
-// neverRefused reports the storefront methods no share ever refuses: checkout, payment and order
-// status. A customer paying, or looking at what they paid for, is never told the shop is busy.
-func neverRefused(fullMethod string) bool {
+// isCheckout reports the checkout methods: placing, paying and order status. They take the checkout
+// lane, a share of their own, so a browsing flood never tells a customer paying that the shop is
+// busy; a checkout flood is still capped.
+func isCheckout(fullMethod string) bool {
 	switch fullMethod {
 	case frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName,
 		frontend.FrontendService_SubmitOrder_FullMethodName,
@@ -162,16 +192,17 @@ func neverRefused(fullMethod string) bool {
 }
 
 // newTeamFairEdge is the per-team gate of cfg in front of the gRPC chain: storefront calls take the
-// shop lane of their shop's team, except neverRefused, which pass ungated.
+// shop lane of their shop's team, isCheckout ones its checkout lane.
 func newTeamFairEdge(cfg teamfair.Config) *teamfair.Edge {
 	return teamfair.NewEdge(teamfair.New(cfg),
 		func(m string) bool { return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront },
-		neverRefused)
+		isCheckout)
 }
 
 // initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
-// Storefront calls take the shop lane of their shop's team (checkout, payment and order status
-// never do); the storefront team's shop is not gated unless TEAM_STOREFRONT_SHOP_* set limits.
+// Storefront calls take the shop lane of their shop's team, checkout, payment and order status its
+// checkout lane; the storefront team has generous shares of both (TEAM_STOREFRONT_SHOP_* /
+// TEAM_STOREFRONT_CHECKOUT_*) and never takes a global slot.
 func (a *App) initTeamFair(ctx context.Context) {
 	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, a.storefrontTeamID(), os.Getenv)
 	a.fair = newTeamFairEdge(cfg)
@@ -181,6 +212,8 @@ func (a *App) initTeamFair(ctx context.Context) {
 		slog.Int("heavy_all", cfg.GlobalHeavy), slog.Int("ai", cfg.Team.AI),
 		slog.Float64("rate", cfg.Team.Rate), slog.Int("burst", cfg.Team.Burst),
 		slog.Bool("shop_off", cfg.ShopOff), slog.Int("shop", cfg.Shop.Light), slog.Int("shop_all", cfg.GlobalShop),
-		slog.Float64("shop_rate", cfg.Shop.Rate), slog.Int("storefront_shop", cfg.StorefrontShop.Light),
+		slog.Float64("shop_rate", cfg.Shop.Rate), slog.Int("checkout", cfg.Checkout.Light),
+		slog.Int("checkout_all", cfg.GlobalCheckout), slog.Float64("checkout_rate", cfg.Checkout.Rate),
+		slog.Int("storefront_shop", cfg.StorefrontShop.Light), slog.Int("storefront_checkout", cfg.StorefrontCheckout.Light),
 		slog.Int("background", cap(a.backgroundSlots())))
 }

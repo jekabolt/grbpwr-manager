@@ -36,11 +36,19 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	cfg := a.c.Platform
 	st := a.platform
 	sf := a.storefrontTeamID()
+	platform := []string{cfg.BaseDomain, cfg.ShopZoneHost()}
 	adminHosts := shopNoPrimary(cfg.APIBase(), cfg.LegacyOrigins(), a.c.HTTP.AllowedOrigins)
+	// The storefront team's shop hosts come from TENANT_STOREFRONT_HOSTS only, never from the allowed
+	// origins: a CORS-only page is never its main address nor gets its revalidation secret.
+	legacy := storefrontShopHosts(sf, cfg.LegacyStorefrontHosts(), platform, adminHosts)
+	if b != nil {
+		b.SetStorefrontHosts(legacy)
+	}
 	svc := &shop.Service{
-		St:           st,
-		StorefrontID: sf,
-		AdminHosts:   adminHosts,
+		St:              st,
+		StorefrontID:    sf,
+		AdminHosts:      adminHosts,
+		StorefrontHosts: legacy,
 		LogoURL: func(ctx context.Context, teamID int64, slug string) string {
 			sha, err := st.TeamLogoSHA(ctx, teamID)
 			if err != nil {
@@ -72,24 +80,35 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	} else {
 		st.SetShopHostProof(proof)
 	}
-	own := shopOwnHosts([]string{cfg.BaseDomain, cfg.ShopZoneHost()}, a.c.HTTP.AllowedOrigins, cfg.LegacyOrigins())
 	if sf > 0 {
-		taken, err := st.EnsureLegacyShopHosts(ctx, sf, own, time.Now())
+		taken, err := st.EnsureLegacyShopHosts(ctx, sf, legacy, time.Now())
 		if err != nil {
 			return fmt.Errorf("shops: legacy hosts: %w", err)
 		}
 		for _, h := range taken {
 			slog.Default().ErrorContext(ctx, "shops: a legacy host was attached by another team; taken back", slog.String("host", h))
 		}
+		// A legacy row that is no storefront host any more (an older boot seeded the allowed origins,
+		// or TENANT_STOREFRONT_HOSTS changed) goes.
+		removed, err := st.PruneLegacyShopHosts(ctx, sf, legacy)
+		if err != nil {
+			return fmt.Errorf("shops: legacy hosts: %w", err)
+		}
+		for _, h := range removed {
+			slog.Default().WarnContext(ctx, "shops: a legacy host that is not a storefront host was removed", slog.String("host", h))
+		}
 	}
+	// Reserved for every team: the storefront's hosts and every allowed or legacy admin origin.
+	own := append(shopReservedHosts(platform, a.c.HTTP.AllowedOrigins, cfg.LegacyOrigins()), legacy...)
 	domains := a.shopDomainProvider(ctx)
 	// Team payments run with or without a storefront team: only the storefront team's own (env) Stripe
 	// is gone on a no-shop installation.
 	pay := a.newShopPay(ctx, b, adminS, frontendS != nil) // X18-L3, teams_shop_pay.go
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
-		Reserved:  append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
-		Payments:  shopPayments(pay),
-		NoPrimary: adminHosts})
+		Reserved:        append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
+		Payments:        shopPayments(pay),
+		NoPrimary:       adminHosts,
+		StorefrontHosts: legacy})
 	go drainShopDomains(ctx, st, domains)
 	a.startShopDomains(ctx, domains, invalidate, re)
 	if frontendS != nil {
@@ -194,11 +213,34 @@ func shopNoPrimary(api string, admin, allowed []string) []string {
 	return out
 }
 
-// shopOwnHosts are the storefront team's own hosts (HTTP_ALLOWED_ORIGINS and the legacy admin
-// origins): legacy shop hosts of the storefront team, never a team's custom host. Dev and preview
-// hosts (localhost, IPs, vercel) and hosts under the platform's domains (base, shop zone: the console
-// and team platform addresses, reserved anyway) are left out.
-func shopOwnHosts(platform []string, origins ...[]string) []string {
+// storefrontShopHosts are the storefront team's shop hosts (TENANT_STOREFRONT_HOSTS, bare hosts or
+// origins): its legacy shop hosts, the only ones that name it, may be its main address and receive
+// its revalidation. None without a storefront team. Admin and API hosts, dev and preview hosts and
+// hosts under the platform's domains are left out.
+func storefrontShopHosts(sf int64, hosts, platform, admin []string) []string {
+	if sf <= 0 {
+		return nil
+	}
+	var out []string
+	for _, v := range hosts {
+		h := shop.OriginHost(v)
+		if h == "" {
+			h = shop.NormHost(v)
+		}
+		if h == "" || slices.Contains(out, h) || slices.Contains(admin, h) || shop.ValidCustomHost(h, platform...) != nil {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// shopReservedHosts are the hosts of the allowed and legacy admin origins (HTTP_ALLOWED_ORIGINS,
+// PLATFORM_LEGACY_ADMIN_ORIGINS): never a team's custom host. Not shop hosts of the storefront team
+// (storefrontShopHosts). Dev and preview hosts (localhost, IPs, vercel) and hosts under the
+// platform's domains (base, shop zone: the console and team platform addresses, reserved anyway)
+// are left out.
+func shopReservedHosts(platform []string, origins ...[]string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, list := range origins {

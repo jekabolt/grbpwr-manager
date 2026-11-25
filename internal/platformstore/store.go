@@ -67,6 +67,10 @@ type Config struct {
 	// StorefrontNone: TENANT_STOREFRONT_TEAM_ID=none in teams mode — this installation has no storefront
 	// team (no legacy grbpwr shop, no env Stripe). Team shops still run. Read it through NoShop.
 	StorefrontNone bool `mapstructure:"-"`
+	// StorefrontHosts (TENANT_STOREFRONT_HOSTS, X18): comma-separated shop hosts of the storefront
+	// team (grbpwr). Only these are its legacy shop hosts: they name the storefront team, may be its
+	// main address and receive its shop revalidation. Read through LegacyStorefrontHosts.
+	StorefrontHosts string `mapstructure:"storefront_hosts"`
 	// ShopZone (PLATFORM_SHOP_ZONE, X18): the zone of shop addresses, {slug}.<ShopZone>; empty =
 	// "shop." + BaseDomain. Read through ShopZoneHost.
 	ShopZone string `mapstructure:"shop_zone"`
@@ -244,6 +248,22 @@ func (c Config) ShopZoneHost() string {
 		return "shop." + b
 	}
 	return ""
+}
+
+// DefaultStorefrontHosts are the storefront team's shop hosts while TENANT_STOREFRONT_HOSTS is unset.
+const DefaultStorefrontHosts = "grbpwr.com,www.grbpwr.com,beta.grbpwr.com"
+
+// LegacyStorefrontHosts splits StorefrontHosts: DefaultStorefrontHosts when unset, none for "none".
+// Allowed origins (HTTP_ALLOWED_ORIGINS) are never added: a CORS-only page is not a shop host.
+func (c Config) LegacyStorefrontHosts() []string {
+	v := strings.TrimSpace(c.StorefrontHosts)
+	switch {
+	case v == "":
+		v = DefaultStorefrontHosts
+	case strings.EqualFold(v, "none"):
+		return nil
+	}
+	return splitList(v)
 }
 
 // LegacyOrigins splits LegacyAdminOrigins.

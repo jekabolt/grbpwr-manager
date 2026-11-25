@@ -50,7 +50,8 @@ func shopBinder(t *testing.T) (*Binder, *shopFakePlane) {
 		shops: map[int64]platformstore.TeamShop{7: {TeamID: 7, Enabled: true}, 9: {TeamID: 9, Enabled: true}},
 	}
 	b.usePlane(p, platformstore.Config{BaseDomain: "lekalo.studio"})
-	b.SetStorefrontOrigins([]string{"https://grbpwr.com", "http://localhost:3000"})
+	b.SetAllowedOrigins([]string{"https://grbpwr.com", "http://localhost:3000", "https://jekabolt.github.io"})
+	b.SetStorefrontHosts([]string{"grbpwr.com", "www.grbpwr.com"})
 	return b, p
 }
 
@@ -72,6 +73,14 @@ func TestShopTeamResolution(t *testing.T) {
 		{"header and origin agree", "acme.com", "https://acme.shop.lekalo.studio", 7, false, codes.OK},
 		{"dev origin, header wins", "bolt.shop.lekalo.studio", "http://localhost:3000", 9, false, codes.OK},
 		{"header names the storefront's own host", "grbpwr.com", "", 1, true, codes.OK},
+		{"storefront header and storefront origin agree", "www.grbpwr.com", "https://grbpwr.com", 1, true, codes.OK},
+		{"storefront header, dev origin", "grbpwr.com", "http://localhost:3000", 1, true, codes.OK},
+		{"storefront header, shop origin", "grbpwr.com", "https://acme.com", 0, false, codes.PermissionDenied},
+		{"shop header, storefront origin", "acme.com", "https://grbpwr.com", 0, false, codes.PermissionDenied},
+		{"shop header, www storefront origin", "acme.shop.lekalo.studio", "https://www.grbpwr.com", 0, false, codes.PermissionDenied},
+		{"cors-only origin names no shop", "", "https://jekabolt.github.io", 1, true, codes.OK},
+		{"cors-only origin, header wins", "acme.com", "https://jekabolt.github.io", 7, false, codes.OK},
+		{"cors-only header names no shop", "jekabolt.github.io", "https://acme.com", 7, false, codes.OK},
 		{"unknown header", "nope.shop.lekalo.studio", "", 0, false, codes.NotFound},
 		{"header and origin disagree", "acme.com", "https://bolt.shop.lekalo.studio", 0, false, codes.PermissionDenied},
 		{"malformed header", "acme_com", "", 0, false, codes.NotFound},
@@ -131,6 +140,24 @@ func TestShopOpen(t *testing.T) {
 	}
 	if ok, _ := b.ShopOpen(ctx, teamOne); !ok {
 		t.Fatal("the storefront team is always open")
+	}
+}
+
+// The storefront team's hosts and the allowed origins are answered without the control plane.
+func TestShopOwnHostsNeverLookedUp(t *testing.T) {
+	b, p := shopBinder(t)
+	ctx := context.Background()
+	for _, c := range [][2]string{
+		{"grbpwr.com", ""}, {"", "https://www.grbpwr.com"}, {"grbpwr.com", "http://localhost:3000"},
+		{"jekabolt.github.io", ""}, {"", "https://jekabolt.github.io"},
+	} {
+		got, legacy, err := b.ShopTeam(ctx, c[0], c[1])
+		if err != nil || got.ID != 1 || !legacy {
+			t.Fatalf("%q %q: team %d legacy %v err %v, want the storefront team", c[0], c[1], got.ID, legacy, err)
+		}
+	}
+	if p.looks != 0 {
+		t.Fatalf("lookups = %d, want 0", p.looks)
 	}
 }
 

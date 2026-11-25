@@ -11,8 +11,9 @@ import (
 )
 
 // X18 v3: a bare domain brings its "www." sibling as a redirect (removed with it); the storefront
-// team picks a legacy host as its main address (admin hosts neither listed nor accepted) and may
-// clear it, while its switch, domains and mail stay refused.
+// team picks one of its configured storefront hosts as its main address (admin hosts and CORS-only
+// origins neither listed nor accepted) and may clear it, while its switch, domains and mail stay
+// refused.
 func TestShopWWWSiblingAndStorefrontPrimary(t *testing.T) {
 	w := newWorkspaceWorld(t)
 	ctx := context.Background()
@@ -20,7 +21,8 @@ func TestShopWWWSiblingAndStorefrontPrimary(t *testing.T) {
 	fake := &shop.FakeDomains{Live: map[string]bool{}}
 	domains := &failingRemove{FakeDomains: fake}
 	w.s.SetShops(ShopWiring{Domains: domains, Invalidate: func(int64) {},
-		Reserved: []string{"www.grbpwr.com", "grbpwr.com"}, NoPrimary: []string{"admin.grbpwr.com"}})
+		Reserved: []string{"www.grbpwr.com", "grbpwr.com"}, NoPrimary: []string{"admin.grbpwr.com"},
+		StorefrontHosts: []string{"grbpwr.com", "www.grbpwr.com"}})
 	proof, err := shop.NewTXTProof("test-pepper-for-the-host-proof")
 	require.NoError(t, err)
 	txt := map[string][]string{}
@@ -75,10 +77,10 @@ VALUES ('www.taken.io', 3, 'custom', 0, 0, 'live', '[]', ?, ?)`, time.Now().UTC(
 	require.Equal(t, []string{"brand.com", "www.brand.com"}, domains.removed)
 	require.Equal(t, 0, w.count(t, `SELECT COUNT(*) FROM shop_host WHERE host IN ('brand.com', 'www.brand.com')`))
 
-	// The storefront team: its legacy hosts are its domains, admin hosts left out; one becomes its
-	// main address.
+	// The storefront team: its configured storefront hosts are its domains, an admin host and a
+	// CORS-only origin (rows an older boot seeded) left out; one becomes its main address.
 	sf := storefrontOwner()
-	_, err = w.st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "admin.grbpwr.com"}, time.Now())
+	_, err = w.st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "admin.grbpwr.com", "jekabolt.github.io"}, time.Now())
 	require.NoError(t, err)
 	got, err := w.s.GetShop(sf, &pb_admin.GetShopRequest{})
 	require.NoError(t, err)
@@ -90,6 +92,9 @@ VALUES ('www.taken.io', 3, 'custom', 0, 0, 'live', '[]', ?, ?)`, time.Now().UTC(
 	require.Empty(t, got.Shop.PrimaryHost)
 	_, err = w.s.SetShopPrimaryHost(sf, &pb_admin.SetShopPrimaryHostRequest{Host: "admin.grbpwr.com"})
 	require.Equal(t, "FailedPrecondition host_admin", refusal(err))
+	_, err = w.s.SetShopPrimaryHost(sf, &pb_admin.SetShopPrimaryHostRequest{Host: "jekabolt.github.io"})
+	require.Equal(t, "FailedPrecondition host_not_storefront", refusal(err))
+	require.Equal(t, 0, w.count(t, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1 AND is_primary = 1`))
 	pr, err := w.s.SetShopPrimaryHost(sf, &pb_admin.SetShopPrimaryHostRequest{Host: "GRBPWR.com"})
 	require.NoError(t, err)
 	require.Equal(t, "grbpwr.com", pr.Shop.PrimaryHost)

@@ -49,8 +49,13 @@ func TestDefaults(t *testing.T) {
 		if d.Shop.Light != c.light || d.GlobalShop != c.gs || d.ShopWait <= 0 || d.Shop.Rate <= 0 {
 			t.Errorf("pool %d: shop %d shop-all %d wait %s rate %v", c.pool, d.Shop.Light, d.GlobalShop, d.ShopWait, d.Shop.Rate)
 		}
-		if d.StorefrontShop != (Limits{}) || d.ShopOff {
-			t.Errorf("pool %d: the storefront shop is gated by default: %+v", c.pool, d.StorefrontShop)
+		if d.Checkout.Light != c.light || d.GlobalCheckout != c.gs || d.CheckoutWait <= d.ShopWait || d.Checkout.Rate <= 0 || d.Checkout.Burst <= 0 {
+			t.Errorf("pool %d: checkout %+v all %d wait %s", c.pool, d.Checkout, d.GlobalCheckout, d.CheckoutWait)
+		}
+		// The storefront team: bounded, never unlimited, and far above a team shop.
+		sfs, sfc := d.StorefrontShop, d.StorefrontCheckout
+		if sfs.Light < 64 || sfs.Rate <= d.Shop.Rate || sfs.Burst <= d.Shop.Burst || sfc.Light < 32 || sfc.Rate <= d.Checkout.Rate || sfc.Burst <= d.Checkout.Burst || d.ShopOff {
+			t.Errorf("pool %d: storefront shop %+v checkout %+v", c.pool, sfs, sfc)
 		}
 	}
 }
@@ -78,10 +83,11 @@ func TestLightCapIsPerTeam(t *testing.T) {
 	}
 }
 
-// The storefront team's storefront calls are not gated by default: 50 concurrent slow storefront
-// calls of team #1, while its admin share is full, the shop shares are tiny and another team's shop
-// holds the only global shop slot, never get ResourceExhausted.
-func TestStorefrontNeverRefused(t *testing.T) {
+// The storefront team's storefront calls get a generous share by default: 50 concurrent slow
+// storefront calls of team #1, while its admin share is full, the shop shares are tiny and another
+// team's shop holds the only global shop slot, never get ResourceExhausted. Its share is still
+// bounded (TestStorefrontShopLimits refuses over it).
+func TestStorefrontGenerousByDefault(t *testing.T) {
 	g := New(Config{Team: Limits{Light: 1, Heavy: 1, AI: 1, Rate: 1, Burst: 1},
 		GlobalHeavy: 1, LightWait: 10 * time.Millisecond, HeavyWait: 10 * time.Millisecond,
 		Shop: Limits{Light: 1, Rate: 1, Burst: 1}, GlobalShop: 1, ShopWait: 10 * time.Millisecond,
@@ -89,6 +95,9 @@ func TestStorefrontNeverRefused(t *testing.T) {
 	brand := mustAcquire(t, g, teamA, Shop) // the only global shop slot
 	defer brand()
 	shop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
+	if sf := g.Config().StorefrontShop; sf.Light <= 0 || sf.Rate <= 0 || sf.Burst <= 0 {
+		t.Fatalf("the storefront shop is unbounded: %+v", sf)
+	}
 	e := NewEdge(g, shop, nil)
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
 	r := mustAcquire(t, g, Key{TeamID: 1}, Light) // team #1's admin share is full
@@ -99,8 +108,8 @@ func TestStorefrontNeverRefused(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) {
-				time.Sleep(50 * time.Millisecond) // a Stripe wait
+			_, err := unaryCall(e, ctx, "/frontend.FrontendService/GetProduct", func(context.Context, any) (any, error) {
+				time.Sleep(50 * time.Millisecond) // a slow page
 				return nil, nil
 			})
 			if status.Code(err) == codes.ResourceExhausted {
@@ -279,6 +288,8 @@ func TestUnaryEdge(t *testing.T) {
 	g := testGate(1, 1, 1)
 	g.cfg.Shop = Limits{Light: 1, Rate: 1e6, Burst: 1e6}
 	g.cfg.ShopWait = 50 * time.Millisecond
+	g.cfg.Checkout = Limits{Light: 1, Rate: 1e6, Burst: 1e6}
+	g.cfg.CheckoutWait = 50 * time.Millisecond
 	isShop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
 	e := NewEdge(g, isShop, func(m string) bool { return m == "/frontend.FrontendService/SubmitOrder" })
 	team := tenant.Team{ID: 2, Slug: "a"}
@@ -309,11 +320,18 @@ func TestUnaryEdge(t *testing.T) {
 	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != ShopBusyCode {
 		t.Fatalf("shop busy: %v", err)
 	}
-	// A pass method (checkout) runs with the shop's share and the admin share both used up.
+	// A checkout method takes its own lane: it runs with the shop's share and the admin share both
+	// used up, and is refused (shop_busy) only once the checkout share itself is used up.
 	ran := false
 	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
 		t.Fatalf("checkout refused: %v ran=%v", err, ran)
 	}
+	checkoutHeld := mustAcquire(t, g, Key{TeamID: 2}, Checkout)
+	_, err = unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil })
+	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != ShopBusyCode {
+		t.Fatalf("checkout busy: %v", err)
+	}
+	checkoutHeld()
 	shopHeld()
 	if _, err := unaryCall(e, context.Background(), "/auth.AuthService/Login", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
@@ -374,7 +392,7 @@ func TestShopLanePerTeam(t *testing.T) {
 	if _, err := g.Acquire(context.Background(), teamB, Shop); !IsBusy(err) {
 		t.Fatalf("all shops full: %v, want busy", err)
 	}
-	// The storefront team never takes a global shop slot and has no cap by default.
+	// The storefront team never takes a global shop slot; its default cap is far above a team's.
 	for i := 0; i < 5; i++ {
 		defer mustAcquire(t, g, Key{TeamID: 1}, Shop)()
 	}
@@ -429,5 +447,79 @@ func TestShopRateAndOff(t *testing.T) {
 	g.cfg.ShopOff = true
 	for i := 0; i < 5; i++ {
 		defer mustAcquire(t, g, teamA, Shop)()
+	}
+}
+
+func checkoutGate(teamCheckout, allCheckouts int) *Gate {
+	g := shopGate(1, 1)
+	g.cfg.Checkout = Limits{Light: teamCheckout, Rate: 1e6, Burst: 1e6}
+	g.cfg.CheckoutWait = 50 * time.Millisecond
+	g.cfg.StorefrontCheckout = Limits{Light: 2, Rate: 1e6, Burst: 1e6}
+	g.checkout = make(chan struct{}, allCheckouts)
+	return g
+}
+
+// Checkout is a lane of its own: browsing full (the team's shop slot and every global shop slot)
+// never refuses it; a team's checkout stops at its own cap, all team shops' checkouts at
+// GlobalCheckout; the storefront team never takes a global checkout slot and stops at its own cap.
+func TestCheckoutLane(t *testing.T) {
+	g := checkoutGate(2, 3)
+	browsing := mustAcquire(t, g, teamA, Shop) // A's shop slot and the only global shop slot
+	defer browsing()
+	if _, err := g.Acquire(context.Background(), teamB, Shop); !IsBusy(err) {
+		t.Fatalf("browsing full: %v, want busy", err)
+	}
+	a1 := mustAcquire(t, g, teamA, Checkout)
+	a2 := mustAcquire(t, g, teamA, Checkout)
+	_, err := g.Acquire(context.Background(), teamA, Checkout)
+	var be BusyError
+	if !errors.As(err, &be) || be.Why != "checkout queue" {
+		t.Fatalf("third checkout of A: %v, want busy", err)
+	}
+	b1 := mustAcquire(t, g, teamB, Checkout) // the third global checkout slot
+	if _, err := g.Acquire(context.Background(), Key{TeamID: 4}, Checkout); !IsBusy(err) {
+		t.Fatalf("all checkouts full: %v, want busy", err)
+	}
+	sf := Key{TeamID: 1}
+	s1 := mustAcquire(t, g, sf, Checkout) // no global slot left, the storefront still checks out
+	s2 := mustAcquire(t, g, sf, Checkout)
+	if _, err := g.Acquire(context.Background(), sf, Checkout); !IsBusy(err) {
+		t.Fatalf("storefront over its checkout cap: %v, want busy", err)
+	}
+	// A refused checkout left no slot behind: freeing one of A's lets team 4 in.
+	a1()
+	mustAcquire(t, g, Key{TeamID: 4}, Checkout)()
+	a2()
+	b1()
+	s1()
+	s2()
+
+	// The checkout bucket refuses with its own word; TEAM_FAIR_SHOP=off ungates checkout too.
+	g = checkoutGate(5, 5)
+	g.cfg.Checkout = Limits{Light: 5, Rate: 1, Burst: 1}
+	mustAcquire(t, g, teamA, Checkout)()
+	if _, err := g.Acquire(context.Background(), teamA, Checkout); !errors.As(err, &be) || be.Why != "checkout rate" {
+		t.Fatalf("over the checkout bucket: %v", err)
+	}
+	g = checkoutGate(1, 1)
+	g.cfg.ShopOff = true
+	for i := 0; i < 5; i++ {
+		defer mustAcquire(t, g, teamA, Checkout)()
+	}
+}
+
+// New never leaves the storefront team unbounded: a Config without storefront shares gets the
+// defaults, and a set field is kept.
+func TestStorefrontSharesFilled(t *testing.T) {
+	g := New(Config{StorefrontTeamID: 1, StorefrontCheckout: Limits{Light: 7}})
+	c, d := g.Config(), Defaults(5)
+	if c.StorefrontShop != d.StorefrontShop {
+		t.Fatalf("storefront shop %+v, want %+v", c.StorefrontShop, d.StorefrontShop)
+	}
+	if c.StorefrontCheckout != (Limits{Light: 7, Rate: d.StorefrontCheckout.Rate, Burst: d.StorefrontCheckout.Burst}) {
+		t.Fatalf("storefront checkout %+v", c.StorefrontCheckout)
+	}
+	if c.Checkout != d.Checkout || c.GlobalCheckout != d.GlobalCheckout || c.CheckoutWait != d.CheckoutWait {
+		t.Fatalf("checkout %+v %d %s", c.Checkout, c.GlobalCheckout, c.CheckoutWait)
 	}
 }

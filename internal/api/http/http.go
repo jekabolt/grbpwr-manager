@@ -1303,8 +1303,8 @@ func (s *Server) Start(ctx context.Context,
 	// The tenant binder learns the control plane from the auth server (teams mode), and the
 	// admin chain gets the binder. Teams mode off the binder stays static (team #1 only).
 	if b, ok := s.tenantBinder.(*tenantbind.Binder); ok {
-		// x-shop-host naming one of the storefront's own hosts is the storefront team (X18).
-		b.SetStorefrontOrigins(s.c.AllowedOrigins)
+		// An allowed origin (dev, the console, CORS-only pages) names no shop (X18).
+		b.SetAllowedOrigins(s.c.AllowedOrigins)
 		if st, cfg, on := authServer.PlatformStore(); on {
 			b.UsePlatform(st, cfg)
 			// A member removed or re-roled is refused on the next call, not after the cache TTL.

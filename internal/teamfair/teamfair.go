@@ -16,15 +16,20 @@
 // heavy), so there is no deadlock. A wait longer than Config.LightWait / HeavyWait, or an empty
 // token bucket, is a BusyError (the edge answers ResourceExhausted "team_busy" / HTTP 429).
 //
-// Storefront calls (the shared storefront serves every team's shop) take the shop lane: a share of
-// their own per team, so a shop never queues behind its team's admin nor the admin behind its shop:
+// Storefront calls (the shared storefront serves every team's shop) take two lanes of their own per
+// team, so a shop never queues behind its team's admin nor the admin behind its shop, and browsing
+// never refuses a customer paying:
 //
-//   - shop: at most Config.Shop.Light storefront calls of one team in flight AND at most
+//   - shop (browsing): at most Config.Shop.Light calls of one team in flight AND at most
 //     Config.GlobalShop of all team shops together, plus a token bucket per team shop
 //     (Config.Shop.Rate / Burst); a wait longer than Config.ShopWait or an empty bucket is a
 //     BusyError (the edge answers ResourceExhausted "shop_busy");
-//   - the storefront team (grbpwr) never takes a global shop slot and has its own limits
-//     (Config.StorefrontShop, default none: never refused), so no brand's traffic can refuse it.
+//   - checkout (placing, paying, order status): the same shape with its own slots, global bound and
+//     bucket (Config.Checkout, GlobalCheckout, CheckoutWait). A browsing flood never touches it; a
+//     checkout flood is still capped;
+//   - the storefront team (grbpwr) never takes a global slot of either lane and has its own,
+//     generous shares (Config.StorefrontShop, StorefrontCheckout), so no brand's traffic can refuse
+//     it, while its own flood is still bounded.
 //
 // A call with no team (sign-in, the operator console) is not gated.
 package teamfair
@@ -53,6 +58,9 @@ const (
 	Upload
 	// Shop: a storefront call of the team's shop (the shop share, never its admin share).
 	Shop
+	// Checkout: a checkout call of the team's shop (placing, paying, order status): a share of its
+	// own, never the shop's browsing share.
+	Checkout
 )
 
 func (l Lane) String() string {
@@ -65,6 +73,8 @@ func (l Lane) String() string {
 		return "upload"
 	case Shop:
 		return "shop"
+	case Checkout:
+		return "checkout"
 	}
 	return "light"
 }
@@ -101,7 +111,7 @@ type Config struct {
 	// LightWait / HeavyWait bound the queue wait of a light / heavy-or-ai call.
 	LightWait, HeavyWait time.Duration
 
-	// ShopOff leaves storefront calls ungated (TEAM_FAIR_SHOP=off).
+	// ShopOff leaves storefront calls, browsing and checkout, ungated (TEAM_FAIR_SHOP=off).
 	ShopOff bool
 	// Shop is every team shop's share of storefront calls: Light = calls in flight, Rate / Burst =
 	// its token bucket (Heavy and AI are not used).
@@ -110,20 +120,30 @@ type Config struct {
 	GlobalShop int
 	// ShopWait bounds the queue wait of a storefront call.
 	ShopWait time.Duration
+	// Checkout is every team shop's share of checkout calls, apart from its browsing share: Light =
+	// calls in flight, Rate / Burst = its token bucket.
+	Checkout Limits
+	// GlobalCheckout bounds checkout calls of all team shops together (the storefront team aside).
+	GlobalCheckout int
+	// CheckoutWait bounds the queue wait of a checkout call.
+	CheckoutWait time.Duration
 	// StorefrontTeamID is the storefront team (grbpwr); 0 = none. Its storefront calls take
-	// StorefrontShop and never a global shop slot.
+	// StorefrontShop / StorefrontCheckout and never a global slot.
 	StorefrontTeamID int64
-	// StorefrontShop is the storefront team's share: Light 0 = no cap in flight, Rate 0 = no
-	// bucket; both 0 (the default) = never gated.
-	StorefrontShop Limits
+	// StorefrontShop / StorefrontCheckout are the storefront team's shares of browsing and checkout:
+	// generous, never unlimited (a zero field = the default).
+	StorefrontShop     Limits
+	StorefrontCheckout Limits
 }
 
 // Defaults derives the shares from the database pool size: a team holds at most half the pool
 // (rounded up), heavy work of all teams at most half the pool (rounded down, at least one); a team
-// shop as much as a team's admin, all team shops together two thirds of the pool (rounded up, at
-// least two), so the storefront team and the admin always find room.
-// pool 5 → light 3, global heavy 2, shop 3, all shops 4; pool 15 → light 8, global heavy 7, shop 8,
-// all shops 10.
+// shop as much as a team's admin for browsing and again for checkout, all team shops together two
+// thirds of the pool per lane (rounded up, at least two), so the storefront team and the admin
+// always find room. The storefront team: 64 browsing and 32 checkout calls in flight at least (8 and
+// 4 per pool connection), buckets of 500/s and 100/s.
+// pool 5 → light 3, global heavy 2, shop 3, all shops 4, checkout 3, all checkouts 4; pool 15 →
+// light 8, global heavy 7, shop 8, all shops 10, checkout 8, all checkouts 10.
 func Defaults(pool int) Config {
 	if pool < 1 {
 		pool = 1
@@ -148,7 +168,28 @@ func Defaults(pool int) Config {
 		Shop:        Limits{Light: light, Rate: 50, Burst: 200},
 		GlobalShop:  gs,
 		ShopWait:    5 * time.Second,
+
+		Checkout:       Limits{Light: light, Rate: 20, Burst: 60},
+		GlobalCheckout: gs,
+		CheckoutWait:   15 * time.Second,
+
+		StorefrontShop:     Limits{Light: max(64, 8*pool), Rate: 500, Burst: 1000},
+		StorefrontCheckout: Limits{Light: max(32, 4*pool), Rate: 100, Burst: 300},
 	}
+}
+
+// fillShop replaces zero fields of a shop share (Light, Rate, Burst) with the defaults d.
+func (l Limits) fillShop(d Limits) Limits {
+	if l.Light <= 0 {
+		l.Light = d.Light
+	}
+	if l.Rate <= 0 {
+		l.Rate = d.Rate
+	}
+	if l.Burst <= 0 {
+		l.Burst = d.Burst
+	}
+	return l
 }
 
 // fill replaces zero fields of l with the defaults d.
@@ -192,10 +233,10 @@ type Stats struct {
 
 type share struct {
 	limits Limits
-	light  chan struct{} // nil = no cap (the storefront team's shop share only)
+	light  chan struct{} // nil = no cap (a shop share with Light 0 only)
 	heavy  chan struct{}
 	ai     chan struct{}
-	bucket *rate.Limiter // nil = no bucket (the storefront team's shop share only)
+	bucket *rate.Limiter // nil = no bucket (a shop share with Rate 0 only)
 }
 
 func newShare(l Limits) *share {
@@ -208,7 +249,8 @@ func newShare(l Limits) *share {
 	}
 }
 
-// newShopShare is a shop share: a light cap and a bucket only where l sets them.
+// newShopShare is a shop or checkout share: a light cap and a bucket only where l sets them (New
+// fills both; only a Config edited after New can leave one out).
 func newShopShare(l Limits) *share {
 	s := &share{limits: l}
 	if l.Light > 0 {
@@ -224,20 +266,21 @@ func newShopShare(l Limits) *share {
 	return s
 }
 
-// shareKey names a share: a team's admin share or its shop share.
+// shareKey names a share: a team's admin share (lane Light), its shop share or its checkout share.
 type shareKey struct {
 	team int64
-	shop bool
+	lane Lane
 }
 
 // Gate is the bulkhead. The zero value is not usable; a nil *Gate is a pass-through.
 type Gate struct {
-	cfg    Config
-	heavy  chan struct{}
-	shop   chan struct{}
-	mu     sync.Mutex
-	shares map[shareKey]*share
-	over   atomic.Pointer[Override]
+	cfg      Config
+	heavy    chan struct{}
+	shop     chan struct{}
+	checkout chan struct{}
+	mu       sync.Mutex
+	shares   map[shareKey]*share
+	over     atomic.Pointer[Override]
 
 	busy, limited, waited atomic.Int64
 }
@@ -255,23 +298,24 @@ func New(cfg Config) *Gate {
 	if cfg.HeavyWait <= 0 {
 		cfg.HeavyWait = d.HeavyWait
 	}
-	if cfg.Shop.Light <= 0 {
-		cfg.Shop.Light = d.Shop.Light
-	}
-	if cfg.Shop.Rate <= 0 {
-		cfg.Shop.Rate = d.Shop.Rate
-	}
-	if cfg.Shop.Burst <= 0 {
-		cfg.Shop.Burst = d.Shop.Burst
-	}
+	cfg.Shop = cfg.Shop.fillShop(d.Shop)
+	cfg.Checkout = cfg.Checkout.fillShop(d.Checkout)
+	cfg.StorefrontShop = cfg.StorefrontShop.fillShop(d.StorefrontShop)
+	cfg.StorefrontCheckout = cfg.StorefrontCheckout.fillShop(d.StorefrontCheckout)
 	if cfg.GlobalShop <= 0 {
 		cfg.GlobalShop = d.GlobalShop
+	}
+	if cfg.GlobalCheckout <= 0 {
+		cfg.GlobalCheckout = d.GlobalCheckout
 	}
 	if cfg.ShopWait <= 0 {
 		cfg.ShopWait = d.ShopWait
 	}
+	if cfg.CheckoutWait <= 0 {
+		cfg.CheckoutWait = d.CheckoutWait
+	}
 	return &Gate{cfg: cfg, heavy: make(chan struct{}, cfg.GlobalHeavy), shop: make(chan struct{}, cfg.GlobalShop),
-		shares: map[shareKey]*share{}}
+		checkout: make(chan struct{}, cfg.GlobalCheckout), shares: map[shareKey]*share{}}
 }
 
 // Config returns the effective configuration.
@@ -323,15 +367,21 @@ func (g *Gate) storefront(k Key) bool {
 	return g.cfg.StorefrontTeamID > 0 && k.TeamID == g.cfg.StorefrontTeamID
 }
 
-// shopShareOf is k's shop share (the operator's per-team override does not apply to shops).
-func (g *Gate) shopShareOf(k Key) *share {
+// shopShareOf is k's share of lane Shop or Checkout (the operator's per-team override does not
+// apply to shops).
+func (g *Gate) shopShareOf(k Key, lane Lane) *share {
 	want := g.cfg.Shop
-	if g.storefront(k) {
+	switch {
+	case lane == Checkout && g.storefront(k):
+		want = g.cfg.StorefrontCheckout
+	case lane == Checkout:
+		want = g.cfg.Checkout
+	case g.storefront(k):
 		want = g.cfg.StorefrontShop
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	sk := shareKey{team: k.TeamID, shop: true}
+	sk := shareKey{team: k.TeamID, lane: lane}
 	s := g.shares[sk]
 	if s == nil || s.limits != want {
 		s = newShopShare(want)
@@ -349,11 +399,14 @@ func (g *Gate) Acquire(ctx context.Context, k Key, lane Lane) (release func(), e
 	var s *share
 	wait := g.cfg.LightWait
 	switch lane {
-	case Shop:
+	case Shop, Checkout:
 		if g.cfg.ShopOff {
 			return func() {}, nil
 		}
-		s, wait = g.shopShareOf(k), g.cfg.ShopWait
+		s, wait = g.shopShareOf(k, lane), g.cfg.ShopWait
+		if lane == Checkout {
+			wait = g.cfg.CheckoutWait
+		}
 	case Light:
 		s = g.shareOf(k)
 	default:
@@ -362,8 +415,8 @@ func (g *Gate) Acquire(ctx context.Context, k Key, lane Lane) (release func(), e
 	if s.bucket != nil && !s.bucket.Allow() {
 		g.limited.Add(1)
 		why := "rate"
-		if lane == Shop {
-			why = "shop rate"
+		if lane == Shop || lane == Checkout {
+			why = lane.String() + " rate"
 		}
 		return nil, BusyError{Why: why}
 	}
@@ -409,14 +462,18 @@ func (g *Gate) Acquire(ctx context.Context, k Key, lane Lane) (release func(), e
 		chain = []chan struct{}{s.ai}
 	case Upload:
 		chain = []chan struct{}{s.heavy}
-	case Shop:
-		// The team shop's own slot first, the global one last (as heavy); the storefront team never
-		// takes a global slot.
+	case Shop, Checkout:
+		// The team shop's own slot first, the global one of its lane last (as heavy); the storefront
+		// team never takes a global slot.
 		if s.light != nil {
 			chain = append(chain, s.light)
 		}
 		if !g.storefront(k) {
-			chain = append(chain, g.shop)
+			global := g.shop
+			if lane == Checkout {
+				global = g.checkout
+			}
+			chain = append(chain, global)
 		}
 	default:
 		chain = []chan struct{}{s.light}

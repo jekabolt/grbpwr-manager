@@ -44,6 +44,9 @@ type ShopWiring struct {
 	// NoPrimary are legacy hosts of the storefront team that are never its main address (admin and
 	// API hosts): the shared storefront would send grbpwr's customers there.
 	NoPrimary []string
+	// StorefrontHosts are the storefront team's configured shop hosts (TENANT_STOREFRONT_HOSTS): the
+	// only hosts its shop screen lists and the only ones it may make its main address.
+	StorefrontHosts []string
 }
 
 // SetShops wires the shop screen (teams mode; call before serving).
@@ -119,21 +122,21 @@ func (s *Server) shopView(ctx context.Context, t tenant.Team, eff []feature.Key)
 	if t.ID == s.storefrontID() {
 		// The storefront team (grbpwr): always on, its env keys and mail; its hosts are the legacy ones,
 		// one of which the owner may make its main address (grbpwr.com on the shared storefront).
-		// Admin and API hosts (NoPrimary) are never offered: they are not shop addresses.
+		// Only its configured storefront hosts are offered, never an admin or API host (NoPrimary).
 		out.Enabled, out.Status = true, shopOpen
 		out.Payments.Method, out.Payments.Status = "platform", "active"
 		hosts, err := st.ShopHosts(ctx, t.ID)
 		if err != nil {
 			return nil, err
 		}
-		var hide []string
+		var hide, offer []string
 		if s.shopW != nil {
-			hide = s.shopW.NoPrimary
+			hide, offer = s.shopW.NoPrimary, s.shopW.StorefrontHosts
 		}
 		for _, h := range hosts {
 			if h.Primary {
 				out.PrimaryHost = h.Host
-			} else if slices.Contains(hide, h.Host) {
+			} else if slices.Contains(hide, h.Host) || !slices.Contains(offer, h.Host) {
 				continue
 			}
 			out.Domains = append(out.Domains, shopDomainPb(h))
@@ -470,8 +473,8 @@ func (s *Server) RemoveShopDomain(ctx context.Context, req *pb_admin.RemoveShopD
 }
 
 // SetShopPrimaryHost makes a live address the shop's main one. The storefront team picks one of its
-// legacy hosts (never an admin or API host), or clears it with an empty host: grbpwr then revalidates
-// only the old storefront.
+// configured storefront hosts (never an admin or API host, never a CORS-only origin), or clears it
+// with an empty host: grbpwr then revalidates only the old storefront.
 func (s *Server) SetShopPrimaryHost(ctx context.Context, req *pb_admin.SetShopPrimaryHostRequest) (*pb_admin.SetShopPrimaryHostResponse, error) {
 	p, err := s.shopCaller(ctx, true)
 	if err != nil {
@@ -485,6 +488,8 @@ func (s *Server) SetShopPrimaryHost(ctx context.Context, req *pb_admin.SetShopPr
 		action, err = "shop.primary_cleared", s.platform.store.ClearShopPrimary(ctx, p.w.Team.ID)
 	case sf && slices.Contains(s.shopW.NoPrimary, host):
 		return nil, status.Error(codes.FailedPrecondition, "host_admin")
+	case sf && !slices.Contains(s.shopW.StorefrontHosts, host):
+		return nil, status.Error(codes.FailedPrecondition, "host_not_storefront")
 	default:
 		err = s.platform.store.SetShopPrimary(ctx, p.w.Team.ID, host)
 	}

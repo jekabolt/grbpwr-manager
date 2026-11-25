@@ -38,6 +38,9 @@ func (m *memStore) TeamStripe(_ context.Context, id int64) (platformstore.TeamSt
 	return st, ok, nil
 }
 
+// sfHosts are the storefront team's configured shop hosts (TENANT_STOREFRONT_HOSTS).
+var sfHosts = []string{"grbpwr.com", "www.grbpwr.com"}
+
 func legacy(host string, primary bool) platformstore.ShopHost {
 	return platformstore.ShopHost{Host: host, TeamID: 1, Kind: platformstore.ShopHostLegacy, Status: platformstore.ShopHostLive, Primary: primary}
 }
@@ -60,7 +63,7 @@ func TestProfileStorefrontPackAndKey(t *testing.T) {
 			7: {Kind: "connect", AccountID: &acct, Mode: "test", ChargesEnabled: true},
 		},
 	}
-	svc := &Service{St: st, StorefrontID: 1, StorefrontStripe: func(context.Context) (string, string) { return "pk_env", "test" }}
+	svc := &Service{St: st, StorefrontID: 1, StorefrontHosts: sfHosts, StorefrontStripe: func(context.Context) (string, string) { return "pk_env", "test" }}
 
 	p, err := svc.Profile(ctx, tenant.Team{ID: 1, Name: "grbpwr"}, true)
 	if err != nil {
@@ -103,14 +106,15 @@ func TestProfileStorefrontPackAndKey(t *testing.T) {
 	}
 }
 
-// A storefront never sees the storefront team's admin and API hosts, live legacy rows or not; its
-// shop hosts stay.
+// A storefront never sees the storefront team's admin and API hosts, nor a legacy row that is not a
+// configured storefront host (a CORS-only page an older boot seeded); its shop hosts stay.
 func TestProfileHidesAdminHosts(t *testing.T) {
 	st := &memStore{hosts: map[int64][]platformstore.ShopHost{1: {
 		legacy("admin.grbpwr.com", false), legacy("grbpwr.com", true), legacy("backend.grbpwr.com", false),
-		legacy("www.grbpwr.com", false),
+		legacy("www.grbpwr.com", false), legacy("jekabolt.github.io", false),
 	}}}
-	svc := &Service{St: st, StorefrontID: 1, AdminHosts: []string{"admin.grbpwr.com", "backend.grbpwr.com"}}
+	svc := &Service{St: st, StorefrontID: 1, AdminHosts: []string{"admin.grbpwr.com", "backend.grbpwr.com"},
+		StorefrontHosts: append(slices.Clone(sfHosts), "admin.grbpwr.com")}
 	p, err := svc.Profile(context.Background(), tenant.Team{ID: 1, Name: "grbpwr"}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -118,10 +122,10 @@ func TestProfileHidesAdminHosts(t *testing.T) {
 	if p.PrimaryHost != "grbpwr.com" || !slices.Equal(p.Hosts, []string{"grbpwr.com", "www.grbpwr.com"}) {
 		t.Fatalf("storefront hosts: primary %q hosts %v", p.PrimaryHost, p.Hosts)
 	}
-	// Without the list (no admin hosts known) every live host is listed, as before.
-	svc.AdminHosts = nil
-	if p, _ = svc.Profile(context.Background(), tenant.Team{ID: 1}, true); len(p.Hosts) != 4 {
-		t.Fatalf("no admin hosts known: %v", p.Hosts)
+	// Without configured storefront hosts the storefront team shows none (fail closed).
+	svc.StorefrontHosts = nil
+	if p, _ = svc.Profile(context.Background(), tenant.Team{ID: 1}, true); len(p.Hosts) != 0 || p.PrimaryHost != "" {
+		t.Fatalf("no storefront hosts configured: %q %v", p.PrimaryHost, p.Hosts)
 	}
 }
 
@@ -137,7 +141,7 @@ func TestRevalidateTargetStorefront(t *testing.T) {
 			8: {{Host: "off.com", Status: platformstore.ShopHostLive, Primary: true}},
 		},
 	}
-	svc := &Service{St: st, StorefrontID: 1}
+	svc := &Service{St: st, StorefrontID: 1, StorefrontHosts: sfHosts}
 	for _, c := range []struct {
 		team int64
 		host string
@@ -155,6 +159,31 @@ func TestRevalidateTargetStorefront(t *testing.T) {
 	st.err = errors.New("down")
 	if _, ok, err := svc.RevalidateTarget(ctx, 1); err == nil || ok {
 		t.Fatal("a failed lookup must fail")
+	}
+}
+
+// A CORS-only origin (a github.io page among HTTP_ALLOWED_ORIGINS) is not a storefront host: even as
+// the storefront team's main address (a row an older boot seeded) it is no revalidation target, so
+// the shared storefront's secret never goes there; the old storefront (Base) is still revalidated.
+func TestRevalidateNeverCORSOnlyHost(t *testing.T) {
+	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
+	st := &memStore{hosts: map[int64][]platformstore.ShopHost{1: {legacy("jekabolt.github.io", true), legacy("grbpwr.com", false)}}}
+	svc := &Service{St: st, StorefrontID: 1, StorefrontHosts: sfHosts}
+	if h, ok, err := svc.RevalidateTarget(ctx, 1); err != nil || ok || h != "" {
+		t.Fatalf("a CORS-only main address is a target: %q %v %v", h, ok, err)
+	}
+	base, sh := &allRe{}, &hostRe{}
+	r := &Revalidator{Base: base, Shop: sh, StorefrontID: 1, Target: svc.RevalidateTarget}
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil {
+		t.Fatal(err)
+	}
+	if base.n != 1 || sh.host != "" || sh.key != "" {
+		t.Fatalf("base %d, shared storefront got %q", base.n, sh.host)
+	}
+	// The same main address, once configured, is revalidated there.
+	svc.StorefrontHosts = append(slices.Clone(sfHosts), "jekabolt.github.io")
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil || sh.host != "jekabolt.github.io" {
+		t.Fatalf("configured host: err %v shop %q", err, sh.host)
 	}
 }
 

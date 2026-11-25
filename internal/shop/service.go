@@ -44,11 +44,24 @@ type Service struct {
 	// AdminHosts are the admin and API hosts among the storefront team's legacy hosts: never a shop
 	// address, so a storefront never sees them (Profile leaves them out).
 	AdminHosts []string
+	// StorefrontHosts are the storefront team's configured shop hosts (TENANT_STOREFRONT_HOSTS). Only
+	// these are its shop addresses: shown in its profile, and its main address is revalidated only
+	// when it is one of them. Empty = none (fail closed).
+	StorefrontHosts []string
 }
 
 // storefront reports whether teamID is the storefront team.
 func (s *Service) storefront(teamID int64) bool {
 	return s.StorefrontID > 0 && teamID == s.StorefrontID
+}
+
+// shopHost reports whether host may be one of the team's shop addresses: never an admin or API
+// host, and for the storefront team only one of StorefrontHosts.
+func (s *Service) shopHost(teamID int64, host string) bool {
+	if slices.Contains(s.AdminHosts, host) {
+		return false
+	}
+	return !s.storefront(teamID) || slices.Contains(s.StorefrontHosts, host)
 }
 
 // PrimaryHost is a team's main address ("" when it has none).
@@ -67,11 +80,15 @@ func (s *Service) PrimaryHost(ctx context.Context, teamID int64) (string, error)
 
 // RevalidateTarget is the main address of a team's shop while it is on and not closed (Target).
 // The storefront team has no shop switch (it is always on the shared storefront): its main address
-// is the target whatever team_shop says.
+// is the target whatever team_shop says, but only while it is one of StorefrontHosts, so a host that
+// is not a configured storefront host never receives the storefront's revalidation secret.
 func (s *Service) RevalidateTarget(ctx context.Context, teamID int64) (string, bool, error) {
 	if s.storefront(teamID) {
 		h, err := s.PrimaryHost(ctx, teamID)
-		return h, h != "", err
+		if err != nil || h == "" || !s.shopHost(teamID, h) {
+			return "", false, err
+		}
+		return h, true, nil
 	}
 	ts, err := s.St.TeamShop(ctx, teamID)
 	if err != nil {
@@ -109,8 +126,8 @@ func (s *Service) Profile(ctx context.Context, t tenant.Team, open bool) (Profil
 	}
 	for _, h := range hosts {
 		switch {
-		case slices.Contains(s.AdminHosts, h.Host):
-			// An admin or API host is never shown to a storefront.
+		case !s.shopHost(t.ID, h.Host):
+			// An admin or API host, or a storefront team host that is not configured, is never shown.
 		case h.Primary:
 			p.PrimaryHost = h.Host
 			p.Hosts = append([]string{h.Host}, p.Hosts...)

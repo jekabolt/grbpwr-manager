@@ -34,8 +34,13 @@ func TestTeamFairConfig(t *testing.T) {
 	if c.Team.Light != 8 || c.Team.Rate != 50 {
 		t.Fatalf("bad values fall back to defaults: %+v", c)
 	}
-	if c.ShopOff || c.Shop.Light != 8 || c.GlobalShop != 10 || c.StorefrontTeamID != 0 || c.StorefrontShop != (teamfair.Limits{}) {
+	d := teamfair.Defaults(15)
+	if c.ShopOff || c.Shop.Light != 8 || c.GlobalShop != 10 || c.StorefrontTeamID != 0 || c.StorefrontShop != d.StorefrontShop {
 		t.Fatalf("shop defaults for pool 15: %+v", c)
+	}
+	if c.Checkout != d.Checkout || c.GlobalCheckout != 10 || c.StorefrontCheckout != d.StorefrontCheckout ||
+		c.StorefrontShop.Light < 64 || c.StorefrontCheckout.Light < 32 {
+		t.Fatalf("checkout defaults for pool 15: %+v", c)
 	}
 	env = map[string]string{
 		envTeamFairShop: "off", envTeamShopParallel: "2", envTeamShopRate: "5", envTeamShopBurst: "9",
@@ -46,36 +51,72 @@ func TestTeamFairConfig(t *testing.T) {
 		c.StorefrontTeamID != 1 || c.StorefrontShop != (teamfair.Limits{Light: 7, Rate: 30, Burst: 60}) {
 		t.Fatalf("shop overrides: %+v", c)
 	}
+	env = map[string]string{
+		envTeamCheckoutParallel: "2", envTeamCheckoutRate: "4", envTeamCheckoutBurst: "8", envCheckoutParallel: "5",
+		envStorefrontCheckoutPar: "11", envStorefrontCheckoutRate: "12", envStorefrontCheckoutBurst: "13",
+	}
+	c = teamFairConfig(5, 1, get)
+	if c.Checkout != (teamfair.Limits{Light: 2, Rate: 4, Burst: 8}) || c.GlobalCheckout != 5 ||
+		c.StorefrontCheckout != (teamfair.Limits{Light: 11, Rate: 12, Burst: 13}) {
+		t.Fatalf("checkout overrides: %+v", c)
+	}
 	if backgroundParallel(5) != 2 || backgroundParallel(15) != 5 || backgroundParallel(0) != 2 {
 		t.Fatal("background slots")
 	}
 }
 
-// A team shop's lane full (its one slot held by a slow page, its rate used up): another page is
-// refused with shop_busy, while checkout, payment and order status still run.
-func TestCheckoutNeverRefused(t *testing.T) {
-	env := map[string]string{envTeamShopParallel: "1", envTeamShopRate: "1", envTeamShopBurst: "1"}
+// Checkout is its own lane. A team shop's browsing full (its one slot held by a slow page, its rate
+// used up): another page is refused with shop_busy, while every checkout, payment and order-status
+// method still runs. Checkout itself is bounded: a team's own checkout cap, then all team shops'
+// checkouts together, refuse with shop_busy; the storefront team never takes a global checkout slot.
+func TestCheckoutLane(t *testing.T) {
+	env := map[string]string{
+		envTeamShopParallel: "1", envTeamShopRate: "1", envTeamShopBurst: "1",
+		envTeamCheckoutParallel: "1", envCheckoutParallel: "2", envStorefrontCheckoutPar: "1",
+	}
 	cfg := teamFairConfig(5, 1, func(k string) string { return env[k] })
 	cfg.ShopWait = 20 * time.Millisecond
+	cfg.CheckoutWait = 20 * time.Millisecond
 	e := newTeamFairEdge(cfg)
-	ctx := tenant.With(context.Background(), tenant.Team{ID: 2, Slug: "brand"})
-	call := func(m string, h grpc.UnaryHandler) error {
+	brand := func(id int64) context.Context {
+		return tenant.With(context.Background(), tenant.Team{ID: id, Slug: "brand"})
+	}
+	call := func(ctx context.Context, m string, h grpc.UnaryHandler) error {
 		_, err := e.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: m}, h)
 		return err
 	}
+	ok := func(context.Context, any) (any, error) { return nil, nil }
+	// hold runs m for ctx until the returned func is called.
+	hold := func(ctx context.Context, m string) func() {
+		t.Helper()
+		release, started, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		go func() {
+			done <- call(ctx, m, func(context.Context, any) (any, error) {
+				close(started)
+				<-release
+				return nil, nil
+			})
+		}()
+		select {
+		case <-started:
+		case err := <-done:
+			t.Fatalf("%s refused: %v", m, err)
+		}
+		return func() {
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	shopBusy := func(err error) bool {
+		st, _ := status.FromError(err)
+		return st.Code() == codes.ResourceExhausted && st.Message() == teamfair.ShopBusyCode
+	}
 
-	hold, started, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() {
-		done <- call(frontend.FrontendService_GetHero_FullMethodName, func(context.Context, any) (any, error) {
-			close(started)
-			<-hold
-			return nil, nil
-		})
-	}()
-	<-started
-	err := call(frontend.FrontendService_GetColorwaysPaged_FullMethodName, func(context.Context, any) (any, error) { return nil, nil })
-	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != teamfair.ShopBusyCode {
-		t.Fatalf("a page with the lane full: %v, want shop_busy", err)
+	page := hold(brand(2), frontend.FrontendService_GetHero_FullMethodName)
+	if err := call(brand(2), frontend.FrontendService_GetColorwaysPaged_FullMethodName, ok); !shopBusy(err) {
+		t.Fatalf("a page with browsing full: %v, want shop_busy", err)
 	}
 	paying := []string{
 		frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName,
@@ -89,12 +130,31 @@ func TestCheckoutNeverRefused(t *testing.T) {
 	}
 	for _, m := range paying {
 		ran := false
-		if err := call(m, func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
-			t.Fatalf("%s with the lane full: err %v, ran %v", m, err, ran)
+		if err := call(brand(2), m, func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
+			t.Fatalf("%s with browsing full: err %v, ran %v", m, err, ran)
 		}
 	}
-	close(hold)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+
+	// The team's own checkout cap (1): a second checkout of the same team is refused.
+	pay2 := hold(brand(2), frontend.FrontendService_SubmitOrder_FullMethodName)
+	if err := call(brand(2), frontend.FrontendService_GetOrderInvoice_FullMethodName, ok); !shopBusy(err) {
+		t.Fatalf("a second checkout of one team: %v, want shop_busy", err)
+	}
+	// All team shops' checkouts (2): a third team is refused, the storefront team still checks out
+	// up to its own cap.
+	pay3 := hold(brand(3), frontend.FrontendService_SubmitOrder_FullMethodName)
+	if err := call(brand(4), frontend.FrontendService_SubmitOrder_FullMethodName, ok); !shopBusy(err) {
+		t.Fatalf("a checkout with every global checkout slot held: %v, want shop_busy", err)
+	}
+	paySF := hold(brand(1), frontend.FrontendService_SubmitOrder_FullMethodName)
+	if err := call(brand(1), frontend.FrontendService_SubmitOrder_FullMethodName, ok); !shopBusy(err) {
+		t.Fatalf("the storefront team over its checkout cap: %v, want shop_busy", err)
+	}
+	paySF()
+	pay3()
+	pay2()
+	page()
+	if err := call(brand(4), frontend.FrontendService_SubmitOrder_FullMethodName, ok); err != nil {
+		t.Fatalf("checkout after the slots were freed: %v", err)
 	}
 }

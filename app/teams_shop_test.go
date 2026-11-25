@@ -9,16 +9,44 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 )
 
-// The storefront's own hosts (legacy shop hosts, reserved for every team) come from its origins:
-// no dev, preview or IP host, no duplicate.
-func TestShopOwnHosts(t *testing.T) {
-	got := shopOwnHosts([]string{"beta.lekalo.studio", "shop.beta.lekalo.studio"},
+// The reserved hosts come from the allowed and legacy admin origins: no dev, preview or IP host, no
+// duplicate.
+func TestShopReservedHosts(t *testing.T) {
+	got := shopReservedHosts([]string{"beta.lekalo.studio", "shop.beta.lekalo.studio"},
 		[]string{"https://beta.lekalo.studio", "https://acme.shop.beta.lekalo.studio", "https://www.grbpwr.com", "https://grbpwr.com/", "http://localhost:3000", "https://x.vercel.app", "http://127.0.0.1:8080", "https://WWW.grbpwr.com"},
 		[]string{"https://beta.grbpwr.com", "nonsense"},
 	)
 	want := []string{"www.grbpwr.com", "grbpwr.com", "beta.grbpwr.com"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("own hosts %v, want %v", got, want)
+		t.Fatalf("reserved hosts %v, want %v", got, want)
+	}
+}
+
+// The storefront team's shop hosts come from TENANT_STOREFRONT_HOSTS alone (default grbpwr.com, www
+// and beta), never from the allowed origins: a CORS-only page (github.io) is never one unless
+// listed. Admin, dev, preview and platform hosts are dropped; "none" and no storefront team = none.
+func TestStorefrontShopHosts(t *testing.T) {
+	platform := []string{"beta.lekalo.studio", "shop.beta.lekalo.studio"}
+	admin := []string{"admin.grbpwr.com", "backend.grbpwr.com"}
+	cfg := config.Platform{}
+	if got := storefrontShopHosts(1, cfg.LegacyStorefrontHosts(), platform, admin); !slices.Equal(got, []string{"grbpwr.com", "www.grbpwr.com", "beta.grbpwr.com"}) {
+		t.Fatalf("default: %v", got)
+	}
+	cfg.StorefrontHosts = " https://Shop.Brand.com/ , grbpwr.com,admin.grbpwr.com, localhost, x.vercel.app, acme.shop.beta.lekalo.studio, grbpwr.com, 127.0.0.1 "
+	if got := storefrontShopHosts(1, cfg.LegacyStorefrontHosts(), platform, admin); !slices.Equal(got, []string{"shop.brand.com", "grbpwr.com"}) {
+		t.Fatalf("explicit: %v", got)
+	}
+	cfg.StorefrontHosts = "NONE"
+	if got := storefrontShopHosts(1, cfg.LegacyStorefrontHosts(), platform, admin); len(got) != 0 {
+		t.Fatalf("none: %v", got)
+	}
+	cfg.StorefrontHosts = ""
+	if got := storefrontShopHosts(0, cfg.LegacyStorefrontHosts(), platform, admin); len(got) != 0 {
+		t.Fatalf("no storefront team: %v", got)
+	}
+	// The allowed origins never add a host: the github.io page is not a storefront host.
+	if got := storefrontShopHosts(1, cfg.LegacyStorefrontHosts(), platform, admin); slices.Contains(got, "jekabolt.github.io") {
+		t.Fatalf("a CORS-only origin became a storefront host: %v", got)
 	}
 }
 

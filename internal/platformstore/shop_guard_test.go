@@ -228,6 +228,53 @@ func TestLegacyShopHosts(t *testing.T) {
 	}
 }
 
+// TestPruneLegacyShopHosts (X18 v3 review): only the configured storefront hosts stay legacy rows of
+// the storefront team; a host an older boot seeded from the allowed origins goes, a pruned main
+// address leaves no main address, and other kinds and other teams' rows are never touched.
+func TestPruneLegacyShopHosts(t *testing.T) {
+	st := openFresh(t)
+	ctx := context.Background()
+	ann, _, _ := seedConsole(t, st)
+	now := time.Now().UTC()
+	if err := st.SetShopEnabled(ctx, 2, true, "acme.shop.beta.lekalo.studio", ann, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "jekabolt.github.io", "admin.grbpwr.com"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetShopPrimary(ctx, 1, "jekabolt.github.io"); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := st.PruneLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com"})
+	if err != nil || len(removed) != 2 || removed[0] != "admin.grbpwr.com" || removed[1] != "jekabolt.github.io" {
+		t.Fatalf("prune: %v %v", removed, err)
+	}
+	for _, h := range []string{"jekabolt.github.io", "admin.grbpwr.com"} {
+		if _, ok, err := st.ShopHostTeam(ctx, h); err != nil || ok {
+			t.Fatalf("%s still routes: %v %v", h, ok, err)
+		}
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1 AND is_primary = 1`); n != 0 {
+		t.Fatalf("a pruned main address stayed: %d", n)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1`); n != 2 {
+		t.Fatalf("storefront rows = %d, want 2", n)
+	}
+	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary || h.Kind != platformstore.ShopHostSubdomain {
+		t.Fatalf("another team's row changed: %+v", h)
+	}
+	if removed, err := st.PruneLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com"}); err != nil || len(removed) != 0 {
+		t.Fatalf("second prune: %v %v", removed, err)
+	}
+	// Team 2's platform address is never a legacy row: a prune of team 2 with nothing to keep leaves it.
+	if removed, err := st.PruneLegacyShopHosts(ctx, 2, nil); err != nil || len(removed) != 0 {
+		t.Fatalf("prune of a team without legacy rows: %v %v", removed, err)
+	}
+	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary {
+		t.Fatal("prune removed a platform address")
+	}
+}
+
 // TestShopHostOnceLiveStaysTheTeams (X18 re-review): a host its team verified once is never free for
 // another team, however old and whatever its status now; a lapsed proof keeps its status, only the
 // provider demotes it.

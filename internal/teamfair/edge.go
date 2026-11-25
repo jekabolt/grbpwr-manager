@@ -16,7 +16,7 @@ import (
 // BusyCode is the status message of a refusal: one machine word the client can match.
 const BusyCode = "team_busy"
 
-// ShopBusyCode is the refusal of a storefront call: the team's shop share is used up.
+// ShopBusyCode is the refusal of a storefront call: the team's shop or checkout share is used up.
 const ShopBusyCode = "shop_busy"
 
 // uploadReadTimeout bounds how long an upload's body may take to arrive (the server has no
@@ -32,24 +32,24 @@ type Edge struct {
 	// shop reports a storefront method: it takes the Shop lane (its team's shop share), never the
 	// team's admin share. nil = none.
 	shop func(fullMethod string) bool
-	// pass reports a method that is never gated (checkout, payment, order status): a customer paying
-	// is never refused, whatever the shares. nil = none.
-	pass func(fullMethod string) bool
+	// checkout reports a checkout method (placing, paying, order status): it takes the Checkout
+	// lane, a share of its own, so browsing never refuses a customer paying. nil = none.
+	checkout func(fullMethod string) bool
 
 	mu   sync.Mutex
 	warn map[warnKey]time.Time
 }
 
-// warnKey throttles refusal logs per team and per share.
+// warnKey throttles refusal logs per team and per lane.
 type warnKey struct {
 	k    Key
-	shop bool
+	lane Lane
 }
 
 // NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which take the Shop lane;
-// pass marks methods that are never gated (it wins over shop).
-func NewEdge(g *Gate, shop, pass func(fullMethod string) bool) *Edge {
-	return &Edge{g: g, shop: shop, pass: pass, warn: map[warnKey]time.Time{}}
+// checkout marks checkout methods, which take the Checkout lane (it wins over shop).
+func NewEdge(g *Gate, shop, checkout func(fullMethod string) bool) *Edge {
+	return &Edge{g: g, shop: shop, checkout: checkout, warn: map[warnKey]time.Time{}}
 }
 
 // Gate returns the gate behind the edge.
@@ -61,7 +61,7 @@ func (e *Edge) Gate() *Gate {
 }
 
 func (e *Edge) logBusy(ctx context.Context, k Key, lane Lane, err error) {
-	wk := warnKey{k: k, shop: lane == Shop}
+	wk := warnKey{k: k, lane: lane}
 	e.mu.Lock()
 	last, seen := e.warn[wk]
 	now := time.Now()
@@ -78,7 +78,7 @@ func (e *Edge) logBusy(ctx context.Context, k Key, lane Lane, err error) {
 // refusal maps an Acquire error of lane to the gRPC answer.
 func refusal(lane Lane, err error) error {
 	if IsBusy(err) {
-		if lane == Shop {
+		if lane == Shop || lane == Checkout {
 			return status.Error(codes.ResourceExhausted, ShopBusyCode)
 		}
 		return status.Error(codes.ResourceExhausted, BusyCode)
@@ -88,11 +88,10 @@ func refusal(lane Lane, err error) error {
 
 // Unary gates a unary call by the team in its context. Put it after the admin auth interceptor:
 // in teams mode the team of an admin call is bound there. No team = not gated. A storefront call
-// takes the Shop lane of the shop's team (bound by its host); a pass method (checkout, payment,
-// order status) is never gated.
+// takes the Shop lane of the shop's team (bound by its host), a checkout call its Checkout lane.
 func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if e == nil || e.g == nil || e.g.cfg.Off || (e.pass != nil && e.pass(info.FullMethod)) {
+		if e == nil || e.g == nil || e.g.cfg.Off {
 			return handler(ctx, req)
 		}
 		t, ok := tenant.From(ctx)
@@ -101,7 +100,10 @@ func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 		}
 		k := Key{TeamID: t.ID}
 		lane := LaneOf(info.FullMethod)
-		if e.shop != nil && e.shop(info.FullMethod) {
+		switch {
+		case e.checkout != nil && e.checkout(info.FullMethod):
+			lane = Checkout
+		case e.shop != nil && e.shop(info.FullMethod):
 			lane = Shop
 		}
 		release, err := e.g.Acquire(ctx, k, lane)

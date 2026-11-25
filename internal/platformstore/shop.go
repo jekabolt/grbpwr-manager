@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -1034,6 +1035,39 @@ func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host str
 VALUES (?, ?, 'legacy', 1, 0, 'live', ?, ?, ?)`, host, teamID, recs, now, now)
 		return err
 	})
+}
+
+// PruneLegacyShopHosts deletes the team's legacy hosts that are not in keep: only the configured
+// storefront hosts (TENANT_STOREFRONT_HOSTS) stay the storefront team's; a host an older boot seeded
+// from the allowed origins (a CORS-only page, the console) goes. A pruned main address leaves the
+// team without one. Other kinds and other teams' rows are never touched. Idempotent (boot). It
+// answers the hosts removed.
+func (s *Store) PruneLegacyShopHosts(ctx context.Context, teamID int64, keep []string) ([]string, error) {
+	var removed []string
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		removed = nil
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var hosts []string
+		if err := tx.SelectContext(ctx, &hosts, `SELECT host FROM shop_host WHERE team_id = ? AND kind = 'legacy' ORDER BY host FOR UPDATE`, teamID); err != nil {
+			return err
+		}
+		for _, h := range hosts {
+			if slices.Contains(keep, h) {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ? AND team_id = ? AND kind = 'legacy'`, h, teamID); err != nil {
+				return err
+			}
+			removed = append(removed, h)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("platformstore: prune legacy shop hosts: %w", err)
+	}
+	return removed, nil
 }
 
 // TeamMailName is one team's name and brand name as the team-shop mail lane sees them: no shop's
