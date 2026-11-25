@@ -77,10 +77,17 @@ func TestCheckoutNeverRefused(t *testing.T) {
 	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != teamfair.ShopBusyCode {
 		t.Fatalf("a page with the lane full: %v, want shop_busy", err)
 	}
-	if !neverRefused[frontend.FrontendService_SubmitOrder_FullMethodName] {
-		t.Fatal("SubmitOrder is not in neverRefused")
+	paying := []string{
+		frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName,
+		frontend.FrontendService_SubmitOrder_FullMethodName,
+		frontend.FrontendService_GetOrderInvoice_FullMethodName,
+		frontend.FrontendService_CancelOrderInvoice_FullMethodName,
+		frontend.FrontendService_ValidateOrderByUUID_FullMethodName,
+		frontend.FrontendService_GetOrderByUUIDAndEmail_FullMethodName,
+		frontend.FrontendService_CancelOrderByUser_FullMethodName,
+		frontend.FrontendService_ListMyOrders_FullMethodName,
 	}
-	for m := range neverRefused {
+	for _, m := range paying {
 		ran := false
 		if err := call(m, func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
 			t.Fatalf("%s with the lane full: err %v, ran %v", m, err, ran)

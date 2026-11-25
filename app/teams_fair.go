@@ -144,17 +144,21 @@ func (a *App) storefrontTeamID() int64 {
 	return sf
 }
 
-// neverRefused are the storefront methods no share ever refuses: checkout, payment and order
+// neverRefused reports the storefront methods no share ever refuses: checkout, payment and order
 // status. A customer paying, or looking at what they paid for, is never told the shop is busy.
-var neverRefused = map[string]bool{
-	frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName: true,
-	frontend.FrontendService_SubmitOrder_FullMethodName:              true,
-	frontend.FrontendService_GetOrderInvoice_FullMethodName:          true,
-	frontend.FrontendService_CancelOrderInvoice_FullMethodName:       true,
-	frontend.FrontendService_ValidateOrderByUUID_FullMethodName:      true,
-	frontend.FrontendService_GetOrderByUUIDAndEmail_FullMethodName:   true,
-	frontend.FrontendService_CancelOrderByUser_FullMethodName:        true,
-	frontend.FrontendService_ListMyOrders_FullMethodName:             true,
+func neverRefused(fullMethod string) bool {
+	switch fullMethod {
+	case frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName,
+		frontend.FrontendService_SubmitOrder_FullMethodName,
+		frontend.FrontendService_GetOrderInvoice_FullMethodName,
+		frontend.FrontendService_CancelOrderInvoice_FullMethodName,
+		frontend.FrontendService_ValidateOrderByUUID_FullMethodName,
+		frontend.FrontendService_GetOrderByUUIDAndEmail_FullMethodName,
+		frontend.FrontendService_CancelOrderByUser_FullMethodName,
+		frontend.FrontendService_ListMyOrders_FullMethodName:
+		return true
+	}
+	return false
 }
 
 // newTeamFairEdge is the per-team gate of cfg in front of the gRPC chain: storefront calls take the
@@ -162,7 +166,7 @@ var neverRefused = map[string]bool{
 func newTeamFairEdge(cfg teamfair.Config) *teamfair.Edge {
 	return teamfair.NewEdge(teamfair.New(cfg),
 		func(m string) bool { return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront },
-		func(m string) bool { return neverRefused[m] })
+		neverRefused)
 }
 
 // initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
