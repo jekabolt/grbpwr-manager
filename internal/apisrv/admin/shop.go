@@ -119,15 +119,22 @@ func (s *Server) shopView(ctx context.Context, t tenant.Team, eff []feature.Key)
 	if t.ID == s.storefrontID() {
 		// The storefront team (grbpwr): always on, its env keys and mail; its hosts are the legacy ones,
 		// one of which the owner may make its main address (grbpwr.com on the shared storefront).
+		// Admin and API hosts (NoPrimary) are never offered: they are not shop addresses.
 		out.Enabled, out.Status = true, shopOpen
 		out.Payments.Method, out.Payments.Status = "platform", "active"
 		hosts, err := st.ShopHosts(ctx, t.ID)
 		if err != nil {
 			return nil, err
 		}
+		var hide []string
+		if s.shopW != nil {
+			hide = s.shopW.NoPrimary
+		}
 		for _, h := range hosts {
 			if h.Primary {
 				out.PrimaryHost = h.Host
+			} else if slices.Contains(hide, h.Host) {
+				continue
 			}
 			out.Domains = append(out.Domains, shopDomainPb(h))
 		}
@@ -464,7 +471,7 @@ func (s *Server) RemoveShopDomain(ctx context.Context, req *pb_admin.RemoveShopD
 
 // SetShopPrimaryHost makes a live address the shop's main one. The storefront team picks one of its
 // legacy hosts (never an admin or API host), or clears it with an empty host: grbpwr then revalidates
-// the old storefront again.
+// only the old storefront.
 func (s *Server) SetShopPrimaryHost(ctx context.Context, req *pb_admin.SetShopPrimaryHostRequest) (*pb_admin.SetShopPrimaryHostResponse, error) {
 	p, err := s.shopCaller(ctx, true)
 	if err != nil {

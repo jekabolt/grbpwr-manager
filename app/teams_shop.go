@@ -59,7 +59,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 
 	re := &shop.Revalidator{Base: a.re, Target: svc.RevalidateTarget, StorefrontID: sf}
 	// Without SHOP_REVALIDATE_MASTER no shop is revalidated at its address, so the storefront team
-	// stays on the old route (Base) even with a main address.
+	// revalidates only the old route (Base) even with a main address.
 	if hr, ok := a.re.(shop.HostRevalidator); ok && strings.TrimSpace(a.c.Revalidation.ShopMaster) != "" {
 		re.Shop = hr
 	}

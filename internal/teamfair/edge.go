@@ -32,6 +32,9 @@ type Edge struct {
 	// shop reports a storefront method: it takes the Shop lane (its team's shop share), never the
 	// team's admin share. nil = none.
 	shop func(fullMethod string) bool
+	// pass reports a method that is never gated (checkout, payment, order status): a customer paying
+	// is never refused, whatever the shares. nil = none.
+	pass func(fullMethod string) bool
 
 	mu   sync.Mutex
 	warn map[warnKey]time.Time
@@ -43,9 +46,10 @@ type warnKey struct {
 	shop bool
 }
 
-// NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which take the Shop lane.
-func NewEdge(g *Gate, shop func(fullMethod string) bool) *Edge {
-	return &Edge{g: g, shop: shop, warn: map[warnKey]time.Time{}}
+// NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which take the Shop lane;
+// pass marks methods that are never gated (it wins over shop).
+func NewEdge(g *Gate, shop, pass func(fullMethod string) bool) *Edge {
+	return &Edge{g: g, shop: shop, pass: pass, warn: map[warnKey]time.Time{}}
 }
 
 // Gate returns the gate behind the edge.
@@ -84,10 +88,11 @@ func refusal(lane Lane, err error) error {
 
 // Unary gates a unary call by the team in its context. Put it after the admin auth interceptor:
 // in teams mode the team of an admin call is bound there. No team = not gated. A storefront call
-// takes the Shop lane of the shop's team (bound by its host).
+// takes the Shop lane of the shop's team (bound by its host); a pass method (checkout, payment,
+// order status) is never gated.
 func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if e == nil || e.g == nil || e.g.cfg.Off {
+		if e == nil || e.g == nil || e.g.cfg.Off || (e.pass != nil && e.pass(info.FullMethod)) {
 			return handler(ctx, req)
 		}
 		t, ok := tenant.From(ctx)

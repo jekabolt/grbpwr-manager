@@ -89,7 +89,7 @@ func TestStorefrontNeverRefused(t *testing.T) {
 	brand := mustAcquire(t, g, teamA, Shop) // the only global shop slot
 	defer brand()
 	shop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
-	e := NewEdge(g, shop)
+	e := NewEdge(g, shop, nil)
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
 	r := mustAcquire(t, g, Key{TeamID: 1}, Light) // team #1's admin share is full
 	defer r()
@@ -279,7 +279,8 @@ func TestUnaryEdge(t *testing.T) {
 	g := testGate(1, 1, 1)
 	g.cfg.Shop = Limits{Light: 1, Rate: 1e6, Burst: 1e6}
 	g.cfg.ShopWait = 50 * time.Millisecond
-	e := NewEdge(g, func(m string) bool { return m == "/frontend.FrontendService/SubmitOrder" })
+	isShop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
+	e := NewEdge(g, isShop, func(m string) bool { return m == "/frontend.FrontendService/SubmitOrder" })
 	team := tenant.Team{ID: 2, Slug: "a"}
 	ctx := tenant.With(context.Background(), team)
 
@@ -299,14 +300,19 @@ func TestUnaryEdge(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	// The shop of the same team (its own share) and a call with no team pass.
-	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
+	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/GetHero", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
 	// The shop's own share used up: refused with the shop's machine word, the admin share untouched.
 	shopHeld := mustAcquire(t, g, Key{TeamID: 2}, Shop)
-	_, err = unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil })
+	_, err = unaryCall(e, ctx, "/frontend.FrontendService/GetHero", func(context.Context, any) (any, error) { return nil, nil })
 	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != ShopBusyCode {
 		t.Fatalf("shop busy: %v", err)
+	}
+	// A pass method (checkout) runs with the shop's share and the admin share both used up.
+	ran := false
+	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
+		t.Fatalf("checkout refused: %v ran=%v", err, ran)
 	}
 	shopHeld()
 	if _, err := unaryCall(e, context.Background(), "/auth.AuthService/Login", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
@@ -321,7 +327,7 @@ func TestUnaryEdge(t *testing.T) {
 
 func TestHTTPEdge(t *testing.T) {
 	g := testGate(1, 1, 1)
-	e := NewEdge(g, nil)
+	e := NewEdge(g, nil, nil)
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 2})
 	rel := mustAcquire(t, g, Key{TeamID: 2}, Heavy)
 	h := e.HTTP(Upload, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))

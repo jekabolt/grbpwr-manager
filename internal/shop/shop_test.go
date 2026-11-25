@@ -76,11 +76,14 @@ type allRe struct{ n int }
 
 func (r *allRe) RevalidateAll(context.Context, *dto.RevalidationData) error { r.n++; return nil }
 
-type hostRe struct{ host, key string }
+type hostRe struct {
+	host, key string
+	err       error
+}
 
 func (r *hostRe) RevalidateShop(_ context.Context, host, key string, _ *dto.RevalidationData) error {
 	r.host, r.key = host, key
-	return nil
+	return r.err
 }
 
 func TestRevalidatorRoutes(t *testing.T) {

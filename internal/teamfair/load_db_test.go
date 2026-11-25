@@ -86,7 +86,7 @@ type loadResult struct {
 
 func run(t *testing.T, db *sqlx.DB, g *Gate, a, b tenant.Team) loadResult {
 	t.Helper()
-	e := NewEdge(g, nil)
+	e := NewEdge(g, nil, nil)
 	call := func(ctx context.Context, method string, h func(ctx context.Context) error) error {
 		_, err := e.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: method}, func(ctx context.Context, _ any) (any, error) {
 			return nil, h(ctx)

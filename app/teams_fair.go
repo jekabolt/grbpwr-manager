@@ -11,6 +11,7 @@ import (
 	"github.com/jekabolt/grbpwr-manager/internal/teamfair"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
+	frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
 )
 
 // Per-team shares (X15, gap 14; tmp/plans/teams/lanes/X15-design.md). Every value is optional: the
@@ -143,14 +144,33 @@ func (a *App) storefrontTeamID() int64 {
 	return sf
 }
 
+// neverRefused are the storefront methods no share ever refuses: checkout, payment and order
+// status. A customer paying, or looking at what they paid for, is never told the shop is busy.
+var neverRefused = map[string]bool{
+	frontend.FrontendService_ValidateOrderItemsInsert_FullMethodName: true,
+	frontend.FrontendService_SubmitOrder_FullMethodName:              true,
+	frontend.FrontendService_GetOrderInvoice_FullMethodName:          true,
+	frontend.FrontendService_CancelOrderInvoice_FullMethodName:       true,
+	frontend.FrontendService_ValidateOrderByUUID_FullMethodName:      true,
+	frontend.FrontendService_GetOrderByUUIDAndEmail_FullMethodName:   true,
+	frontend.FrontendService_CancelOrderByUser_FullMethodName:        true,
+	frontend.FrontendService_ListMyOrders_FullMethodName:             true,
+}
+
+// newTeamFairEdge is the per-team gate of cfg in front of the gRPC chain: storefront calls take the
+// shop lane of their shop's team, except neverRefused, which pass ungated.
+func newTeamFairEdge(cfg teamfair.Config) *teamfair.Edge {
+	return teamfair.NewEdge(teamfair.New(cfg),
+		func(m string) bool { return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront },
+		func(m string) bool { return neverRefused[m] })
+}
+
 // initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
-// Storefront calls take the shop lane of their shop's team; the storefront team's shop is not
-// gated unless TEAM_STOREFRONT_SHOP_* set limits.
+// Storefront calls take the shop lane of their shop's team (checkout, payment and order status
+// never do); the storefront team's shop is not gated unless TEAM_STOREFRONT_SHOP_* set limits.
 func (a *App) initTeamFair(ctx context.Context) {
 	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, a.storefrontTeamID(), os.Getenv)
-	a.fair = teamfair.NewEdge(teamfair.New(cfg), func(m string) bool {
-		return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront
-	})
+	a.fair = newTeamFairEdge(cfg)
 	a.hs.SetTeamFair(a.fair.Unary())
 	slog.Default().InfoContext(ctx, "per-team shares",
 		slog.Bool("off", cfg.Off), slog.Int("light", cfg.Team.Light), slog.Int("heavy", cfg.Team.Heavy),

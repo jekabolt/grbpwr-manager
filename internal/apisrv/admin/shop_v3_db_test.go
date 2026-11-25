@@ -11,8 +11,8 @@ import (
 )
 
 // X18 v3: a bare domain brings its "www." sibling as a redirect (removed with it); the storefront
-// team picks a legacy host as its main address (never an admin host) and may clear it, while its
-// switch, domains and mail stay refused.
+// team picks a legacy host as its main address (admin hosts neither listed nor accepted) and may
+// clear it, while its switch, domains and mail stay refused.
 func TestShopWWWSiblingAndStorefrontPrimary(t *testing.T) {
 	w := newWorkspaceWorld(t)
 	ctx := context.Background()
@@ -75,13 +75,18 @@ VALUES ('www.taken.io', 3, 'custom', 0, 0, 'live', '[]', ?, ?)`, time.Now().UTC(
 	require.Equal(t, []string{"brand.com", "www.brand.com"}, domains.removed)
 	require.Equal(t, 0, w.count(t, `SELECT COUNT(*) FROM shop_host WHERE host IN ('brand.com', 'www.brand.com')`))
 
-	// The storefront team: its legacy hosts are its domains; one becomes its main address.
+	// The storefront team: its legacy hosts are its domains, admin hosts left out; one becomes its
+	// main address.
 	sf := storefrontOwner()
 	_, err = w.st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "admin.grbpwr.com"}, time.Now())
 	require.NoError(t, err)
 	got, err := w.s.GetShop(sf, &pb_admin.GetShopRequest{})
 	require.NoError(t, err)
-	require.Len(t, got.Shop.Domains, 3)
+	var listed []string
+	for _, d := range got.Shop.Domains {
+		listed = append(listed, d.Host)
+	}
+	require.ElementsMatch(t, []string{"grbpwr.com", "www.grbpwr.com"}, listed)
 	require.Empty(t, got.Shop.PrimaryHost)
 	_, err = w.s.SetShopPrimaryHost(sf, &pb_admin.SetShopPrimaryHostRequest{Host: "admin.grbpwr.com"})
 	require.Equal(t, "FailedPrecondition host_admin", refusal(err))

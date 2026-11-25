@@ -1,9 +1,16 @@
 package app
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/teamfair"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
+	frontend "github.com/jekabolt/grbpwr-manager/proto/gen/frontend"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestTeamFairConfig(t *testing.T) {
@@ -41,5 +48,46 @@ func TestTeamFairConfig(t *testing.T) {
 	}
 	if backgroundParallel(5) != 2 || backgroundParallel(15) != 5 || backgroundParallel(0) != 2 {
 		t.Fatal("background slots")
+	}
+}
+
+// A team shop's lane full (its one slot held by a slow page, its rate used up): another page is
+// refused with shop_busy, while checkout, payment and order status still run.
+func TestCheckoutNeverRefused(t *testing.T) {
+	env := map[string]string{envTeamShopParallel: "1", envTeamShopRate: "1", envTeamShopBurst: "1"}
+	cfg := teamFairConfig(5, 1, func(k string) string { return env[k] })
+	cfg.ShopWait = 20 * time.Millisecond
+	e := newTeamFairEdge(cfg)
+	ctx := tenant.With(context.Background(), tenant.Team{ID: 2, Slug: "brand"})
+	call := func(m string, h grpc.UnaryHandler) error {
+		_, err := e.Unary()(ctx, nil, &grpc.UnaryServerInfo{FullMethod: m}, h)
+		return err
+	}
+
+	hold, started, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- call(frontend.FrontendService_GetHero_FullMethodName, func(context.Context, any) (any, error) {
+			close(started)
+			<-hold
+			return nil, nil
+		})
+	}()
+	<-started
+	err := call(frontend.FrontendService_GetColorwaysPaged_FullMethodName, func(context.Context, any) (any, error) { return nil, nil })
+	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != teamfair.ShopBusyCode {
+		t.Fatalf("a page with the lane full: %v, want shop_busy", err)
+	}
+	if !neverRefused[frontend.FrontendService_SubmitOrder_FullMethodName] {
+		t.Fatal("SubmitOrder is not in neverRefused")
+	}
+	for m := range neverRefused {
+		ran := false
+		if err := call(m, func(context.Context, any) (any, error) { ran = true; return nil, nil }); err != nil || !ran {
+			t.Fatalf("%s with the lane full: err %v, ran %v", m, err, ran)
+		}
+	}
+	close(hold)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

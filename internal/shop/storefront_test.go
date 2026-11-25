@@ -135,8 +135,9 @@ func TestRevalidateTargetStorefront(t *testing.T) {
 	}
 }
 
-// The storefront team goes to the shared storefront at its main address once it has one, and to the
-// old storefront (Base) before that, without the shop path, or when the lookup fails.
+// The storefront team always revalidates the old storefront (Base); once it has a main address it
+// also revalidates the shared storefront there (both while grbpwr.com moves). A failed lookup or a
+// failing side never skips Base; without Base only the shared storefront runs.
 func TestRevalidatorStorefrontOnShared(t *testing.T) {
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
 	base, sh := &allRe{}, &hostRe{}
@@ -149,22 +150,34 @@ func TestRevalidatorStorefrontOnShared(t *testing.T) {
 		t.Fatalf("no main address: base %d shop %q", base.n, sh.host)
 	}
 	host = "grbpwr.com"
-	_ = r.RevalidateAll(ctx, &dto.RevalidationData{})
-	if base.n != 1 || sh.host != "grbpwr.com" || sh.key != "t1" {
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil {
+		t.Fatal(err)
+	}
+	if base.n != 2 || sh.host != "grbpwr.com" || sh.key != "t1" {
 		t.Fatalf("main address: base %d shop %q %q", base.n, sh.host, sh.key)
 	}
-	sh.host, lookupErr = "", errors.New("down")
+	// The shared storefront failing still revalidates Base, and the error comes back.
+	sh.host, sh.err = "", errors.New("shared down")
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err == nil || base.n != 3 || sh.host != "grbpwr.com" {
+		t.Fatalf("shared failing: err %v base %d shop %q", err, base.n, sh.host)
+	}
+	sh.host, sh.err, lookupErr = "", nil, errors.New("down")
 	_ = r.RevalidateAll(ctx, &dto.RevalidationData{})
-	if base.n != 2 || sh.host != "" {
+	if base.n != 4 || sh.host != "" {
 		t.Fatalf("failed lookup: base %d shop %q", base.n, sh.host)
 	}
 	lookupErr, r.Shop = nil, nil
 	_ = r.RevalidateAll(ctx, &dto.RevalidationData{})
-	if base.n != 3 {
+	if base.n != 5 {
 		t.Fatalf("no shop path: base %d", base.n)
 	}
-	r.Base = nil
-	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil {
-		t.Fatal(err)
+	// Base unset: the shared storefront alone.
+	r.Shop, r.Base = sh, nil
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil || sh.host != "grbpwr.com" {
+		t.Fatalf("no base: err %v shop %q", err, sh.host)
+	}
+	host, sh.host = "", ""
+	if err := r.RevalidateAll(ctx, &dto.RevalidationData{}); err != nil || sh.host != "" {
+		t.Fatalf("no base, no main address: err %v shop %q", err, sh.host)
 	}
 }
