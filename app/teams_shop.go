@@ -36,9 +36,11 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	cfg := a.c.Platform
 	st := a.platform
 	sf := a.storefrontTeamID()
+	adminHosts := shopNoPrimary(cfg.APIBase(), cfg.LegacyOrigins(), a.c.HTTP.AllowedOrigins)
 	svc := &shop.Service{
 		St:           st,
 		StorefrontID: sf,
+		AdminHosts:   adminHosts,
 		LogoURL: func(ctx context.Context, teamID int64, slug string) string {
 			sha, err := st.TeamLogoSHA(ctx, teamID)
 			if err != nil {
@@ -87,7 +89,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
 		Reserved:  append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
 		Payments:  shopPayments(pay),
-		NoPrimary: shopNoPrimary(cfg.APIBase(), cfg.LegacyOrigins(), a.c.HTTP.AllowedOrigins)})
+		NoPrimary: adminHosts})
 	go drainShopDomains(ctx, st, domains)
 	a.startShopDomains(ctx, domains, invalidate, re)
 	if frontendS != nil {
@@ -165,9 +167,10 @@ func drainShopDomains(ctx context.Context, st *platformstore.Store, dp shop.Doma
 	}
 }
 
-// shopNoPrimary are hosts the storefront team's main address never is: the legacy admin origins,
-// the API host, and any allowed origin whose first label names an admin or API host (admin.grbpwr.com,
-// backend.grbpwr.com). The shared storefront would send grbpwr's customers there.
+// shopNoPrimary are the admin and API hosts among the storefront team's hosts: the legacy admin
+// origins, the API host, and any allowed origin whose first label names an admin or API host
+// (admin.grbpwr.com, backend.grbpwr.com). Never its main address (the shared storefront would send
+// grbpwr's customers there), never listed on its shop screen or in its storefront profile.
 func shopNoPrimary(api string, admin, allowed []string) []string {
 	out := []string{}
 	add := func(h string) {

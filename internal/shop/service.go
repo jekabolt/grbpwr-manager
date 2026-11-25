@@ -2,6 +2,7 @@ package shop
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/tenant"
@@ -40,6 +41,9 @@ type Service struct {
 	// from its env config, as its checkout runs now; nil or "" = no checkout key. The storefront
 	// team never reads team_stripe.
 	StorefrontStripe func(ctx context.Context) (publishable, mode string)
+	// AdminHosts are the admin and API hosts among the storefront team's legacy hosts: never a shop
+	// address, so a storefront never sees them (Profile leaves them out).
+	AdminHosts []string
 }
 
 // storefront reports whether teamID is the storefront team.
@@ -105,6 +109,8 @@ func (s *Service) Profile(ctx context.Context, t tenant.Team, open bool) (Profil
 	}
 	for _, h := range hosts {
 		switch {
+		case slices.Contains(s.AdminHosts, h.Host):
+			// An admin or API host is never shown to a storefront.
 		case h.Primary:
 			p.PrimaryHost = h.Host
 			p.Hosts = append([]string{h.Host}, p.Hosts...)

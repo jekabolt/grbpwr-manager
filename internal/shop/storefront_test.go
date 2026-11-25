@@ -3,6 +3,7 @@ package shop
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/internal/dto"
@@ -99,6 +100,28 @@ func TestProfileStorefrontPackAndKey(t *testing.T) {
 	svc.StorefrontID = 0
 	if p, _ = svc.Profile(ctx, tenant.Team{ID: 1}, true); p.Pack != "" || p.StripePublishableKey != "pk_team_row" {
 		t.Fatalf("no storefront: %+v", p)
+	}
+}
+
+// A storefront never sees the storefront team's admin and API hosts, live legacy rows or not; its
+// shop hosts stay.
+func TestProfileHidesAdminHosts(t *testing.T) {
+	st := &memStore{hosts: map[int64][]platformstore.ShopHost{1: {
+		legacy("admin.grbpwr.com", false), legacy("grbpwr.com", true), legacy("backend.grbpwr.com", false),
+		legacy("www.grbpwr.com", false),
+	}}}
+	svc := &Service{St: st, StorefrontID: 1, AdminHosts: []string{"admin.grbpwr.com", "backend.grbpwr.com"}}
+	p, err := svc.Profile(context.Background(), tenant.Team{ID: 1, Name: "grbpwr"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PrimaryHost != "grbpwr.com" || !slices.Equal(p.Hosts, []string{"grbpwr.com", "www.grbpwr.com"}) {
+		t.Fatalf("storefront hosts: primary %q hosts %v", p.PrimaryHost, p.Hosts)
+	}
+	// Without the list (no admin hosts known) every live host is listed, as before.
+	svc.AdminHosts = nil
+	if p, _ = svc.Profile(context.Background(), tenant.Team{ID: 1}, true); len(p.Hosts) != 4 {
+		t.Fatalf("no admin hosts known: %v", p.Hosts)
 	}
 }
 
