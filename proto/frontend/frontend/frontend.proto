@@ -275,7 +275,9 @@ message ShopProfile {
   string base_currency = 13;
   // stripe_account_id is the connected account Stripe.js loads with (Connect only).
   string stripe_account_id = 14;
-  // stripe_publishable_key is the shop's own key (own keys); empty with Connect = the platform key.
+  // stripe_publishable_key is the key Stripe.js loads with: the storefront team's own (its env
+  // config, live or test as its checkout runs), a team's own key (own keys), or the platform key
+  // (Connect, with stripe_account_id). Empty = checkout off.
   string stripe_publishable_key = 15;
   // open: the shop takes orders; false = draw a closed page.
   bool open = 16;
@@ -285,6 +287,9 @@ message ShopProfile {
   string website = 18;
   // stripe_mode: "live" or "test"; empty = checkout off.
   string stripe_mode = 19;
+  // pack is the storefront's code pack this shop draws with: "grbpwr" for the storefront team,
+  // empty = the shared template alone. Brands do not choose it.
+  string pack = 20;
 }
 
 // ShopColors are the brand colours ("#rrggbb").

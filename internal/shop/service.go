@@ -15,6 +15,9 @@ type Store interface {
 	TeamStripe(ctx context.Context, teamID int64) (platformstore.TeamStripe, bool, error)
 }
 
+// StorefrontPack is the code pack the shared storefront draws the storefront team (grbpwr) with.
+const StorefrontPack = "grbpwr"
+
 // Profile is what a storefront draws a shop with (frontend ShopProfile).
 type Profile struct {
 	ShopKey, Name, LogoURL, PrimaryHost               string
@@ -22,6 +25,9 @@ type Profile struct {
 	Open                                              bool
 	LegalEntity, LegalAddress, ContactEmail, Website  string
 	StripePublishableKey, StripeAccountID, StripeMode string
+	// Pack is the storefront's code pack for this shop: StorefrontPack for the storefront team,
+	// "" (the shared template alone) for every other team.
+	Pack string
 }
 
 // Service answers shop questions over the control plane.
@@ -30,6 +36,15 @@ type Service struct {
 	StorefrontID int64
 	// LogoURL is the public logo URL of a team ("" = none).
 	LogoURL func(ctx context.Context, teamID int64, slug string) string
+	// StorefrontStripe answers the storefront team's publishable key and mode ("live" / "test")
+	// from its env config, as its checkout runs now; nil or "" = no checkout key. The storefront
+	// team never reads team_stripe.
+	StorefrontStripe func(ctx context.Context) (publishable, mode string)
+}
+
+// storefront reports whether teamID is the storefront team.
+func (s *Service) storefront(teamID int64) bool {
+	return s.StorefrontID > 0 && teamID == s.StorefrontID
 }
 
 // PrimaryHost is a team's main address ("" when it has none).
@@ -47,7 +62,13 @@ func (s *Service) PrimaryHost(ctx context.Context, teamID int64) (string, error)
 }
 
 // RevalidateTarget is the main address of a team's shop while it is on and not closed (Target).
+// The storefront team has no shop switch (it is always on the shared storefront): its main address
+// is the target whatever team_shop says.
 func (s *Service) RevalidateTarget(ctx context.Context, teamID int64) (string, bool, error) {
+	if s.storefront(teamID) {
+		h, err := s.PrimaryHost(ctx, teamID)
+		return h, h != "", err
+	}
 	ts, err := s.St.TeamShop(ctx, teamID)
 	if err != nil {
 		return "", false, err
@@ -87,12 +108,23 @@ func (s *Service) Profile(ctx context.Context, t tenant.Team, open bool) (Profil
 		case h.Primary:
 			p.PrimaryHost = h.Host
 			p.Hosts = append([]string{h.Host}, p.Hosts...)
-		case h.Status == platformstore.ShopHostLive:
+		case h.Status == platformstore.ShopHostLive && h.RedirectTo == "":
+			// A redirect ("www." of a bare domain) never serves the shop itself.
 			p.Hosts = append(p.Hosts, h.Host)
 		}
 	}
 	if s.LogoURL != nil {
 		p.LogoURL = s.LogoURL(ctx, t.ID, t.Slug)
+	}
+	if s.storefront(t.ID) {
+		p.Pack = StorefrontPack
+		if s.StorefrontStripe != nil {
+			p.StripePublishableKey, p.StripeMode = s.StorefrontStripe(ctx)
+			if p.StripePublishableKey == "" {
+				p.StripeMode = ""
+			}
+		}
+		return p, nil
 	}
 	st, ok, err := s.St.TeamStripe(ctx, t.ID)
 	if err != nil {

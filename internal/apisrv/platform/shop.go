@@ -39,7 +39,9 @@ func (s *Server) withShop(ctx context.Context, ids []int64, rows ...*pb_admin.Pl
 			continue
 		}
 		if ids[i] == sf {
-			row.Shop = "open"
+			// The storefront team is always open; its main address is set once grbpwr.com moves to the
+			// shared storefront.
+			row.Shop, row.ShopHost = "open", sums[ids[i]].PrimaryHost
 			continue
 		}
 		sum := sums[ids[i]]

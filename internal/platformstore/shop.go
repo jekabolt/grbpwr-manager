@@ -26,9 +26,13 @@ var (
 	ErrShopHostNotLive = errors.New("platformstore: shop host not live")
 	// ErrShopHostLimit: the team has as many custom hosts as it may.
 	ErrShopHostLimit = errors.New("platformstore: shop host limit")
+	// ErrShopHostRedirect: the host is (or would replace) one of the team's own hosts of the other
+	// sort: a "www." redirect cannot be attached as a shop address, nor a shop address as a redirect.
+	ErrShopHostRedirect = errors.New("platformstore: shop host redirect")
 )
 
-// ShopHostMax bounds the custom hosts of one team.
+// ShopHostMax bounds the custom hosts of one team (a "www." redirect of one of them is not counted:
+// it comes and goes with its domain).
 const ShopHostMax = 10
 
 // Shop host kinds and statuses (shop_host.kind / status).
@@ -346,7 +350,7 @@ VALUES (?, ?, 'subdomain', 1, 0, 'live', ?, ?, ?)`, subdomain, teamID, recs, now
 // gated by the ownership proof (gateShopHost): live only when the team proved the domain.
 func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) error {
 	now = now.UTC()
-	status, records, unproven := s.gateShopHost(ctx, teamID, host, status, records)
+	status, records, unproven := s.gateShopHost(ctx, teamID, host, host, status, records)
 	recs, err := recordsJSON(records)
 	if err != nil {
 		return err
@@ -367,6 +371,9 @@ func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status s
 			return ErrShopHostTaken
 		case err == nil && cur.Kind != ShopHostCustom:
 			return ErrShopHostManaged
+		case err == nil && cur.RedirectTo != "":
+			// The team's own "www." redirect: it stays one until the team removes it.
+			return ErrShopHostRedirect
 		case err == nil:
 			status = keepVerified(cur, status, unproven)
 			verified := cur.VerifiedAt
@@ -386,7 +393,7 @@ func (s *Store) AttachShopHost(ctx context.Context, teamID int64, host, status s
 			return fmt.Errorf("platformstore: shop host owner: %w", err)
 		}
 		var n int
-		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM shop_host WHERE team_id = ? AND kind = 'custom'`, teamID); err != nil {
+		if err := tx.GetContext(ctx, &n, `SELECT COUNT(*) FROM shop_host WHERE team_id = ? AND kind = 'custom' AND redirect_to = ''`, teamID); err != nil {
 			return fmt.Errorf("platformstore: count shop hosts: %w", err)
 		}
 		if n >= ShopHostMax {
@@ -417,7 +424,17 @@ VALUES (?, ?, 'custom', 0, 0, ?, ?, ?, ?, ?)`, host, teamID, status, recs, now, 
 // stored, which may differ from the one asked for.
 func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, status string, records []ShopRecord, now time.Time) (string, error) {
 	now = now.UTC()
-	status, records, unproven := s.gateShopHost(ctx, teamID, host, status, records)
+	// A redirect is proven by its target's proof (read before the DNS lookup, outside the transaction;
+	// a row's target never changes while it stands).
+	proofHost := host
+	var target string
+	if err := s.db.GetContext(ctx, &target, `SELECT redirect_to FROM shop_host WHERE host = ? AND team_id = ?`, host, teamID); err != nil && !isNoRows(err) {
+		return "", fmt.Errorf("platformstore: shop host target: %w", err)
+	}
+	if target != "" {
+		proofHost = target
+	}
+	status, records, unproven := s.gateShopHost(ctx, teamID, host, proofHost, status, records)
 	recs, err := recordsJSON(records)
 	if err != nil {
 		return "", err
@@ -435,6 +452,9 @@ func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, statu
 		}
 		if cur.Kind != ShopHostCustom {
 			return ErrShopHostManaged
+		}
+		if cur.RedirectTo != target {
+			return ErrShopHostNotFound // removed and attached again meanwhile: the next check sees it
 		}
 		status = keepVerified(cur, status, unproven)
 		verified := cur.VerifiedAt
@@ -457,9 +477,19 @@ func (s *Store) SetShopHostStatus(ctx context.Context, teamID int64, host, statu
 }
 
 // RemoveShopHost deletes a custom host of the team and queues its removal at the domain provider
-// (shop_domain_drop). When it was the main address, the platform address takes over.
+// (shop_domain_drop), with the "www." redirects that point at it. When it was the main address, the
+// platform address takes over.
 func (s *Store) RemoveShopHost(ctx context.Context, teamID int64, host string) error {
-	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+	_, err := s.RemoveShopHostAll(ctx, teamID, host)
+	return err
+}
+
+// RemoveShopHostAll is RemoveShopHost answering every host it removed (host first, then its
+// redirects), so the caller can drop each at the provider at once.
+func (s *Store) RemoveShopHostAll(ctx context.Context, teamID int64, host string) ([]string, error) {
+	var gone []string
+	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
+		gone = gone[:0]
 		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
 			return err
 		}
@@ -473,14 +503,101 @@ func (s *Store) RemoveShopHost(ctx context.Context, teamID int64, host string) e
 		if cur.Managed || cur.Kind != ShopHostCustom {
 			return ErrShopHostManaged
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ?`, host); err != nil {
-			return fmt.Errorf("platformstore: remove shop host: %w", err)
+		gone = append(gone, host)
+		if cur.RedirectTo == "" {
+			var redirects []string
+			if err := tx.SelectContext(ctx, &redirects, `SELECT host FROM shop_host WHERE team_id = ? AND redirect_to = ? ORDER BY host FOR UPDATE`, teamID, host); err != nil {
+				return fmt.Errorf("platformstore: shop host redirects: %w", err)
+			}
+			gone = append(gone, redirects...)
 		}
-		if err := enqueueDomainDropTx(ctx, tx, []string{host}, time.Now().UTC()); err != nil {
+		for _, h := range gone {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ? AND team_id = ?`, h, teamID); err != nil {
+				return fmt.Errorf("platformstore: remove shop host: %w", err)
+			}
+		}
+		if err := enqueueDomainDropTx(ctx, tx, gone, time.Now().UTC()); err != nil {
 			return err
 		}
 		if cur.Primary {
 			return primaryToSubdomainTx(ctx, tx, teamID, host)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return gone, nil
+}
+
+// AttachShopRedirect adds host as a "www." redirect of target, a custom host of the team without a
+// redirect of its own: a custom, unmanaged row with redirect_to set, not counted against ShopHostMax,
+// proven by target's proof (its records leave that proof record out: the target's row shows it) and
+// removed with target. Attaching it again refreshes its status; a non-redirect host of the team is
+// ErrShopHostRedirect, another team's host ErrShopHostTaken (unless it never went live within
+// ShopHostPendingTTL), a target the team does not have ErrShopHostNotFound.
+func (s *Store) AttachShopRedirect(ctx context.Context, teamID int64, host, target, status string, records []ShopRecord, now time.Time) error {
+	now = now.UTC()
+	if host == target {
+		return ErrShopHostRedirect
+	}
+	status, records, unproven := s.gateShopHost(ctx, teamID, host, target, status, records)
+	recs, err := recordsJSON(records)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		var tgt shopHostRow
+		if err := tx.GetContext(ctx, &tgt, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ? FOR UPDATE`, target, teamID); err != nil {
+			if isNoRows(err) {
+				return ErrShopHostNotFound
+			}
+			return fmt.Errorf("platformstore: redirect target: %w", err)
+		}
+		if tgt.Kind != ShopHostCustom || tgt.RedirectTo != "" {
+			return ErrShopHostNotFound
+		}
+		var cur shopHostRow
+		err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host)
+		switch {
+		case err == nil && cur.TeamID != teamID && stalePending(cur, now):
+			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ? AND team_id = ?`, host, cur.TeamID); err != nil {
+				return fmt.Errorf("platformstore: stale shop host: %w", err)
+			}
+		case err == nil && cur.TeamID != teamID:
+			return ErrShopHostTaken
+		case err == nil && (cur.Kind != ShopHostCustom || cur.RedirectTo != target):
+			return ErrShopHostRedirect
+		case err == nil:
+			status = keepVerified(cur, status, unproven)
+			verified := cur.VerifiedAt
+			if status == ShopHostLive && cur.Status != ShopHostLive {
+				verified = &now
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET status = ?, records = ?, checked_at = ?, verified_at = ? WHERE host = ?`,
+				status, recs, now, verified, host); err != nil {
+				return fmt.Errorf("platformstore: refresh shop redirect: %w", err)
+			}
+			return nil
+		case !isNoRows(err):
+			return fmt.Errorf("platformstore: shop host owner: %w", err)
+		}
+		var verified *time.Time
+		if status == ShopHostLive {
+			verified = &now
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shop_host (host, team_id, kind, managed, is_primary, status, redirect_to, records, created_at, verified_at, checked_at)
+VALUES (?, ?, 'custom', 0, 0, ?, ?, ?, ?, ?, ?)`, host, teamID, status, target, recs, now, verified, now); err != nil {
+			if dupKey(err, "PRIMARY") {
+				return ErrShopHostTaken
+			}
+			return fmt.Errorf("platformstore: attach shop redirect: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM shop_domain_drop WHERE host = ?`, host); err != nil {
+			return fmt.Errorf("platformstore: cancel shop domain drop: %w", err)
 		}
 		return nil
 	})
@@ -496,7 +613,22 @@ func primaryToSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, from s
 	return nil
 }
 
-// SetShopPrimary makes a live host of the team its main address.
+// ClearShopPrimary leaves the team without a main address (the storefront team only: every other
+// team's shop keeps its platform address as the main one). A no-op without one.
+func (s *Store) ClearShopPrimary(ctx context.Context, teamID int64) error {
+	return s.inTx(ctx, func(tx *sqlx.Tx) error {
+		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 0 WHERE team_id = ? AND is_primary = 1`, teamID); err != nil {
+			return fmt.Errorf("platformstore: clear shop primary: %w", err)
+		}
+		return nil
+	})
+}
+
+// SetShopPrimary makes a live host of the team its main address (a legacy host too: the storefront
+// team's main address is one of them once grbpwr.com moves to the shared storefront).
 func (s *Store) SetShopPrimary(ctx context.Context, teamID int64, host string) error {
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
@@ -695,8 +827,9 @@ func (s *Store) SetShopHostProof(p ShopHostProof) { s.proof.Store(&shopProofHold
 // host's status calls it: the shop screen and the domains worker). It puts the proof record first in
 // the records (found or not) and turns a provider «live» into «verifying» until the team's proof is
 // in its DNS; unproven reports that demotion (keepVerified undoes it for a host verified before). No
-// proof installed: never live.
-func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, status string, records []ShopRecord) (string, []ShopRecord, bool) {
+// proof installed: never live. proofHost is the host whose proof counts: host itself, or for a
+// redirect its target (then the target's proof record is not repeated in host's records).
+func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, proofHost, status string, records []ShopRecord) (string, []ShopRecord, bool) {
 	h := s.proof.Load()
 	if h == nil || h.p == nil {
 		if status == ShopHostLive {
@@ -704,11 +837,17 @@ func (s *Store) gateShopHost(ctx context.Context, teamID int64, host, status str
 		}
 		return status, records, false
 	}
-	rec := h.p.Record(teamID, host)
-	ok, err := h.p.Proven(ctx, teamID, host)
+	ok, err := h.p.Proven(ctx, teamID, proofHost)
 	if err != nil {
 		ok = false
 	}
+	if proofHost != host {
+		if status == ShopHostLive && !ok {
+			return ShopHostVerifying, records, true
+		}
+		return status, records, false
+	}
+	rec := h.p.Record(teamID, host)
 	rec.Found = ok
 	out := make([]ShopRecord, 0, len(records)+1)
 	out = append(out, rec)
@@ -833,7 +972,8 @@ func (s *Store) dropShopDomain(ctx context.Context, host string, now time.Time, 
 }
 
 // EnsureLegacyShopHosts makes hosts the storefront team's (teamID) legacy hosts: live, managed, never
-// a main address. Idempotent (boot). A host another team holds is taken back: legacy hosts are the
+// a main address on their own (the owner may pick one, SetShopPrimary; a boot keeps that pick).
+// Idempotent (boot). A host another team holds is taken back: legacy hosts are the
 // storefront's own, and its customers must never reach another team. It answers the hosts taken back.
 func (s *Store) EnsureLegacyShopHosts(ctx context.Context, teamID int64, hosts []string, now time.Time) ([]string, error) {
 	now = now.UTC()

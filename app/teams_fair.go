@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/jekabolt/grbpwr-manager/internal/teamfair"
+	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 )
 
@@ -24,6 +25,16 @@ const (
 	envTeamRate          = "TEAM_RATE"
 	envTeamBurst         = "TEAM_BURST"
 	envBackgroundSlots   = "BACKGROUND_PARALLEL"
+
+	// The shop lane (storefront calls): TEAM_FAIR_SHOP=off leaves them ungated.
+	envTeamFairShop        = "TEAM_FAIR_SHOP"
+	envTeamShopParallel    = "TEAM_SHOP_PARALLEL"
+	envTeamShopRate        = "TEAM_SHOP_RATE"
+	envTeamShopBurst       = "TEAM_SHOP_BURST"
+	envShopParallel        = "SHOP_PARALLEL"
+	envStorefrontShopPar   = "TEAM_STOREFRONT_SHOP_PARALLEL"
+	envStorefrontShopRate  = "TEAM_STOREFRONT_SHOP_RATE"
+	envStorefrontShopBurst = "TEAM_STOREFRONT_SHOP_BURST"
 )
 
 func envPositiveInt(name string) int {
@@ -34,10 +45,13 @@ func envPositiveInt(name string) int {
 	return n
 }
 
-// teamFairConfig is teamfair.Defaults(pool) with the env overrides applied.
-func teamFairConfig(pool int, getenv func(string) string) teamfair.Config {
+// teamFairConfig is teamfair.Defaults(pool) with the env overrides applied; storefront is the
+// storefront team (0 = none).
+func teamFairConfig(pool int, storefront int64, getenv func(string) string) teamfair.Config {
 	cfg := teamfair.Defaults(pool)
 	cfg.Off = strings.EqualFold(strings.TrimSpace(getenv(envTeamFair)), "off")
+	cfg.ShopOff = strings.EqualFold(strings.TrimSpace(getenv(envTeamFairShop)), "off")
+	cfg.StorefrontTeamID = storefront
 	num := func(name string) int {
 		n, err := strconv.Atoi(strings.TrimSpace(getenv(name)))
 		if err != nil || n < 1 {
@@ -62,6 +76,27 @@ func teamFairConfig(pool int, getenv func(string) string) teamfair.Config {
 	}
 	if n := num(envTeamBurst); n > 0 {
 		cfg.Team.Burst = n
+	}
+	if n := num(envTeamShopParallel); n > 0 {
+		cfg.Shop.Light = n
+	}
+	if n := num(envTeamShopRate); n > 0 {
+		cfg.Shop.Rate = float64(n)
+	}
+	if n := num(envTeamShopBurst); n > 0 {
+		cfg.Shop.Burst = n
+	}
+	if n := num(envShopParallel); n > 0 {
+		cfg.GlobalShop = n
+	}
+	if n := num(envStorefrontShopPar); n > 0 {
+		cfg.StorefrontShop.Light = n
+	}
+	if n := num(envStorefrontShopRate); n > 0 {
+		cfg.StorefrontShop.Rate = float64(n)
+	}
+	if n := num(envStorefrontShopBurst); n > 0 {
+		cfg.StorefrontShop.Burst = n
 	}
 	return cfg
 }
@@ -97,10 +132,22 @@ func (a *App) backgroundSlots() chan struct{} {
 	return a.bg.c
 }
 
+// storefrontTeamID is the storefront team (grbpwr): TENANT_STOREFRONT_TEAM_ID, else team one unless
+// the installation has none (0).
+func (a *App) storefrontTeamID() int64 {
+	cfg := a.c.Platform
+	sf := cfg.StorefrontTeamID
+	if sf <= 0 && !cfg.NoShop() {
+		sf = tenant.TeamOneID
+	}
+	return sf
+}
+
 // initTeamFair builds the per-team gate and puts it into the gRPC chain (after admin auth).
-// Storefront calls are not gated (customers are never refused on a timer).
+// Storefront calls take the shop lane of their shop's team; the storefront team's shop is not
+// gated unless TEAM_STOREFRONT_SHOP_* set limits.
 func (a *App) initTeamFair(ctx context.Context) {
-	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, os.Getenv)
+	cfg := teamFairConfig(a.c.DB.MaxOpenConnections, a.storefrontTeamID(), os.Getenv)
 	a.fair = teamfair.NewEdge(teamfair.New(cfg), func(m string) bool {
 		return tenantbind.ClassifyMethod(m) == tenantbind.ClassStorefront
 	})
@@ -109,5 +156,7 @@ func (a *App) initTeamFair(ctx context.Context) {
 		slog.Bool("off", cfg.Off), slog.Int("light", cfg.Team.Light), slog.Int("heavy", cfg.Team.Heavy),
 		slog.Int("heavy_all", cfg.GlobalHeavy), slog.Int("ai", cfg.Team.AI),
 		slog.Float64("rate", cfg.Team.Rate), slog.Int("burst", cfg.Team.Burst),
+		slog.Bool("shop_off", cfg.ShopOff), slog.Int("shop", cfg.Shop.Light), slog.Int("shop_all", cfg.GlobalShop),
+		slog.Float64("shop_rate", cfg.Shop.Rate), slog.Int("storefront_shop", cfg.StorefrontShop.Light),
 		slog.Int("background", cap(a.backgroundSlots())))
 }

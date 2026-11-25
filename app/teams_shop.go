@@ -5,17 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/admin"
 	"github.com/jekabolt/grbpwr-manager/internal/apisrv/frontend"
 	"github.com/jekabolt/grbpwr-manager/internal/auth/jwt"
+	"github.com/jekabolt/grbpwr-manager/internal/cache"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 	"github.com/jekabolt/grbpwr-manager/internal/platformauth/teamlogo"
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
 	"github.com/jekabolt/grbpwr-manager/internal/saferun"
 	"github.com/jekabolt/grbpwr-manager/internal/shop"
-	"github.com/jekabolt/grbpwr-manager/internal/tenant"
 	"github.com/jekabolt/grbpwr-manager/internal/tenantbind"
 )
 
@@ -33,10 +35,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	}
 	cfg := a.c.Platform
 	st := a.platform
-	sf := cfg.StorefrontTeamID
-	if sf <= 0 && !cfg.NoShop() {
-		sf = tenant.TeamOneID
-	}
+	sf := a.storefrontTeamID()
 	svc := &shop.Service{
 		St:           st,
 		StorefrontID: sf,
@@ -48,6 +47,7 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 			}
 			return teamlogo.URL(cfg.APIBase(), slug, sha)
 		},
+		StorefrontStripe: storefrontStripe(a.c.StripePayment, a.c.StripePaymentTest),
 	}
 	origins := shop.NewOrigins(cfg.ShopZoneHost(), st.OpenShopHosts)
 	invalidate := func(teamID int64) {
@@ -58,7 +58,9 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	a.hs.SetShopInvalidator(invalidate)
 
 	re := &shop.Revalidator{Base: a.re, Target: svc.RevalidateTarget, StorefrontID: sf}
-	if hr, ok := a.re.(shop.HostRevalidator); ok {
+	// Without SHOP_REVALIDATE_MASTER no shop is revalidated at its address, so the storefront team
+	// stays on the old route (Base) even with a main address.
+	if hr, ok := a.re.(shop.HostRevalidator); ok && strings.TrimSpace(a.c.Revalidation.ShopMaster) != "" {
 		re.Shop = hr
 	}
 	// A custom host goes live only with its team's DNS proof (TXT under _lekalo.<host>); without a
@@ -83,8 +85,9 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 	// is gone on a no-shop installation.
 	pay := a.newShopPay(ctx, b, adminS, frontendS != nil) // X18-L3, teams_shop_pay.go
 	adminS.SetShops(admin.ShopWiring{Domains: domains, Invalidate: invalidate, Revalidator: re,
-		Reserved: append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
-		Payments: shopPayments(pay)})
+		Reserved:  append(append(own, "grbpwr.com", "lekalo.studio"), shop.RegistrableDomains(own...)...),
+		Payments:  shopPayments(pay),
+		NoPrimary: shopNoPrimary(cfg.APIBase(), cfg.LegacyOrigins(), a.c.HTTP.AllowedOrigins)})
 	go drainShopDomains(ctx, st, domains)
 	a.startShopDomains(ctx, domains, invalidate, re)
 	if frontendS != nil {
@@ -107,6 +110,34 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		slog.Default().WarnContext(ctx, "shops: no shop zone (PLATFORM_SHOP_ZONE / base domain); shops cannot be turned on")
 	}
 	return nil
+}
+
+// storefrontStripe answers the storefront team's publishable key from its env Stripe config: the
+// processor its checkout runs on now (the team's payment-is-prod setting picks CARD = live config,
+// else CARD_TEST = test config). The mode follows the key itself, so a test key in the live slot (beta)
+// answers "test".
+func storefrontStripe(live, test stripe.Config) func(context.Context) (string, string) {
+	return func(ctx context.Context) (string, string) {
+		if cache.GetPaymentIsProd(ctx) {
+			return stripeKeyMode(live, "live")
+		}
+		return stripeKeyMode(test, "test")
+	}
+}
+
+// stripeKeyMode is c's publishable key and its mode ("" when the processor is off or has no key).
+func stripeKeyMode(c stripe.Config, slot string) (string, string) {
+	pk := strings.TrimSpace(c.PubKey)
+	if !c.Enabled || pk == "" {
+		return "", ""
+	}
+	switch {
+	case strings.HasPrefix(pk, "pk_live_"):
+		return pk, "live"
+	case strings.HasPrefix(pk, "pk_test_"):
+		return pk, "test"
+	}
+	return pk, slot
 }
 
 // shopDomainDrainEvery is how often queued provider removals of let-go custom domains are retried.
@@ -132,6 +163,32 @@ func drainShopDomains(ctx context.Context, st *platformstore.Store, dp shop.Doma
 			slog.Default().InfoContext(ctx, "shops: domains removed at the provider", slog.Int("count", n))
 		}
 	}
+}
+
+// shopNoPrimary are hosts the storefront team's main address never is: the legacy admin origins,
+// the API host, and any allowed origin whose first label names an admin or API host (admin.grbpwr.com,
+// backend.grbpwr.com). The shared storefront would send grbpwr's customers there.
+func shopNoPrimary(api string, admin, allowed []string) []string {
+	out := []string{}
+	add := func(h string) {
+		if h != "" && !slices.Contains(out, h) {
+			out = append(out, h)
+		}
+	}
+	add(shop.OriginHost(api))
+	for _, o := range admin {
+		add(shop.OriginHost(o))
+	}
+	for _, o := range allowed {
+		h := shop.OriginHost(o)
+		first, _, _ := strings.Cut(h, ".")
+		for _, p := range []string{"admin", "backend", "api"} {
+			if strings.HasPrefix(first, p) {
+				add(h)
+			}
+		}
+	}
+	return out
 }
 
 // shopOwnHosts are the storefront team's own hosts (HTTP_ALLOWED_ORIGINS and the legacy admin

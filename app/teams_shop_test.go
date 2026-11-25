@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jekabolt/grbpwr-manager/config"
+	"github.com/jekabolt/grbpwr-manager/internal/payment/stripe"
 )
 
 // The storefront's own hosts (legacy shop hosts, reserved for every team) come from its origins:
@@ -33,5 +34,39 @@ func TestWireShopsRefusesOneMaster(t *testing.T) {
 	c.Revalidation.ShopMaster = "another-master-another-master-xx"
 	if err := a.wireShops(context.Background(), nil, nil, nil); err != nil {
 		t.Fatalf("two masters: %v", err)
+	}
+}
+
+// The storefront's publishable key comes from its env processor; the mode from the key itself, the
+// slot only when the key does not say.
+func TestStripeKeyMode(t *testing.T) {
+	for _, c := range []struct {
+		cfg       stripe.Config
+		slot      string
+		key, mode string
+	}{
+		{stripe.Config{Enabled: true, PubKey: " pk_live_x "}, "test", "pk_live_x", "live"},
+		{stripe.Config{Enabled: true, PubKey: "pk_test_x"}, "live", "pk_test_x", "test"},
+		{stripe.Config{Enabled: true, PubKey: "pk_other"}, "live", "pk_other", "live"},
+		{stripe.Config{Enabled: false, PubKey: "pk_live_x"}, "live", "", ""},
+		{stripe.Config{Enabled: true}, "test", "", ""},
+	} {
+		if k, m := stripeKeyMode(c.cfg, c.slot); k != c.key || m != c.mode {
+			t.Errorf("%+v %s: %q %q", c.cfg, c.slot, k, m)
+		}
+	}
+}
+
+// The storefront team's main address is never an admin or API host: the shared storefront would
+// send its customers there.
+func TestShopNoPrimary(t *testing.T) {
+	got := shopNoPrimary("https://backend.grbpwr.com", []string{"https://admin.grbpwr.com"},
+		[]string{"https://grbpwr.com", "https://www.grbpwr.com", "https://admin.grbpwr.com", "https://api.grbpwr.com", "https://admin-beta.grbpwr.com"})
+	want := []string{"backend.grbpwr.com", "admin.grbpwr.com", "api.grbpwr.com", "admin-beta.grbpwr.com"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if got := shopNoPrimary("", nil, nil); len(got) != 0 {
+		t.Fatalf("empty: %v", got)
 	}
 }

@@ -41,10 +41,16 @@ func mustAcquire(t *testing.T, g *Gate, k Key, l Lane) func() {
 }
 
 func TestDefaults(t *testing.T) {
-	for _, c := range []struct{ pool, light, gh int }{{5, 3, 2}, {15, 8, 7}, {1, 2, 1}, {0, 2, 1}, {2, 2, 1}} {
+	for _, c := range []struct{ pool, light, gh, gs int }{{5, 3, 2, 4}, {15, 8, 7, 10}, {1, 2, 1, 2}, {0, 2, 1, 2}, {2, 2, 1, 2}} {
 		d := Defaults(c.pool)
 		if d.Team.Light != c.light || d.GlobalHeavy != c.gh || d.Team.Heavy != 1 {
 			t.Errorf("pool %d: light %d heavy-all %d heavy %d", c.pool, d.Team.Light, d.GlobalHeavy, d.Team.Heavy)
+		}
+		if d.Shop.Light != c.light || d.GlobalShop != c.gs || d.ShopWait <= 0 || d.Shop.Rate <= 0 {
+			t.Errorf("pool %d: shop %d shop-all %d wait %s rate %v", c.pool, d.Shop.Light, d.GlobalShop, d.ShopWait, d.Shop.Rate)
+		}
+		if d.StorefrontShop != (Limits{}) || d.ShopOff {
+			t.Errorf("pool %d: the storefront shop is gated by default: %+v", c.pool, d.StorefrontShop)
 		}
 	}
 }
@@ -72,11 +78,16 @@ func TestLightCapIsPerTeam(t *testing.T) {
 	}
 }
 
-// Storefront calls are never gated: 50 concurrent slow storefront calls of team #1, while its admin
-// share is full and the gate is tiny, never get ResourceExhausted.
+// The storefront team's storefront calls are not gated by default: 50 concurrent slow storefront
+// calls of team #1, while its admin share is full, the shop shares are tiny and another team's shop
+// holds the only global shop slot, never get ResourceExhausted.
 func TestStorefrontNeverRefused(t *testing.T) {
 	g := New(Config{Team: Limits{Light: 1, Heavy: 1, AI: 1, Rate: 1, Burst: 1},
-		GlobalHeavy: 1, LightWait: 10 * time.Millisecond, HeavyWait: 10 * time.Millisecond})
+		GlobalHeavy: 1, LightWait: 10 * time.Millisecond, HeavyWait: 10 * time.Millisecond,
+		Shop: Limits{Light: 1, Rate: 1, Burst: 1}, GlobalShop: 1, ShopWait: 10 * time.Millisecond,
+		StorefrontTeamID: 1})
+	brand := mustAcquire(t, g, teamA, Shop) // the only global shop slot
+	defer brand()
 	shop := func(m string) bool { return strings.HasPrefix(m, "/frontend.FrontendService/") }
 	e := NewEdge(g, shop)
 	ctx := tenant.With(context.Background(), tenant.Team{ID: 1})
@@ -266,6 +277,8 @@ func unaryCall(e *Edge, ctx context.Context, method string, h grpc.UnaryHandler)
 
 func TestUnaryEdge(t *testing.T) {
 	g := testGate(1, 1, 1)
+	g.cfg.Shop = Limits{Light: 1, Rate: 1e6, Burst: 1e6}
+	g.cfg.ShopWait = 50 * time.Millisecond
 	e := NewEdge(g, func(m string) bool { return m == "/frontend.FrontendService/SubmitOrder" })
 	team := tenant.Team{ID: 2, Slug: "a"}
 	ctx := tenant.With(context.Background(), team)
@@ -285,10 +298,17 @@ func TestUnaryEdge(t *testing.T) {
 	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != BusyCode {
 		t.Fatalf("got %v", err)
 	}
-	// The shop of the same team (ungated) and a call with no team pass.
+	// The shop of the same team (its own share) and a call with no team pass.
 	if _, err := unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
+	// The shop's own share used up: refused with the shop's machine word, the admin share untouched.
+	shopHeld := mustAcquire(t, g, Key{TeamID: 2}, Shop)
+	_, err = unaryCall(e, ctx, "/frontend.FrontendService/SubmitOrder", func(context.Context, any) (any, error) { return nil, nil })
+	if st, _ := status.FromError(err); st.Code() != codes.ResourceExhausted || st.Message() != ShopBusyCode {
+		t.Fatalf("shop busy: %v", err)
+	}
+	shopHeld()
 	if _, err := unaryCall(e, context.Background(), "/auth.AuthService/Login", func(context.Context, any) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -316,5 +336,92 @@ func TestHTTPEdge(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/files/upload", nil).WithContext(ctx))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("free: %d", rec.Code)
+	}
+}
+
+func shopGate(teamShop, allShops int) *Gate {
+	return New(Config{
+		Team:        Limits{Light: 1, Heavy: 1, AI: 1, Rate: 1e6, Burst: 1e6},
+		GlobalHeavy: 1,
+		LightWait:   50 * time.Millisecond,
+		HeavyWait:   50 * time.Millisecond,
+		Shop:        Limits{Light: teamShop, Rate: 1e6, Burst: 1e6},
+		GlobalShop:  allShops,
+		ShopWait:    50 * time.Millisecond,
+
+		StorefrontTeamID: 1,
+	})
+}
+
+// A team's shop has a share of its own: its admin share full does not touch it, its shop at its cap
+// is refused while another team's shop still runs, and all team shops together stop at GlobalShop.
+func TestShopLanePerTeam(t *testing.T) {
+	g := shopGate(2, 3)
+	admin := mustAcquire(t, g, teamA, Light) // A's admin share is full
+	defer admin()
+	a1 := mustAcquire(t, g, teamA, Shop)
+	a2 := mustAcquire(t, g, teamA, Shop)
+	if _, err := g.Acquire(context.Background(), teamA, Shop); !IsBusy(err) {
+		t.Fatalf("third shop call of A: %v, want busy", err)
+	}
+	b1 := mustAcquire(t, g, teamB, Shop) // the third global shop slot
+	if _, err := g.Acquire(context.Background(), teamB, Shop); !IsBusy(err) {
+		t.Fatalf("all shops full: %v, want busy", err)
+	}
+	// The storefront team never takes a global shop slot and has no cap by default.
+	for i := 0; i < 5; i++ {
+		defer mustAcquire(t, g, Key{TeamID: 1}, Shop)()
+	}
+	// A refused shop call left no slot behind: freeing one of A's lets B in.
+	a1()
+	b2 := mustAcquire(t, g, teamB, Shop)
+	a2()
+	b1()
+	b2()
+	// The admin share of B is untouched by all of this.
+	mustAcquire(t, g, teamB, Light)()
+}
+
+// The storefront team's limits apply only when set: then its cap and bucket refuse it too, still
+// without any global shop slot.
+func TestStorefrontShopLimits(t *testing.T) {
+	g := shopGate(1, 1)
+	g.cfg.StorefrontShop = Limits{Light: 2}
+	sf := Key{TeamID: 1}
+	brand := mustAcquire(t, g, teamA, Shop) // the only global shop slot
+	defer brand()
+	r1 := mustAcquire(t, g, sf, Shop)
+	r2 := mustAcquire(t, g, sf, Shop)
+	if _, err := g.Acquire(context.Background(), sf, Shop); !IsBusy(err) {
+		t.Fatalf("storefront over its cap: %v, want busy", err)
+	}
+	r1()
+	r2()
+
+	g = shopGate(1, 1)
+	g.cfg.StorefrontShop = Limits{Rate: 1, Burst: 2}
+	mustAcquire(t, g, sf, Shop)()
+	mustAcquire(t, g, sf, Shop)()
+	if _, err := g.Acquire(context.Background(), sf, Shop); !IsBusy(err) {
+		t.Fatalf("storefront over its bucket: %v, want busy", err)
+	}
+}
+
+func TestShopRateAndOff(t *testing.T) {
+	g := shopGate(5, 5)
+	g.cfg.Shop = Limits{Light: 5, Rate: 1, Burst: 2}
+	mustAcquire(t, g, teamA, Shop)()
+	mustAcquire(t, g, teamA, Shop)()
+	_, err := g.Acquire(context.Background(), teamA, Shop)
+	var be BusyError
+	if !errors.As(err, &be) || be.Why != "shop rate" {
+		t.Fatalf("over the shop bucket: %v", err)
+	}
+	mustAcquire(t, g, teamB, Shop)() // another team's bucket is its own
+
+	g = shopGate(1, 1)
+	g.cfg.ShopOff = true
+	for i := 0; i < 5; i++ {
+		defer mustAcquire(t, g, teamA, Shop)()
 	}
 }

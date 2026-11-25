@@ -26,6 +26,8 @@ type fakeVercel struct {
 }
 
 type fakeDomain struct {
+	redirect   string // the redirect target ("" = serves the project)
+	redirectSC int
 	verified   bool
 	txt        string // verification TXT value while not verified
 	routed     bool   // DNS points at Vercel
@@ -55,6 +57,9 @@ func vErr(w http.ResponseWriter, code int, c, msg string) {
 func (f *fakeVercel) pd(name string, d *fakeDomain) map[string]any {
 	labels := strings.Split(name, ".")
 	out := map[string]any{"name": name, "apexName": strings.Join(labels[len(labels)-2:], "."), "verified": d.verified}
+	if d.redirect != "" {
+		out["redirect"], out["redirectStatusCode"] = d.redirect, d.redirectSC
+	}
 	if !d.verified && d.txt != "" {
 		out["verification"] = []map[string]string{{"type": "TXT", "domain": "_vercel." + out["apexName"].(string), "value": d.txt, "reason": "pending_domain_verification"}}
 	}
@@ -87,7 +92,11 @@ func (f *fakeVercel) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case r.Method == http.MethodPost && p == "/v10/projects/lekalo-shop/domains":
-		var body struct{ Name string }
+		var body struct {
+			Name               string
+			Redirect           string
+			RedirectStatusCode int
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if f.elsewhere[body.Name] {
 			vErr(w, 409, "domain_already_in_use", "in use by another project")
@@ -101,7 +110,11 @@ func (f *fakeVercel) serve(w http.ResponseWriter, r *http.Request) {
 			vErr(w, 400, "invalid_domain", "bad")
 			return
 		}
-		d := &fakeDomain{}
+		if body.Redirect != "" && f.domains[body.Redirect] == nil {
+			vErr(w, 400, "redirect_target_not_found", "no such target")
+			return
+		}
+		d := &fakeDomain{redirect: body.Redirect, redirectSC: body.RedirectStatusCode}
 		f.domains[body.Name] = d
 		writeJSON(w, 200, f.pd(body.Name, d))
 	case strings.HasPrefix(p, "/v9/projects/lekalo-shop/domains/"):
@@ -124,6 +137,14 @@ func (f *fakeVercel) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, 200, f.pd(name, d))
 		case r.Method == http.MethodGet:
+			writeJSON(w, 200, f.pd(name, d))
+		case r.Method == http.MethodPatch:
+			var body struct {
+				Redirect           string
+				RedirectStatusCode int
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			d.redirect, d.redirectSC = body.Redirect, body.RedirectStatusCode
 			writeJSON(w, 200, f.pd(name, d))
 		case r.Method == http.MethodDelete:
 			delete(f.domains, name)
@@ -321,5 +342,45 @@ func TestVercelConfigEnabled(t *testing.T) {
 	}
 	if !(VercelConfig{Token: "x", ProjectID: "p"}).Enabled() {
 		t.Fatal("full config must be enabled")
+	}
+}
+
+// A www sibling is added as a permanent redirect to its bare domain; again is idempotent; a sibling
+// the project has with another target gets the redirect; one on another project is taken.
+func TestVercelAttachRedirect(t *testing.T) {
+	f, v := newFakeVercel(t)
+	ctx := context.Background()
+	if _, err := v.Attach(ctx, "brand.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.AttachRedirect(ctx, "www.brand.com", "brand.com"); err != nil {
+		t.Fatal(err)
+	}
+	d := f.domains["www.brand.com"]
+	if d == nil || d.redirect != "brand.com" || d.redirectSC != http.StatusPermanentRedirect {
+		t.Fatalf("redirect: %+v", d)
+	}
+	f.calls = nil
+	if _, err := v.AttachRedirect(ctx, "www.brand.com", "brand.com"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, http.MethodPatch) {
+			t.Fatalf("an unchanged redirect was patched: %v", f.calls)
+		}
+	}
+	d.redirect = ""
+	if _, err := v.AttachRedirect(ctx, "www.brand.com", "brand.com"); err != nil {
+		t.Fatal(err)
+	}
+	if d.redirect != "brand.com" || d.redirectSC != http.StatusPermanentRedirect {
+		t.Fatalf("patched: %+v", d)
+	}
+	f.elsewhere["www.other.com"] = true
+	if _, err := v.AttachRedirect(ctx, "www.other.com", "brand.com"); !errors.Is(err, ErrDomainTaken) {
+		t.Fatalf("elsewhere: %v", err)
+	}
+	if _, err := v.AttachRedirect(ctx, "www_bad.brand.com", "brand.com"); !errors.Is(err, ErrBadHost) {
+		t.Fatalf("bad host: %v", err)
 	}
 }
