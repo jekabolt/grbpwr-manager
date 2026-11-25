@@ -6,6 +6,11 @@ cmd/assembly_clear.go	assemblyClearCmd
 cmd/assembly_clear.go	assemblyClearDryRun
 cmd/assembly_clear.go	assemblyClearID
 cmd/assembly_clear.go	assemblyClearReopen
+cmd/backfill_pixel_preview.go	pixelBackfillBatch
+cmd/backfill_pixel_preview.go	pixelBackfillCmd
+cmd/backfill_pixel_preview.go	pixelBackfillDryRun
+cmd/backfill_pixel_preview.go	pixelBackfillLimit
+cmd/backfill_pixel_preview.go	pixelBackfillTeam
 cmd/costbasis_report.go	costBasisCards
 cmd/costbasis_report.go	costBasisCmd
 cmd/costbasis_report.go	costBasisJSON
