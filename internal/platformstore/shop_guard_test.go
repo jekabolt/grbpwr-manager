@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jekabolt/grbpwr-manager/internal/platformstore"
+	"github.com/jekabolt/grbpwr-manager/internal/shop"
 )
 
 // proofFake proves the "team:host" pairs it names.
@@ -185,13 +187,16 @@ func TestShopHostTakeoverGuards(t *testing.T) {
 	}
 }
 
-// TestLegacyShopHosts (X18 review, major 2): the storefront team's own hosts are seeded at boot as
-// live legacy rows, idempotently, and taken back from a team that attached one.
+// TestLegacyShopHosts (X18 review, major 2; v3 re-review): the storefront team's own hosts are
+// seeded at boot as live legacy rows, idempotently. The boot never deletes: a host another team holds
+// as its own domain stays that team's and is reported (the binder names the storefront team for its
+// configured hosts before any lookup).
 func TestLegacyShopHosts(t *testing.T) {
 	st := openFresh(t)
 	ctx := context.Background()
 	ann, _, _ := seedConsole(t, st)
 	now := time.Now().UTC()
+	st.SetLegacyShopHosts(1, []string{"www.grbpwr.com", "grbpwr.com"})
 	st.SetShopHostProof(proofFake{proofKey(2, "www.grbpwr.com"): true})
 	if err := st.SetShopEnabled(ctx, 2, true, "acme.shop.beta.lekalo.studio", ann, now); err != nil {
 		t.Fatal(err)
@@ -202,25 +207,23 @@ func TestLegacyShopHosts(t *testing.T) {
 	if err := st.SetShopPrimary(ctx, 2, "www.grbpwr.com"); err != nil {
 		t.Fatal(err)
 	}
-	taken, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"www.grbpwr.com", "grbpwr.com"}, now)
-	if err != nil || len(taken) != 1 || taken[0] != "www.grbpwr.com" {
-		t.Fatalf("seed %v %v", taken, err)
+	held, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"www.grbpwr.com", "grbpwr.com"}, now)
+	if err != nil || len(held) != 1 || held[0] != "www.grbpwr.com" {
+		t.Fatalf("seed %v %v", held, err)
 	}
-	for _, h := range []string{"www.grbpwr.com", "grbpwr.com"} {
-		if id, ok, err := st.ShopHostTeam(ctx, h); err != nil || !ok || id != 1 {
-			t.Fatalf("%s routes to %d %v %v", h, id, ok, err)
-		}
-		if lh := hostStatus(t, st, 1, h); lh.Kind != platformstore.ShopHostLegacy || !lh.Managed || lh.Primary {
-			t.Fatalf("legacy row %+v", lh)
-		}
+	if id, ok, err := st.ShopHostTeam(ctx, "grbpwr.com"); err != nil || !ok || id != 1 {
+		t.Fatalf("grbpwr.com routes to %d %v %v", id, ok, err)
 	}
-	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary {
-		t.Fatal("the team that lost the host has no main address")
+	if lh := hostStatus(t, st, 1, "grbpwr.com"); lh.Kind != platformstore.ShopHostLegacy || !lh.Managed || lh.Primary {
+		t.Fatalf("legacy row %+v", lh)
 	}
-	if taken, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"www.grbpwr.com", "grbpwr.com"}, now); err != nil || len(taken) != 0 {
-		t.Fatalf("second seed %v %v", taken, err)
+	if h := hostStatus(t, st, 2, "www.grbpwr.com"); h.Kind != platformstore.ShopHostCustom || !h.Primary {
+		t.Fatalf("the boot took another team's domain: %+v", h)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1`); n != 2 {
+	if held, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"www.grbpwr.com", "grbpwr.com"}, now); err != nil || len(held) != 1 {
+		t.Fatalf("second seed %v %v", held, err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1`); n != 1 {
 		t.Fatalf("legacy rows = %d", n)
 	}
 	if err := st.AttachShopHost(ctx, 2, "grbpwr.com", platformstore.ShopHostLive, nil, now); !errors.Is(err, platformstore.ErrShopHostTaken) {
@@ -228,50 +231,172 @@ func TestLegacyShopHosts(t *testing.T) {
 	}
 }
 
-// TestPruneLegacyShopHosts (X18 v3 review): only the configured storefront hosts stay legacy rows of
-// the storefront team; a host an older boot seeded from the allowed origins goes, a pruned main
-// address leaves no main address, and other kinds and other teams' rows are never touched.
-func TestPruneLegacyShopHosts(t *testing.T) {
+// TestLegacyRowsCountOnlyWhenConfigured (X18 v3 re-review): a legacy row counts only while its host is
+// a configured storefront host and its team the storefront team. Under "none", or after the
+// storefront team changed, every other legacy row is ignored by every read (routing, lists, CORS,
+// summaries, main address, revalidation) and nothing is deleted.
+func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 	st := openFresh(t)
 	ctx := context.Background()
-	ann, _, _ := seedConsole(t, st)
+	seedConsole(t, st)
 	now := time.Now().UTC()
-	if err := st.SetShopEnabled(ctx, 2, true, "acme.shop.beta.lekalo.studio", ann, now); err != nil {
+	hosts := []string{"grbpwr.com", "www.grbpwr.com"}
+	if _, err := st.EnsureLegacyShopHosts(ctx, 1, hosts, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "jekabolt.github.io", "admin.grbpwr.com"}, now); err != nil {
+	if _, err := st.DB().Exec(`UPDATE shop_host SET is_primary = 1 WHERE host = 'grbpwr.com'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetShopPrimary(ctx, 1, "jekabolt.github.io"); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO team_shop (team_id, enabled) VALUES (1, 1) ON DUPLICATE KEY UPDATE enabled = 1`); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := st.PruneLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com"})
-	if err != nil || len(removed) != 2 || removed[0] != "admin.grbpwr.com" || removed[1] != "jekabolt.github.io" {
-		t.Fatalf("prune: %v %v", removed, err)
+	routes := func(host string) (int64, bool) {
+		t.Helper()
+		id, ok, err := st.ShopHostTeam(ctx, host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id, ok
 	}
-	for _, h := range []string{"jekabolt.github.io", "admin.grbpwr.com"} {
-		if _, ok, err := st.ShopHostTeam(ctx, h); err != nil || ok {
-			t.Fatalf("%s still routes: %v %v", h, ok, err)
+	listed := func(teamID int64) []string {
+		t.Helper()
+		hs, err := st.ShopHosts(ctx, teamID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.Host)
+		}
+		return out
+	}
+	summaryPrimary := func(teamID int64) string {
+		t.Helper()
+		sums, err := st.ShopSummaries(ctx, []int64{teamID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sums[teamID].PrimaryHost
+	}
+	target := func(sf, teamID int64, sfHosts []string) string {
+		t.Helper()
+		svc := &shop.Service{St: st, StorefrontID: sf, StorefrontHosts: sfHosts}
+		h, ok, err := svc.RevalidateTarget(ctx, teamID)
+		if err != nil || ok != (h != "") {
+			t.Fatalf("revalidate target %q %v %v", h, ok, err)
+		}
+		return h
+	}
+	open := func() []string {
+		t.Helper()
+		hs, err := st.OpenShopHosts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hs
+	}
+
+	// No gate yet (fail closed): no legacy row counts.
+	if _, ok := routes("grbpwr.com"); ok {
+		t.Fatal("a legacy row counted without a gate")
+	}
+	// Configured: the rows route, list and revalidate.
+	st.SetLegacyShopHosts(1, hosts)
+	if id, ok := routes("grbpwr.com"); !ok || id != 1 {
+		t.Fatalf("configured: %d %v", id, ok)
+	}
+	if got := listed(1); len(got) != 2 || summaryPrimary(1) != "grbpwr.com" || target(1, 1, hosts) != "grbpwr.com" {
+		t.Fatalf("configured: %v %q", got, summaryPrimary(1))
+	}
+	if got := open(); !slices.Contains(got, "grbpwr.com") {
+		t.Fatalf("configured: open hosts %v", got)
+	}
+
+	// "none" with a stale grbpwr.com row on team 1: as if absent.
+	st.SetLegacyShopHosts(1, nil)
+	for _, h := range hosts {
+		if _, ok := routes(h); ok {
+			t.Fatalf("none: %s routes", h)
+		}
+		if _, err := st.ShopHost(ctx, 1, h); !errors.Is(err, platformstore.ErrShopHostNotFound) {
+			t.Fatalf("none: %s read: %v", h, err)
 		}
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1 AND is_primary = 1`); n != 0 {
-		t.Fatalf("a pruned main address stayed: %d", n)
+	if got := listed(1); len(got) != 0 {
+		t.Fatalf("none: listed %v", got)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1`); n != 2 {
-		t.Fatalf("storefront rows = %d, want 2", n)
+	if got := open(); len(got) != 0 {
+		t.Fatalf("none: open hosts %v", got)
 	}
-	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary || h.Kind != platformstore.ShopHostSubdomain {
-		t.Fatalf("another team's row changed: %+v", h)
+	if p := summaryPrimary(1); p != "" {
+		t.Fatalf("none: main address %q", p)
 	}
-	if removed, err := st.PruneLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com"}); err != nil || len(removed) != 0 {
-		t.Fatalf("second prune: %v %v", removed, err)
+	if h := target(1, 1, nil); h != "" {
+		t.Fatalf("none: revalidated %q", h)
 	}
-	// Team 2's platform address is never a legacy row: a prune of team 2 with nothing to keep leaves it.
-	if removed, err := st.PruneLegacyShopHosts(ctx, 2, nil); err != nil || len(removed) != 0 {
-		t.Fatalf("prune of a team without legacy rows: %v %v", removed, err)
+	if err := st.SetShopPrimary(ctx, 1, "www.grbpwr.com"); !errors.Is(err, platformstore.ErrShopHostNotFound) {
+		t.Fatalf("none: main address on an ignored row: %v", err)
 	}
-	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); !h.Primary {
-		t.Fatal("prune removed a platform address")
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1 AND kind = 'legacy'`); n != 2 {
+		t.Fatalf("none: rows deleted, %d left", n)
+	}
+	// An ignored row still holds its name.
+	if err := st.AttachShopHost(ctx, 2, "grbpwr.com", platformstore.ShopHostLive, nil, now); !errors.Is(err, platformstore.ErrShopHostTaken) {
+		t.Fatalf("none: another team attached an ignored host: %v", err)
+	}
+
+	// The storefront team becomes team 7 with grbpwr.com only: that row moves (no delete), team 1's
+	// www row stays and is ignored, and team 1's old main address is gone.
+	if _, err := st.DB().Exec(`INSERT INTO team (id, slug, name, db_name, status, created_at) VALUES (7, 'seven', 'Seven', 'lk_t_seven001', 'active', '2026-11-05')`); err != nil {
+		t.Fatal(err)
+	}
+	st.SetLegacyShopHosts(1, hosts) // put the main address back on team 1 first
+	if err := st.SetShopPrimary(ctx, 1, "www.grbpwr.com"); err != nil {
+		t.Fatal(err)
+	}
+	seven := []string{"grbpwr.com"}
+	st.SetLegacyShopHosts(7, seven)
+	if held, err := st.EnsureLegacyShopHosts(ctx, 7, seven, now); err != nil || len(held) != 0 {
+		t.Fatalf("seed team 7: %v %v", held, err)
+	}
+	if id, ok := routes("grbpwr.com"); !ok || id != 7 {
+		t.Fatalf("team 7: grbpwr.com routes to %d %v", id, ok)
+	}
+	if _, ok := routes("www.grbpwr.com"); ok {
+		t.Fatal("team 7: team 1's legacy row still routes")
+	}
+	if got := listed(1); len(got) != 0 {
+		t.Fatalf("team 7: team 1 lists %v", got)
+	}
+	if p := summaryPrimary(1); p != "" {
+		t.Fatalf("team 7: team 1 main address %q", p)
+	}
+	if h := target(7, 1, seven); h != "" {
+		t.Fatalf("team 7: team 1 revalidated at %q", h)
+	}
+	if err := st.SetShopPrimary(ctx, 1, "www.grbpwr.com"); !errors.Is(err, platformstore.ErrShopHostNotFound) {
+		t.Fatalf("team 7: team 1 main address on an ignored row: %v", err)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE kind = 'legacy'`); n != 2 {
+		t.Fatalf("team 7: legacy rows %d, want 2", n)
+	}
+	// Team 1 opens a shop of its own: its platform address becomes the main address (the ignored
+	// row's flag is dropped, the row stays) and is its revalidation target.
+	if err := st.SetShopEnabled(ctx, 1, true, "grbpwr.shop.beta.lekalo.studio", 101, now); err != nil {
+		t.Fatal(err)
+	}
+	if h := target(7, 1, seven); h != "grbpwr.shop.beta.lekalo.studio" {
+		t.Fatalf("team 1 shop target %q", h)
+	}
+	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE host = 'www.grbpwr.com' AND team_id = 1 AND kind = 'legacy'`); n != 1 {
+		t.Fatalf("team 1's ignored row went: %d", n)
+	}
+	// Team 7 picks grbpwr.com and is revalidated there.
+	if err := st.SetShopPrimary(ctx, 7, "grbpwr.com"); err != nil {
+		t.Fatal(err)
+	}
+	if h := target(7, 7, seven); h != "grbpwr.com" {
+		t.Fatalf("team 7 target %q", h)
 	}
 }
 

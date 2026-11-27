@@ -30,17 +30,24 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		// One master would let a revalidation secret of a shop be derived next to its customer keys.
 		return errors.New("shops: SHOP_REVALIDATE_MASTER must differ from STOREFRONT_AUTH_SHOP_MASTER")
 	}
-	if a.platform == nil {
-		return nil
-	}
 	cfg := a.c.Platform
-	st := a.platform
 	sf := a.storefrontTeamID()
 	platform := []string{cfg.BaseDomain, cfg.ShopZoneHost()}
 	adminHosts := shopNoPrimary(cfg.APIBase(), cfg.LegacyOrigins(), a.c.HTTP.AllowedOrigins)
 	// The storefront team's shop hosts come from TENANT_STOREFRONT_HOSTS only, never from the allowed
-	// origins: a CORS-only page is never its main address nor gets its revalidation secret.
-	legacy := storefrontShopHosts(sf, cfg.LegacyStorefrontHosts(), platform, adminHosts)
+	// origins: a CORS-only page is never its main address nor gets its revalidation secret. A bad
+	// entry fails the boot.
+	legacy, err := storefrontShopHosts(sf, cfg.LegacyStorefrontHosts(), platform, adminHosts)
+	if err != nil {
+		return err
+	}
+	if a.platform == nil {
+		return nil
+	}
+	st := a.platform
+	// Only the storefront team's configured hosts count as legacy rows; any other legacy row (a host
+	// no longer listed, "none", a former storefront team) is ignored everywhere. Nothing is deleted.
+	st.SetLegacyShopHosts(sf, legacy)
 	if b != nil {
 		b.SetStorefrontHosts(legacy)
 	}
@@ -81,21 +88,13 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		st.SetShopHostProof(proof)
 	}
 	if sf > 0 {
-		taken, err := st.EnsureLegacyShopHosts(ctx, sf, legacy, time.Now())
+		// Seed only: the boot never deletes a shop host.
+		held, err := st.EnsureLegacyShopHosts(ctx, sf, legacy, time.Now())
 		if err != nil {
 			return fmt.Errorf("shops: legacy hosts: %w", err)
 		}
-		for _, h := range taken {
-			slog.Default().ErrorContext(ctx, "shops: a legacy host was attached by another team; taken back", slog.String("host", h))
-		}
-		// A legacy row that is no storefront host any more (an older boot seeded the allowed origins,
-		// or TENANT_STOREFRONT_HOSTS changed) goes.
-		removed, err := st.PruneLegacyShopHosts(ctx, sf, legacy)
-		if err != nil {
-			return fmt.Errorf("shops: legacy hosts: %w", err)
-		}
-		for _, h := range removed {
-			slog.Default().WarnContext(ctx, "shops: a legacy host that is not a storefront host was removed", slog.String("host", h))
+		for _, h := range held {
+			slog.Default().ErrorContext(ctx, "shops: a storefront host is another team's domain; left to that team", slog.String("host", h))
 		}
 	}
 	// Reserved for every team: the storefront's hosts and every allowed or legacy admin origin.
@@ -213,26 +212,40 @@ func shopNoPrimary(api string, admin, allowed []string) []string {
 	return out
 }
 
-// storefrontShopHosts are the storefront team's shop hosts (TENANT_STOREFRONT_HOSTS, bare hosts or
-// origins): its legacy shop hosts, the only ones that name it, may be its main address and receive
-// its revalidation. None without a storefront team. Admin and API hosts, dev and preview hosts and
-// hosts under the platform's domains are left out.
-func storefrontShopHosts(sf int64, hosts, platform, admin []string) []string {
-	if sf <= 0 {
-		return nil
+// storefrontShopHosts are the storefront team's shop hosts (TENANT_STOREFRONT_HOSTS entries, bare
+// hosts or origins): its legacy shop hosts, the only ones that name it, may be its main address and
+// receive its revalidation. nil entries ("none") = none. Every entry must be a valid custom host:
+// an empty or malformed entry, an admin or API host, a dev or preview host or a host under the
+// platform's domains is an error (the boot fails), never dropped. A repeated host counts once. None
+// without a storefront team (the entries are still checked).
+func storefrontShopHosts(sf int64, entries, platform, admin []string) ([]string, error) {
+	if entries == nil {
+		return nil, nil
 	}
 	var out []string
-	for _, v := range hosts {
+	for _, v := range entries {
 		h := shop.OriginHost(v)
-		if h == "" {
+		if h == "" && !strings.Contains(v, "://") {
 			h = shop.NormHost(v)
 		}
-		if h == "" || slices.Contains(out, h) || slices.Contains(admin, h) || shop.ValidCustomHost(h, platform...) != nil {
-			continue
+		switch {
+		case h == "" || !shop.ValidHost(h):
+			return nil, fmt.Errorf("shops: TENANT_STOREFRONT_HOSTS: %q is not a host", v)
+		case slices.Contains(admin, h):
+			return nil, fmt.Errorf("shops: TENANT_STOREFRONT_HOSTS: %q is an admin or API host", v)
+		case shop.ValidCustomHost(h, platform...) != nil:
+			return nil, fmt.Errorf("shops: TENANT_STOREFRONT_HOSTS: %q is a dev, preview or platform host", v)
+		case !slices.Contains(out, h):
+			out = append(out, h)
 		}
-		out = append(out, h)
 	}
-	return out
+	if len(out) == 0 {
+		return nil, errors.New(`shops: TENANT_STOREFRONT_HOSTS names no host (use "none" for none)`)
+	}
+	if sf <= 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // shopReservedHosts are the hosts of the allowed and legacy admin origins (HTTP_ALLOWED_ORIGINS,

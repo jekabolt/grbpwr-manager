@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -138,18 +137,57 @@ type TeamStripe struct {
 	DisconnectedAt      *time.Time `db:"disconnected_at"`
 }
 
+// legacyGate is the storefront team and its configured shop hosts (SetLegacyShopHosts).
+type legacyGate struct {
+	team  int64
+	hosts map[string]bool
+}
+
+// SetLegacyShopHosts names the storefront team and its configured shop hosts (TENANT_STOREFRONT_HOSTS,
+// boot). A legacy shop_host row counts only while its host is one of hosts and its team is teamID:
+// every other legacy row (a host no longer configured, all of them under "none", every row of a
+// former storefront team) is ignored by every read, as if absent: it never routes, is never listed,
+// never a main address nor a revalidation target. Writes still see it, so it keeps its name: no team
+// can attach that host while the row is there. Nothing is ever deleted for this. Without a call, or
+// with teamID <= 0, no legacy row counts (fail closed). Other kinds are never affected.
+func (s *Store) SetLegacyShopHosts(teamID int64, hosts []string) {
+	g := &legacyGate{team: teamID, hosts: make(map[string]bool, len(hosts))}
+	for _, h := range hosts {
+		g.hosts[h] = true
+	}
+	s.legacy.Store(g)
+}
+
+// shopRowCounts reports whether a row of kind on host held by teamID counts (SetLegacyShopHosts).
+func (s *Store) shopRowCounts(teamID int64, kind, host string) bool {
+	if kind != ShopHostLegacy {
+		return true
+	}
+	g := s.legacy.Load()
+	return g != nil && g.team > 0 && teamID == g.team && g.hosts[host]
+}
+
+func (s *Store) counts(r shopHostRow) bool { return s.shopRowCounts(r.TeamID, r.Kind, r.Host) }
+
 // ShopHostTeam is the team a live host answers for; ok=false when no team has it live. Only live
 // hosts route a storefront request: a custom host is live only after its team proved it owns the
-// domain (ShopHostProof), a platform address and a legacy host are live by construction.
+// domain (ShopHostProof), a platform address and a legacy host are live by construction. A legacy
+// row that does not count (SetLegacyShopHosts) routes nowhere.
 func (s *Store) ShopHostTeam(ctx context.Context, host string) (int64, bool, error) {
-	var id int64
-	if err := s.db.GetContext(ctx, &id, `SELECT team_id FROM shop_host WHERE host = ? AND status = 'live'`, host); err != nil {
+	var r struct {
+		TeamID int64  `db:"team_id"`
+		Kind   string `db:"kind"`
+	}
+	if err := s.db.GetContext(ctx, &r, `SELECT team_id, kind FROM shop_host WHERE host = ? AND status = 'live'`, host); err != nil {
 		if isNoRows(err) {
 			return 0, false, nil
 		}
 		return 0, false, fmt.Errorf("platformstore: shop host team: %w", err)
 	}
-	return id, true, nil
+	if !s.shopRowCounts(r.TeamID, r.Kind, host) {
+		return 0, false, nil
+	}
+	return r.TeamID, true, nil
 }
 
 // ShopHostPendingTTL is how long another team's custom host that never went live holds its name;
@@ -166,7 +204,8 @@ func stalePending(cur shopHostRow, now time.Time) bool {
 
 // ShopHostFree reports whether team teamID may attach host: no row, the team's own custom row, or
 // another team's custom row that never went live (never verified) within ShopHostPendingTTL. Else ErrShopHostTaken
-// (ErrShopHostManaged for the team's own platform or legacy host).
+// (ErrShopHostManaged for the team's own platform or legacy host). A legacy row that does not count
+// still holds its name.
 func (s *Store) ShopHostFree(ctx context.Context, teamID int64, host string, now time.Time) error {
 	var cur shopHostRow
 	err := s.db.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ?`, host)
@@ -183,7 +222,8 @@ func (s *Store) ShopHostFree(ctx context.Context, teamID int64, host string, now
 	return ErrShopHostTaken
 }
 
-// ShopHosts lists a team's hosts: the platform address first, then by attach time.
+// ShopHosts lists a team's hosts: the platform address first, then by attach time. A legacy row that
+// does not count (SetLegacyShopHosts) is left out.
 func (s *Store) ShopHosts(ctx context.Context, teamID int64) ([]ShopHost, error) {
 	var rows []shopHostRow
 	if err := s.db.SelectContext(ctx, &rows, `SELECT `+shopHostColumns+` FROM shop_host WHERE team_id = ?
@@ -192,12 +232,14 @@ ORDER BY (kind = 'subdomain') DESC, created_at, host`, teamID); err != nil {
 	}
 	out := make([]ShopHost, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, r.host())
+		if s.counts(r) {
+			out = append(out, r.host())
+		}
 	}
 	return out, nil
 }
 
-// ShopHost reads one host of a team.
+// ShopHost reads one host of a team (ErrShopHostNotFound for a legacy row that does not count).
 func (s *Store) ShopHost(ctx context.Context, teamID int64, host string) (ShopHost, error) {
 	var r shopHostRow
 	if err := s.db.GetContext(ctx, &r, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? AND team_id = ?`, host, teamID); err != nil {
@@ -206,19 +248,33 @@ func (s *Store) ShopHost(ctx context.Context, teamID int64, host string) (ShopHo
 		}
 		return ShopHost{}, fmt.Errorf("platformstore: shop host: %w", err)
 	}
+	if !s.counts(r) {
+		return ShopHost{}, ErrShopHostNotFound
+	}
 	return r.host(), nil
 }
 
 // OpenShopHosts lists every live host of every shop that is on and not closed by the operator (the
-// CORS allow-list of /api/frontend). Hosts of a team that is not active are left out.
+// CORS allow-list of /api/frontend). Hosts of a team that is not active, and legacy rows that do not
+// count, are left out.
 func (s *Store) OpenShopHosts(ctx context.Context) ([]string, error) {
-	var hosts []string
-	if err := s.db.SelectContext(ctx, &hosts, `SELECT h.host FROM shop_host h
+	var rows []struct {
+		Host   string `db:"host"`
+		TeamID int64  `db:"team_id"`
+		Kind   string `db:"kind"`
+	}
+	if err := s.db.SelectContext(ctx, &rows, `SELECT h.host, h.team_id, h.kind FROM shop_host h
 JOIN team_shop ts ON ts.team_id = h.team_id
 JOIN team t ON t.id = h.team_id
 WHERE ts.enabled = 1 AND ts.closed_by_operator = 0 AND t.status = 'active' AND h.status = 'live'
 ORDER BY h.host`); err != nil {
 		return nil, fmt.Errorf("platformstore: open shop hosts: %w", err)
+	}
+	hosts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if s.shopRowCounts(r.TeamID, r.Kind, r.Host) {
+			hosts = append(hosts, r.Host)
+		}
 	}
 	return hosts, nil
 }
@@ -261,7 +317,7 @@ func (s *Store) SetShopEnabled(ctx context.Context, teamID int64, enabled bool, 
 			return err
 		}
 		if enabled {
-			if err := ensureSubdomainTx(ctx, tx, teamID, subdomain, now); err != nil {
+			if err := s.ensureSubdomainTx(ctx, tx, teamID, subdomain, now); err != nil {
 				return err
 			}
 		}
@@ -284,11 +340,11 @@ func (s *Store) EnsureShopSubdomain(ctx context.Context, teamID int64, subdomain
 		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
 			return err
 		}
-		return ensureSubdomainTx(ctx, tx, teamID, subdomain, now.UTC())
+		return s.ensureSubdomainTx(ctx, tx, teamID, subdomain, now.UTC())
 	})
 }
 
-func ensureSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, subdomain string, now time.Time) error {
+func (s *Store) ensureSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, subdomain string, now time.Time) error {
 	if subdomain == "" {
 		return errors.New("platformstore: shop subdomain is empty")
 	}
@@ -297,9 +353,16 @@ func ensureSubdomainTx(ctx context.Context, tx *sqlx.Tx, teamID int64, subdomain
 		return fmt.Errorf("platformstore: shop hosts: %w", err)
 	}
 	have, primary, oldPrimary := false, false, false
+	var ignored []string
 	for _, h := range hosts {
 		if h.Host == subdomain {
 			have = true
+			continue
+		}
+		if h.Primary && !s.counts(h) {
+			// The main address of a former storefront team on a legacy row that no longer counts:
+			// no main address (the platform address takes over); the row itself stays.
+			ignored = append(ignored, h.Host)
 			continue
 		}
 		if h.Primary {
@@ -338,6 +401,11 @@ VALUES (?, ?, 'subdomain', 1, 0, 'live', ?, ?, ?)`, subdomain, teamID, recs, now
 		}
 	}
 	if !primary {
+		for _, h := range ignored {
+			if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 0 WHERE host = ? AND team_id = ? AND kind = 'legacy'`, h, teamID); err != nil {
+				return fmt.Errorf("platformstore: drop shop primary: %w", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE shop_host SET is_primary = 1 WHERE host = ? AND team_id = ?`, subdomain, teamID); err != nil {
 			return fmt.Errorf("platformstore: shop subdomain primary: %w", err)
 		}
@@ -629,7 +697,8 @@ func (s *Store) ClearShopPrimary(ctx context.Context, teamID int64) error {
 }
 
 // SetShopPrimary makes a live host of the team its main address (a legacy host too: the storefront
-// team's main address is one of them once grbpwr.com moves to the shared storefront).
+// team's main address is one of them once grbpwr.com moves to the shared storefront). A legacy row
+// that does not count (SetLegacyShopHosts) is ErrShopHostNotFound.
 func (s *Store) SetShopPrimary(ctx context.Context, teamID int64, host string) error {
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
 		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
@@ -641,6 +710,9 @@ func (s *Store) SetShopPrimary(ctx context.Context, teamID int64, host string) e
 				return ErrShopHostNotFound
 			}
 			return fmt.Errorf("platformstore: lock shop host: %w", err)
+		}
+		if !s.counts(cur) {
+			return ErrShopHostNotFound
 		}
 		if cur.Status != ShopHostLive || cur.RedirectTo != "" {
 			return ErrShopHostNotLive
@@ -783,13 +855,15 @@ type ShopSummary struct {
 	Payable     bool   `db:"payable"`
 }
 
-// ShopSummaries reads the shops of teams in one query; a team without a shop row is missing.
+// ShopSummaries reads the shops of teams in one query; a team without a shop row is missing. A main
+// address on a legacy row that does not count (SetLegacyShopHosts) reads as none.
 func (s *Store) ShopSummaries(ctx context.Context, teamIDs []int64) (map[int64]ShopSummary, error) {
 	out := make(map[int64]ShopSummary, len(teamIDs))
 	if len(teamIDs) == 0 {
 		return out, nil
 	}
 	q, args, err := sqlx.In(`SELECT ts.team_id, ts.enabled, ts.closed_by_operator, COALESCE(h.host, '') AS primary_host,
+COALESCE(h.kind, '') AS primary_kind,
 (st.team_id IS NOT NULL AND st.charges_enabled = 1 AND st.disconnected_at IS NULL) AS payable
 FROM team_shop ts
 LEFT JOIN shop_host h ON h.primary_team = ts.team_id
@@ -799,13 +873,17 @@ WHERE ts.team_id IN (?)`, teamIDs)
 		return nil, err
 	}
 	var rows []struct {
-		TeamID int64 `db:"team_id"`
+		TeamID      int64  `db:"team_id"`
+		PrimaryKind string `db:"primary_kind"`
 		ShopSummary
 	}
 	if err := s.db.SelectContext(ctx, &rows, s.db.Rebind(q), args...); err != nil {
 		return nil, fmt.Errorf("platformstore: shop summaries: %w", err)
 	}
 	for _, r := range rows {
+		if r.PrimaryHost != "" && !s.shopRowCounts(r.TeamID, r.PrimaryKind, r.PrimaryHost) {
+			r.PrimaryHost = ""
+		}
 		out[r.TeamID] = r.ShopSummary
 	}
 	return out, nil
@@ -974,11 +1052,14 @@ func (s *Store) dropShopDomain(ctx context.Context, host string, now time.Time, 
 
 // EnsureLegacyShopHosts makes hosts the storefront team's (teamID) legacy hosts: live, managed, never
 // a main address on their own (the owner may pick one, SetShopPrimary; a boot keeps that pick).
-// Idempotent (boot). A host another team holds is taken back: legacy hosts are the
-// storefront's own, and its customers must never reach another team. It answers the hosts taken back.
+// Idempotent (boot). It only seeds, it never deletes a row: a legacy row of a former storefront team
+// moves to teamID (it is the storefront's own host; the former team loses it as its main address),
+// and a host another team holds as its own domain stays that team's: it is answered (held) for the
+// boot to report. The binder names the storefront team for its configured hosts before any lookup,
+// so such a row never takes the storefront's customers.
 func (s *Store) EnsureLegacyShopHosts(ctx context.Context, teamID int64, hosts []string, now time.Time) ([]string, error) {
 	now = now.UTC()
-	var taken []string
+	var held []string
 	recs, err := recordsJSON(nil)
 	if err != nil {
 		return nil, err
@@ -986,19 +1067,19 @@ func (s *Store) EnsureLegacyShopHosts(ctx context.Context, teamID int64, hosts [
 	for _, host := range hosts {
 		var err error
 		for try := 0; try < 2; try++ { // a second try when another instance seeded it at the same time
-			err = s.ensureLegacyShopHost(ctx, teamID, host, recs, now, &taken)
+			err = s.ensureLegacyShopHost(ctx, teamID, host, recs, now, &held)
 			if err == nil || !dupKey(err, "PRIMARY") {
 				break
 			}
 		}
 		if err != nil {
-			return taken, fmt.Errorf("platformstore: legacy shop host %s: %w", host, err)
+			return held, fmt.Errorf("platformstore: legacy shop host %s: %w", host, err)
 		}
 	}
-	return taken, nil
+	return held, nil
 }
 
-func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host string, recs []byte, now time.Time, taken *[]string) error {
+func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host string, recs []byte, now time.Time, held *[]string) error {
 	return s.inTx(ctx, func(tx *sqlx.Tx) error {
 		var cur shopHostRow
 		err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ?`, host)
@@ -1011,63 +1092,41 @@ func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host str
 		case cur.Kind == ShopHostSubdomain:
 			// A team's platform address is never a legacy host: the configuration is wrong (boot fails).
 			return fmt.Errorf("%w: %s is a platform address of a team", ErrShopHostManaged, host)
+		case cur.Kind != ShopHostLegacy:
+			// A team's own domain is never taken at boot.
+			if cur.TeamID != teamID {
+				*held = append(*held, host)
+			}
+			return nil
 		default:
+			// A legacy row of a former storefront team (or not live): it becomes teamID's, live.
 			// Lock order: the holder's team_shop row, then the host.
 			if _, err := lockTeamShop(ctx, tx, cur.TeamID); err != nil {
 				return err
 			}
-			if err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host); err != nil && !isNoRows(err) {
+			err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host)
+			switch {
+			case isNoRows(err):
+				// Gone meanwhile: seeded below.
+			case err != nil:
 				return err
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ?`, host); err != nil {
-				return err
-			}
-			if cur.TeamID != teamID {
-				*taken = append(*taken, host)
-			}
-			if cur.Primary && cur.TeamID != teamID {
-				if err := primaryToSubdomainTx(ctx, tx, cur.TeamID, host); err != nil {
-					return err
+			case cur.Kind != ShopHostLegacy:
+				return fmt.Errorf("%w: %s changed during the seed", ErrShopHostTaken, host)
+			default:
+				if cur.Primary && cur.TeamID != teamID {
+					if err := primaryToSubdomainTx(ctx, tx, cur.TeamID, host); err != nil {
+						return err
+					}
 				}
+				_, err := tx.ExecContext(ctx, `UPDATE shop_host SET team_id = ?, status = 'live', verified_at = COALESCE(verified_at, ?)
+WHERE host = ?`, teamID, now, host)
+				return err
 			}
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO shop_host (host, team_id, kind, managed, is_primary, status, records, created_at, verified_at)
 VALUES (?, ?, 'legacy', 1, 0, 'live', ?, ?, ?)`, host, teamID, recs, now, now)
 		return err
 	})
-}
-
-// PruneLegacyShopHosts deletes the team's legacy hosts that are not in keep: only the configured
-// storefront hosts (TENANT_STOREFRONT_HOSTS) stay the storefront team's; a host an older boot seeded
-// from the allowed origins (a CORS-only page, the console) goes. A pruned main address leaves the
-// team without one. Other kinds and other teams' rows are never touched. Idempotent (boot). It
-// answers the hosts removed.
-func (s *Store) PruneLegacyShopHosts(ctx context.Context, teamID int64, keep []string) ([]string, error) {
-	var removed []string
-	err := s.inTx(ctx, func(tx *sqlx.Tx) error {
-		removed = nil
-		if _, err := lockTeamShop(ctx, tx, teamID); err != nil {
-			return err
-		}
-		var hosts []string
-		if err := tx.SelectContext(ctx, &hosts, `SELECT host FROM shop_host WHERE team_id = ? AND kind = 'legacy' ORDER BY host FOR UPDATE`, teamID); err != nil {
-			return err
-		}
-		for _, h := range hosts {
-			if slices.Contains(keep, h) {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM shop_host WHERE host = ? AND team_id = ? AND kind = 'legacy'`, h, teamID); err != nil {
-				return err
-			}
-			removed = append(removed, h)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("platformstore: prune legacy shop hosts: %w", err)
-	}
-	return removed, nil
 }
 
 // TeamMailName is one team's name and brand name as the team-shop mail lane sees them: no shop's

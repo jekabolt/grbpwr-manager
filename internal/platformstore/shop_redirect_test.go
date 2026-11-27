@@ -132,6 +132,7 @@ func TestStorefrontPrimaryOnLegacy(t *testing.T) {
 	ctx := context.Background()
 	seedConsole(t, st)
 	now := time.Now().UTC()
+	st.SetLegacyShopHosts(1, []string{"www.grbpwr.com", "grbpwr.com"})
 	if _, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"www.grbpwr.com", "grbpwr.com"}, now); err != nil {
 		t.Fatal(err)
 	}

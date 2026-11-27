@@ -78,8 +78,9 @@ VALUES ('www.taken.io', 3, 'custom', 0, 0, 'live', '[]', ?, ?)`, time.Now().UTC(
 	require.Equal(t, 0, w.count(t, `SELECT COUNT(*) FROM shop_host WHERE host IN ('brand.com', 'www.brand.com')`))
 
 	// The storefront team: its configured storefront hosts are its domains, an admin host and a
-	// CORS-only origin (rows an older boot seeded) left out; one becomes its main address.
+	// CORS-only origin (rows an older boot seeded, ignored now) left out; one becomes its main address.
 	sf := storefrontOwner()
+	w.st.SetLegacyShopHosts(1, []string{"grbpwr.com", "www.grbpwr.com"})
 	_, err = w.st.EnsureLegacyShopHosts(ctx, 1, []string{"grbpwr.com", "www.grbpwr.com", "admin.grbpwr.com", "jekabolt.github.io"}, time.Now())
 	require.NoError(t, err)
 	got, err := w.s.GetShop(sf, &pb_admin.GetShopRequest{})
