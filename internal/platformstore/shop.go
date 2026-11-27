@@ -1050,13 +1050,15 @@ func (s *Store) dropShopDomain(ctx context.Context, host string, now time.Time, 
 	return removed, nil
 }
 
-// EnsureLegacyShopHosts makes hosts the storefront team's (teamID) legacy hosts: live, managed, never
+// EnsureLegacyShopHosts seeds hosts as the storefront team's (teamID) legacy hosts: live, managed, never
 // a main address on their own (the owner may pick one, SetShopPrimary; a boot keeps that pick).
-// Idempotent (boot). It only seeds, it never deletes a row: a legacy row of a former storefront team
-// moves to teamID (it is the storefront's own host; the former team loses it as its main address),
-// and a host another team holds as its own domain stays that team's: it is answered (held) for the
-// boot to report. The binder names the storefront team for its configured hosts before any lookup,
-// so such a row never takes the storefront's customers.
+// Idempotent (boot). It only inserts a listed host that has no row; it never updates, moves or
+// deletes an existing row of any team, so instances of a rolling deploy that disagree on the
+// storefront team cannot hand a host back and forth. A listed host that another team holds (any
+// kind, a legacy row of a former storefront team included) is left alone and answered (held) for the
+// boot to report; the read gate (SetLegacyShopHosts) ignores such a legacy row, and the binder names
+// the storefront team for its configured hosts before any lookup. A storefront team change is a
+// manual step: the former team's legacy rows are moved to the new team by hand.
 func (s *Store) EnsureLegacyShopHosts(ctx context.Context, teamID int64, hosts []string, now time.Time) ([]string, error) {
 	now = now.UTC()
 	var held []string
@@ -1087,41 +1089,11 @@ func (s *Store) ensureLegacyShopHost(ctx context.Context, teamID int64, host str
 		case isNoRows(err):
 		case err != nil:
 			return err
-		case cur.TeamID == teamID && cur.Kind == ShopHostLegacy && cur.Status == ShopHostLive:
-			return nil
-		case cur.Kind == ShopHostSubdomain:
-			// A team's platform address is never a legacy host: the configuration is wrong (boot fails).
-			return fmt.Errorf("%w: %s is a platform address of a team", ErrShopHostManaged, host)
-		case cur.Kind != ShopHostLegacy:
-			// A team's own domain is never taken at boot.
-			if cur.TeamID != teamID {
-				*held = append(*held, host)
-			}
-			return nil
+		case cur.TeamID == teamID:
+			return nil // its own row, whatever its kind: left as it is
 		default:
-			// A legacy row of a former storefront team (or not live): it becomes teamID's, live.
-			// Lock order: the holder's team_shop row, then the host.
-			if _, err := lockTeamShop(ctx, tx, cur.TeamID); err != nil {
-				return err
-			}
-			err := tx.GetContext(ctx, &cur, `SELECT `+shopHostColumns+` FROM shop_host WHERE host = ? FOR UPDATE`, host)
-			switch {
-			case isNoRows(err):
-				// Gone meanwhile: seeded below.
-			case err != nil:
-				return err
-			case cur.Kind != ShopHostLegacy:
-				return fmt.Errorf("%w: %s changed during the seed", ErrShopHostTaken, host)
-			default:
-				if cur.Primary && cur.TeamID != teamID {
-					if err := primaryToSubdomainTx(ctx, tx, cur.TeamID, host); err != nil {
-						return err
-					}
-				}
-				_, err := tx.ExecContext(ctx, `UPDATE shop_host SET team_id = ?, status = 'live', verified_at = COALESCE(verified_at, ?)
-WHERE host = ?`, teamID, now, host)
-				return err
-			}
+			*held = append(*held, host) // another team's row: never touched at boot
+			return nil
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO shop_host (host, team_id, kind, managed, is_primary, status, records, created_at, verified_at)
 VALUES (?, ?, 'legacy', 1, 0, 'live', ?, ?, ?)`, host, teamID, recs, now, now)

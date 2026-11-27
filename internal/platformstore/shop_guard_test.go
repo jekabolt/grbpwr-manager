@@ -234,7 +234,8 @@ func TestLegacyShopHosts(t *testing.T) {
 // TestLegacyRowsCountOnlyWhenConfigured (X18 v3 re-review): a legacy row counts only while its host is
 // a configured storefront host and its team the storefront team. Under "none", or after the
 // storefront team changed, every other legacy row is ignored by every read (routing, lists, CORS,
-// summaries, main address, revalidation) and nothing is deleted.
+// summaries, main address, revalidation); the boot never deletes, moves or updates a row, so a
+// storefront team change takes a manual move.
 func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 	st := openFresh(t)
 	ctx := context.Background()
@@ -345,8 +346,8 @@ func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 		t.Fatalf("none: another team attached an ignored host: %v", err)
 	}
 
-	// The storefront team becomes team 7 with grbpwr.com only: that row moves (no delete), team 1's
-	// www row stays and is ignored, and team 1's old main address is gone.
+	// The storefront team becomes team 7 with grbpwr.com only. The boot never re-owns a row: team 1's
+	// legacy rows stay team 1's (main address flag included), are reported held and are ignored.
 	if _, err := st.DB().Exec(`INSERT INTO team (id, slug, name, db_name, status, created_at) VALUES (7, 'seven', 'Seven', 'lk_t_seven001', 'active', '2026-11-05')`); err != nil {
 		t.Fatal(err)
 	}
@@ -355,18 +356,43 @@ func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	seven := []string{"grbpwr.com"}
+	untouched := func(stage string) {
+		t.Helper()
+		if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 1 AND kind = 'legacy' AND status = 'live'`); n != 2 {
+			t.Fatalf("%s: team 1 legacy rows %d, want 2", stage, n)
+		}
+		if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE host = 'www.grbpwr.com' AND team_id = 1 AND is_primary = 1`); n != 1 {
+			t.Fatalf("%s: team 1 main address flag changed", stage)
+		}
+		if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE team_id = 7`); n != 0 {
+			t.Fatalf("%s: team 7 rows %d", stage, n)
+		}
+	}
 	st.SetLegacyShopHosts(7, seven)
-	if held, err := st.EnsureLegacyShopHosts(ctx, 7, seven, now); err != nil || len(held) != 0 {
+	if held, err := st.EnsureLegacyShopHosts(ctx, 7, seven, now); err != nil || !slices.Equal(held, seven) {
 		t.Fatalf("seed team 7: %v %v", held, err)
 	}
-	if id, ok := routes("grbpwr.com"); !ok || id != 7 {
-		t.Fatalf("team 7: grbpwr.com routes to %d %v", id, ok)
+	untouched("seed team 7")
+	// A rolling deploy: an old instance seeds for team 1, the new one for team 7, back and forth.
+	for i := 0; i < 2; i++ {
+		if held, err := st.EnsureLegacyShopHosts(ctx, 1, hosts, now); err != nil || len(held) != 0 {
+			t.Fatalf("old instance seed: %v %v", held, err)
+		}
+		if held, err := st.EnsureLegacyShopHosts(ctx, 7, seven, now); err != nil || !slices.Equal(held, seven) {
+			t.Fatalf("new instance seed: %v %v", held, err)
+		}
+		untouched("rolling deploy")
 	}
-	if _, ok := routes("www.grbpwr.com"); ok {
-		t.Fatal("team 7: team 1's legacy row still routes")
+	for _, h := range hosts {
+		if _, ok := routes(h); ok {
+			t.Fatalf("team 7: team 1's legacy row %s routes", h)
+		}
 	}
 	if got := listed(1); len(got) != 0 {
 		t.Fatalf("team 7: team 1 lists %v", got)
+	}
+	if got := listed(7); len(got) != 0 {
+		t.Fatalf("team 7: lists %v before the manual move", got)
 	}
 	if p := summaryPrimary(1); p != "" {
 		t.Fatalf("team 7: team 1 main address %q", p)
@@ -377,8 +403,8 @@ func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 	if err := st.SetShopPrimary(ctx, 1, "www.grbpwr.com"); !errors.Is(err, platformstore.ErrShopHostNotFound) {
 		t.Fatalf("team 7: team 1 main address on an ignored row: %v", err)
 	}
-	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE kind = 'legacy'`); n != 2 {
-		t.Fatalf("team 7: legacy rows %d, want 2", n)
+	if err := st.SetShopPrimary(ctx, 7, "grbpwr.com"); !errors.Is(err, platformstore.ErrShopHostNotFound) {
+		t.Fatalf("team 7: main address on team 1's row: %v", err)
 	}
 	// Team 1 opens a shop of its own: its platform address becomes the main address (the ignored
 	// row's flag is dropped, the row stays) and is its revalidation target.
@@ -390,6 +416,20 @@ func TestLegacyRowsCountOnlyWhenConfigured(t *testing.T) {
 	}
 	if n := countRows(t, st, `SELECT COUNT(*) FROM shop_host WHERE host = 'www.grbpwr.com' AND team_id = 1 AND kind = 'legacy'`); n != 1 {
 		t.Fatalf("team 1's ignored row went: %d", n)
+	}
+	// The manual ops step of a storefront team change: the row is moved by hand. Then it counts for
+	// team 7, and no boot of either side moves it back.
+	if _, err := st.DB().Exec(`UPDATE shop_host SET team_id = 7, is_primary = 0 WHERE host = 'grbpwr.com' AND kind = 'legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := st.EnsureLegacyShopHosts(ctx, 1, hosts, now); err != nil || !slices.Equal(held, seven) {
+		t.Fatalf("old instance after the move: %v %v", held, err)
+	}
+	if held, err := st.EnsureLegacyShopHosts(ctx, 7, seven, now); err != nil || len(held) != 0 {
+		t.Fatalf("new instance after the move: %v %v", held, err)
+	}
+	if id, ok := routes("grbpwr.com"); !ok || id != 7 {
+		t.Fatalf("after the move: grbpwr.com routes to %d %v", id, ok)
 	}
 	// Team 7 picks grbpwr.com and is revalidated there.
 	if err := st.SetShopPrimary(ctx, 7, "grbpwr.com"); err != nil {
@@ -491,9 +531,9 @@ func TestShopHostOnceLiveStaysTheTeams(t *testing.T) {
 		t.Fatalf("a refused attach dropped the queued removal: %d", n)
 	}
 
-	// A team's platform address is never seeded as a legacy host: the boot fails.
-	if _, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"acme.shop.beta.lekalo.studio"}, now); !errors.Is(err, platformstore.ErrShopHostManaged) {
-		t.Fatalf("legacy seed over a platform address: %v", err)
+	// A team's platform address is never seeded as a legacy host: held and left as it is.
+	if held, err := st.EnsureLegacyShopHosts(ctx, 1, []string{"acme.shop.beta.lekalo.studio"}, now); err != nil || !slices.Equal(held, []string{"acme.shop.beta.lekalo.studio"}) {
+		t.Fatalf("legacy seed over a platform address: %v %v", held, err)
 	}
 	if h := hostStatus(t, st, 2, "acme.shop.beta.lekalo.studio"); h.Kind != platformstore.ShopHostSubdomain {
 		t.Fatalf("platform address changed: %+v", h)

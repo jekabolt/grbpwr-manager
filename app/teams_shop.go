@@ -88,13 +88,13 @@ func (a *App) wireShops(ctx context.Context, b *tenantbind.Binder, adminS *admin
 		st.SetShopHostProof(proof)
 	}
 	if sf > 0 {
-		// Seed only: the boot never deletes a shop host.
+		// Seed only: the boot inserts absent hosts and never updates or deletes a shop host.
 		held, err := st.EnsureLegacyShopHosts(ctx, sf, legacy, time.Now())
 		if err != nil {
 			return fmt.Errorf("shops: legacy hosts: %w", err)
 		}
 		for _, h := range held {
-			slog.Default().ErrorContext(ctx, "shops: a storefront host is another team's domain; left to that team", slog.String("host", h))
+			slog.Default().ErrorContext(ctx, "shops: a storefront host belongs to another team; left alone", slog.String("host", h))
 		}
 	}
 	// Reserved for every team: the storefront's hosts and every allowed or legacy admin origin.
