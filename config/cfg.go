@@ -576,6 +576,7 @@ func bindEnvVars() {
 	viper.BindEnv("platform.db_prefix", "TENANT_DB_PREFIX")
 	viper.BindEnv("platform.team1_db", "TENANT_TEAM1_DB")
 	viper.BindEnv("platform.storefront_team_id", "TENANT_STOREFRONT_TEAM_ID")
+	_ = viper.BindEnv("platform.storefront_hosts", "TENANT_STOREFRONT_HOSTS")
 	viper.BindEnv("platform.shop_zone", "PLATFORM_SHOP_ZONE")
 	viper.BindEnv("platform.team1_profile", "TENANT_TEAM1_PROFILE")
 	viper.BindEnv("platform.spares", "TENANT_SPARES")

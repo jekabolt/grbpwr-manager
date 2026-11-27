@@ -4759,7 +4759,9 @@ service AdminService {
     };
   }
 
-  // AttachShopDomain stores a domain of the team's own and answers the DNS records to add.
+  // AttachShopDomain stores a domain of the team's own and answers the DNS records to add. A bare
+  // domain ("brand.com") also gets "www.brand.com" redirecting to it when that host is free; the
+  // redirect is proven by the domain's own TXT record.
   rpc AttachShopDomain(AttachShopDomainRequest) returns (AttachShopDomainResponse) {
     option (google.api.http) = {
       post: "/api/admin/team/shop/domains"
@@ -4775,7 +4777,8 @@ service AdminService {
     };
   }
 
-  // RemoveShopDomain removes a domain of the team's own (the shop.lekalo.studio address stays).
+  // RemoveShopDomain removes a domain of the team's own and the "www." redirect that came with it
+  // (the shop.lekalo.studio address stays).
   rpc RemoveShopDomain(RemoveShopDomainRequest) returns (RemoveShopDomainResponse) {
     option (google.api.http) = {
       post: "/api/admin/team/shop/domains/{host}/remove"
@@ -4783,7 +4786,8 @@ service AdminService {
     };
   }
 
-  // SetShopPrimaryHost picks the main address: mail links, revalidation and redirects use it.
+  // SetShopPrimaryHost picks the main address: mail links, revalidation and redirects use it. The
+  // storefront team (grbpwr) may pick one of its legacy hosts, or clear it with an empty host.
   rpc SetShopPrimaryHost(SetShopPrimaryHostRequest) returns (SetShopPrimaryHostResponse) {
     option (google.api.http) = {
       post: "/api/admin/team/shop/primary"
@@ -16047,7 +16051,8 @@ message Shop {
   string status = 2;
   // address is the shop's own address on the platform: "{slug}.shop.lekalo.studio"; empty while off.
   string address = 3;
-  // primary_host is the main address (no scheme): a live custom domain or the address above.
+  // primary_host is the main address (no scheme): a live custom domain, the address above or, for
+  // the storefront team, one of its legacy hosts.
   string primary_host = 4;
   // domains are every host of the shop, the platform address first.
   repeated ShopDomain domains = 5;
@@ -16163,7 +16168,8 @@ message RemoveShopDomainResponse {
 }
 
 message SetShopPrimaryHostRequest {
-  // host must be one of the shop's live hosts.
+  // host must be one of the shop's live hosts, not a redirect; the storefront team may send "" to
+  // clear its main address.
   string host = 1;
 }
 

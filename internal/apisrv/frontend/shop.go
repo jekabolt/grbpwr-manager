@@ -176,6 +176,12 @@ func (s *Server) GetShopProfile(ctx context.Context, _ *pb_frontend.GetShopProfi
 	}
 	out.Name, out.LegalName, out.LogoUrl, out.Email = p.Name, p.LegalEntity, p.LogoURL, p.ContactEmail
 	out.Address, out.Website, out.PrimaryHost, out.Hosts, out.Open = p.LegalAddress, p.Website, p.PrimaryHost, p.Hosts, p.Open
-	out.StripeAccountId, out.StripePublishableKey, out.StripeMode = shopStripeOf(sh.d.Payments, p)
+	out.Pack = p.Pack
+	if sh.d.StorefrontID > 0 && t.ID == sh.d.StorefrontID {
+		// The storefront team pays through its env processors: its key comes with the profile.
+		out.StripePublishableKey, out.StripeMode = p.StripePublishableKey, p.StripeMode
+	} else {
+		out.StripeAccountId, out.StripePublishableKey, out.StripeMode = shopStripeOf(sh.d.Payments, p)
+	}
 	return &pb_frontend.GetShopProfileResponse{Profile: out}, nil
 }

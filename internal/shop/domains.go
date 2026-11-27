@@ -24,6 +24,9 @@ type DomainState struct {
 // is idempotent: attaching a domain the project already has answers its state.
 type DomainProvider interface {
 	Attach(ctx context.Context, host string) (DomainState, error)
+	// AttachRedirect adds host as a permanent redirect to target, a domain the project already has
+	// ("www.brand.com" to "brand.com"); a host the project has already gets the redirect.
+	AttachRedirect(ctx context.Context, host, target string) (DomainState, error)
 	Check(ctx context.Context, host string) (DomainState, error)
 	Remove(ctx context.Context, host string) error
 }
@@ -58,6 +61,11 @@ func (f *FakeDomains) state(host string) DomainState {
 
 // Attach answers the records for host.
 func (f *FakeDomains) Attach(_ context.Context, host string) (DomainState, error) {
+	return f.state(host), nil
+}
+
+// AttachRedirect answers the records for host (the redirect itself is nobody's business here).
+func (f *FakeDomains) AttachRedirect(_ context.Context, host, _ string) (DomainState, error) {
 	return f.state(host), nil
 }
 

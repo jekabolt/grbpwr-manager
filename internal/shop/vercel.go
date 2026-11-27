@@ -110,6 +110,7 @@ func statusOf(err error) int {
 type projectDomain struct {
 	Name         string `json:"name"`
 	ApexName     string `json:"apexName"`
+	Redirect     string `json:"redirect"`
 	Verified     bool   `json:"verified"`
 	Verification []struct {
 		Type   string `json:"type"`
@@ -288,6 +289,45 @@ func (v *Vercel) Attach(ctx context.Context, host string) (DomainState, error) {
 			return DomainState{}, gerr
 		}
 		pd = got
+	case st == http.StatusBadRequest:
+		var ve *vercelError
+		if errors.As(err, &ve) && strings.Contains(ve.Code, "invalid") {
+			return DomainState{}, fmt.Errorf("%w: %v", ErrBadHost, err)
+		}
+		return DomainState{}, err
+	default:
+		return DomainState{}, err
+	}
+	return v.state(ctx, host, pd)
+}
+
+// redirectStatus is the redirect a "www." sibling answers with: permanent, method kept.
+const redirectStatus = http.StatusPermanentRedirect
+
+// AttachRedirect adds host to the project as a redirect to target (a domain of the project). A host
+// the project already has gets the redirect when it has another one; a host on another project is
+// ErrDomainTaken; a name Vercel refuses is ErrBadHost.
+func (v *Vercel) AttachRedirect(ctx context.Context, host, target string) (DomainState, error) {
+	var pd projectDomain
+	err := v.do(ctx, http.MethodPost, "/v10/projects/"+url.PathEscape(v.project)+"/domains", nil,
+		map[string]any{"name": host, "redirect": target, "redirectStatusCode": redirectStatus}, &pd)
+	switch st := statusOf(err); {
+	case err == nil:
+	case st == http.StatusConflict:
+		got, gerr := v.getProjectDomain(ctx, host)
+		if statusOf(gerr) == http.StatusNotFound {
+			return DomainState{}, ErrDomainTaken
+		}
+		if gerr != nil {
+			return DomainState{}, gerr
+		}
+		pd = got
+		if NormHost(pd.Redirect) != target {
+			if err := v.do(ctx, http.MethodPatch, v.projectPath("/domains/"+url.PathEscape(host)), nil,
+				map[string]any{"redirect": target, "redirectStatusCode": redirectStatus}, &pd); err != nil {
+				return DomainState{}, err
+			}
+		}
 	case st == http.StatusBadRequest:
 		var ve *vercelError
 		if errors.As(err, &ve) && strings.Contains(ve.Code, "invalid") {

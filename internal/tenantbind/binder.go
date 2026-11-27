@@ -104,9 +104,11 @@ type Binder struct {
 	behind        func(tenant.Team) bool // nil = every team is current
 	tokenTeams    TokenTeams             // nil = every public link is team #1 (token.go)
 	// shops: the shop lookups (shop.go); nil = teams mode off, every storefront call is the
-	// storefront team. storefrontHosts: hosts of HTTP_ALLOWED_ORIGINS (the storefront's own).
+	// storefront team. storefrontHosts: the storefront team's own shop hosts (TENANT_STOREFRONT_HOSTS),
+	// they name the storefront team. corsHosts: hosts of HTTP_ALLOWED_ORIGINS, they name no shop.
 	shops           shopPlane
 	storefrontHosts map[string]bool
+	corsHosts       map[string]bool
 
 	cacheMu   sync.Mutex
 	features  map[int64]featureEntry

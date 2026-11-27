@@ -58,13 +58,30 @@ type shopStateEntry struct {
 // shopCacheMax bounds the host cache (negative answers included); it is reset when reached.
 const shopCacheMax = 10000
 
-// SetStorefrontOrigins hands the binder the storefront's own origins (HTTP_ALLOWED_ORIGINS): a
-// request naming one of their hosts in x-shop-host is the storefront team's, not an unknown shop.
-func (b *Binder) SetStorefrontOrigins(origins []string) {
+// SetAllowedOrigins hands the binder the allowed origins (HTTP_ALLOWED_ORIGINS: dev, the console,
+// CORS-only pages). Unless one is a storefront host (SetStorefrontHosts), a request naming its host,
+// in x-shop-host or by its Origin, names no shop: it is never looked up and never names a team.
+func (b *Binder) SetAllowedOrigins(origins []string) {
 	m := map[string]bool{}
 	for _, o := range origins {
 		if h := shop.OriginHost(o); h != "" {
 			m[h] = true
+		}
+	}
+	b.mu.Lock()
+	b.corsHosts = m
+	b.mu.Unlock()
+}
+
+// SetStorefrontHosts hands the binder the storefront team's own shop hosts (TENANT_STOREFRONT_HOSTS:
+// grbpwr.com, www.grbpwr.com …; empty without a storefront team). A request naming one, in
+// x-shop-host or by its Origin, names the storefront team, so it never lets the other side pick
+// another shop.
+func (b *Binder) SetStorefrontHosts(hosts []string) {
+	m := map[string]bool{}
+	for _, h := range hosts {
+		if n := shop.NormHost(h); shop.ValidHost(n) {
+			m[n] = true
 		}
 	}
 	b.mu.Lock()
@@ -148,10 +165,13 @@ func (b *Binder) StorefrontTeamID() int64 {
 	return b.storefrontID
 }
 
-// ShopTeam resolves the team of a storefront request from its x-shop-host and Origin. legacy=true:
-// the request names no shop (or one of the storefront's own hosts) and runs as the storefront team.
+// ShopTeam resolves the team of a storefront request from its x-shop-host and Origin. Each side
+// names a team: a storefront host (SetStorefrontHosts) the storefront team, an allowed origin
+// (SetAllowedOrigins) none, any other host the team of its shop_host row (an unknown Origin names
+// none). When both sides name a team they must name the same one. legacy=true: the request names no
+// shop or the storefront team's, and runs as the storefront team.
 // Refusals: NotFound shop_not_found (x-shop-host names no shop), PermissionDenied shop_mismatch
-// (x-shop-host and Origin name two different shops), Unavailable (control plane).
+// (x-shop-host and Origin name two different teams), Unavailable (control plane).
 func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenant.Team, legacy bool, err error) {
 	sp := b.shopPlane()
 	if !b.TeamsMode() || sp == nil {
@@ -159,8 +179,9 @@ func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenan
 		return t, true, err
 	}
 	b.mu.RLock()
-	own := b.storefrontHosts
+	own, cors := b.storefrontHosts, b.corsHosts
 	b.mu.RUnlock()
+	sf := b.StorefrontTeamID()
 
 	hh := shop.NormHost(shopHost)
 	oh := shop.OriginHost(origin)
@@ -173,7 +194,12 @@ func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenan
 		oh = ""
 	}
 	var fromHeader, fromOrigin int64
-	if hh != "" && !own[hh] {
+	switch {
+	case hh == "" || (cors[hh] && !own[hh]):
+		// no header, or an allowed origin's host: names no shop
+	case own[hh] && sf > 0:
+		fromHeader = sf
+	default:
 		id, ok, err := b.hostTeam(ctx, sp, hh)
 		if err != nil {
 			return tenant.Team{}, false, status.Error(codes.Unavailable, "shop lookup unavailable")
@@ -183,25 +209,26 @@ func (b *Binder) ShopTeam(ctx context.Context, shopHost, origin string) (t tenan
 		}
 		fromHeader = id
 	}
-	if oh != "" && !own[oh] {
+	switch {
+	case oh == "" || (cors[oh] && !own[oh]):
+	case own[oh] && sf > 0:
+		fromOrigin = sf
+	default:
 		id, ok, err := b.hostTeam(ctx, sp, oh)
 		if err != nil {
 			return tenant.Team{}, false, status.Error(codes.Unavailable, "shop lookup unavailable")
 		}
 		if ok {
-			fromOrigin = id // an unknown Origin (dev, the storefront's own) names no shop
+			fromOrigin = id // an unknown Origin (a preview, a page elsewhere) names no shop
 		}
 	}
-	id := fromHeader
-	switch {
-	case fromHeader != 0 && fromOrigin != 0 && fromHeader != fromOrigin:
+	if fromHeader != 0 && fromOrigin != 0 && fromHeader != fromOrigin {
 		return tenant.Team{}, false, status.Error(codes.PermissionDenied, MsgShopMismatch)
-	case id == 0 && hh != "" && own[hh]:
-		// x-shop-host names the storefront's own host: the storefront team, whatever the Origin says.
-	case id == 0:
+	}
+	id := fromHeader
+	if id == 0 {
 		id = fromOrigin
 	}
-	sf := b.StorefrontTeamID()
 	if id == 0 && sf <= 0 {
 		// No storefront team (TENANT_STOREFRONT_TEAM_ID=none): a request that names no team shop
 		// has no shop to run as.

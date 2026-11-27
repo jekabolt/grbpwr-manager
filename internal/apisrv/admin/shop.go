@@ -41,6 +41,12 @@ type ShopWiring struct {
 	// Payments is the team shops' Stripe (shoppay.Service, lane X18-L3); nil = Stripe RPCs answer
 	// stripe_not_ready and team-shop card payments are refused.
 	Payments ShopPayments
+	// NoPrimary are legacy hosts of the storefront team that are never its main address (admin and
+	// API hosts): the shared storefront would send grbpwr's customers there.
+	NoPrimary []string
+	// StorefrontHosts are the storefront team's configured shop hosts (TENANT_STOREFRONT_HOSTS): the
+	// only hosts its shop screen lists and the only ones it may make its main address.
+	StorefrontHosts []string
 }
 
 // SetShops wires the shop screen (teams mode; call before serving).
@@ -87,6 +93,8 @@ func shopErr(ctx context.Context, op string, err error) error {
 		return status.Error(codes.FailedPrecondition, "host_not_live")
 	case errors.Is(err, platformstore.ErrShopHostLimit):
 		return status.Error(codes.ResourceExhausted, "host_limit")
+	case errors.Is(err, platformstore.ErrShopHostRedirect):
+		return status.Error(codes.FailedPrecondition, "host_redirect")
 	case errors.Is(err, shop.ErrBadHost):
 		return status.Error(codes.InvalidArgument, "bad_host")
 	}
@@ -112,9 +120,27 @@ func (s *Server) shopView(ctx context.Context, t tenant.Team, eff []feature.Key)
 	st := s.platform.store
 	out := &pb_admin.Shop{Mail: &pb_admin.ShopMail{}, Payments: &pb_admin.ShopPayments{Method: "none", Status: "none"}}
 	if t.ID == s.storefrontID() {
-		// Today's storefront (grbpwr): always on, its own hosts and keys, outside shop_host.
+		// The storefront team (grbpwr): always on, its env keys and mail; its hosts are the legacy ones,
+		// one of which the owner may make its main address (grbpwr.com on the shared storefront).
+		// Only its configured storefront hosts are offered, never an admin or API host (NoPrimary).
 		out.Enabled, out.Status = true, shopOpen
 		out.Payments.Method, out.Payments.Status = "platform", "active"
+		hosts, err := st.ShopHosts(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		var hide, offer []string
+		if s.shopW != nil {
+			hide, offer = s.shopW.NoPrimary, s.shopW.StorefrontHosts
+		}
+		for _, h := range hosts {
+			if h.Primary {
+				out.PrimaryHost = h.Host
+			} else if slices.Contains(hide, h.Host) || !slices.Contains(offer, h.Host) {
+				continue
+			}
+			out.Domains = append(out.Domains, shopDomainPb(h))
+		}
 		return out, nil
 	}
 	ts, err := st.TeamShop(ctx, t.ID)
@@ -228,7 +254,8 @@ func (s *Server) GetShop(ctx context.Context, _ *pb_admin.GetShopRequest) (*pb_a
 	return &pb_admin.GetShopResponse{Shop: out}, nil
 }
 
-// legacyShop refuses changes to the storefront team's shop (today's storefront, configured by env).
+// legacyShop refuses changes to the storefront team's shop (configured by env): its switch, domains,
+// payments and mail. Its main address is the one thing the owner picks (SetShopPrimaryHost).
 func (s *Server) legacyShop(p peopleCtx) error {
 	if p.w.Team.ID == s.storefrontID() {
 		return status.Error(codes.FailedPrecondition, "shop_legacy")
@@ -325,6 +352,9 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 	if err := s.platform.store.ShopHostFree(ctx, p.w.Team.ID, host, time.Now()); err != nil {
 		return nil, shopErr(ctx, "attach", err)
 	}
+	if cur, err := s.platform.store.ShopHost(ctx, p.w.Team.ID, host); err == nil && cur.RedirectTo != "" {
+		return nil, shopErr(ctx, "attach", platformstore.ErrShopHostRedirect)
+	}
 	state, err := s.shopW.Domains.Attach(ctx, host)
 	if errors.Is(err, shop.ErrDomainTaken) || errors.Is(err, shop.ErrBadHost) {
 		return nil, shopErr(ctx, "attach", err)
@@ -337,6 +367,7 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 		return nil, shopErr(ctx, "attach", err)
 	}
 	s.peopleAudit(ctx, p, "shop.domain_attached", map[string]string{"host": host})
+	s.attachWWW(ctx, p, host)
 	s.shopChanged(ctx, p.w.Team.ID)
 	d, err := s.domainOf(ctx, p.w.Team.ID, host)
 	if err != nil {
@@ -347,6 +378,36 @@ func (s *Server) AttachShopDomain(ctx context.Context, req *pb_admin.AttachShopD
 		return nil, err
 	}
 	return &pb_admin.AttachShopDomainResponse{Shop: out, Domain: d}, nil
+}
+
+// attachWWW gives a bare domain its "www." sibling redirecting to it, when that host is free (no
+// other team's, not the team's own shop address). Best effort: a failure leaves the domain without it,
+// and attaching the domain again tries again.
+func (s *Server) attachWWW(ctx context.Context, p peopleCtx, apex string) {
+	if reg := shop.RegistrableDomains(apex); len(reg) != 1 || reg[0] != apex {
+		return // a subdomain ("shop.brand.com") gets no sibling
+	}
+	www, err := s.customHost("www." + apex)
+	if err != nil {
+		return
+	}
+	st, teamID, now := s.platform.store, p.w.Team.ID, time.Now()
+	if cur, err := st.ShopHost(ctx, teamID, www); err == nil && cur.RedirectTo != apex {
+		return // the team's own shop address: left alone
+	}
+	if err := st.ShopHostFree(ctx, teamID, www, now); err != nil {
+		return // another team's
+	}
+	state, err := s.shopW.Domains.AttachRedirect(ctx, www, apex)
+	if err != nil {
+		slog.Default().WarnContext(ctx, "shop: www redirect at the domain provider", slog.String("host", www), slog.String("err", err.Error()))
+		return
+	}
+	if err := st.AttachShopRedirect(ctx, teamID, www, apex, validShopStatus(state.Status), shopRecords(state.Records), now); err != nil {
+		slog.Default().WarnContext(ctx, "shop: www redirect", slog.String("host", www), slog.String("err", err.Error()))
+		return
+	}
+	s.peopleAudit(ctx, p, "shop.domain_attached", map[string]string{"host": www, "redirect_to": apex})
 }
 
 // CheckShopDomain asks the provider again whether the domain's records are in place.
@@ -391,12 +452,16 @@ func (s *Server) RemoveShopDomain(ctx context.Context, req *pb_admin.RemoveShopD
 		return nil, err
 	}
 	host := shop.NormHost(req.GetHost())
-	if err := s.platform.store.RemoveShopHost(ctx, p.w.Team.ID, host); err != nil {
+	gone, err := s.platform.store.RemoveShopHostAll(ctx, p.w.Team.ID, host)
+	if err != nil {
 		return nil, shopErr(ctx, "remove", err)
 	}
-	// The removal is queued (shop_domain_drop) with the row; try it now, the drain retries a failure.
-	if _, err := s.platform.store.DropShopDomainNow(ctx, host, time.Now(), s.shopW.Domains.Remove); err != nil {
-		slog.Default().WarnContext(ctx, "shop: domain provider remove; queued for retry", slog.String("err", err.Error()))
+	// The removals are queued (shop_domain_drop) with the rows (the domain and its "www." redirect);
+	// try them now, the drain retries a failure.
+	for _, h := range gone {
+		if _, err := s.platform.store.DropShopDomainNow(ctx, h, time.Now(), s.shopW.Domains.Remove); err != nil {
+			slog.Default().WarnContext(ctx, "shop: domain provider remove; queued for retry", slog.String("err", err.Error()))
+		}
 	}
 	s.peopleAudit(ctx, p, "shop.domain_removed", map[string]string{"host": host})
 	s.shopChanged(ctx, p.w.Team.ID)
@@ -407,17 +472,31 @@ func (s *Server) RemoveShopDomain(ctx context.Context, req *pb_admin.RemoveShopD
 	return &pb_admin.RemoveShopDomainResponse{Shop: out}, nil
 }
 
-// SetShopPrimaryHost makes a live address the shop's main one.
+// SetShopPrimaryHost makes a live address the shop's main one. The storefront team picks one of its
+// configured storefront hosts (never an admin or API host, never a CORS-only origin), or clears it
+// with an empty host: grbpwr then revalidates only the old storefront.
 func (s *Server) SetShopPrimaryHost(ctx context.Context, req *pb_admin.SetShopPrimaryHostRequest) (*pb_admin.SetShopPrimaryHostResponse, error) {
 	p, err := s.shopCaller(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	host := shop.NormHost(req.GetHost())
-	if err := s.platform.store.SetShopPrimary(ctx, p.w.Team.ID, host); err != nil {
+	sf := p.w.Team.ID == s.storefrontID()
+	action := "shop.primary_set"
+	switch {
+	case sf && host == "":
+		action, err = "shop.primary_cleared", s.platform.store.ClearShopPrimary(ctx, p.w.Team.ID)
+	case sf && slices.Contains(s.shopW.NoPrimary, host):
+		return nil, status.Error(codes.FailedPrecondition, "host_admin")
+	case sf && !slices.Contains(s.shopW.StorefrontHosts, host):
+		return nil, status.Error(codes.FailedPrecondition, "host_not_storefront")
+	default:
+		err = s.platform.store.SetShopPrimary(ctx, p.w.Team.ID, host)
+	}
+	if err != nil {
 		return nil, shopErr(ctx, "primary", err)
 	}
-	s.peopleAudit(ctx, p, "shop.primary_set", map[string]string{"host": host})
+	s.peopleAudit(ctx, p, action, map[string]string{"host": host})
 	s.shopChanged(ctx, p.w.Team.ID)
 	out, err := s.shopOf(ctx, p)
 	if err != nil {

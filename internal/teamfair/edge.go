@@ -16,6 +16,9 @@ import (
 // BusyCode is the status message of a refusal: one machine word the client can match.
 const BusyCode = "team_busy"
 
+// ShopBusyCode is the refusal of a storefront call: the team's shop or checkout share is used up.
+const ShopBusyCode = "shop_busy"
+
 // uploadReadTimeout bounds how long an upload's body may take to arrive (the server has no
 // ReadTimeout: it also carries long streams). 256 MiB at ~4 Mbit/s fits.
 const uploadReadTimeout = 10 * time.Minute
@@ -26,17 +29,27 @@ const warnEvery = time.Minute
 // Edge adapts a Gate to the gRPC chain and to plain HTTP handlers.
 type Edge struct {
 	g *Gate
-	// shop reports a storefront method: never gated. nil = none.
+	// shop reports a storefront method: it takes the Shop lane (its team's shop share), never the
+	// team's admin share. nil = none.
 	shop func(fullMethod string) bool
+	// checkout reports a checkout method (placing, paying, order status): it takes the Checkout
+	// lane, a share of its own, so browsing never refuses a customer paying. nil = none.
+	checkout func(fullMethod string) bool
 
 	mu   sync.Mutex
-	warn map[Key]time.Time
+	warn map[warnKey]time.Time
 }
 
-// NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which pass ungated:
-// customers are never refused on a timer.
-func NewEdge(g *Gate, shop func(fullMethod string) bool) *Edge {
-	return &Edge{g: g, shop: shop, warn: map[Key]time.Time{}}
+// warnKey throttles refusal logs per team and per lane.
+type warnKey struct {
+	k    Key
+	lane Lane
+}
+
+// NewEdge wraps g (nil g = pass-through). shop marks storefront methods, which take the Shop lane;
+// checkout marks checkout methods, which take the Checkout lane (it wins over shop).
+func NewEdge(g *Gate, shop, checkout func(fullMethod string) bool) *Edge {
+	return &Edge{g: g, shop: shop, checkout: checkout, warn: map[warnKey]time.Time{}}
 }
 
 // Gate returns the gate behind the edge.
@@ -48,46 +61,57 @@ func (e *Edge) Gate() *Gate {
 }
 
 func (e *Edge) logBusy(ctx context.Context, k Key, lane Lane, err error) {
+	wk := warnKey{k: k, lane: lane}
 	e.mu.Lock()
-	last, seen := e.warn[k]
+	last, seen := e.warn[wk]
 	now := time.Now()
 	if seen && now.Sub(last) < warnEvery {
 		e.mu.Unlock()
 		return
 	}
-	e.warn[k] = now
+	e.warn[wk] = now
 	e.mu.Unlock()
 	slog.Default().WarnContext(ctx, "team share used up; call refused",
 		slog.String("key", k.String()), slog.String("lane", lane.String()), slog.String("err", err.Error()))
 }
 
-// refusal maps an Acquire error to the gRPC answer.
-func refusal(err error) error {
+// refusal maps an Acquire error of lane to the gRPC answer.
+func refusal(lane Lane, err error) error {
 	if IsBusy(err) {
+		if lane == Shop || lane == Checkout {
+			return status.Error(codes.ResourceExhausted, ShopBusyCode)
+		}
 		return status.Error(codes.ResourceExhausted, BusyCode)
 	}
 	return status.FromContextError(err).Err()
 }
 
 // Unary gates a unary call by the team in its context. Put it after the admin auth interceptor:
-// in teams mode the team of an admin call is bound there. No team = not gated.
+// in teams mode the team of an admin call is bound there. No team = not gated. A storefront call
+// takes the Shop lane of the shop's team (bound by its host), a checkout call its Checkout lane.
 func (e *Edge) Unary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if e == nil || e.g == nil || e.g.cfg.Off {
 			return handler(ctx, req)
 		}
 		t, ok := tenant.From(ctx)
-		if !ok || (e.shop != nil && e.shop(info.FullMethod)) {
+		if !ok {
 			return handler(ctx, req)
 		}
 		k := Key{TeamID: t.ID}
 		lane := LaneOf(info.FullMethod)
+		switch {
+		case e.checkout != nil && e.checkout(info.FullMethod):
+			lane = Checkout
+		case e.shop != nil && e.shop(info.FullMethod):
+			lane = Shop
+		}
 		release, err := e.g.Acquire(ctx, k, lane)
 		if err != nil {
 			if IsBusy(err) {
 				e.logBusy(ctx, k, lane, err)
 			}
-			return nil, refusal(err)
+			return nil, refusal(lane, err)
 		}
 		defer release()
 		return handler(ctx, req)
